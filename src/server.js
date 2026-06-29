@@ -254,10 +254,17 @@ app.get('/api/meta', (req, res) => {
   res.json({ center_name: s.center_name });
 });
 
+// 機密設定：非管理員一律遮罩（員工端仍需 /api/settings 取一般選項，故不改成 requireAdmin）
+const SECRET_SETTING_KEYS = [
+  'line_channel_access_token', 'line_channel_secret',
+  'fb_page_access_token', 'fb_app_secret', 'fb_verify_token',
+  'einvoice_api_key', 'gov_api_key',
+  'ecpay_hash_key', 'ecpay_hash_iv'
+];
 app.get('/api/settings', requireStaff, (req, res) => {
   const s = getSettings();
   if (req.session.user.role !== 'admin') {
-    s.line_channel_access_token = s.line_channel_access_token ? '(已設定)' : '';
+    for (const k of SECRET_SETTING_KEYS) s[k] = s[k] ? '(已設定)' : '';
   }
   res.json(s);
 });
@@ -643,7 +650,7 @@ app.get('/api/babies/:id/report', requireStaff, (req, res) => {
   res.json(report);
 });
 
-app.post('/api/babies/:id/report/send', requireStaff, async (req, res) => {
+app.post('/api/babies/:id/report/send', requireStaff, ah(async (req, res) => {
   const date = (req.body && req.body.date) || today();
   const report = buildDailyReport(req.params.id, date);
   if (!report) return res.status(404).json({ error: '找不到資料' });
@@ -661,7 +668,7 @@ app.post('/api/babies/:id/report/send', requireStaff, async (req, res) => {
     line_sent: results.filter(r => r.channel === 'line' && r.ok).length,
     line_failed: results.filter(r => r.channel === 'line' && !r.ok).length
   });
-});
+}));
 
 // 寶寶成長趨勢：每日體重、黃疸最後一筆，與每日餵食彙總
 function buildTrends(babyId) {

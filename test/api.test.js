@@ -209,3 +209,15 @@ test('ECPay：付款回調驗簽後自動入帳；錯誤簽章被拒', async () 
   const bad = await fetch(BASE + '/api/webhooks/ecpay', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'MerchantTradeNo=' + mtn + '&RtnCode=1&CheckMacValue=WRONG' });
   assert.strictEqual(await bad.text(), '0|CheckMacValue Error');
 });
+
+test('資安：非管理員讀取 settings 時金鑰被遮罩（不外洩明文）', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  await req('PUT', '/api/settings', { ecpay_hash_key: 'SUPERSECRETKEY' });
+  // kit_test 由前面 RBAC 測試建立（只有 meals 權限）
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  const s = await req('GET', '/api/settings');
+  assert.strictEqual(s.status, 200);
+  assert.strictEqual(s.data.ecpay_hash_key, '(已設定)');
+  assert.notStrictEqual(s.data.ecpay_hash_key, 'SUPERSECRETKEY');
+});
