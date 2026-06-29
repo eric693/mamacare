@@ -1,0 +1,19 @@
+{
+  "name": "mamacare",
+  "version": "1.0.0",
+  "description": "產後護理之家管理系統：照護紀錄、家屬透明化、排班、房務",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node src/db.js --seed",
+    "test": "node --test test/",
+    "deploy": "bash scripts/deploy.sh"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "multer": "^1.4.5-lts.2",
+    "pg": "^8.22.0"
+  }
+}

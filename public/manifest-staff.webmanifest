@@ -1,0 +1,13 @@
+{
+  "name": "MamaCare 產後護理之家管理系統",
+  "short_name": "MamaCare",
+  "description": "產後護理之家管理系統（員工端）",
+  "start_url": "/index.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f5",
+  "theme_color": "#2a7f78",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any maskable" }
+  ]
+}

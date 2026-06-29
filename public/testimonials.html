@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>名人推薦</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body { background: var(--bg); }
+    .kol-hero { text-align: center; padding: 36px 16px 8px; }
+    .kol-hero h1 { color: var(--primary-dark); font-size: 1.8rem; }
+    .kol-hero p { color: var(--muted); }
+    .kol-wrap { max-width: 1000px; margin: 0 auto; padding: 16px; }
+    .kol-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+    .kol-card { background: #fff; border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; }
+    .kol-photo { aspect-ratio: 1/1; background: #f0f4f3; }
+    .kol-photo img { width: 100%; height: 100%; object-fit: cover; }
+    .kol-photo .ph { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); }
+    .kol-body { padding: 14px 16px; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .kol-name { font-weight: 700; color: var(--primary-dark); font-size: 1.1rem; }
+    .kol-title { font-size: .85rem; color: var(--accent); }
+    .kol-quote { font-size: .95rem; line-height: 1.6; }
+    .kol-quote::before { content: "“"; color: var(--primary); font-size: 1.2rem; }
+    .kol-quote::after { content: "”"; color: var(--primary); }
+    .kol-links { margin-top: auto; display: flex; gap: 10px; padding-top: 6px; }
+    .kol-links a { font-size: .85rem; }
+    .empty { text-align: center; color: var(--muted); padding: 40px; }
+  </style>
+</head>
+<body>
+  <div class="kol-hero">
+    <h1 id="kol-title">名人推薦</h1>
+    <p>聽聽他們怎麼說</p>
+  </div>
+  <div class="kol-wrap"><div class="kol-grid" id="kol-grid"><div class="empty">載入中…</div></div></div>
+
+  <script src="/js/api.js"></script>
+  <script>
+    (async () => {
+      let data;
+      try { data = await api('/public/testimonials'); }
+      catch (e) { document.getElementById('kol-grid').innerHTML = '<div class="empty">載入失敗</div>'; return; }
+      if (data.center_name) {
+        document.getElementById('kol-title').textContent = `${data.center_name}　名人推薦`;
+        document.title = `名人推薦 - ${data.center_name}`;
+      }
+      const grid = document.getElementById('kol-grid');
+      if (!data.items.length) { grid.innerHTML = '<div class="empty">尚無推薦內容</div>'; return; }
+      grid.innerHTML = data.items.map(t => `
+        <div class="kol-card">
+          <div class="kol-photo">${t.photo ? `<img src="${esc(t.photo)}" alt="${esc(t.name)}" loading="lazy">` : '<div class="ph">無照片</div>'}</div>
+          <div class="kol-body">
+            <div class="kol-name">${esc(t.name)}</div>
+            ${t.title ? `<div class="kol-title">${esc(t.title)}</div>` : ''}
+            ${t.quote ? `<div class="kol-quote">${esc(t.quote)}</div>` : ''}
+            <div class="kol-links">
+              ${t.source_url ? `<a href="${esc(t.source_url)}" target="_blank" rel="noopener">原文連結</a>` : ''}
+              ${t.video_url ? `<a href="${esc(t.video_url)}" target="_blank" rel="noopener">▶ 影片</a>` : ''}
+            </div>
+          </div>
+        </div>`).join('');
+    })();
+  </script>
+</body>
+</html>

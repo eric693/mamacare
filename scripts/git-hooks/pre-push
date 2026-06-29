@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# push 前自動跑回歸測試；未通過則阻擋 push。
+# 啟用方式：git config core.hooksPath scripts/git-hooks（本專案已設定）
+cd "$(git rev-parse --show-toplevel)" || exit 1
+echo "▶ pre-push：執行 npm test…"
+if npm test; then
+  echo "✓ 測試通過，允許 push。"
+  exit 0
+else
+  echo "✗ 測試未通過，已阻擋 push。請修正後再試（或以 --no-verify 強制略過，不建議）。"
+  exit 1
+fi

@@ -1,0 +1,1251 @@
+const path = require('path');
+const crypto = require('crypto');
+const Database = require('better-sqlite3');
+
+// 預設正式資料庫；測試／其他環境可用 MAMACARE_DB 覆寫，不影響線上預設
+const DB_PATH = process.env.MAMACARE_DB || path.join(__dirname, '..', 'data', 'mamacare.db');
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return salt + ':' + hash;
+}
+
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(':');
+  const candidate = crypto.scryptSync(password, salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(candidate, 'hex'));
+}
+
+function init() {
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'nurse' CHECK (role IN ('admin','nurse')),
+    phone TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS rooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    room_type TEXT NOT NULL DEFAULT '標準房',
+    price_per_day INTEGER NOT NULL DEFAULT 0,
+    notes TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE TABLE IF NOT EXISTS mothers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT DEFAULT '',
+    birth_date TEXT DEFAULT '',
+    due_date TEXT DEFAULT '',
+    delivery_date TEXT DEFAULT '',
+    delivery_type TEXT DEFAULT '' ,
+    diet_notes TEXT DEFAULT '',
+    medical_notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved','checked_in','checked_out')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS babies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    name TEXT NOT NULL,
+    gender TEXT DEFAULT '' CHECK (gender IN ('','male','female')),
+    birth_date TEXT DEFAULT '',
+    birth_weight_g INTEGER,
+    notes TEXT DEFAULT '',
+    location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS bookings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    room_id INTEGER NOT NULL REFERENCES rooms(id),
+    check_in TEXT NOT NULL,
+    check_out TEXT NOT NULL,
+    deposit INTEGER NOT NULL DEFAULT 0,
+    total_amount INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved','checked_in','checked_out','cancelled')),
+    notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS baby_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    record_type TEXT NOT NULL CHECK (record_type IN
+      ('feeding','diaper','temperature','weight','jaundice','bath','sleep','photo','note')),
+    feed_method TEXT DEFAULT '',
+    amount_ml INTEGER,
+    diaper_kind TEXT DEFAULT '',
+    diaper_rash TEXT DEFAULT '',
+    value_num REAL,
+    photo_file TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    location TEXT DEFAULT '' CHECK (location IN ('','nursery','rooming')),
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_baby_records_baby ON baby_records(baby_id, recorded_at);
+
+  -- 寶寶位置異動紀錄（抱去給媽媽／抱回嬰兒室）
+  CREATE TABLE IF NOT EXISTS baby_location_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    location TEXT NOT NULL CHECK (location IN ('nursery','rooming')),
+    note TEXT DEFAULT '',
+    moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_baby_location_logs_baby ON baby_location_logs(baby_id, moved_at);
+
+  CREATE TABLE IF NOT EXISTS mother_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    record_type TEXT NOT NULL CHECK (record_type IN
+      ('vital','wound','uterus','breast','lochia','mood','education','note')),
+    value_text TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mother_records_mother ON mother_records(mother_id, recorded_at);
+
+  CREATE TABLE IF NOT EXISTS handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nurse_id INTEGER NOT NULL REFERENCES users(id),
+    shift_type TEXT NOT NULL CHECK (shift_type IN ('day','evening','night')),
+    handover_date TEXT NOT NULL,
+    situation TEXT DEFAULT '',
+    background TEXT DEFAULT '',
+    assessment TEXT DEFAULT '',
+    recommendation TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS shifts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    shift_date TEXT NOT NULL,
+    shift_type TEXT NOT NULL CHECK (shift_type IN ('day','evening','night')),
+    UNIQUE(user_id, shift_date, shift_type)
+  );
+
+  CREATE TABLE IF NOT EXISTS family_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    name TEXT NOT NULL,
+    relation TEXT DEFAULT '',
+    access_code TEXT NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS push_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    report_date TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'portal',
+    sent_by INTEGER REFERENCES users(id),
+    sent_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS charge_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL REFERENCES bookings(id),
+    item_name TEXT NOT NULL,
+    unit_price INTEGER NOT NULL DEFAULT 0,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    charged_on TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_charge_items_booking ON charge_items(booking_id);
+
+  CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL REFERENCES bookings(id),
+    amount INTEGER NOT NULL,
+    method TEXT NOT NULL DEFAULT '現金',
+    paid_on TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    received_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_payments_booking ON payments(booking_id);
+
+  CREATE TABLE IF NOT EXISTS meal_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    meal_date TEXT NOT NULL,
+    meal_type TEXT NOT NULL CHECK (meal_type IN ('breakfast','lunch','dinner')),
+    choice TEXT NOT NULL DEFAULT '',
+    note TEXT DEFAULT '',
+    UNIQUE(mother_id, meal_date, meal_type)
+  );
+
+  CREATE TABLE IF NOT EXISTS tours (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT DEFAULT '',
+    due_date TEXT DEFAULT '',
+    tour_at TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','visited','signed','lost')),
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 電子合約範本（含 {{占位符}}，建立合約時以訂房資料帶入並凍結）
+  CREATE TABLE IF NOT EXISTS contract_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 已產生的合約：body 為建立當下凍結的全文，簽署後鎖定不可改，僅管理員可作廢
+  CREATE TABLE IF NOT EXISTS contracts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER REFERENCES bookings(id),
+    template_id INTEGER,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    sign_token TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','signed','void')),
+    signer_name TEXT DEFAULT '',
+    signer_relation TEXT DEFAULT '',
+    signer_id_last4 TEXT DEFAULT '',
+    signature_data TEXT DEFAULT '',
+    signed_at TEXT DEFAULT '',
+    signed_ip TEXT DEFAULT '',
+    signed_ua TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    voided_by INTEGER REFERENCES users(id),
+    voided_at TEXT DEFAULT '',
+    void_reason TEXT DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_contracts_booking ON contracts(booking_id);
+
+  -- 稽核軌跡：誰在何時對哪筆資料做了什麼（醫療/個資合規佐證）
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    user_name TEXT DEFAULT '',
+    role TEXT DEFAULT '',
+    action TEXT NOT NULL,                 -- create/update/delete/login/logout/sign/void/restore...
+    method TEXT DEFAULT '',
+    entity TEXT DEFAULT '',               -- 資料表/資源名稱
+    entity_id TEXT DEFAULT '',
+    path TEXT DEFAULT '',
+    summary TEXT DEFAULT '',              -- 變更摘要（不含敏感大欄位）
+    ip TEXT DEFAULT '',
+    user_agent TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+  CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_logs(entity, entity_id);
+
+  -- 異常／不良事件通報（跌倒、給藥錯誤、嬰兒辨識錯誤、感染、燙傷…）
+  CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,               -- fall/med_error/baby_id_error/infection/burn/equipment/other
+    severity TEXT NOT NULL DEFAULT 'minor' CHECK (severity IN ('near_miss','minor','moderate','severe','sentinel')),
+    occurred_at TEXT NOT NULL,
+    location TEXT DEFAULT '',
+    mother_id INTEGER REFERENCES mothers(id),
+    baby_id INTEGER REFERENCES babies(id),
+    subject TEXT DEFAULT '',              -- 對象（媽媽/寶寶/員工/訪客）自由描述
+    description TEXT DEFAULT '',
+    immediate_action TEXT DEFAULT '',     -- 立即處置
+    cause_analysis TEXT DEFAULT '',       -- 原因分析
+    follow_up TEXT DEFAULT '',            -- 後續追蹤／改善措施
+    outcome TEXT DEFAULT '',              -- 結果
+    physician_notified INTEGER NOT NULL DEFAULT 0,
+    family_notified INTEGER NOT NULL DEFAULT 0,
+    reported_to_authority INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','processing','closed')),
+    reported_by INTEGER REFERENCES users(id),
+    closed_by INTEGER REFERENCES users(id),
+    closed_at TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_incidents_occurred ON incidents(occurred_at);
+
+  -- 感染管制：洗手稽核
+  CREATE TABLE IF NOT EXISTS hand_hygiene_audits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_date TEXT NOT NULL,
+    area TEXT DEFAULT '',                 -- 嬰兒室/護理站/月子房…
+    observed_role TEXT DEFAULT '',        -- 受稽核對象（護理師/清潔/訪客…）
+    opportunities INTEGER NOT NULL DEFAULT 0,  -- 觀察手部衛生時機數
+    compliant INTEGER NOT NULL DEFAULT 0,      -- 確實執行數
+    observer_id INTEGER REFERENCES users(id),
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_hh_date ON hand_hygiene_audits(audit_date);
+
+  -- 感染管制：環境清潔消毒簽核
+  CREATE TABLE IF NOT EXISTS disinfection_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    disinfect_date TEXT NOT NULL,
+    area TEXT NOT NULL,                   -- 區域/設備
+    agent TEXT DEFAULT '',               -- 消毒劑/方法
+    operator_id INTEGER REFERENCES users(id),   -- 執行人
+    verified_by INTEGER REFERENCES users(id),   -- 覆核簽核人
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_disinfect_date ON disinfection_logs(disinfect_date);
+
+  -- 感染管制：群聚事件通報
+  CREATE TABLE IF NOT EXISTS cluster_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pathogen TEXT DEFAULT '',            -- 病原/疾病
+    onset_date TEXT NOT NULL,
+    affected_count INTEGER NOT NULL DEFAULT 0,
+    affected_detail TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    control_action TEXT DEFAULT '',      -- 防治措施
+    reported_to_authority INTEGER NOT NULL DEFAULT 0,
+    reported_at TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','monitoring','closed')),
+    created_by INTEGER REFERENCES users(id),
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 新生兒給藥紀錄（MAR：Medication Administration Record）
+  CREATE TABLE IF NOT EXISTS med_administrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    drug_name TEXT NOT NULL,
+    dose TEXT DEFAULT '',
+    route TEXT DEFAULT '',               -- 口服/IM/IV/外用…
+    ordered_by TEXT DEFAULT '',          -- 醫囑醫師
+    scheduled_at TEXT DEFAULT '',
+    administered_at TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'given' CHECK (status IN ('given','held','refused','missed')),
+    nurse_id INTEGER REFERENCES users(id),
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mar_baby ON med_administrations(baby_id, administered_at);
+
+  -- 新生兒疫苗接種（B型肝炎、卡介苗…）
+  CREATE TABLE IF NOT EXISTS vaccinations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    vaccine TEXT NOT NULL,               -- hepb_immunoglobulin/hepb/bcg/other
+    dose_no TEXT DEFAULT '',
+    administered_at TEXT DEFAULT '',
+    lot_no TEXT DEFAULT '',
+    site TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('scheduled','done','deferred','refused')),
+    nurse_id INTEGER REFERENCES users(id),
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_vacc_baby ON vaccinations(baby_id);
+
+  -- 新生兒篩檢追蹤（聽力、代謝、心臟血氧 CCHD）
+  CREATE TABLE IF NOT EXISTS newborn_screenings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    screen_type TEXT NOT NULL,           -- hearing/metabolic/cchd/other
+    screened_at TEXT DEFAULT '',
+    result TEXT NOT NULL DEFAULT 'pending' CHECK (result IN ('pending','pass','refer','abnormal')),
+    follow_up TEXT DEFAULT '',           -- 複篩/轉介追蹤
+    follow_up_done INTEGER NOT NULL DEFAULT 0,
+    nurse_id INTEGER REFERENCES users(id),
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_screen_baby ON newborn_screenings(baby_id);
+
+  -- 新生兒光照治療紀錄
+  CREATE TABLE IF NOT EXISTS phototherapy_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    start_at TEXT NOT NULL,
+    end_at TEXT DEFAULT '',
+    bilirubin_before REAL,
+    bilirubin_after REAL,
+    device TEXT DEFAULT '',
+    nurse_id INTEGER REFERENCES users(id),
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_photo_baby ON phototherapy_logs(baby_id);
+
+  -- 電子發票／收據（欄位對齊財政部電子發票 MIG 3.2；實際上傳大平台需加值中心 API）
+  CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER REFERENCES bookings(id),
+    doc_type TEXT NOT NULL DEFAULT 'invoice' CHECK (doc_type IN ('invoice','receipt')),
+    invoice_number TEXT DEFAULT '',      -- 發票號碼 2碼英文+8碼數字
+    random_number TEXT DEFAULT '',       -- 隨機碼 4 碼
+    invoice_date TEXT NOT NULL,
+    invoice_time TEXT DEFAULT '',
+    buyer_name TEXT DEFAULT '',
+    buyer_tax_id TEXT DEFAULT '',        -- 統一編號（B2B），空為 B2C
+    carrier_type TEXT DEFAULT '',        -- 載具類別
+    carrier_id TEXT DEFAULT '',          -- 載具號碼
+    npoban TEXT DEFAULT '',              -- 捐贈碼
+    items TEXT NOT NULL DEFAULT '[]',    -- JSON: [{name,qty,price,amount}]
+    sales_amount INTEGER NOT NULL DEFAULT 0,   -- 銷售額（未稅，含免稅情形）
+    tax_type TEXT NOT NULL DEFAULT '3' CHECK (tax_type IN ('1','2','3','9')), -- 1應稅 2零稅 3免稅 9混合
+    tax_amount INTEGER NOT NULL DEFAULT 0,
+    total_amount INTEGER NOT NULL DEFAULT 0,    -- 總計
+    status TEXT NOT NULL DEFAULT 'issued' CHECK (status IN ('issued','void','allowance')),
+    allowance_amount INTEGER NOT NULL DEFAULT 0,
+    void_reason TEXT DEFAULT '',
+    upload_status TEXT NOT NULL DEFAULT 'local' CHECK (upload_status IN ('local','uploaded','failed')),
+    upload_note TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    voided_by INTEGER REFERENCES users(id),
+    voided_at TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_invoices_booking ON invoices(booking_id);
+
+  -- 家屬留言（家屬端 ←→ 員工端雙向；員工可回覆，含已讀狀態）
+  CREATE TABLE IF NOT EXISTS family_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    family_id INTEGER REFERENCES family_members(id),
+    sender TEXT NOT NULL CHECK (sender IN ('family','staff')),
+    sender_name TEXT DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    staff_id INTEGER REFERENCES users(id),
+    read_by_staff INTEGER NOT NULL DEFAULT 0,
+    read_by_family INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_family_msg_baby ON family_messages(baby_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    category TEXT DEFAULT '',
+    price INTEGER NOT NULL DEFAULT 0,
+    cost INTEGER NOT NULL DEFAULT 0,
+    image TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    track_stock INTEGER NOT NULL DEFAULT 0,    -- 是否管控庫存
+    stock INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,         -- 1=上架 0=下架
+    sort INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_products_active ON products(active, sort);
+
+  CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER REFERENCES bookings(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    placed_by TEXT NOT NULL DEFAULT 'staff' CHECK (placed_by IN ('family','staff')),
+    family_id INTEGER REFERENCES family_members(id),
+    created_by INTEGER REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','cancelled')),
+    total_amount INTEGER NOT NULL DEFAULT 0,
+    note TEXT DEFAULT '',
+    confirmed_by INTEGER REFERENCES users(id),
+    confirmed_at TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, created_at);
+
+  CREATE TABLE IF NOT EXISTS order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    product_id INTEGER REFERENCES products(id),
+    item_name TEXT NOT NULL,
+    unit_price INTEGER NOT NULL DEFAULT 0,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    amount INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+
+  -- 耗材進銷存（內部物料，與商城銷售商品分開）
+  CREATE TABLE IF NOT EXISTS supplies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    category TEXT DEFAULT '',
+    unit TEXT DEFAULT '',                       -- 單位：包/罐/箱…
+    stock INTEGER NOT NULL DEFAULT 0,
+    safety_stock INTEGER NOT NULL DEFAULT 0,    -- 安全庫存，低於此值提醒
+    note TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE IF NOT EXISTS supply_txns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    supply_id INTEGER NOT NULL REFERENCES supplies(id),
+    txn_type TEXT NOT NULL CHECK (txn_type IN ('in','out','adjust')), -- 進貨/領用/盤點
+    quantity INTEGER NOT NULL,                  -- 異動數量（in 正、out 正數代表領出、adjust 為調整後差值）
+    balance_after INTEGER NOT NULL DEFAULT 0,
+    reason TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_supply_txns ON supply_txns(supply_id, created_at);
+
+  -- 課程／活動與加購服務
+  CREATE TABLE IF NOT EXISTS programs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT 'course' CHECK (kind IN ('course','service')), -- 課程/服務
+    name TEXT NOT NULL,
+    category TEXT DEFAULT '',
+    price INTEGER NOT NULL DEFAULT 0,
+    capacity INTEGER NOT NULL DEFAULT 0,        -- 0=不限名額
+    scheduled_at TEXT DEFAULT '',               -- 課程時段（服務可留空，採預約）
+    location TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE IF NOT EXISTS program_signups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    program_id INTEGER NOT NULL REFERENCES programs(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    booking_id INTEGER REFERENCES bookings(id),
+    family_id INTEGER REFERENCES family_members(id),
+    placed_by TEXT NOT NULL DEFAULT 'staff' CHECK (placed_by IN ('family','staff')),
+    quantity INTEGER NOT NULL DEFAULT 1,
+    preferred_at TEXT DEFAULT '',               -- 服務類偏好時段
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','cancelled')),
+    note TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    confirmed_by INTEGER REFERENCES users(id),
+    confirmed_at TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_signups_status ON program_signups(status, created_at);
+
+  -- 優惠券
+  CREATE TABLE IF NOT EXISTS coupons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT DEFAULT '',
+    discount_type TEXT NOT NULL DEFAULT 'amount' CHECK (discount_type IN ('amount','percent')),
+    discount_value INTEGER NOT NULL DEFAULT 0,  -- amount=元；percent=百分比
+    min_spend INTEGER NOT NULL DEFAULT 0,
+    max_discount INTEGER NOT NULL DEFAULT 0,    -- percent 折扣上限，0=不限
+    usage_limit INTEGER NOT NULL DEFAULT 0,     -- 0=不限次數
+    used_count INTEGER NOT NULL DEFAULT 0,
+    valid_from TEXT DEFAULT '',
+    valid_to TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 月子餐每日菜單（依日期＋餐別＋階段＋飲食類型）
+  CREATE TABLE IF NOT EXISTS meal_menu (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    menu_date TEXT NOT NULL,
+    slot TEXT NOT NULL,                 -- 餐別（早餐/午點/晚餐…）
+    stage TEXT NOT NULL DEFAULT '',     -- 餐期階段名稱，''=不分階段
+    diet TEXT NOT NULL DEFAULT '',      -- 飲食類型（一般/素食…），''=通用
+    staple TEXT DEFAULT '',             -- 主食
+    main TEXT DEFAULT '',               -- 主菜
+    soup TEXT DEFAULT '',               -- 藥膳湯品
+    veggie TEXT DEFAULT '',             -- 鮮蔬
+    dessert TEXT DEFAULT '',            -- 甜品
+    drink TEXT DEFAULT '',              -- 飲品
+    note TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(menu_date, slot, stage, diet)
+  );
+  CREATE INDEX IF NOT EXISTS idx_meal_menu_date ON meal_menu(menu_date, slot);
+
+  -- 衛福部表單通報上傳（與電子發票相同模式：未設定介接則僅本地產生）
+  CREATE TABLE IF NOT EXISTS gov_submissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_type TEXT NOT NULL,                 -- 表單類型（monthly_report…）
+    period TEXT NOT NULL DEFAULT '',         -- 期間 YYYY-MM
+    title TEXT DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',      -- 上傳內容快照（JSON）
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','uploaded','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    uploaded_at TEXT DEFAULT '',
+    ack_no TEXT DEFAULT '',                  -- 主管機關回執編號
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(form_type, period)
+  );
+
+  -- 員工證照（到期提醒）
+  CREATE TABLE IF NOT EXISTS staff_certifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id),
+    staff_name TEXT DEFAULT '',              -- 非系統帳號者可手填姓名
+    cert_name TEXT NOT NULL,
+    cert_no TEXT DEFAULT '',
+    issuer TEXT DEFAULT '',
+    issued_on TEXT DEFAULT '',
+    expires_on TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_cert_expires ON staff_certifications(expires_on);
+
+  -- 電子問卷／滿意度調查
+  CREATE TABLE IF NOT EXISTS surveys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    questions TEXT NOT NULL DEFAULT '[]',    -- JSON [{type:'rating'|'choice'|'text', label, options?}]
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE TABLE IF NOT EXISTS survey_responses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    survey_id INTEGER NOT NULL REFERENCES surveys(id),
+    family_id INTEGER REFERENCES family_members(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    answers TEXT NOT NULL DEFAULT '{}',      -- JSON { 題序: 答案 }
+    submitted_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_survey_resp ON survey_responses(survey_id);
+
+  -- LINE／Facebook 雙向訊息 CRM
+  CREATE TABLE IF NOT EXISTS crm_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL CHECK (channel IN ('line','facebook')),
+    channel_user_id TEXT NOT NULL,        -- LINE userId / FB PSID
+    display_name TEXT DEFAULT '',
+    picture_url TEXT DEFAULT '',
+    mother_id INTEGER REFERENCES mothers(id),     -- 自動／手動對應住戶
+    family_id INTEGER REFERENCES family_members(id),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+    last_message_at TEXT DEFAULT '',
+    last_text TEXT DEFAULT '',
+    unread INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(channel, channel_user_id)
+  );
+  CREATE TABLE IF NOT EXISTS crm_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id INTEGER NOT NULL REFERENCES crm_contacts(id),
+    direction TEXT NOT NULL CHECK (direction IN ('in','out')),
+    text TEXT DEFAULT '',
+    msg_type TEXT NOT NULL DEFAULT 'text',
+    staff_id INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_crm_msg ON crm_messages(contact_id, id);
+
+  -- 線上金流付款意圖（ECPay 綠界等）
+  CREATE TABLE IF NOT EXISTS payment_intents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL REFERENCES bookings(id),
+    amount INTEGER NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'ecpay',
+    merchant_trade_no TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','failed')),
+    trade_no TEXT DEFAULT '',
+    payment_type TEXT DEFAULT '',
+    paid_at TEXT DEFAULT '',
+    raw TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 名人／顧客推薦牆（對外行銷內容）
+  CREATE TABLE IF NOT EXISTS testimonials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    title TEXT DEFAULT '',          -- 稱號（明星夫妻／資深音樂人…）
+    quote TEXT DEFAULT '',          -- 推薦語
+    photo TEXT DEFAULT '',          -- /uploads/xxx
+    source_url TEXT DEFAULT '',     -- FB／IG 來源連結
+    video_url TEXT DEFAULT '',      -- 影片連結
+    sort INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  `);
+
+  // 既有資料庫的欄位遷移
+  const famCols = db.prepare('PRAGMA table_info(family_members)').all().map(c => c.name);
+  if (!famCols.includes('line_user_id')) {
+    db.exec("ALTER TABLE family_members ADD COLUMN line_user_id TEXT NOT NULL DEFAULT ''");
+  }
+  const babyCols = db.prepare('PRAGMA table_info(babies)').all().map(c => c.name);
+  if (!babyCols.includes('location')) {
+    db.exec("ALTER TABLE babies ADD COLUMN location TEXT NOT NULL DEFAULT 'nursery'");
+  }
+  const brCols = db.prepare('PRAGMA table_info(baby_records)').all().map(c => c.name);
+  if (!brCols.includes('location')) {
+    db.exec("ALTER TABLE baby_records ADD COLUMN location TEXT DEFAULT ''");
+  }
+  if (!brCols.includes('diaper_rash')) {
+    db.exec("ALTER TABLE baby_records ADD COLUMN diaper_rash TEXT DEFAULT ''");
+  }
+
+  // 會員：媽媽自動為會員，掛點數與會員編號
+  const mCols = db.prepare('PRAGMA table_info(mothers)').all().map(c => c.name);
+  if (!mCols.includes('points')) db.exec('ALTER TABLE mothers ADD COLUMN points INTEGER NOT NULL DEFAULT 0');
+  if (!mCols.includes('member_no')) {
+    db.exec("ALTER TABLE mothers ADD COLUMN member_no TEXT DEFAULT ''");
+    // 既有媽媽補編會員編號 M + 5 碼
+    const rows = db.prepare("SELECT id FROM mothers WHERE member_no = '' OR member_no IS NULL").all();
+    const upd = db.prepare('UPDATE mothers SET member_no = ? WHERE id = ?');
+    for (const r of rows) upd.run('M' + String(r.id).padStart(5, '0'), r.id);
+  }
+
+  // 月子餐：每位媽媽的飲食類型
+  if (!mCols.includes('meal_diet')) db.exec("ALTER TABLE mothers ADD COLUMN meal_diet TEXT NOT NULL DEFAULT '一般'");
+
+  // 合約重簽：記錄取代來源（版本鏈）
+  const ctCols = db.prepare('PRAGMA table_info(contracts)').all().map(c => c.name);
+  if (!ctCols.includes('replaces_id')) db.exec('ALTER TABLE contracts ADD COLUMN replaces_id INTEGER');
+
+  // 應收帳款催收：記錄最後催收時間
+  const bkCols = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
+  if (!bkCols.includes('dunned_at')) db.exec("ALTER TABLE bookings ADD COLUMN dunned_at TEXT DEFAULT ''");
+
+  // 交班未結項目轉待辦
+  const hoCols = db.prepare('PRAGMA table_info(handovers)').all().map(c => c.name);
+  if (!hoCols.includes('follow_up')) db.exec("ALTER TABLE handovers ADD COLUMN follow_up TEXT DEFAULT ''");
+  if (!hoCols.includes('resolved')) db.exec('ALTER TABLE handovers ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0');
+  if (!hoCols.includes('resolved_by')) db.exec('ALTER TABLE handovers ADD COLUMN resolved_by INTEGER');
+  if (!hoCols.includes('resolved_at')) db.exec("ALTER TABLE handovers ADD COLUMN resolved_at TEXT DEFAULT ''");
+
+  // 耗材：目標補貨量（叫貨單用，0=用安全庫存兩倍估算）
+  const supCols = db.prepare('PRAGMA table_info(supplies)').all().map(c => c.name);
+  if (!supCols.includes('restock_level')) db.exec('ALTER TABLE supplies ADD COLUMN restock_level INTEGER NOT NULL DEFAULT 0');
+
+  // 擴充寶寶照護紀錄：新增生命徵象（呼吸/心跳/血氧）、生長（身長/頭圍）、
+  // 觀察（膚色/臍帶/溢吐奶/活動力/大便性狀）等型別，並加 value_text 存類別型觀察值
+  const brSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='baby_records'").get() || {}).sql || '';
+  if (!brSql.includes("'respiration'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE baby_records_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        baby_id INTEGER NOT NULL REFERENCES babies(id),
+        nurse_id INTEGER REFERENCES users(id),
+        record_type TEXT NOT NULL CHECK (record_type IN
+          ('feeding','diaper','temperature','weight','jaundice','bath','sleep','photo','note',
+           'respiration','heart_rate','spo2','length','head_circ','skin','cord','vomit','activity','stool')),
+        feed_method TEXT DEFAULT '',
+        amount_ml INTEGER,
+        diaper_kind TEXT DEFAULT '',
+        value_num REAL,
+        value_text TEXT DEFAULT '',
+        photo_file TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        recorded_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        location TEXT DEFAULT '',
+        diaper_rash TEXT DEFAULT ''
+      )`);
+      db.exec(`INSERT INTO baby_records_new
+        (id, baby_id, nurse_id, record_type, feed_method, amount_ml, diaper_kind, value_num, photo_file, note, recorded_at, location, diaper_rash)
+        SELECT id, baby_id, nurse_id, record_type, feed_method, amount_ml, diaper_kind, value_num, photo_file, note, recorded_at, location, diaper_rash
+        FROM baby_records`);
+      db.exec('DROP TABLE baby_records');
+      db.exec('ALTER TABLE baby_records_new RENAME TO baby_records');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_baby_records_baby ON baby_records(baby_id, recorded_at)');
+    });
+    db.pragma('foreign_keys = OFF');
+    tx();
+    db.pragma('foreign_keys = ON');
+  }
+
+  // 擴充媽媽照護紀錄：血壓、脈搏、排泄、泌乳指導、用藥
+  const mrSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='mother_records'").get() || {}).sql || '';
+  if (!mrSql.includes("'lactation'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE mother_records_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        nurse_id INTEGER REFERENCES users(id),
+        record_type TEXT NOT NULL CHECK (record_type IN
+          ('vital','wound','uterus','breast','lochia','mood','education','note',
+           'bp','pulse','elimination','lactation','medication')),
+        value_text TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        recorded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )`);
+      db.exec(`INSERT INTO mother_records_new (id, mother_id, nurse_id, record_type, value_text, note, recorded_at)
+        SELECT id, mother_id, nurse_id, record_type, value_text, note, recorded_at FROM mother_records`);
+      db.exec('DROP TABLE mother_records');
+      db.exec('ALTER TABLE mother_records_new RENAME TO mother_records');
+    });
+    db.pragma('foreign_keys = OFF');
+    tx();
+    db.pragma('foreign_keys = ON');
+  }
+
+  // 照護紀錄可編輯：最後修改者／時間（明細變更另由 audit_logs 留軌跡）。須在上述重建之後執行
+  for (const t of ['baby_records', 'mother_records']) {
+    const cols = db.prepare(`PRAGMA table_info(${t})`).all().map(c => c.name);
+    if (!cols.includes('edited_at')) db.exec(`ALTER TABLE ${t} ADD COLUMN edited_at TEXT DEFAULT ''`);
+    if (!cols.includes('edited_by')) db.exec(`ALTER TABLE ${t} ADD COLUMN edited_by INTEGER`);
+  }
+
+  // 帳號權限：非管理員帳號可分模組授權（admin 角色恆為全權）
+  const uCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (!uCols.includes('permissions')) {
+    db.exec("ALTER TABLE users ADD COLUMN permissions TEXT NOT NULL DEFAULT ''");
+    // 既有護理師沿用原有可存取範圍，避免升級後被鎖權限
+    const defaultStaff = JSON.stringify(['baby_care', 'newborn_medical', 'mother_care', 'handover',
+      'incidents', 'infection', 'residents', 'rooms', 'billing', 'shop', 'supplies', 'programs',
+      'members', 'meals', 'invoices', 'contracts', 'tours', 'shifts', 'family']);
+    db.prepare("UPDATE users SET permissions = ? WHERE role = 'nurse' AND permissions = ''").run(defaultStaff);
+  }
+
+  // 訂單：折扣與點數欄位（商城結帳）
+  const oCols = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
+  if (oCols.length) {
+    if (!oCols.includes('subtotal')) db.exec('ALTER TABLE orders ADD COLUMN subtotal INTEGER NOT NULL DEFAULT 0');
+    if (!oCols.includes('discount')) db.exec('ALTER TABLE orders ADD COLUMN discount INTEGER NOT NULL DEFAULT 0');
+    if (!oCols.includes('points_used')) db.exec('ALTER TABLE orders ADD COLUMN points_used INTEGER NOT NULL DEFAULT 0');
+    if (!oCols.includes('points_earned')) db.exec('ALTER TABLE orders ADD COLUMN points_earned INTEGER NOT NULL DEFAULT 0');
+    if (!oCols.includes('coupon_code')) db.exec("ALTER TABLE orders ADD COLUMN coupon_code TEXT DEFAULT ''");
+  }
+
+  ensureSettings();
+  ensureContractTemplate();
+}
+
+// 預設定型化合約範本（參考衛福部產後護理機構定型化契約應記載事項精神，可於系統內自由編修）
+const DEFAULT_CONTRACT_TEMPLATE = `{{center_name}}　入住服務契約
+
+立契約人
+　甲方（服務人）：{{center_name}}
+　乙方（消費者）：{{mother_name}}　聯絡電話：{{mother_phone}}
+
+第一條　服務期間與房型
+　房型房間：{{room_type}} {{room_name}} 房
+　入住日期：{{check_in}}
+　退房日期：{{check_out}}
+　住宿天數：共 {{days}} 天
+
+第二條　費用與付款
+　契約總金額：新臺幣 {{total_amount}} 元整。
+　已收訂金：新臺幣 {{deposit}} 元整。
+　應補餘額：新臺幣 {{balance}} 元整，乙方應於入住時或雙方約定期日前繳清。
+
+第三條　服務內容
+　甲方依產後護理機構相關法令，提供乙方及其新生兒之護理照護、膳食、房務及家屬探視等服務，並依法配置護理人員與遵守人力比規定。
+
+第四條　退費約定
+　乙方於入住前或入住期間因故終止契約者，雙方同意依消費者保護法及產後護理機構定型化契約相關規定辦理退費。
+
+第五條　個人資料保護
+　甲方為提供服務之必要，於服務期間蒐集、處理及利用乙方與新生兒之個人資料，並依個人資料保護法規定保護之；乙方同意甲方於家屬入口提供照護紀錄予乙方指定之家屬查閱。
+
+第六條　其他約定
+　本契約如有未盡事宜，依相關法令及誠信原則辦理。本契約一式二份，雙方各執一份為憑。
+
+簽約日期：{{today}}`;
+
+// 入住同意書
+const TPL_ADMISSION = `{{center_name}}　入住同意書
+
+立同意書人（消費者）：{{mother_name}}　聯絡電話：{{mother_phone}}
+房型房間：{{room_type}} {{room_name}} 房　入住：{{check_in}}　退房：{{check_out}}
+
+一、本人同意入住{{center_name}}接受產後護理照護服務，並已充分了解服務內容、收費標準與各項規範。
+二、本人同意於住宿期間遵守機構各項管理規定，配合護理作業、感染管制與門禁安全措施。
+三、本人了解新生兒之照護、餵食、沐浴及醫療協助等，將由合格護理人員依專業判斷執行，必要時協助轉診就醫。
+四、本人同意機構於緊急狀況下，為保障母嬰安全得先行必要處置並儘速通知本人或指定家屬。
+
+立同意書人簽名：　　　　　　　　　日期：{{today}}`;
+
+// 個人資料蒐集、處理及利用同意書
+const TPL_PRIVACY = `{{center_name}}　個人資料蒐集處理利用同意書
+
+依個人資料保護法第8條規定告知下列事項：
+
+一、蒐集目的：產後護理照護、契約管理、帳務收費、家屬照護資訊揭露、醫療聯繫及法令遵循。
+二、個資類別：姓名、聯絡方式、生產與健康相關紀錄、新生兒照護紀錄及影像等。
+三、利用期間：自蒐集日起至服務結束後依醫療及相關法令規定之保存期限屆滿為止。
+四、利用對象與地區：限{{center_name}}及其委外協力單位於我國境內利用。
+五、當事人權利：得向本機構請求查詢、閱覽、複製、補正、停止蒐集處理利用或刪除個人資料。
+六、本人同意機構於家屬入口，提供新生兒照護紀錄予本人指定之家屬查閱。
+
+立同意書人：{{mother_name}}　簽名：　　　　　　　　　日期：{{today}}`;
+
+// 母嬰同室同意書
+const TPL_ROOMING = `{{center_name}}　母嬰同室同意書
+
+立同意書人（母親）：{{mother_name}}
+
+一、本人了解母嬰同室有助於親子依附關係建立與母乳哺育，亦了解同室期間新生兒主要照護責任由本人承擔，護理人員從旁協助與指導。
+二、母嬰同室期間，本人同意遵守安全守則：不與新生兒同床睡眠、避免於疲累時抱餵、注意口鼻不受遮蔽、離房時須將新生兒送回或通知嬰兒室。
+三、本人了解可依自身狀況隨時調整母嬰同室時段，夜間或休息需要時得將新生兒送回嬰兒室照護。
+四、嬰兒室與母嬰同室之轉換，將由護理人員核對身分辨識並登錄交接時間。
+
+立同意書人簽名：　　　　　　　　　日期：{{today}}`;
+
+// 訪客規範同意書
+const TPL_VISITOR = `{{center_name}}　訪客探視規範
+
+為維護產婦休養與新生兒健康安全，敬請訪客配合下列規範：
+
+一、探視時間依機構公告為準，請於規定時段內探視，並於櫃台完成登記與量測體溫。
+二、有發燒、咳嗽、腹瀉、皮疹或其他疑似感染症狀者，請勿入內探視。
+三、進入嬰兒室及月子房前請依指示落實手部衛生；嬰兒室探視人數與資格依機構規定辦理。
+四、請勿任意抱離新生兒、餵食或拍攝他人母嬰；禁止攜帶寵物及未經許可之食品入內。
+五、為防範嬰兒辨識錯誤與抱錯事件，新生兒交付一律由護理人員核對身分後辦理。
+
+本人（{{mother_name}}及其家屬）已閱讀並同意遵守上述訪客規範。
+簽名：　　　　　　　　　日期：{{today}}`;
+
+const DEFAULT_TEMPLATES = [
+  ['入住服務契約（預設範本）', DEFAULT_CONTRACT_TEMPLATE],
+  ['入住同意書', TPL_ADMISSION],
+  ['個人資料同意書', TPL_PRIVACY],
+  ['母嬰同室同意書', TPL_ROOMING],
+  ['訪客規範同意書', TPL_VISITOR]
+];
+
+function ensureContractTemplate() {
+  const ins = db.prepare('INSERT INTO contract_templates (name, body) VALUES (?,?)');
+  const has = db.prepare('SELECT COUNT(*) c FROM contract_templates WHERE name = ?');
+  for (const [name, body] of DEFAULT_TEMPLATES) {
+    if (has.get(name).c === 0) ins.run(name, body);
+  }
+}
+
+// 營運參數一律存 settings，程式內不得寫死業務數值
+const DEFAULT_SETTINGS = {
+  center_name: 'MamaCare 產後護理之家',
+  nurse_baby_ratio: '5',
+  temp_high: '37.5',
+  temp_low: '36.0',
+  jaundice_alert: '13',
+  feed_methods: '親餵,瓶餵母奶,瓶餵配方,混合',
+  delivery_types: '自然產,剖腹產',
+  // 新生兒觀察類別選項（可自訂）
+  skin_options: '紅潤,蒼白,發紺,黃染,紅疹',
+  cord_options: '乾燥,滲液,紅腫,異味,已脫落',
+  vomit_options: '溢奶,吐奶,噴射狀',
+  activity_options: '活躍,正常,嗜睡,虛弱',
+  stool_options: '胎便,轉移便,黃稠便,綠便,水樣便,有血絲',
+  payment_methods: '現金,匯款轉帳,信用卡',
+  charge_presets: '月子餐加購,營養品,嬰兒用品,尿布加購,訪客餐',
+  meal_choices: '一般餐,素食餐,不需供餐',
+  line_channel_access_token: '',
+  // 感染管制目標：手部衛生遵從率門檻（%），低於此值於月報標示
+  hand_hygiene_target: '85',
+  // 電子發票／收據（MIG 3.2）— 實際上傳大平台需加值中心 API
+  einvoice_seller_name: 'MamaCare 產後護理之家',
+  einvoice_seller_tax_id: '',
+  einvoice_tax_type: '3',            // 預設免稅（醫療/護理服務）
+  einvoice_tax_rate: '5',
+  einvoice_provider: '',             // 加值中心名稱（ecpay/tradevan…），空=僅本地收據
+  einvoice_api_url: '',
+  einvoice_api_key: '',
+  // 收據自動採番：前綴 + 年月 + 流水號（流水號由系統遞增，可隨時重設起始值）
+  receipt_prefix: 'R',
+  receipt_next_seq: '1',
+  // 退費試算參數（依機構定型化契約調整；單位：%）
+  refund_handling_fee_pct: '0',      // 退費作業手續費（占已繳金額）
+  refund_penalty_pct: '20',          // 未使用天數之違約金上限（占未使用期間費用）
+  // 會員點數（商城）：每滿 points_earn_per 元回饋 1 點，1 點折抵 points_value 元
+  points_enabled: '1',
+  points_earn_per: '100',
+  points_value: '1',
+  // 月子餐：一日餐別、飲食類型、餐期階段（依產後天數）
+  meal_slots: '早餐,早點,午餐,午點,晚餐,宵夜',
+  meal_diets: '一般,素食',
+  meal_stages: '[{"name":"第一階段·排惡露","from":1,"to":7},{"name":"第二階段·補氣血","from":8,"to":14},{"name":"第三階段·健脾胃","from":15,"to":21},{"name":"第四階段·養氣補身","from":22,"to":40}]',
+  // 衛福部表單通報介接（空=僅本地產生／匯出，不實際上傳）
+  gov_api_url: '',
+  gov_api_key: '',
+  gov_org_code: '',
+  gov_auto_upload: '0',              // 1=產生後自動上傳並於失敗時自動重試補送
+  // 員工證照到期提醒天數
+  cert_alert_days: '60',
+  // 智能照護提醒：距上次餵奶超過幾小時就提醒該餵奶
+  feed_interval_hours: '3',
+  // 異常即時 LINE 通知值班的目標（LINE userId 或 group/room id；需同時設 line_channel_access_token）
+  line_staff_alert_id: '',
+  // 退房時自動推滿意度問卷給家屬（需有啟用中的問卷）
+  survey_on_checkout: '1',
+  // 線上金流（ECPay 綠界）：未設定 merchant_id 則停用
+  payment_provider: '',            // 'ecpay' 啟用
+  ecpay_merchant_id: '',
+  ecpay_hash_key: '',
+  ecpay_hash_iv: '',
+  ecpay_stage: '1',                // 1=測試環境(stage)，0=正式
+  public_base_url: '',             // 對外網址（產生 ReturnURL/ClientBackURL），如 https://mamacare.crownai.ink
+  // LINE Webhook 驗簽（雙向訊息 CRM）；line_channel_access_token 共用於推播
+  line_channel_secret: '',
+  // Facebook Messenger 介接（粉專雙向訊息）
+  fb_page_access_token: '',
+  fb_app_secret: '',
+  fb_verify_token: ''
+};
+
+function ensureSettings() {
+  const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?,?)');
+  for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
+}
+
+function getSettings() {
+  const out = {};
+  for (const row of db.prepare('SELECT key, value FROM settings').all()) out[row.key] = row.value;
+  return out;
+}
+
+function setSetting(key, value) {
+  if (!(key in DEFAULT_SETTINGS)) return false;
+  db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(String(value), key);
+  return true;
+}
+
+// 紅臀（尿布疹）程度，依序由輕到重；空字串代表未評估／不適用。
+// 「輕度」以上視為發生紅臀（計入紅臀率），「中度」以上列入異常事件。
+const DIAPER_RASH_LEVELS = ['無', '輕度', '中度', '重度'];
+const RASH_OCCURRED = ['輕度', '中度', '重度'];
+const RASH_SEVERE = ['中度', '重度'];
+
+function genAccessCode() {
+  // 8 碼大寫英數，排除易混淆字元
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  const bytes = crypto.randomBytes(8);
+  for (let i = 0; i < 8; i++) code += alphabet[bytes[i] % alphabet.length];
+  return code;
+}
+
+function dateStr(offsetDays = 0) {
+  // 以本地時間為準，與 server 端 today() 一致，避免 UTC+8 跨日錯位
+  const d = new Date(Date.now() + offsetDays * 86400000);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function seed() {
+  const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  if (userCount > 0) return false;
+
+  const insUser = db.prepare(
+    'INSERT INTO users (username, password_hash, name, role, phone) VALUES (?,?,?,?,?)');
+  const adminId = insUser.run('admin', hashPassword('admin123'), '王主任', 'admin', '0912000001').lastInsertRowid;
+  const nurse1 = insUser.run('nurse1', hashPassword('nurse123'), '林佳慧', 'nurse', '0912000002').lastInsertRowid;
+  const nurse2 = insUser.run('nurse2', hashPassword('nurse123'), '陳怡君', 'nurse', '0912000003').lastInsertRowid;
+  const nurse3 = insUser.run('nurse3', hashPassword('nurse123'), '張雅婷', 'nurse', '0912000004').lastInsertRowid;
+
+  const insRoom = db.prepare(
+    'INSERT INTO rooms (name, room_type, price_per_day, notes) VALUES (?,?,?,?)');
+  const roomIds = [];
+  roomIds.push(insRoom.run('101', '標準房', 6800, '').lastInsertRowid);
+  roomIds.push(insRoom.run('102', '標準房', 6800, '').lastInsertRowid);
+  roomIds.push(insRoom.run('201', '豪華房', 8800, '含客廳').lastInsertRowid);
+  roomIds.push(insRoom.run('202', '豪華房', 8800, '含客廳').lastInsertRowid);
+  roomIds.push(insRoom.run('301', '總統套房', 12800, '雙陽台').lastInsertRowid);
+
+  const insMother = db.prepare(`INSERT INTO mothers
+    (name, phone, due_date, delivery_date, delivery_type, diet_notes, status)
+    VALUES (?,?,?,?,?,?,?)`);
+  const m1 = insMother.run('李美玲', '0933111222', dateStr(-12), dateStr(-10), '自然產', '不吃牛肉', 'checked_in').lastInsertRowid;
+  const m2 = insMother.run('黃淑芬', '0933333444', dateStr(-6), dateStr(-5), '剖腹產', '素食', 'checked_in').lastInsertRowid;
+  const m3 = insMother.run('吳佩珊', '0933555666', dateStr(20), '', '', '', 'reserved').lastInsertRowid;
+
+  const insBaby = db.prepare(`INSERT INTO babies
+    (mother_id, name, gender, birth_date, birth_weight_g, notes) VALUES (?,?,?,?,?,?)`);
+  const b1 = insBaby.run(m1, '小寶', 'male', dateStr(-10), 3120, '').lastInsertRowid;
+  const b2 = insBaby.run(m2, '安安', 'female', dateStr(-5), 2980, '輕微黃疸觀察中').lastInsertRowid;
+
+  const insBooking = db.prepare(`INSERT INTO bookings
+    (mother_id, room_id, check_in, check_out, deposit, total_amount, status) VALUES (?,?,?,?,?,?,?)`);
+  const bk1 = insBooking.run(m1, roomIds[2], dateStr(-8), dateStr(22), 30000, 264000, 'checked_in').lastInsertRowid;
+  const bk2 = insBooking.run(m2, roomIds[0], dateStr(-3), dateStr(27), 20000, 204000, 'checked_in').lastInsertRowid;
+  insBooking.run(m3, roomIds[4], dateStr(22), dateStr(52), 50000, 384000, 'reserved');
+
+  const insCharge = db.prepare(`INSERT INTO charge_items
+    (booking_id, item_name, unit_price, quantity, charged_on, note, created_by) VALUES (?,?,?,?,?,?,?)`);
+  insCharge.run(bk1, '營養品', 1200, 2, dateStr(-2), '', adminId);
+  insCharge.run(bk1, '訪客餐', 350, 3, dateStr(-1), '家屬探視', nurse1);
+  insCharge.run(bk2, '尿布加購', 450, 1, dateStr(-1), '', nurse2);
+
+  const insPay = db.prepare(`INSERT INTO payments
+    (booking_id, amount, method, paid_on, note, received_by) VALUES (?,?,?,?,?,?)`);
+  insPay.run(bk1, 120000, '匯款轉帳', dateStr(-8), '第一期款', adminId);
+  insPay.run(bk2, 100000, '信用卡', dateStr(-3), '第一期款', adminId);
+
+  const insBR = db.prepare(`INSERT INTO baby_records
+    (baby_id, nurse_id, record_type, feed_method, amount_ml, diaper_kind, value_num, note, recorded_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`);
+  const today = dateStr(0);
+  const yesterday = dateStr(-1);
+  // 今日紀錄（demo 用）
+  insBR.run(b1, nurse1, 'feeding', '瓶餵母奶', 90, '', null, '', `${today} 06:10:00`);
+  insBR.run(b1, nurse1, 'diaper', '', null, '濕', null, '', `${today} 06:30:00`);
+  insBR.run(b1, nurse1, 'temperature', '', null, '', 36.8, '', `${today} 07:00:00`);
+  insBR.run(b1, nurse2, 'feeding', '瓶餵母奶', 100, '', null, '', `${today} 09:15:00`);
+  insBR.run(b1, nurse2, 'diaper', '', null, '便', null, '黃色軟便', `${today} 09:40:00`);
+  insBR.run(b1, nurse2, 'weight', '', null, '', 3260, '', `${today} 10:00:00`);
+  insBR.run(b1, nurse2, 'bath', '', null, '', null, '臍帶乾燥', `${today} 10:30:00`);
+  insBR.run(b2, nurse1, 'feeding', '親餵', null, '', null, '含乳良好', `${today} 07:20:00`);
+  insBR.run(b2, nurse1, 'jaundice', '', null, '', 11.2, '持續觀察', `${today} 08:00:00`);
+  insBR.run(b2, nurse1, 'temperature', '', null, '', 37.1, '', `${today} 08:05:00`);
+  insBR.run(b2, nurse2, 'feeding', '瓶餵配方', 80, '', null, '', `${today} 11:00:00`);
+  // 昨日紀錄
+  insBR.run(b1, nurse3, 'feeding', '瓶餵母奶', 90, '', null, '', `${yesterday} 21:00:00`);
+  insBR.run(b1, nurse3, 'temperature', '', null, '', 36.9, '', `${yesterday} 22:00:00`);
+  insBR.run(b2, nurse3, 'feeding', '瓶餵配方', 70, '', null, '', `${yesterday} 20:30:00`);
+  insBR.run(b2, nurse3, 'jaundice', '', null, '', 12.0, '', `${yesterday} 09:00:00`);
+
+  // 紅臀（尿布疹）評估示範：安安昨日輕度、今日中度（中度列入異常事件）
+  const insRash = db.prepare(`INSERT INTO baby_records
+    (baby_id, nurse_id, record_type, diaper_kind, diaper_rash, note, recorded_at)
+    VALUES (?,?,?,?,?,?,?)`);
+  insRash.run(b1, nurse1, 'diaper', '便', '無', '', `${today} 13:30:00`);
+  insRash.run(b2, nurse3, 'diaper', '濕', '輕度', '臀部微紅，已塗護膚膏', `${yesterday} 14:00:00`);
+  insRash.run(b2, nurse1, 'diaper', '便', '中度', '臀部紅疹擴大，加強護理並通知醫師', `${today} 13:50:00`);
+
+  // 寶寶位置：小寶目前抱在媽媽身邊（母嬰同室），安安在嬰兒室
+  db.prepare('UPDATE babies SET location = ? WHERE id = ?').run('rooming', b1);
+  const insLoc = db.prepare(`INSERT INTO baby_location_logs
+    (baby_id, nurse_id, location, note, moved_at) VALUES (?,?,?,?,?)`);
+  insLoc.run(b1, nurse1, 'rooming', '媽媽親餵練習', `${today} 09:10:00`);
+  insLoc.run(b1, nurse2, 'nursery', '餵食後抱回嬰兒室休息', `${yesterday} 23:00:00`);
+  insLoc.run(b1, nurse1, 'rooming', '日間母嬰同室', `${yesterday} 10:00:00`);
+
+  const insMR = db.prepare(`INSERT INTO mother_records
+    (mother_id, nurse_id, record_type, value_text, note, recorded_at) VALUES (?,?,?,?,?,?)`);
+  insMR.run(m1, nurse1, 'vital', 'BP 112/70, HR 76, T 36.6', '', `${today} 08:00:00`);
+  insMR.run(m1, nurse1, 'uterus', '子宮底臍下三指，收縮良好', '', `${today} 08:10:00`);
+  insMR.run(m2, nurse1, 'wound', '剖腹傷口乾燥無滲液', '', `${today} 08:30:00`);
+  insMR.run(m2, nurse2, 'breast', '雙側乳房柔軟，泌乳順暢', '', `${today} 10:30:00`);
+
+  const insShift = db.prepare(
+    'INSERT OR IGNORE INTO shifts (user_id, shift_date, shift_type) VALUES (?,?,?)');
+  for (let d = -1; d <= 6; d++) {
+    insShift.run(nurse1, dateStr(d), 'day');
+    insShift.run(nurse2, dateStr(d), 'evening');
+    insShift.run(nurse3, dateStr(d), 'night');
+  }
+  insShift.run(adminId, dateStr(0), 'day');
+
+  const insHandover = db.prepare(`INSERT INTO handovers
+    (nurse_id, shift_type, handover_date, situation, background, assessment, recommendation)
+    VALUES (?,?,?,?,?,?,?)`);
+  insHandover.run(nurse3, 'night', today,
+    '安安夜間哭鬧兩次，餵食後安撫入睡。',
+    '出生第五天，黃疸觀察中，昨日經皮黃疸值 12.0。',
+    '今晨黃疸值 11.2，呈下降趨勢，進食量正常。',
+    '白班續測黃疸值，若超過 13 通知小兒科醫師。');
+
+  const insMeal = db.prepare(
+    'INSERT OR IGNORE INTO meal_orders (mother_id, meal_date, meal_type, choice) VALUES (?,?,?,?)');
+  for (const meal of ['breakfast', 'lunch', 'dinner']) {
+    insMeal.run(m1, today, meal, '一般餐');
+    insMeal.run(m2, today, meal, '素食餐');
+  }
+
+  const insTour = db.prepare(`INSERT INTO tours
+    (name, phone, due_date, tour_at, source, status, note) VALUES (?,?,?,?,?,?,?)`);
+  insTour.run('林小姐', '0955123456', dateStr(60), `${dateStr(2)} 14:00`, '官網表單', 'scheduled', '想參觀豪華房');
+  insTour.run('周小姐', '0966789012', dateStr(45), `${dateStr(-3)} 10:30`, '朋友介紹', 'signed', '已簽約 30 天方案');
+  insTour.run('鄭小姐', '0977345678', dateStr(90), `${dateStr(-7)} 15:00`, '網路搜尋', 'lost', '價格考量');
+
+  const insFam = db.prepare(
+    'INSERT INTO family_members (baby_id, name, relation, access_code) VALUES (?,?,?,?)');
+  insFam.run(b1, '張志明', '爸爸', 'DEMO1234');
+  insFam.run(b1, '張王秀蘭', '阿嬤', genAccessCode());
+  insFam.run(b2, '劉建宏', '爸爸', genAccessCode());
+
+  // ---- 評鑑相關示範資料：異常事件、感染管制、新生兒醫療、發票 ----
+  db.prepare(`INSERT INTO incidents
+    (category, severity, occurred_at, location, baby_id, subject, description,
+     immediate_action, follow_up, physician_notified, family_notified, status, reported_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    'infection', 'minor', `${yesterday} 14:30`, '嬰兒室', b2, '安安（新生兒）',
+    '尿布部位紅疹擴大，疑似念珠菌感染。', '清潔患部、塗抹護膚藥膏並通知小兒科醫師評估。',
+    '每班觀察並記錄變化，三日後複評。', 1, 1, 'processing', nurse1);
+
+  const insHH = db.prepare(`INSERT INTO hand_hygiene_audits
+    (audit_date, area, observed_role, opportunities, compliant, observer_id, note)
+    VALUES (?,?,?,?,?,?,?)`);
+  insHH.run(yesterday, '嬰兒室', '護理師', 20, 18, adminId, '接觸新生兒前後稽核');
+  insHH.run(today, '護理站', '護理師', 15, 14, adminId, '');
+
+  const insDis = db.prepare(`INSERT INTO disinfection_logs
+    (disinfect_date, area, agent, operator_id, verified_by, note) VALUES (?,?,?,?,?,?)`);
+  insDis.run(today, '嬰兒室環境與保溫箱', '1:100 漂白水擦拭', nurse2, adminId, '每日例行清消');
+  insDis.run(yesterday, '月子餐備餐區', '75% 酒精', nurse3, adminId, '');
+
+  const insMar = db.prepare(`INSERT INTO med_administrations
+    (baby_id, drug_name, dose, route, ordered_by, scheduled_at, administered_at, status, nurse_id, note)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  insMar.run(b2, '口服維生素D3', '400 IU', '口服', '林小兒科醫師',
+    `${today} 09:00`, `${today} 09:05`, 'given', nurse1, '每日一次');
+
+  const insVac = db.prepare(`INSERT INTO vaccinations
+    (baby_id, vaccine, dose_no, administered_at, lot_no, site, status, nurse_id, note)
+    VALUES (?,?,?,?,?,?,?,?,?)`);
+  insVac.run(b1, 'hepb', '第1劑', `${dateStr(-10)} 12:00`, 'HB2026A', '右大腿', 'done', nurse1, '出生時接種');
+  insVac.run(b1, 'bcg', '', '', '', '', 'scheduled', null, '滿月後評估接種');
+  insVac.run(b2, 'hepb', '第1劑', `${dateStr(-5)} 10:00`, 'HB2026A', '左大腿', 'done', nurse2, '');
+
+  const insScr = db.prepare(`INSERT INTO newborn_screenings
+    (baby_id, screen_type, screened_at, result, follow_up, follow_up_done, nurse_id, note)
+    VALUES (?,?,?,?,?,?,?,?)`);
+  insScr.run(b1, 'hearing', `${dateStr(-9)} 10:00`, 'pass', '', 1, nurse1, '雙耳通過');
+  insScr.run(b1, 'metabolic', `${dateStr(-8)} 09:00`, 'pending', '檢體已送驗，待報告', 0, nurse1, '');
+  insScr.run(b2, 'cchd', `${dateStr(-4)} 11:00`, 'pass', '', 1, nurse2, '血氧飽和度正常');
+  insScr.run(b2, 'hearing', `${dateStr(-4)} 11:30`, 'refer', '右耳未過，安排複篩', 0, nurse2, '');
+
+  db.prepare(`INSERT INTO phototherapy_logs
+    (baby_id, start_at, end_at, bilirubin_before, bilirubin_after, device, nurse_id, note)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
+    b2, `${yesterday} 20:00`, `${today} 08:00`, 13.5, 11.2, '單面藍光燈', nurse3, '黃疸偏高，醫囑光照治療');
+
+  db.prepare(`INSERT INTO invoices
+    (booking_id, doc_type, invoice_number, random_number, invoice_date, invoice_time,
+     buyer_name, items, sales_amount, tax_type, tax_amount, total_amount, status, created_by, note)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    bk1, 'receipt', '', '', dateStr(-8), '14:00', '李美玲',
+    JSON.stringify([{ name: '產後護理服務訂金', qty: 1, price: 120000, amount: 120000 }]),
+    120000, '3', 0, 120000, 'issued', adminId, '第一期款收據');
+
+  return true;
+}
+
+init();
+
+if (process.argv.includes('--seed')) {
+  const created = seed();
+  console.log(created ? '種子資料建立完成' : '資料庫已有資料，略過種子建立');
+}
+
+module.exports = {
+  db, hashPassword, verifyPassword, genAccessCode, seed,
+  getSettings, setSetting, DEFAULT_SETTINGS,
+  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE
+};

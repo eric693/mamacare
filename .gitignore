@@ -1,0 +1,11 @@
+node_modules/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+uploads/
+backups/
+logs/
+*.log
+.env
+.DS_Store
+MamaCare功能介紹.pdf

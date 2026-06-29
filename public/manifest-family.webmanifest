@@ -1,0 +1,14 @@
+{
+  "name": "寶寶日報 - MamaCare 家屬入口",
+  "short_name": "寶寶日報",
+  "description": "查看寶寶每日照護、月子餐、商城與滿意度問卷",
+  "start_url": "/family.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#2a7f78",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any maskable" }
+  ]
+}

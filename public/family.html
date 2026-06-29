@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>寶寶日報 - MamaCare 家屬入口</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="manifest" href="/manifest-family.webmanifest">
+  <meta name="theme-color" content="#2a7f78">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="寶寶日報">
+  <link rel="apple-touch-icon" href="/favicon.svg">
+</head>
+<body>
+
+  <!-- 通行碼登入 -->
+  <div id="login-view" class="login-wrap" hidden>
+    <div class="login-card">
+      <h1>寶寶日報</h1>
+      <div class="sub">MamaCare 家屬入口</div>
+      <form id="login-form">
+        <div class="field">
+          <label for="code">家屬通行碼</label>
+          <input id="code" autocomplete="off" autocapitalize="characters"
+                 style="text-align:center;letter-spacing:4px;font-size:1.2rem"
+                 maxlength="8" placeholder="8 碼通行碼" required>
+        </div>
+        <button class="btn" type="submit">查看寶寶日報</button>
+        <div class="error-msg" id="login-error"></div>
+      </form>
+      <div class="login-hint">
+        通行碼由護理之家提供，每位家屬一組。<br>測試通行碼：DEMO1234
+      </div>
+    </div>
+  </div>
+
+  <!-- 日報主畫面 -->
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <div class="brand">寶寶日報</div>
+      <div class="spacer"></div>
+      <div class="user-info" id="fam-info"></div>
+      <button class="btn small" id="logout-btn"
+              style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.6)">登出</button>
+    </header>
+    <main class="content" style="margin:0 auto;max-width:720px">
+      <div class="family-hero">
+        <h2 id="baby-title"></h2>
+        <p id="baby-sub"></p>
+      </div>
+      <div class="card">
+        <div class="row" style="gap:12px;flex-wrap:wrap">
+          <div class="field" style="flex:1;max-width:220px">
+            <label>選擇日期</label>
+            <input type="date" id="report-date">
+          </div>
+          <div class="field" id="sibling-wrap" style="flex:1;max-width:220px" hidden>
+            <label>選擇寶寶（雙胞胎）</label>
+            <select id="sibling-select"></select>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <button id="tab-report" class="active">今日摘要</button>
+        <button id="tab-timeline">完整時間軸</button>
+        <button id="tab-photos">照片牆</button>
+        <button id="tab-trends">成長趨勢</button>
+        <button id="tab-meal">月子餐</button>
+        <button id="tab-shop">商城</button>
+        <button id="tab-programs">課程／服務</button>
+        <button id="tab-survey">滿意度問卷</button>
+        <button id="tab-messages">聯絡護理站</button>
+      </div>
+      <div id="panel"></div>
+    </main>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/family.js"></script>
+  <script>if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {})); }</script>
+</body>
+</html>
