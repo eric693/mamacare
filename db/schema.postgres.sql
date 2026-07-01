@@ -35,7 +35,7 @@ CREATE TABLE mothers (
     medical_notes TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved','checked_in','checked_out')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  , points INTEGER NOT NULL DEFAULT 0, member_no TEXT DEFAULT '', meal_diet TEXT NOT NULL DEFAULT '一般');
+  , points INTEGER NOT NULL DEFAULT 0, member_no TEXT DEFAULT '', meal_diet TEXT NOT NULL DEFAULT '一般', hk_dnd TEXT DEFAULT '', hk_needs TEXT DEFAULT '', hk_notes TEXT DEFAULT '');
 
 CREATE TABLE babies (
     id SERIAL PRIMARY KEY,
@@ -59,7 +59,7 @@ CREATE TABLE bookings (
     status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved','checked_in','checked_out','cancelled')),
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  , dunned_at TEXT DEFAULT '');
+  , dunned_at TEXT DEFAULT '', baby_check_in TEXT DEFAULT '');
 
 CREATE TABLE handovers (
     id SERIAL PRIMARY KEY,
@@ -150,6 +150,28 @@ CREATE TABLE tours (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+CREATE TABLE tour_logs (
+    id SERIAL PRIMARY KEY,
+    tour_id INTEGER NOT NULL REFERENCES tours(id) ON DELETE CASCADE,
+    body TEXT NOT NULL DEFAULT '',
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+CREATE TABLE housekeeping_logs (
+    id SERIAL PRIMARY KEY,
+    room_id INTEGER REFERENCES rooms(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    task TEXT NOT NULL DEFAULT '',
+    scheduled_for TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','done')),
+    note TEXT DEFAULT '',
+    created_by INTEGER,
+    done_by INTEGER,
+    done_at TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
 CREATE TABLE baby_location_logs (
     id SERIAL PRIMARY KEY,
     baby_id INTEGER NOT NULL REFERENCES babies(id),
@@ -187,7 +209,7 @@ CREATE TABLE contracts (
     voided_by INTEGER REFERENCES users(id),
     voided_at TEXT DEFAULT '',
     void_reason TEXT DEFAULT ''
-  , replaces_id INTEGER);
+  , replaces_id INTEGER, handler TEXT DEFAULT '');
 
 CREATE TABLE audit_logs (
     id SERIAL PRIMARY KEY,

@@ -48,7 +48,21 @@ async function loadReport() {
     `${date}${days && days > 0 ? `　出生第 ${days} 天` : ''}　媽媽：${rpt.baby.mother_name}`;
 
   if (activeTab === 'report') {
+    const extra = [];
+    if (s.respiration_latest != null) extra.push([`${s.respiration_latest} 次/分`, '呼吸']);
+    if (s.heart_rate_latest != null) extra.push([`${s.heart_rate_latest} bpm`, '心跳']);
+    if (s.spo2_latest != null) extra.push([`${s.spo2_latest}%`, '血氧']);
+    if (s.length_latest != null) extra.push([`${s.length_latest} cm`, '身長']);
+    if (s.head_circ_latest != null) extra.push([`${s.head_circ_latest} cm`, '頭圍']);
+    if (s.skin_latest) extra.push([esc(s.skin_latest), '膚色']);
+    if (s.activity_latest) extra.push([esc(s.activity_latest), '活動力']);
+    if (s.stool_latest) extra.push([esc(s.stool_latest), '大便性狀']);
+    const alertCard = (rpt.alerts && rpt.alerts.length)
+      ? `<div class="card" style="background:#fdecea;border-left:4px solid #d9534f;padding:10px 12px">
+          <strong style="color:#c0392b">⚠ 今日需注意</strong>
+          <ul style="margin:6px 0 0;padding-left:18px">${rpt.alerts.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>` : '';
     $('#panel').innerHTML = `
+      ${alertCard}
       <div class="card">
         <h3>今日摘要</h3>
         <div class="summary-grid">
@@ -60,6 +74,7 @@ async function loadReport() {
           <div class="item"><div class="v">${s.weight_latest_g ?? '-'}</div><div class="k">體重 (g)</div></div>
           <div class="item"><div class="v">${s.jaundice_latest ?? '-'}</div><div class="k">黃疸 (mg/dL)</div></div>
           <div class="item"><div class="v">${s.bath_done ? '已完成' : '未安排'}</div><div class="k">沐浴</div></div>
+          ${extra.map(([v, k]) => `<div class="item"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('')}
           <div class="item"><div class="v">${rpt.photos.length} 張</div><div class="k">今日照片</div></div>
         </div>
       </div>

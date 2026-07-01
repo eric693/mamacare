@@ -318,6 +318,92 @@ async function viewDashboard() {
     </div>`;
 }
 
+/* ---------- 寶寶日報：摘要 / 異常 / 列印 ---------- */
+function babyReportAlerts(alerts) {
+  if (!alerts || !alerts.length) return '';
+  return `<div class="card" style="background:#fdecea;border-left:4px solid var(--danger);padding:10px 12px;margin-bottom:12px">
+    <strong style="color:var(--danger)">⚠ 異常提醒</strong>
+    <ul style="margin:6px 0 0;padding-left:18px">${alerts.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>`;
+}
+function babyReportSummaryGrid(s, photoCount) {
+  const items = [
+    [`${s.feed_count} 次`, '餵食次數'],
+    [`${s.feed_total_ml} ml`, '瓶餵總量'],
+    [`濕 ${s.diaper_wet} / 便 ${s.diaper_stool}`, '尿布'],
+    [`${s.rash_worst ?? '未評估'}`, '紅臀'],
+    [`${s.temp_latest ?? '-'}`, '最新體溫 (°C)'],
+    [`${s.weight_latest_g ?? '-'}`, '體重 (g)'],
+    [`${s.jaundice_latest ?? '-'}`, '黃疸 (mg/dL)']
+  ];
+  // 擴充項目：有記錄才顯示，避免空白塞滿版面
+  if (s.respiration_latest != null) items.push([`${s.respiration_latest} 次/分`, '呼吸']);
+  if (s.heart_rate_latest != null) items.push([`${s.heart_rate_latest} bpm`, '心跳']);
+  if (s.spo2_latest != null) items.push([`${s.spo2_latest}%`, '血氧']);
+  if (s.length_latest != null) items.push([`${s.length_latest} cm`, '身長']);
+  if (s.head_circ_latest != null) items.push([`${s.head_circ_latest} cm`, '頭圍']);
+  if (s.sleep_count) items.push([`${s.sleep_count} 次`, '睡眠紀錄']);
+  if (s.skin_latest) items.push([esc(s.skin_latest), '膚色']);
+  if (s.activity_latest) items.push([esc(s.activity_latest), '活動力']);
+  if (s.stool_latest) items.push([esc(s.stool_latest), '大便性狀']);
+  if (s.vomit_latest) items.push([esc(s.vomit_latest), '溢吐奶']);
+  if (s.cord_latest) items.push([esc(s.cord_latest), '臍帶']);
+  items.push([`${s.bath_done ? '已完成' : '未安排'}`, '沐浴']);
+  if (photoCount != null) items.push([`${photoCount} 張`, '今日照片']);
+  return `<div class="summary-grid" style="margin-bottom:14px">${items.map(([v, k]) =>
+    `<div class="item"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('')}</div>`;
+}
+// 另開視窗列印／另存 PDF：寶寶日報（摘要＋異常＋當日紀錄＋照片）
+function printBabyReport(rpt) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const s = rpt.summary;
+  const row = (k, v) => v == null || v === '' ? '' : `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`;
+  const summaryRows = [
+    row('餵食次數', `${s.feed_count} 次`), row('瓶餵總量', `${s.feed_total_ml} ml`),
+    row('尿布', `濕 ${s.diaper_wet} / 便 ${s.diaper_stool}`), row('紅臀', s.rash_worst ?? '未評估'),
+    row('最新體溫', s.temp_latest != null ? `${s.temp_latest} °C` : ''),
+    row('體重', s.weight_latest_g != null ? `${s.weight_latest_g} g` : ''),
+    row('黃疸', s.jaundice_latest != null ? `${s.jaundice_latest} mg/dL` : ''),
+    row('呼吸', s.respiration_latest != null ? `${s.respiration_latest} 次/分` : ''),
+    row('心跳', s.heart_rate_latest != null ? `${s.heart_rate_latest} bpm` : ''),
+    row('血氧', s.spo2_latest != null ? `${s.spo2_latest}%` : ''),
+    row('身長', s.length_latest != null ? `${s.length_latest} cm` : ''),
+    row('頭圍', s.head_circ_latest != null ? `${s.head_circ_latest} cm` : ''),
+    row('膚色', s.skin_latest), row('活動力', s.activity_latest), row('大便性狀', s.stool_latest),
+    row('溢吐奶', s.vomit_latest), row('臍帶', s.cord_latest),
+    row('沐浴', s.bath_done ? '已完成' : '未安排')
+  ].join('');
+  const recs = (rpt.records || []).filter(r => r.record_type !== 'photo').map(r => `
+    <tr><td>${esc((r.recorded_at || '').slice(11, 16))}</td><td>${esc(BABY_TYPE_LABEL[r.record_type] || r.record_type)}</td>
+    <td>${esc(babyRecordDetail(r))}</td><td>${esc(r.nurse_name || '')}</td></tr>`).join('')
+    || '<tr><td colspan="4" style="text-align:center;color:#888">本日無紀錄</td></tr>';
+  const alerts = (rpt.alerts && rpt.alerts.length)
+    ? `<div class="alert"><strong>⚠ 異常提醒：</strong>${rpt.alerts.map(esc).join('；')}</div>` : '';
+  const photos = (rpt.photos || []).map(p => `<img src="${location.origin}/uploads/${esc(p.photo_file)}" style="max-width:160px;max-height:160px;margin:4px;border:1px solid #ddd">`).join('');
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>寶寶日報 - ${esc(rpt.baby.name)} ${esc(rpt.date)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.6;max-width:760px;margin:24px auto;padding:0 24px}
+      h1{font-size:20px;margin:0 0 2px;color:#b03060} .sub{color:#666;font-size:13px;margin-bottom:14px}
+      table{width:100%;border-collapse:collapse;font-size:14px;margin-bottom:14px}
+      th,td{border:1px solid #ccc;padding:5px 8px;text-align:left} th{background:#f2f7f6}
+      h3{font-size:15px;margin:14px 0 6px;color:#9c2b58}
+      .alert{background:#fdecea;border-left:4px solid #d9534f;padding:8px 12px;margin-bottom:12px;color:#a33}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>${esc(center)}　寶寶日報</h1>
+    <div class="sub">${esc(rpt.baby.name)}　媽媽：${esc(rpt.baby.mother_name || '')}　日期：${esc(rpt.date)}</div>
+    ${alerts}
+    <h3>今日摘要</h3>
+    <table><tbody>${summaryRows}</tbody></table>
+    <h3>當日紀錄</h3>
+    <table><thead><tr><th>時間</th><th>項目</th><th>內容</th><th>護理師</th></tr></thead><tbody>${recs}</tbody></table>
+    ${photos ? `<h3>今日照片</h3><div>${photos}</div>` : ''}
+    <div class="noprint" style="margin-top:24px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+    </body></html>`);
+  win.document.close();
+}
+
 /* ---------- 寶寶照護 ---------- */
 async function viewBabyCare() {
   const babies = await api('/babies');
@@ -603,23 +689,17 @@ async function viewBabyCare() {
     ]);
     const s = rpt.summary;
     openModal(`${rpt.baby.name} 寶寶日報（${rpt.date}）`, `
-      <div class="summary-grid" style="margin-bottom:14px">
-        <div class="item"><div class="v">${s.feed_count} 次</div><div class="k">餵食次數</div></div>
-        <div class="item"><div class="v">${s.feed_total_ml} ml</div><div class="k">瓶餵總量</div></div>
-        <div class="item"><div class="v">濕 ${s.diaper_wet} / 便 ${s.diaper_stool}</div><div class="k">尿布</div></div>
-        <div class="item"><div class="v">${s.rash_worst ?? '未評估'}</div><div class="k">紅臀</div></div>
-        <div class="item"><div class="v">${s.temp_latest ?? '-'}</div><div class="k">最新體溫 (度C)</div></div>
-        <div class="item"><div class="v">${s.weight_latest_g ?? '-'}</div><div class="k">體重 (g)</div></div>
-        <div class="item"><div class="v">${s.jaundice_latest ?? '-'}</div><div class="k">黃疸 (mg/dL)</div></div>
-        <div class="item"><div class="v">${s.bath_done ? '已完成' : '未安排'}</div><div class="k">沐浴</div></div>
-        <div class="item"><div class="v">${rpt.photos.length} 張</div><div class="k">今日照片</div></div>
-      </div>
+      ${babyReportAlerts(rpt.alerts)}
+      <div class="row" style="margin-bottom:10px"><button class="btn small secondary" id="br-print">列印 / 匯出 PDF</button></div>
+      ${babyReportSummaryGrid(s, rpt.photos.length)}
       ${rpt.photos.length ? `<div class="photo-grid" style="margin-bottom:14px">${rpt.photos.map(p => `
         <figure><img src="/uploads/${esc(p.photo_file)}"><figcaption>${esc(p.note || '')}</figcaption></figure>`).join('')}</div>` : ''}
       <h3 style="color:var(--primary-dark);font-size:1rem;margin:8px 0">體重趨勢 (g)</h3>
       ${svgLineChart(trends.weight, { unit: 'g' })}
       <h3 style="color:var(--primary-dark);font-size:1rem;margin:8px 0">黃疸趨勢 (mg/dL)</h3>
-      ${svgLineChart(trends.jaundice, { unit: '', color: '#b8860b' })}`);
+      ${svgLineChart(trends.jaundice, { unit: '', color: '#b8860b' })}`, body => {
+      body.querySelector('#br-print').onclick = () => printBabyReport(rpt);
+    });
   };
 
   $('#bc-send').onclick = async () => {
@@ -657,7 +737,7 @@ async function viewMotherCare() {
           <input type="date" id="mc-date" value="${todayStr()}">
         </div>
       </div>
-      <div class="row mt"><button class="btn" id="mc-add">新增紀錄</button></div>
+      <div class="row mt"><button class="btn" id="mc-assess">一頁式評估</button><button class="btn secondary" id="mc-add">單項紀錄</button></div>
     </div>
     <div class="card">
       <h3>當日紀錄</h3>
@@ -689,6 +769,12 @@ async function viewMotherCare() {
   };
   $('#mc-mother').onchange = refresh;
   $('#mc-date').onchange = refresh;
+
+  $('#mc-assess').onclick = () => {
+    const id = $('#mc-mother').value;
+    if (!id) return;
+    openMotherAssessment(id, refresh);
+  };
 
   $('#mc-add').onclick = () => {
     const id = $('#mc-mother').value;
@@ -733,6 +819,110 @@ async function viewMotherCare() {
   refresh();
 }
 
+// 一頁式產婦評估：所有評估項目同一頁，類別項以下拉選單填寫，減少打字。
+// 僅有填寫/選擇的項目會建立紀錄；可一次儲存多筆。
+const MOTHER_ASSESS_ITEMS = [
+  { type: 'wound', label: '傷口護理', optKey: 'wound_options' },
+  { type: 'uterus', label: '子宮護理', optKey: 'uterus_options' },
+  { type: 'breast', label: '乳房護理', optKey: 'breast_options' },
+  { type: 'lochia', label: '惡露觀察', optKey: 'lochia_options' },
+  { type: 'elimination', label: '排泄', optKey: 'elimination_options' },
+  { type: 'lactation', label: '泌乳指導', optKey: 'lactation_options' },
+  { type: 'mood', label: '情緒評估', optKey: 'mood_options' },
+  { type: 'education', label: '衛教指導', optKey: 'education_options' }
+];
+function csvOptHtml(key) {
+  return (SETTINGS[key] || '').split(',').map(s => s.trim()).filter(Boolean)
+    .map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('');
+}
+// 快選 datalist：輸入框仍可自由輸入，另提供設定裡的建議選項下拉
+function dataList(id, key) {
+  return `<datalist id="${id}">${(SETTINGS[key] || '').split(',').map(s => s.trim()).filter(Boolean)
+    .map(o => `<option value="${esc(o)}">`).join('')}</datalist>`;
+}
+// 快選 datalist（值來自傳入陣列，例如現有分類）：去重、去空
+function dataListValues(id, values) {
+  return `<datalist id="${id}">${[...new Set((values || []).filter(Boolean))]
+    .map(o => `<option value="${esc(o)}">`).join('')}</datalist>`;
+}
+function distinctCats(list) { return [...new Set((list || []).map(x => x.category).filter(Boolean))]; }
+function openMotherAssessment(motherId, onSaved) {
+  const selects = MOTHER_ASSESS_ITEMS.map(it => `
+    <div class="field">
+      <label>${esc(it.label)}</label>
+      <select id="as-${it.type}"><option value="">（略）</option>${csvOptHtml(it.optKey)}</select>
+    </div>`).join('');
+  openModal('一頁式評估', `
+    <p style="font-size:.82rem;color:var(--muted);margin:0 0 10px">只填寫需要記錄的項目；留空者不建立紀錄。每項可於下拉選單外，於最下方備註補充。</p>
+    <h3 style="color:var(--primary-dark);font-size:1rem;margin:4px 0 8px">生命徵象</h3>
+    <div class="form-grid">
+      <div class="field"><label>血壓</label><input id="as-bp" placeholder="110/70"></div>
+      <div class="field"><label>脈搏 (bpm)</label><input type="number" id="as-pulse" inputmode="numeric"></div>
+      <div class="field"><label>體溫 (°C)</label><input type="number" id="as-temp" step="0.1" inputmode="decimal"></div>
+    </div>
+    <h3 style="color:var(--primary-dark);font-size:1rem;margin:12px 0 8px">評估項目</h3>
+    <div class="form-grid">${selects}</div>
+    <div class="form-grid" style="margin-top:8px">
+      <div class="field full"><label>其他備註</label><textarea id="as-note" rows="2"></textarea></div>
+    </div>
+    <div class="row mt"><button class="btn" id="as-save">儲存評估</button><span class="error-msg" id="as-err"></span></div>`, body => {
+    body.querySelector('#as-save').onclick = async () => {
+      const v = id => (body.querySelector(id)?.value || '').trim();
+      const records = [];
+      const bp = v('#as-bp'), pulse = v('#as-pulse'), temp = v('#as-temp');
+      const vital = [bp ? `BP ${bp}` : '', pulse ? `P ${pulse}` : '', temp ? `T ${temp}` : ''].filter(Boolean).join('、');
+      if (vital) records.push({ record_type: 'vital', value_text: vital });
+      for (const it of MOTHER_ASSESS_ITEMS) {
+        const val = v(`#as-${it.type}`);
+        if (val) records.push({ record_type: it.type, value_text: val });
+      }
+      const note = v('#as-note');
+      if (note) records.push({ record_type: 'note', value_text: note });
+      if (!records.length) { body.querySelector('#as-err').textContent = '請至少填寫一個項目'; return; }
+      try {
+        for (const r of records) await api(`/mothers/${motherId}/records`, { method: 'POST', body: r });
+        closeModal();
+        onSaved && onSaved();
+      } catch (e) { body.querySelector('#as-err').textContent = e.message; }
+    };
+  });
+}
+
+// 另開視窗列印／另存 PDF：某日的 SBAR 交班單
+function printHandovers(date, rows) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const blocks = (rows && rows.length) ? rows.map(h => `
+    <div class="ho">
+      <div class="hh">${esc(SHIFT_LABEL[h.shift_type] || h.shift_type)}　交班護理師：${esc(h.nurse_name || '')}　${esc((h.created_at || '').slice(0, 16))}</div>
+      <table><tbody>
+        <tr><th>S 現況</th><td>${esc(h.situation || '')}</td></tr>
+        <tr><th>B 背景</th><td>${esc(h.background || '')}</td></tr>
+        <tr><th>A 評估</th><td>${esc(h.assessment || '')}</td></tr>
+        <tr><th>R 建議</th><td>${esc(h.recommendation || '')}</td></tr>
+        ${h.follow_up ? `<tr><th>待辦</th><td>${esc(h.follow_up)}${h.resolved ? '（已完成）' : ''}</td></tr>` : ''}
+      </tbody></table>
+    </div>`).join('') : '<p style="color:#888">當日無交班紀錄</p>';
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>交班單 ${esc(date)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.6;max-width:760px;margin:24px auto;padding:0 24px}
+      h1{font-size:20px;margin:0 0 2px;color:#b03060} .sub{color:#666;font-size:13px;margin-bottom:14px}
+      .ho{border:1px solid #ccc;border-radius:6px;margin-bottom:14px;overflow:hidden}
+      .hh{background:#f2f7f6;padding:6px 10px;font-weight:700;font-size:14px}
+      table{width:100%;border-collapse:collapse;font-size:14px}
+      th{width:80px;text-align:left;vertical-align:top;padding:6px 8px;background:#fafafa;border-top:1px solid #eee}
+      td{padding:6px 8px;border-top:1px solid #eee;white-space:pre-wrap}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>${esc(center)}　護理交班單（SBAR）</h1>
+    <div class="sub">交班日期：${esc(date)}　列印時間：${esc(new Date().toLocaleString('zh-TW'))}</div>
+    ${blocks}
+    <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+    </body></html>`);
+  win.document.close();
+}
+
 /* ---------- 護理交班 ---------- */
 async function viewHandover() {
   main().innerHTML = `
@@ -743,13 +933,16 @@ async function viewHandover() {
           <label>日期</label>
           <input type="date" id="ho-date" value="${todayStr()}">
         </div>
-        <div class="field" style="display:flex;align-items:flex-end">
+        <div class="field" style="display:flex;align-items:flex-end;gap:8px">
           <button class="btn" id="ho-add">新增交班紀錄</button>
+          <button class="btn secondary" id="ho-print">列印交班單</button>
         </div>
       </div>
     </div>
     <div id="ho-todos"></div>
     <div id="ho-list"></div>`;
+
+  let lastRows = [];
 
   const refreshTodos = async () => {
     const todos = await api('/handover-todos');
@@ -772,6 +965,7 @@ async function viewHandover() {
 
   const refresh = async () => {
     const rows = await api(`/handovers?date=${$('#ho-date').value}`);
+    lastRows = rows;
     $('#ho-list').innerHTML = rows.length ? rows.map(h => `
       <div class="card">
         <div class="row between">
@@ -793,6 +987,7 @@ async function viewHandover() {
     });
   };
   $('#ho-date').onchange = refresh;
+  $('#ho-print').onclick = () => printHandovers($('#ho-date').value, lastRows);
 
   $('#ho-add').onclick = () => {
     openModal('新增交班紀錄（SBAR）', `
@@ -1101,7 +1296,8 @@ async function viewRooms() {
               <td data-label="狀態"><span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span></td>
               <td data-label="操作">
                 ${b.status === 'reserved'
-                  ? `<button class="btn small" data-st="checked_in" data-id="${b.id}">辦理入住</button>
+                  ? `<button class="btn small secondary" data-prep="${b.id}">入住前準備</button>
+                     <button class="btn small" data-st="checked_in" data-id="${b.id}">辦理入住</button>
                      <button class="btn small danger" data-st="cancelled" data-id="${b.id}">取消</button>` : ''}
                 ${b.status === 'checked_in'
                   ? `<button class="btn small secondary" data-st="checked_out" data-id="${b.id}">辦理退房</button>` : ''}
@@ -1120,8 +1316,87 @@ async function viewRooms() {
     };
   });
 
+  main().querySelectorAll('[data-prep]').forEach(btn => {
+    btn.onclick = () => {
+      const bk = bookings.find(x => String(x.id) === btn.dataset.prep);
+      const mom = mothers.find(m => String(m.id) === String(bk.mother_id));
+      openCheckinPrep(bk, mom, rooms);
+    };
+  });
+
   $('#bk-add').onclick = () => openBookingForm(rooms, mothers, {});
   wireRoomCalendar(rooms, mothers);
+}
+
+// 入住前準備：簽約到實際入住之間，調整床位／起迄日、膳食安排、寶寶入住日，最後可直接辦理入住
+async function openCheckinPrep(bk, mom, rooms) {
+  // 膳食類型沿用月子餐設定的飲食類型（meal_diets），與住客 meal_diet 同一套值，避免命名落差
+  const cfg = await api('/meal-config').catch(() => ({ diets: [] }));
+  const diets = (cfg.diets && cfg.diets.length) ? cfg.diets : ['一般'];
+  const curDiet = mom && mom.meal_diet ? mom.meal_diet : '';
+  const dietList = curDiet && !diets.includes(curDiet) ? [curDiet, ...diets] : diets;
+  const dietOpts = dietList.map(c => `<option ${curDiet === c ? 'selected' : ''}>${esc(c)}</option>`).join('');
+  openModal(`入住前準備 — ${esc(bk.mother_name)}`, `
+    <h3 style="color:var(--primary-dark);font-size:1rem;margin:2px 0 8px">床位安排</h3>
+    <div class="form-grid">
+      <div class="field"><label>房間／床位</label>
+        <select id="cp-room">${rooms.map(r => `<option value="${r.id}" data-price="${r.price_per_day}" ${r.id === bk.room_id ? 'selected' : ''}>${esc(r.name)}（${esc(r.room_type)}，${fmtMoney(r.price_per_day)}/日）</option>`).join('')}</select></div>
+      <div class="field"><label>入住日</label><input type="date" id="cp-in" value="${esc(bk.check_in || '')}"></div>
+      <div class="field"><label>退房日</label><input type="date" id="cp-out" value="${esc(bk.check_out || '')}"></div>
+      <div class="field"><label>合約總額</label><input type="number" id="cp-total" inputmode="numeric" value="${bk.total_amount || 0}"></div>
+      <div class="field"><label>寶寶入住日（未定可留空）</label><input type="date" id="cp-baby" value="${esc(bk.baby_check_in || '')}" min="${esc(bk.check_in || '')}"></div>
+    </div>
+    <h3 style="color:var(--primary-dark);font-size:1rem;margin:12px 0 8px">膳食安排</h3>
+    <div class="form-grid">
+      <div class="field"><label>膳食類型</label><select id="cp-diet">${dietOpts}</select></div>
+      <div class="field full"><label>飲食注意（過敏／忌口，會帶入備餐單）</label><input id="cp-dietnote" value="${esc(mom ? (mom.diet_notes || '') : '')}"></div>
+    </div>
+    <div class="row mt" style="gap:8px">
+      <button class="btn" id="cp-save">儲存安排</button>
+      <button class="btn secondary" id="cp-save-in">儲存並辦理入住</button>
+      <span class="error-msg" id="cp-err"></span>
+    </div>`, body => {
+    const roomEl = body.querySelector('#cp-room');
+    const inEl = body.querySelector('#cp-in'), outEl = body.querySelector('#cp-out');
+    const calcTotal = () => {
+      const price = Number(roomEl.selectedOptions[0]?.dataset.price || 0);
+      if (!price || !inEl.value || !outEl.value) return;
+      const days = Math.round((new Date(outEl.value) - new Date(inEl.value)) / 86400000);
+      if (days > 0) body.querySelector('#cp-total').value = days * price;
+    };
+    roomEl.onchange = calcTotal; inEl.onchange = calcTotal; outEl.onchange = calcTotal;
+
+    const persist = async () => {
+      // 床位／日期／金額
+      await api(`/bookings/${bk.id}`, { method: 'PUT', body: {
+        room_id: roomEl.value, check_in: inEl.value, check_out: outEl.value,
+        total_amount: Number(body.querySelector('#cp-total').value) || 0
+      } });
+      // 寶寶入住日
+      await api(`/bookings/${bk.id}/baby-check-in`, { method: 'PUT', body: { baby_check_in: body.querySelector('#cp-baby').value } });
+      // 膳食安排
+      if (mom) {
+        await api(`/mothers/${mom.id}/meal-diet`, { method: 'PUT', body: { meal_diet: body.querySelector('#cp-diet').value } });
+        await api(`/mothers/${mom.id}`, { method: 'PUT', body: {
+          name: mom.name, phone: mom.phone || '', due_date: mom.due_date || '',
+          delivery_date: mom.delivery_date || '', delivery_type: mom.delivery_type || '',
+          diet_notes: body.querySelector('#cp-dietnote').value,
+          medical_notes: mom.medical_notes || '', status: mom.status || 'reserved'
+        } });
+      }
+    };
+    body.querySelector('#cp-save').onclick = async () => {
+      try { await persist(); closeModal(); viewRooms(); }
+      catch (e) { body.querySelector('#cp-err').textContent = e.message; }
+    };
+    body.querySelector('#cp-save-in').onclick = async () => {
+      try {
+        await persist();
+        await api(`/bookings/${bk.id}/status`, { method: 'PUT', body: { status: 'checked_in' } });
+        closeModal(); viewRooms();
+      } catch (e) { body.querySelector('#cp-err').textContent = e.message; }
+    };
+  });
 }
 
 // 訂房表單（可帶 prefill：room_id / check_in，供房況月曆點空格快速建檔）
@@ -1218,6 +1493,219 @@ async function wireRoomCalendar(rooms, mothers, start) {
     openBookingForm(rooms, mothers, { room_id: td.dataset.calRoom, check_in: td.dataset.calDate }));
 }
 
+/* ---------- 排床（預定床表 / 實際入住床表） ---------- */
+let bedTab = 'planned'; // planned=預定床表, actual=實際入住床表
+async function viewBedPlanning() {
+  const start = (location.hash.split('?s=')[1] || todayStr());
+  const [cal, rooms, mothers] = await Promise.all([
+    api(`/room-calendar?start=${start}&days=30`), api('/rooms'), api('/mothers')
+  ]);
+  const days = [];
+  for (let i = 0; i < cal.days; i++) days.push(new Date(new Date(cal.start).getTime() + i * 86400000).toISOString().slice(0, 10));
+  const td = todayStr();
+
+  // 今日預定 vs 實際入住統計
+  const coversToday = b => b.check_in <= td && b.check_out > td;
+  const plannedToday = cal.bookings.filter(coversToday).length;
+  const actualToday = cal.bookings.filter(b => b.status === 'checked_in' && coversToday(b)).length;
+  const pendingToday = cal.bookings.filter(b => b.status === 'reserved' && coversToday(b)).length;
+
+  const headCells = days.map(d => {
+    const wd = '日一二三四五六'[new Date(d).getDay()];
+    return `<th style="min-width:30px;padding:2px;font-weight:${d === td ? '700' : '400'};${d === td ? 'color:var(--primary-dark)' : ''}">${d.slice(8)}<br><small>${wd}</small></th>`;
+  }).join('');
+
+  // mode='planned'：預定（reserved+checked_in 皆著色）；mode='actual'：僅 checked_in 著色，reserved 顯示待入住
+  const matrix = mode => cal.rooms.map(r => {
+    const cells = days.map(d => {
+      const bk = cal.bookings.find(b => b.room_id === r.id && b.check_in <= d && b.check_out > d);
+      if (bk) {
+        const isStart = bk.check_in === d || d === cal.start;
+        if (mode === 'actual' && bk.status !== 'checked_in') {
+          // 預定但尚未實際入住：以斜線淡色標示「待入住」
+          return `<td title="${esc(bk.mother_name)} 預定未入住" style="background:repeating-linear-gradient(45deg,#fff,#fff 4px,#fdeec2 4px,#fdeec2 8px);padding:2px;font-size:10px;color:#b9911f;white-space:nowrap;overflow:hidden;max-width:0">${isStart ? '待' : ''}</td>`;
+        }
+        const color = bk.status === 'checked_in' ? '#cdeae4' : '#fdeec2';
+        return `<td title="${esc(bk.mother_name)}（${esc(bk.check_in)}~${esc(bk.check_out)}・${STATUS_LABEL[bk.status]}）" style="background:${color};padding:2px;font-size:11px;white-space:nowrap;overflow:hidden;max-width:0">${isStart ? esc(bk.mother_name.slice(0, 4)) : ''}</td>`;
+      }
+      return mode === 'planned'
+        ? `<td data-cal-room="${r.id}" data-cal-date="${d}" style="cursor:pointer;padding:2px;border:1px solid #eef2f1"></td>`
+        : `<td style="padding:2px;border:1px solid #eef2f1"></td>`;
+    }).join('');
+    return `<tr><th style="text-align:left;white-space:nowrap;padding:2px 6px;position:sticky;left:0;background:#fff">${esc(r.name)}<br><small style="color:var(--muted)">${esc(r.room_type)}</small></th>${cells}</tr>`;
+  }).join('');
+
+  const legend = bedTab === 'planned'
+    ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span>　點空白格可快速建立訂房'
+    : '<span class="badge green">實際入住中</span>　斜線格＝已預約尚未辦理入住';
+
+  main().innerHTML = `
+    <div class="page-title">排床</div>
+    <div class="card no-print">
+      <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:170px;margin:0"><label>起始日</label><input type="date" id="bp-start" value="${esc(cal.start)}"></div>
+        <div class="row" style="gap:4px">
+          <button class="btn small ${bedTab === 'planned' ? '' : 'secondary'}" id="bp-tab-planned">預定床表</button>
+          <button class="btn small ${bedTab === 'actual' ? '' : 'secondary'}" id="bp-tab-actual">實際入住床表</button>
+        </div>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="num">${plannedToday}</div><div class="label">今日預定床數</div></div>
+      <div class="stat"><div class="num" style="color:var(--primary-dark)">${actualToday}</div><div class="label">今日實際入住</div></div>
+      <div class="stat"><div class="num" ${pendingToday ? 'style="color:var(--danger)"' : ''}>${pendingToday}</div><div class="label">已預約待入住</div></div>
+      <div class="stat"><div class="num">${cal.rooms.length}</div><div class="label">總床位</div></div>
+    </div>
+    <div class="card">
+      <div class="row between"><h3>${bedTab === 'planned' ? '預定床表' : '實際入住床表'}（${esc(cal.start)} 起 30 天）</h3>
+        <span style="font-size:.8rem;color:var(--muted)">${legend}</span></div>
+      <div class="table-wrap" style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px">
+        <thead><tr><th style="position:sticky;left:0;background:#eef5f4;padding:2px 6px">房號</th>${headCells}</tr></thead>
+        <tbody>${matrix(bedTab)}</tbody>
+      </table></div>
+    </div>`;
+
+  $('#bp-start').onchange = () => { location.hash = `#/bed-planning?s=${$('#bp-start').value}`; viewBedPlanning(); };
+  $('#bp-tab-planned').onclick = () => { bedTab = 'planned'; viewBedPlanning(); };
+  $('#bp-tab-actual').onclick = () => { bedTab = 'actual'; viewBedPlanning(); };
+  main().querySelectorAll('[data-cal-room]').forEach(c => c.onclick = () =>
+    openBookingForm(rooms, mothers, { room_id: c.dataset.calRoom, check_in: c.dataset.calDate }));
+}
+
+/* ---------- 房務清潔 ---------- */
+function hkNeedOptions() {
+  return (SETTINGS.hk_need_options || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+function hkTaskPresets() {
+  return (SETTINGS.hk_task_presets || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+async function viewHousekeeping() {
+  const date = location.hash.split('?d=')[1] || todayStr();
+  const data = await api(`/housekeeping?date=${date}`);
+  const isAdmin = currentUser.role === 'admin';
+
+  const resCards = data.residents.length ? data.residents.map(r => {
+    const needs = (r.hk_needs || '').split(',').map(s => s.trim()).filter(Boolean);
+    return `
+    <div class="card" style="margin:0">
+      <div class="row between" style="align-items:flex-start">
+        <div><strong>${esc(r.room_name)} 房</strong>　${esc(r.mother_name)}
+          ${r.pending_tasks ? `<span class="badge yellow">待清潔 ${r.pending_tasks}</span>` : ''}</div>
+        <button class="btn small secondary" data-hk-edit="${r.mother_id}">編輯需求</button>
+      </div>
+      <div style="font-size:.86rem;margin-top:6px">
+        <div>🔕 勿擾時間：${r.hk_dnd ? esc(r.hk_dnd) : '<span style="color:var(--muted)">未設定</span>'}</div>
+        <div style="margin-top:4px">🧺 需求：${needs.length ? needs.map(n => `<span class="badge teal">${esc(n)}</span>`).join(' ') : '<span style="color:var(--muted)">無</span>'}</div>
+        ${r.hk_notes ? `<div style="margin-top:4px;color:#555">📝 ${esc(r.hk_notes)}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('') : '<div class="empty">目前無入住中住客</div>';
+
+  const taskRow = t => `
+    <tr data-status="${t.status}">
+      <td data-label="任務">${esc(t.task)}${t.note ? `<br><small style="color:#666">${esc(t.note)}</small>` : ''}</td>
+      <td data-label="位置">${t.room_name ? esc(t.room_name) + ' 房' : ''}${t.mother_name ? `<br><small>${esc(t.mother_name)}</small>` : ''}</td>
+      <td data-label="排定">${esc(t.scheduled_for || '')}${t.status === 'pending' && t.scheduled_for < date ? ' <span class="badge red">逾期</span>' : ''}</td>
+      <td data-label="狀態">${t.status === 'done'
+        ? `<span class="badge green">已完成</span><br><small>${esc((t.done_at || '').slice(5, 16))} ${esc(t.done_name || '')}</small>`
+        : '<span class="badge yellow">待處理</span>'}</td>
+      <td data-label="操作">
+        ${t.status === 'pending'
+          ? `<button class="btn small" data-hk-done="${t.id}">完成</button>`
+          : `<button class="btn small secondary" data-hk-undo="${t.id}">取消完成</button>`}
+        ${isAdmin ? `<button class="btn small danger" data-hk-del="${t.id}">刪除</button>` : ''}
+      </td>
+    </tr>`;
+
+  main().innerHTML = `
+    <div class="page-title">房務清潔</div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:170px;margin:0"><label>日期</label><input type="date" id="hk-date" value="${esc(data.date)}"></div>
+        <button class="btn small" id="hk-add-task">新增清潔任務</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>住客需求（入住中 ${data.residents.length} 位）</h3>
+      <p style="font-size:.8rem;color:var(--muted);margin:0 0 10px">客服在此登記住客需求（勿擾時間／哺乳衣／定時清垃圾…），清潔人員即可同步看到。</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">${resCards}</div>
+    </div>
+    <div class="card">
+      <h3>清潔任務（${esc(data.date)}）</h3>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>任務</th><th>位置</th><th>排定日</th><th>狀態</th><th></th></tr></thead>
+        <tbody>${data.tasks.map(taskRow).join('') || '<tr><td colspan="5"><div class="empty">本日尚無清潔任務</div></td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+
+  $('#hk-date').onchange = () => { location.hash = `#/housekeeping?d=${$('#hk-date').value}`; viewHousekeeping(); };
+  $('#hk-add-task').onclick = () => openHkTaskForm(data.residents, data.date);
+  main().querySelectorAll('[data-hk-edit]').forEach(b => b.onclick = () =>
+    openHkNeedsForm(data.residents.find(r => String(r.mother_id) === b.dataset.hkEdit)));
+  main().querySelectorAll('[data-hk-done]').forEach(b => b.onclick = async () => {
+    await api(`/housekeeping/tasks/${b.dataset.hkDone}`, { method: 'PUT', body: { status: 'done' } }); viewHousekeeping();
+  });
+  main().querySelectorAll('[data-hk-undo]').forEach(b => b.onclick = async () => {
+    await api(`/housekeeping/tasks/${b.dataset.hkUndo}`, { method: 'PUT', body: { status: 'pending' } }); viewHousekeeping();
+  });
+  main().querySelectorAll('[data-hk-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定刪除這筆清潔任務？')) return;
+    await api(`/housekeeping/tasks/${b.dataset.hkDel}`, { method: 'DELETE' }); viewHousekeeping();
+  });
+}
+
+function openHkNeedsForm(r) {
+  const cur = (r.hk_needs || '').split(',').map(s => s.trim()).filter(Boolean);
+  const checks = hkNeedOptions().map(n =>
+    `<label class="perm-chk"><input type="checkbox" value="${esc(n)}" ${cur.includes(n) ? 'checked' : ''}> ${esc(n)}</label>`).join('');
+  openModal(`清潔需求 — ${esc(r.room_name)} 房 ${esc(r.mother_name)}`, `
+    <div class="form-grid">
+      <div class="field full"><label>勿擾時間</label><input id="hk-dnd" value="${esc(r.hk_dnd || '')}" placeholder="例如：13:00-15:00 午休"></div>
+      <div class="field full"><label>需求項目</label><div style="display:flex;flex-wrap:wrap;gap:8px">${checks}</div></div>
+      <div class="field full"><label>其他備註</label><textarea id="hk-notes" rows="2">${esc(r.hk_notes || '')}</textarea></div>
+    </div>
+    <div class="row mt"><button class="btn" id="hk-save">儲存</button><span class="error-msg" id="hk-err"></span></div>`, body => {
+    body.querySelector('#hk-save').onclick = async () => {
+      const needs = [...body.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value).join(',');
+      try {
+        await api(`/mothers/${r.mother_id}/housekeeping`, { method: 'PUT', body: {
+          hk_dnd: body.querySelector('#hk-dnd').value, hk_needs: needs, hk_notes: body.querySelector('#hk-notes').value
+        } });
+        closeModal(); viewHousekeeping();
+      } catch (e) { body.querySelector('#hk-err').textContent = e.message; }
+    };
+  });
+}
+
+function openHkTaskForm(residents, date) {
+  openModal('新增清潔任務', `
+    <div class="form-grid">
+      <div class="field full"><label>任務</label>
+        <input id="hkt-task" list="hkt-presets" placeholder="例如：更換床單">
+        <datalist id="hkt-presets">${hkTaskPresets().map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+      </div>
+      <div class="field full"><label>對象房間／住客（可不選＝公共區域）</label>
+        <select id="hkt-target"><option value="">— 公共區域 / 不指定 —</option>${residents.map(r =>
+          `<option value="${r.room_id}|${r.mother_id}">${esc(r.room_name)} 房　${esc(r.mother_name)}</option>`).join('')}</select></div>
+      <div class="field"><label>排定日期</label><input type="date" id="hkt-date" value="${esc(date)}"></div>
+      <div class="field full"><label>備註</label><input id="hkt-note"></div>
+    </div>
+    <div class="row mt"><button class="btn" id="hkt-save">新增</button><span class="error-msg" id="hkt-err"></span></div>`, body => {
+    body.querySelector('#hkt-save').onclick = async () => {
+      const task = body.querySelector('#hkt-task').value.trim();
+      if (!task) { body.querySelector('#hkt-err').textContent = '請輸入任務'; return; }
+      const [room_id, mother_id] = (body.querySelector('#hkt-target').value || '|').split('|');
+      try {
+        await api('/housekeeping/tasks', { method: 'POST', body: {
+          task, room_id: room_id || null, mother_id: mother_id || null,
+          scheduled_for: body.querySelector('#hkt-date').value, note: body.querySelector('#hkt-note').value
+        } });
+        closeModal(); viewHousekeeping();
+      } catch (e) { body.querySelector('#hkt-err').textContent = e.message; }
+    };
+  });
+}
+
 /* ---------- 收費帳務 ---------- */
 async function viewBilling() {
   const rows = await api('/billing');
@@ -1232,10 +1720,10 @@ async function viewBilling() {
             <tr data-filter="${esc(b.mother_name + ' ' + b.room_name)}" data-status="${b.balance > 0 ? 'unpaid' : 'paid'}">
               <td data-label="媽媽">${esc(b.mother_name)}　<span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span></td>
               <td data-label="房間 / 期間">${esc(b.room_name)} 房<br><small>${esc(b.check_in)} ~ ${esc(b.check_out)}</small></td>
-              <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}＋加購 ${fmtMoney(b.charges_total)}</small></td>
+              <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶未入住 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
               <td data-label="已收">${fmtMoney(b.total_paid)}<br><small>含訂金 ${fmtMoney(b.deposit)}</small></td>
               <td data-label="未結餘額">${b.balance > 0
-                ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span>`
+                ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span><br><small>合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}</small>`
                 : '<span class="badge green">已結清</span>'}</td>
               <td data-label="操作"><button class="btn small secondary" data-detail="${b.id}">收費明細</button></td>
             </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚無訂房資料</div></td></tr>'}</tbody>
@@ -1249,6 +1737,51 @@ async function viewBilling() {
       openBillingDetail(btn.dataset.detail);
     };
   });
+}
+
+// 另開視窗列印／另存 PDF：加購消費明細
+function printCharges(b) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const rows = (b.charges || []).map(c => `
+    <tr>
+      <td>${esc(c.charged_on)}</td>
+      <td>${esc(c.item_name)}${c.note ? `<br><small style="color:#666">${esc(c.note)}</small>` : ''}</td>
+      <td style="text-align:right">${fmtMoney(c.unit_price)}</td>
+      <td style="text-align:center">${c.quantity}</td>
+      <td style="text-align:right">${fmtMoney(c.unit_price * c.quantity)}</td>
+      <td>${esc(c.staff_name || '-')}</td>
+    </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:#888">尚無加購消費</td></tr>';
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>加購消費明細 - ${esc(b.mother_name)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.6;
+        max-width:760px;margin:24px auto;padding:0 24px}
+      h1{font-size:20px;margin:0 0 4px} .sub{color:#666;font-size:13px;margin-bottom:16px}
+      table{width:100%;border-collapse:collapse;font-size:14px}
+      th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}
+      th{background:#f2f7f6}
+      tfoot td{font-weight:700;background:#fafafa}
+      .meta{font-size:13px;color:#444;margin-bottom:12px}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>${esc(center)}　加購消費明細</h1>
+    <div class="sub">列印時間：${esc(new Date().toLocaleString('zh-TW'))}</div>
+    <div class="meta">
+      媽媽：${esc(b.mother_name)}　房間：${esc(b.room_name)} 房
+      期間：${esc(b.check_in)} ~ ${esc(b.check_out)}
+    </div>
+    <table>
+      <thead><tr><th>日期</th><th>項目</th><th>單價</th><th>數量</th><th>小計</th><th>經手</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="4" style="text-align:right">加購消費合計</td><td style="text-align:right">${fmtMoney(b.charges_total)}</td><td></td></tr></tfoot>
+    </table>
+    ${b.baby_deduct ? `<p style="font-size:13px;color:#555;margin-top:10px">另：寶寶未入住扣抵 ${b.baby_absent_days} 天 −${fmtMoney(b.baby_deduct)}（已反映於應收總額）</p>` : ''}
+    <div class="noprint" style="margin-top:24px;text-align:center">
+      <button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button>
+    </div>
+    </body></html>`);
+  win.document.close();
 }
 
 async function openBillingDetail(bookingId) {
@@ -1273,14 +1806,26 @@ async function openBillingDetail(bookingId) {
 
   openModal(`收費明細：${b.mother_name}（${b.room_name} 房）`, `
     <div class="summary-grid" style="margin-bottom:14px">
-      <div class="item"><div class="v">${fmtMoney(b.total_due)}</div><div class="k">應收（合約＋加購）</div></div>
+      <div class="item"><div class="v">${fmtMoney(b.total_due)}</div><div class="k">應收（合約＋加購${b.baby_deduct ? '−扣抵' : ''}）</div></div>
       <div class="item"><div class="v">${fmtMoney(b.total_paid)}</div><div class="k">已收（含訂金 ${fmtMoney(b.deposit)}）</div></div>
-      <div class="item"><div class="v" style="${b.balance > 0 ? 'color:var(--danger)' : ''}">${fmtMoney(b.balance)}</div><div class="k">未結餘額</div></div>
+      <div class="item"><div class="v" style="${b.balance > 0 ? 'color:var(--danger)' : ''}">${fmtMoney(b.balance)}</div><div class="k">未結餘額${b.balance > 0 ? `（合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}）` : ''}</div></div>
       <div class="item"><div class="v">${b.balance > 0 ? '未結清' : '已結清'}</div><div class="k">帳務狀態</div></div>
     </div>
     <div class="row" style="margin-bottom:10px">
       <button class="btn small secondary" id="bd-refund">退費試算</button>
       <button class="btn small secondary" id="bd-receipt">開立收據</button>
+      <button class="btn small secondary" id="bd-print-charges">列印加購明細</button>
+    </div>
+    <div class="card" style="background:#f7faf9;padding:10px 12px;margin-bottom:12px">
+      <div class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
+        <div class="field" style="max-width:170px;margin:0"><label>寶寶入住日</label><input type="date" id="bd-baby-in" value="${esc(b.baby_check_in || '')}" min="${esc(b.check_in || '')}"></div>
+        <button class="btn small" id="bd-baby-save">儲存</button>
+        <span style="font-size:.82rem;color:var(--muted)">媽媽入住 ${esc(b.check_in)}${b.baby_deduct
+          ? `・寶寶未入住 ${b.baby_absent_days} 天，扣抵 <strong style="color:var(--primary-dark)">${fmtMoney(b.baby_deduct)}</strong>`
+          : '・無扣抵（寶寶已隨媽媽入住或未設定）'}</span>
+        <span class="error-msg" id="bd-baby-err"></span>
+      </div>
+      <p style="font-size:.76rem;color:var(--muted);margin:6px 0 0">媽媽已入住但寶寶尚未到院期間，每日自動扣抵（金額於系統設定調整，目前 ${fmtMoney((Number(SETTINGS.baby_absence_daily_deduct) || 0))}/日），扣抵已反映於上方應收。</p>
     </div>
     <div id="bd-refund-box"></div>
     <h3 style="color:var(--primary-dark);font-size:1rem;margin:8px 0">加購消費</h3>
@@ -1397,6 +1942,7 @@ async function openBillingDetail(bookingId) {
               <tr><td>已收總額</td><td style="text-align:right">${fmtMoney(q.paid_total)}</td></tr>
               <tr><td>應收：已使用 ${q.used_days} 天住宿費</td><td style="text-align:right">${fmtMoney(q.used_fee)}</td></tr>
               <tr><td>應收：加購消費</td><td style="text-align:right">${fmtMoney(q.charges_total)}</td></tr>
+              ${q.baby_deduct ? `<tr><td>扣抵：寶寶未入住 ${q.baby_absent_days} 天</td><td style="text-align:right;color:var(--primary-dark)">-${fmtMoney(q.baby_deduct)}</td></tr>` : ''}
               <tr><td>違約金（未使用 ${q.unused_days} 天 × ${q.penalty_pct}%）</td><td style="text-align:right">${fmtMoney(q.penalty)}</td></tr>
               <tr><td>作業手續費（${q.handling_pct}%）</td><td style="text-align:right">${fmtMoney(q.handling)}</td></tr>
               <tr style="border-top:2px solid #cdd"><td><strong>應退費用</strong></td><td style="text-align:right"><strong style="color:var(--primary-dark);font-size:1.1rem">${fmtMoney(q.refund)}</strong></td></tr>
@@ -1407,6 +1953,13 @@ async function openBillingDetail(bookingId) {
       refundBox.querySelector('#rf-date').onchange = e => drawRefund(e.target.value);
     };
     body.querySelector('#bd-refund').onclick = () => { if (refundBox.innerHTML) refundBox.innerHTML = ''; else drawRefund(); };
+    body.querySelector('#bd-baby-save').onclick = async () => {
+      try {
+        await api(`/bookings/${b.id}/baby-check-in`, { method: 'PUT', body: { baby_check_in: body.querySelector('#bd-baby-in').value } });
+        openBillingDetail(b.id);
+      } catch (e) { body.querySelector('#bd-baby-err').textContent = e.message; }
+    };
+    body.querySelector('#bd-print-charges').onclick = () => printCharges(b);
     body.querySelector('#bd-receipt').onclick = () => {
       const due = b.balance > 0 ? b.balance : b.total_paid;
       invoiceForm([{ id: b.id, mother_name: b.mother_name, room_name: b.room_name }], {
@@ -1709,6 +2262,7 @@ function readTourForm(body) {
 
 async function viewTours() {
   const tours = await api('/tours');
+  const sources = [...new Set(tours.map(t => t.source).filter(Boolean))].sort();
   const month = todayStr().slice(0, 7);
   const inMonth = tours.filter(t => (t.tour_at || '').slice(0, 7) === month);
   const signed = inMonth.filter(t => t.status === 'signed').length;
@@ -1728,19 +2282,34 @@ async function viewTours() {
         <h3>潛在客戶追蹤</h3>
         <button class="btn small" id="tr-add">新增參觀預約</button>
       </div>
-      ${filterBar({ placeholder: '搜尋姓名 / 電話 / 來源…', statuses: [{ val: '', label: '全部' }, { val: 'scheduled', label: '待參觀' }, { val: 'visited', label: '已參觀' }, { val: 'signed', label: '已簽約' }, { val: 'lost', label: '未成交' }] })}
+      <div class="row" style="gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center">
+        <input id="tr-q" placeholder="搜尋姓名 / 電話 / 來源 / 備註…" style="flex:1;min-width:150px">
+        <select id="tr-fsource"><option value="">全部來源</option>${sources.map(s => `<option>${esc(s)}</option>`).join('')}</select>
+        <label style="font-size:.85rem;color:var(--muted)">參觀日</label>
+        <input type="date" id="tr-from" style="max-width:150px">
+        <span>~</span>
+        <input type="date" id="tr-to" style="max-width:150px">
+        <button class="btn small secondary" id="tr-clear">清除</button>
+      </div>
+      <div class="row" style="gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+        ${[{ val: '', label: '全部' }, { val: 'scheduled', label: '待參觀' }, { val: 'visited', label: '已參觀' }, { val: 'signed', label: '已簽約' }, { val: 'lost', label: '未成交' }]
+          .map((s, i) => `<button class="btn small ${i === 0 ? '' : 'secondary'}" data-tr-status="${s.val}">${s.label}</button>`).join('')}
+        <span id="tr-count" style="color:var(--muted);font-size:.85rem"></span>
+      </div>
       <div class="table-wrap">
-        <table class="data stack">
-          <thead><tr><th>參觀時間</th><th>姓名</th><th>電話</th><th>預產期</th><th>來源</th><th>狀態</th><th>備註</th><th></th></tr></thead>
+        <table class="data stack" id="tr-table">
+          <thead><tr><th>參觀時間</th><th>姓名</th><th>電話</th><th>預產期</th><th>來源</th><th>狀態</th><th>最近跟進</th><th></th></tr></thead>
           <tbody>${tours.map(t => `
-            <tr data-filter="${esc(t.name + ' ' + (t.phone || '') + ' ' + (t.source || '') + ' ' + (t.note || ''))}" data-status="${t.status}">
+            <tr data-q="${esc((t.name + ' ' + (t.phone || '') + ' ' + (t.source || '') + ' ' + (t.note || '') + ' ' + (t.last_log || '')).toLowerCase())}" data-status="${t.status}" data-source="${esc(t.source || '')}" data-date="${esc((t.tour_at || '').slice(0, 10))}">
               <td data-label="參觀時間">${esc(t.tour_at)}</td>
               <td data-label="姓名">${esc(t.name)}</td>
               <td data-label="電話">${esc(t.phone || '-')}</td>
               <td data-label="預產期">${esc(t.due_date || '-')}</td>
               <td data-label="來源">${esc(t.source || '-')}</td>
               <td data-label="狀態"><span class="badge ${TOUR_STATUS_BADGE[t.status]}">${TOUR_STATUS_LABEL[t.status]}</span></td>
-              <td data-label="備註">${esc(t.note || '-')}</td>
+              <td data-label="最近跟進">${t.last_log
+                ? `${esc(t.last_log.length > 24 ? t.last_log.slice(0, 24) + '…' : t.last_log)}<br><small>${esc((t.last_log_at || '').slice(0, 16))}</small>`
+                : (t.note ? esc(t.note.length > 24 ? t.note.slice(0, 24) + '…' : t.note) : '<span style="color:var(--muted)">-</span>')}</td>
               <td data-label="操作">
                 ${t.status === 'scheduled'
                   ? `<button class="btn small" data-tst="visited" data-id="${t.id}">已參觀</button>` : ''}
@@ -1748,13 +2317,51 @@ async function viewTours() {
                   ? `<button class="btn small" data-tst="signed" data-id="${t.id}">已簽約</button>` : ''}
                 ${['scheduled', 'visited'].includes(t.status)
                   ? `<button class="btn small secondary" data-tst="lost" data-id="${t.id}">未成交</button>` : ''}
+                <button class="btn small secondary" data-log-tour="${t.id}">追蹤紀錄${t.log_count ? `(${t.log_count})` : ''}</button>
                 <button class="btn small secondary" data-edit-tour="${t.id}">編輯</button>
               </td>
             </tr>`).join('') || '<tr><td colspan="8"><div class="empty">尚無參觀預約</div></td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
-  wireFilter(main());
+
+  // 多條件篩選：關鍵字 + 狀態 + 來源 + 參觀日區間
+  const trState = { q: '', status: '', source: '', from: '', to: '' };
+  const trApply = () => {
+    let shown = 0, total = 0;
+    main().querySelectorAll('#tr-table tr[data-q]').forEach(tr => {
+      total++;
+      const d = tr.dataset.date;
+      const vis = (!trState.q || tr.dataset.q.includes(trState.q))
+        && (!trState.status || tr.dataset.status === trState.status)
+        && (!trState.source || tr.dataset.source === trState.source)
+        && (!trState.from || (d && d >= trState.from))
+        && (!trState.to || (d && d <= trState.to));
+      tr.style.display = vis ? '' : 'none';
+      if (vis) shown++;
+    });
+    const c = $('#tr-count');
+    if (c) c.textContent = total ? `顯示 ${shown} / ${total} 筆` : '';
+  };
+  $('#tr-q').oninput = e => { trState.q = e.target.value.trim().toLowerCase(); trApply(); };
+  $('#tr-fsource').onchange = e => { trState.source = e.target.value; trApply(); };
+  $('#tr-from').onchange = e => { trState.from = e.target.value; trApply(); };
+  $('#tr-to').onchange = e => { trState.to = e.target.value; trApply(); };
+  $('#tr-clear').onclick = () => {
+    Object.assign(trState, { q: '', source: '', from: '', to: '' });
+    $('#tr-q').value = ''; $('#tr-fsource').value = ''; $('#tr-from').value = ''; $('#tr-to').value = '';
+    trApply();
+  };
+  main().querySelectorAll('[data-tr-status]').forEach(b => b.onclick = () => {
+    trState.status = b.dataset.trStatus;
+    main().querySelectorAll('[data-tr-status]').forEach(x => x.classList.toggle('secondary', x !== b));
+    trApply();
+  });
+  trApply();
+
+  main().querySelectorAll('[data-log-tour]').forEach(btn => {
+    btn.onclick = () => openTourLog(tours.find(x => String(x.id) === btn.dataset.logTour));
+  });
 
   main().querySelectorAll('[data-tst]').forEach(btn => {
     btn.onclick = async () => {
@@ -1852,6 +2459,39 @@ async function viewTours() {
       const t = tours.find(x => String(x.id) === btn.dataset.editTour);
       openModal('編輯參觀預約', tourForm(t), body =>
         saveTour(body, payload => api(`/tours/${t.id}`, { method: 'PUT', body: payload })));
+    };
+  });
+}
+
+// 參觀預約追蹤紀錄：時間序顯示 log，可追加新備註（不覆蓋歷史）
+async function openTourLog(tour) {
+  const draw = async () => {
+    const logs = await api(`/tours/${tour.id}/logs`);
+    const timeline = logs.length ? logs.map(l => `
+      <div style="border-left:2px solid var(--primary);padding:4px 0 8px 10px;margin-left:4px">
+        <div style="font-size:.78rem;color:var(--muted)">${esc((l.created_at || '').slice(0, 16))}　${esc(l.staff_name || '系統')}</div>
+        <div style="white-space:pre-wrap">${esc(l.body)}</div>
+      </div>`).join('') : '<div class="empty">尚無追蹤紀錄</div>';
+    const box = document.querySelector('#tl-timeline');
+    if (box) box.innerHTML = timeline;
+  };
+  openModal(`追蹤紀錄 — ${esc(tour.name)}`, `
+    ${tour.note ? `<p style="font-size:.85rem;color:var(--muted)">原始備註：${esc(tour.note)}</p>` : ''}
+    <div class="form-grid" style="margin-bottom:10px">
+      <div class="field full"><label>新增追蹤備註</label><textarea id="tl-body" rows="2" placeholder="例如：來電詢問房型，已寄報價單"></textarea></div>
+      <div class="full row"><button class="btn small" id="tl-save">新增備註</button><span class="error-msg" id="tl-err"></span></div>
+    </div>
+    <div id="tl-timeline" style="max-height:300px;overflow:auto"></div>`, body => {
+    draw();
+    body.querySelector('#tl-save').onclick = async () => {
+      const text = body.querySelector('#tl-body').value.trim();
+      if (!text) { body.querySelector('#tl-err').textContent = '請輸入內容'; return; }
+      try {
+        await api(`/tours/${tour.id}/logs`, { method: 'POST', body: { body: text } });
+        body.querySelector('#tl-body').value = '';
+        body.querySelector('#tl-err').textContent = '';
+        await draw();
+      } catch (e) { body.querySelector('#tl-err').textContent = e.message; }
     };
   });
 }
@@ -2110,6 +2750,70 @@ async function viewFamily() {
   };
 }
 
+/* ---------- 營運報表：每日入住率 + 評鑑品管 7 大指標 ---------- */
+async function viewQualityReport() {
+  const month = location.hash.split('?m=')[1] || todayStr().slice(0, 7);
+  main().innerHTML = `
+    <div class="page-title">營運報表</div>
+    <div class="card no-print">
+      <div class="row">
+        <div class="field" style="max-width:200px"><label>月份</label><input type="month" id="qr-month" value="${month}"></div>
+        <div style="align-self:flex-end" class="row">
+          <button class="btn secondary" id="qr-print">列印</button>
+          <button class="btn secondary" id="qr-csv">匯出每日入住率 CSV</button>
+        </div>
+      </div>
+    </div>
+    <div id="qr-body"><div class="empty">載入中</div></div>`;
+
+  let data = null;
+  const load = async () => {
+    data = await api(`/reports/quality?month=${$('#qr-month').value}`);
+    const ind = data.indicators.map(i => `
+      <div class="stat">
+        <div class="num">${i.value === null ? '—' : i.value}${i.value === null ? '' : `<span style="font-size:.5em;color:var(--muted)"> ${esc(i.unit)}</span>`}</div>
+        <div class="label">${esc(i.name)}</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:2px">${esc(i.detail)}</div>
+      </div>`).join('');
+    const rows = data.daily.map(d => `
+      <tr>
+        <td data-label="日期">${esc(d.date)}</td>
+        <td data-label="佔床">${d.occupied} / ${d.total}</td>
+        <td data-label="入住率"><div style="display:flex;align-items:center;gap:6px">
+          <div style="flex:1;background:#eef3f2;border-radius:4px;height:8px;min-width:60px"><div style="width:${Math.min(100, d.rate)}%;background:var(--primary);height:8px;border-radius:4px"></div></div>
+          <span style="min-width:46px;text-align:right">${d.rate}%</span></div></td>
+        <td data-label="人力配置">${d.staffing_ok ? '<span class="badge green">符合</span>' : '<span class="badge red">不足</span>'}</td>
+      </tr>`).join('');
+    $('#qr-body').innerHTML = `
+      <div class="card">
+        <h3>評鑑品管 7 大指標（${esc(data.month)}）</h3>
+        <p style="font-size:.8rem;color:var(--muted);margin:0 0 10px">依衛福部產後護理機構評鑑精神彙整；指標定義與分母（住民日 ${data.patient_days}）可依貴中心評鑑基準調整。</p>
+        <div class="stat-grid">${ind}</div>
+      </div>
+      <div class="card">
+        <h3>每日入住率（平均 ${data.avg_occupancy}%）</h3>
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>日期</th><th>佔床 / 總床</th><th>入住率</th><th>人力配置</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>`;
+  };
+
+  $('#qr-month').onchange = () => { location.hash = `#/quality-report?m=${$('#qr-month').value}`; load(); };
+  $('#qr-print').onclick = () => window.print();
+  $('#qr-csv').onclick = () => {
+    if (!data) return;
+    const lines = [['日期', '佔床', '總床', '入住率%', '人力配置'],
+      ...data.daily.map(d => [d.date, d.occupied, d.total, d.rate, d.staffing_ok ? '符合' : '不足'])];
+    const csv = '﻿' + lines.map(r => r.join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `每日入住率-${data.month}.csv`;
+    a.click();
+  };
+  load();
+}
+
 /* ---------- 評鑑月報 ---------- */
 async function viewReports() {
   const month = location.hash.split('?m=')[1] || todayStr().slice(0, 7);
@@ -2284,6 +2988,32 @@ async function viewSettings() {
         <div class="field"><label>溢吐奶</label><input id="st-vomit" value="${esc(s.vomit_options)}"></div>
         <div class="field"><label>活動力</label><input id="st-activity" value="${esc(s.activity_options)}"></div>
         <div class="field"><label>大便性狀</label><input id="st-stool" value="${esc(s.stool_options)}"></div>
+        <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>產婦評估選項（一頁式評估的下拉內容，逗號分隔）</strong></div>
+        <div class="field"><label>傷口護理</label><input id="st-wound" value="${esc(s.wound_options || '')}"></div>
+        <div class="field"><label>子宮護理</label><input id="st-uterus" value="${esc(s.uterus_options || '')}"></div>
+        <div class="field"><label>乳房護理</label><input id="st-breast" value="${esc(s.breast_options || '')}"></div>
+        <div class="field"><label>惡露觀察</label><input id="st-lochia" value="${esc(s.lochia_options || '')}"></div>
+        <div class="field"><label>排泄</label><input id="st-elimination" value="${esc(s.elimination_options || '')}"></div>
+        <div class="field"><label>泌乳指導</label><input id="st-lactation" value="${esc(s.lactation_options || '')}"></div>
+        <div class="field"><label>情緒評估</label><input id="st-mood" value="${esc(s.mood_options || '')}"></div>
+        <div class="field"><label>衛教指導</label><input id="st-education" value="${esc(s.education_options || '')}"></div>
+        <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>帳款</strong></div>
+        <div class="field"><label>寶寶未入住每日扣抵（元）</label><input type="number" id="st-baby-deduct" min="0" value="${esc(s.baby_absence_daily_deduct || '0')}"></div>
+        <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>房務清潔（逗號分隔）</strong></div>
+        <div class="field full"><label>住客需求項目</label><input id="st-hk-needs" value="${esc(s.hk_need_options || '')}"></div>
+        <div class="field full"><label>清潔常用任務</label><input id="st-hk-tasks" value="${esc(s.hk_task_presets || '')}"></div>
+        <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>新生兒醫療／異常事件快選（逗號分隔）</strong></div>
+        <div class="field"><label>常用藥品</label><input id="st-med-drug" value="${esc(s.med_drug_options || '')}"></div>
+        <div class="field"><label>給藥途徑</label><input id="st-med-route" value="${esc(s.med_route_options || '')}"></div>
+        <div class="field"><label>接種部位</label><input id="st-vac-site" value="${esc(s.vaccine_site_options || '')}"></div>
+        <div class="field"><label>異常發生地點</label><input id="st-inc-loc" value="${esc(s.incident_location_options || '')}"></div>
+        <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>感染管制／員工證照快選（逗號分隔）</strong></div>
+        <div class="field"><label>手衛稽核區域</label><input id="st-hh-area" value="${esc(s.hh_area_options || '')}"></div>
+        <div class="field"><label>手衛稽核對象</label><input id="st-hh-role" value="${esc(s.hh_role_options || '')}"></div>
+        <div class="field"><label>清消區域/設備</label><input id="st-dis-area" value="${esc(s.disinfect_area_options || '')}"></div>
+        <div class="field"><label>消毒方式</label><input id="st-dis-agent" value="${esc(s.disinfect_agent_options || '')}"></div>
+        <div class="field"><label>證照名稱</label><input id="st-cert-name" value="${esc(s.cert_name_options || '')}"></div>
+        <div class="field"><label>發證單位</label><input id="st-cert-issuer" value="${esc(s.cert_issuer_options || '')}"></div>
         <div class="field full">
           <label>LINE Channel Access Token（設定後，已綁定的家屬改走 LINE 推播）</label>
           <input id="st-line" value="${esc(s.line_channel_access_token)}" placeholder="留空表示僅使用家屬入口">
@@ -2367,6 +3097,27 @@ async function viewSettings() {
           vomit_options: $('#st-vomit').value,
           activity_options: $('#st-activity').value,
           stool_options: $('#st-stool').value,
+          wound_options: $('#st-wound').value,
+          uterus_options: $('#st-uterus').value,
+          breast_options: $('#st-breast').value,
+          lochia_options: $('#st-lochia').value,
+          elimination_options: $('#st-elimination').value,
+          lactation_options: $('#st-lactation').value,
+          mood_options: $('#st-mood').value,
+          education_options: $('#st-education').value,
+          baby_absence_daily_deduct: $('#st-baby-deduct').value,
+          hk_need_options: $('#st-hk-needs').value,
+          hk_task_presets: $('#st-hk-tasks').value,
+          med_drug_options: $('#st-med-drug').value,
+          med_route_options: $('#st-med-route').value,
+          vaccine_site_options: $('#st-vac-site').value,
+          incident_location_options: $('#st-inc-loc').value,
+          hh_area_options: $('#st-hh-area').value,
+          hh_role_options: $('#st-hh-role').value,
+          disinfect_area_options: $('#st-dis-area').value,
+          disinfect_agent_options: $('#st-dis-agent').value,
+          cert_name_options: $('#st-cert-name').value,
+          cert_issuer_options: $('#st-cert-issuer').value,
           line_channel_access_token: $('#st-line').value.trim(),
           line_staff_alert_id: $('#st-line-alert').value.trim(),
           survey_on_checkout: $('#st-survey-co').value,
@@ -2423,6 +3174,14 @@ function signLink(token) {
   return `${location.origin}/sign.html?t=${token}`;
 }
 
+// 經手人下拉：列出在職員工姓名，selected 為預設選取的姓名
+function handlerSelectOptions(users, selected) {
+  const names = [...new Set((users || []).filter(u => u.active !== 0 && u.name).map(u => u.name))];
+  if (selected && !names.includes(selected)) names.unshift(selected);
+  return `<option value="">未指定</option>` +
+    names.map(n => `<option ${n === selected ? 'selected' : ''}>${esc(n)}</option>`).join('');
+}
+
 // 另開視窗列印／另存 PDF：凍結全文 + 簽名圖 + 簽署存證
 function printContract(c) {
   const st = CONTRACT_STATUS[c.status] || CONTRACT_STATUS.pending;
@@ -2455,6 +3214,7 @@ function printContract(c) {
       @media print{.noprint{display:none}}
     </style></head><body>
     <div class="status">${st.label}</div>
+    ${c.handler ? `<div style="font-size:13px;color:#555;margin-bottom:6px">經手人：${esc(c.handler)}</div>` : ''}
     <pre>${esc(c.body)}</pre>
     ${proof}
     <div class="noprint" style="margin-top:24px;text-align:center">
@@ -2466,10 +3226,11 @@ function printContract(c) {
 
 async function viewContracts() {
   const isAdmin = currentUser.role === 'admin';
-  const [contracts, templates, bookings] = await Promise.all([
-    api('/contracts'), api('/contract-templates'), api('/bookings')
+  const [contracts, templates, bookings, users] = await Promise.all([
+    api('/contracts'), api('/contract-templates'), api('/bookings'), api('/users')
   ]);
   const activeTpls = templates.filter(t => t.active);
+  const handlerOptions = handlerSelectOptions(users, currentUser.name);
   main().innerHTML = `
     <div class="page-title">合約簽署</div>
     <div class="card">
@@ -2490,6 +3251,10 @@ async function viewContracts() {
               : '<option value="">尚無啟用範本，請先到下方管理範本</option>'}
           </select>
         </div>
+        <div class="field">
+          <label>經手人</label>
+          <select id="ct-handler">${handlerOptions}</select>
+        </div>
         <div class="full row">
           <button class="btn" id="ct-create">產生合約</button>
           ${isAdmin ? '<button class="btn secondary" id="ct-tpl">管理合約範本</button>' : ''}
@@ -2501,12 +3266,13 @@ async function viewContracts() {
       ${filterBar({ placeholder: '搜尋媽媽 / 房間 / 合約名稱…', statuses: [{ val: '', label: '全部' }, { val: 'pending', label: '待簽署' }, { val: 'signed', label: '已簽署' }, { val: 'void', label: '已作廢' }] })}
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th>媽媽 / 房間</th><th>合約</th><th>狀態</th><th>簽署人</th><th>操作</th></tr></thead>
+          <thead><tr><th>媽媽 / 房間</th><th>合約</th><th>經手人</th><th>狀態</th><th>簽署人</th><th>操作</th></tr></thead>
           <tbody>${contracts.map(c => {
             const st = CONTRACT_STATUS[c.status] || CONTRACT_STATUS.pending;
-            return `<tr data-filter="${esc((c.mother_name || '') + ' ' + (c.room_name || '') + ' ' + c.title + ' ' + (c.signer_name || ''))}" data-status="${c.status}">
+            return `<tr data-filter="${esc((c.mother_name || '') + ' ' + (c.room_name || '') + ' ' + c.title + ' ' + (c.signer_name || '') + ' ' + (c.handler || ''))}" data-status="${c.status}">
               <td data-label="媽媽 / 房間">${esc(c.mother_name || '-')}<br><small>${esc(c.room_name || '')} 房</small></td>
               <td data-label="合約">${esc(c.title)}<br><small>${esc(c.created_at?.slice(0, 16) || '')}　${esc(c.created_by_name || '')}</small></td>
+              <td data-label="經手人">${esc(c.handler || '-')}</td>
               <td data-label="狀態"><span class="badge ${st.badge}">${st.label}</span></td>
               <td data-label="簽署人">${c.status === 'signed' ? `${esc(c.signer_name)}${c.signer_relation ? `（${esc(c.signer_relation)}）` : ''}<br><small>${esc(c.signed_at || '')}</small>` : '-'}</td>
               <td data-label="操作">
@@ -2518,7 +3284,7 @@ async function viewContracts() {
                 ${isAdmin && c.status === 'pending' ? `<button class="btn small danger" data-del="${c.id}">刪除</button>` : ''}
               </td>
             </tr>`;
-          }).join('') || '<tr><td colspan="5"><div class="empty">尚無合約</div></td></tr>'}</tbody>
+          }).join('') || '<tr><td colspan="6"><div class="empty">尚無合約</div></td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -2531,7 +3297,7 @@ async function viewContracts() {
     if (!bookingId) { $('#ct-err').textContent = '請選擇訂房'; return; }
     if (!templateId) { $('#ct-err').textContent = '請選擇合約範本'; return; }
     try {
-      await api(`/bookings/${bookingId}/contracts`, { method: 'POST', body: { template_id: Number(templateId) } });
+      await api(`/bookings/${bookingId}/contracts`, { method: 'POST', body: { template_id: Number(templateId), handler: $('#ct-handler').value } });
       viewContracts();
     } catch (e) { $('#ct-err').textContent = e.message; }
   };
@@ -2568,17 +3334,20 @@ async function viewContracts() {
 }
 
 // 合約編輯 / 重新簽署。mode='edit'（直接改未簽署的內容）或 'resign'（建立新版、原約作廢）
-function openContractEditor(c, mode) {
+async function openContractEditor(c, mode) {
   const resign = mode === 'resign';
+  const users = await api('/users');
+  const handlerOptions = handlerSelectOptions(users, c.handler || '');
   openModal(resign ? '重新簽署（建立新版合約）' : '編輯合約內容', `
     ${resign ? `<p style="font-size:.85rem;color:var(--muted)">將以下方內容建立一份<strong>新合約</strong>並產生新的簽署連結；原合約（${c.status === 'signed' ? '已簽署' : '待簽署'}）會自動作廢並保留存證。</p>` : ''}
     <div class="form-grid">
       <div class="field full"><label>合約名稱</label><input id="ce-title" value="${esc(c.title || '')}"></div>
+      <div class="field"><label>經手人</label><select id="ce-handler">${handlerOptions}</select></div>
       <div class="field full"><label>合約內容</label><textarea id="ce-body" rows="14" style="font-family:inherit">${esc(c.body || '')}</textarea></div>
     </div>
     <div class="row" style="margin-top:8px"><button class="btn" id="ce-save">${resign ? '建立新版並取得簽署連結' : '儲存'}</button><span class="error-msg" id="ce-err"></span></div>`, body => {
     body.querySelector('#ce-save').onclick = async () => {
-      const payload = { title: body.querySelector('#ce-title').value.trim(), body: body.querySelector('#ce-body').value };
+      const payload = { title: body.querySelector('#ce-title').value.trim(), body: body.querySelector('#ce-body').value, handler: body.querySelector('#ce-handler').value };
       try {
         if (resign) {
           const r = await api(`/contracts/${c.id}/resign`, { method: 'POST', body: payload });
@@ -2830,7 +3599,7 @@ function incidentForm(i, babies, mothers) {
       <div class="field"><label>類別</label><select id="if-category">${Object.entries(INCIDENT_LABEL).map(([k, v]) => `<option value="${k}" ${i.category === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="field"><label>嚴重度</label><select id="if-severity">${Object.entries(SEVERITY_LABEL).map(([k, v]) => `<option value="${k}" ${i.severity === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="field"><label>發生時間</label><input type="datetime-local" id="if-occurred" value="${toDtInput(i.occurred_at) || nowDtInput()}"></div>
-      <div class="field"><label>地點</label><input id="if-location" value="${esc(i.location || '')}"></div>
+      <div class="field"><label>地點</label><input id="if-location" value="${esc(i.location || '')}" list="if-location-list">${dataList('if-location-list', 'incident_location_options')}</div>
       <div class="field"><label>相關寶寶（可選）</label><select id="if-baby"><option value="">無</option>${selectOptions(babies, 'id', b => `${b.name}（${b.mother_name}）`, i.baby_id)}</select></div>
       <div class="field"><label>相關媽媽（可選）</label><select id="if-mother"><option value="">無</option>${selectOptions(mothers, 'id', m => m.name, i.mother_id)}</select></div>
       <div class="field full"><label>對象描述（員工/訪客等，可選）</label><input id="if-subject" value="${esc(i.subject || '')}"></div>
@@ -2890,8 +3659,8 @@ async function viewInfection() {
       <h3>洗手稽核（手部衛生遵從率）</h3>
       <div class="form-grid">
         <div class="field"><label>稽核日期</label><input type="date" id="hh-date" value="${todayStr()}"></div>
-        <div class="field"><label>區域</label><input id="hh-area" placeholder="嬰兒室/護理站…"></div>
-        <div class="field"><label>對象</label><input id="hh-role" placeholder="護理師/清潔…"></div>
+        <div class="field"><label>區域</label><input id="hh-area" list="hh-area-list" placeholder="嬰兒室/護理站…">${dataList('hh-area-list', 'hh_area_options')}</div>
+        <div class="field"><label>對象</label><input id="hh-role" list="hh-role-list" placeholder="護理師/清潔…">${dataList('hh-role-list', 'hh_role_options')}</div>
         <div class="field"><label>觀察時機數</label><input type="number" id="hh-opp" min="1" value="10"></div>
         <div class="field"><label>確實執行數</label><input type="number" id="hh-comp" min="0" value="10"></div>
         <div class="field full"><label>備註</label><input id="hh-note"></div>
@@ -2912,8 +3681,8 @@ async function viewInfection() {
       <h3>環境清潔消毒簽核</h3>
       <div class="form-grid">
         <div class="field"><label>日期</label><input type="date" id="dis-date" value="${todayStr()}"></div>
-        <div class="field"><label>區域/設備</label><input id="dis-area" placeholder="嬰兒室/保溫箱…"></div>
-        <div class="field"><label>消毒方式</label><input id="dis-agent" placeholder="1:100漂白水…"></div>
+        <div class="field"><label>區域/設備</label><input id="dis-area" list="dis-area-list" placeholder="嬰兒室/保溫箱…">${dataList('dis-area-list', 'disinfect_area_options')}</div>
+        <div class="field"><label>消毒方式</label><input id="dis-agent" list="dis-agent-list" placeholder="1:100漂白水…">${dataList('dis-agent-list', 'disinfect_agent_options')}</div>
         <div class="field"><label>覆核簽核人</label><select id="dis-verify"><option value="">無</option>${selectOptions(staff, 'id', u => u.name)}</select></div>
         <div class="field full"><label>備註</label><input id="dis-note"></div>
         <div class="full row"><button class="btn" id="dis-add">新增簽核</button><span class="error-msg" id="dis-err"></span></div>
@@ -3070,9 +3839,9 @@ async function renderNewbornMedical(babyId) {
 function marForm(babyId) {
   openModal('新增給藥紀錄', `
     <div class="form-grid">
-      <div class="field full"><label>藥品名稱</label><input id="mar-drug"></div>
+      <div class="field full"><label>藥品名稱</label><input id="mar-drug" list="mar-drug-list">${dataList('mar-drug-list', 'med_drug_options')}</div>
       <div class="field"><label>劑量</label><input id="mar-dose" placeholder="400 IU"></div>
-      <div class="field"><label>途徑</label><input id="mar-route" placeholder="口服/IM…"></div>
+      <div class="field"><label>途徑</label><input id="mar-route" list="mar-route-list" placeholder="口服/IM…">${dataList('mar-route-list', 'med_route_options')}</div>
       <div class="field"><label>醫囑醫師</label><input id="mar-order"></div>
       <div class="field"><label>狀態</label><select id="mar-status">${Object.entries(MED_STATUS_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
       <div class="field"><label>排定時間</label><input type="datetime-local" id="mar-sched"></div>
@@ -3104,7 +3873,7 @@ function vaccForm(babyId, v) {
       <div class="field"><label>狀態</label><select id="vac-status">${Object.entries(VACC_STATUS_LABEL).map(([k, lbl]) => `<option value="${k}" ${(v.status || 'done') === k ? 'selected' : ''}>${lbl}</option>`).join('')}</select></div>
       <div class="field"><label>接種時間</label><input type="datetime-local" id="vac-admin" value="${toDtInput(v.administered_at)}"></div>
       <div class="field"><label>批號</label><input id="vac-lot" value="${esc(v.lot_no || '')}"></div>
-      <div class="field"><label>部位</label><input id="vac-site" value="${esc(v.site || '')}" placeholder="右大腿"></div>
+      <div class="field"><label>部位</label><input id="vac-site" value="${esc(v.site || '')}" list="vac-site-list" placeholder="右大腿">${dataList('vac-site-list', 'vaccine_site_options')}</div>
       <div class="field full"><label>備註</label><input id="vac-note" value="${esc(v.note || '')}"></div>
       <div class="full row"><button class="btn" id="vac-save">儲存</button><span class="error-msg" id="vac-err"></span></div>
     </div>`, body => {
@@ -3420,8 +4189,8 @@ async function viewShop() {
   });
   if (isAdmin) {
     main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () =>
-      openProductForm(products.find(p => p.id == b.dataset.edit)));
-    main().querySelector('#shop-newprod').onclick = () => openProductForm(null);
+      openProductForm(products.find(p => p.id == b.dataset.edit), distinctCats(products)));
+    main().querySelector('#shop-newprod').onclick = () => openProductForm(null, distinctCats(products));
     main().querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
       const p = products.find(x => x.id == b.dataset.toggle);
       try { await api(`/products/${p.id}`, { method: 'PUT', body: { active: p.active ? 0 : 1 } }); viewShop(); }
@@ -3431,12 +4200,12 @@ async function viewShop() {
   main().querySelector('#shop-neworder').onclick = () => openStaffOrderForm(products.filter(p => p.active));
 }
 
-function openProductForm(p) {
+function openProductForm(p, cats) {
   const ed = p || {};
   openModal(ed.id ? '編輯商品' : '新增商品', `
     <div class="form-grid">
       <div class="field full"><label>品名 *</label><input id="pf-name" value="${esc(ed.name || '')}"></div>
-      <div class="field"><label>分類</label><input id="pf-cat" value="${esc(ed.category || '')}" placeholder="例如：媽媽用品"></div>
+      <div class="field"><label>分類</label><input id="pf-cat" value="${esc(ed.category || '')}" list="pf-cat-list" placeholder="例如：媽媽用品">${dataListValues('pf-cat-list', cats)}</div>
       <div class="field"><label>售價 *</label><input type="number" id="pf-price" min="0" value="${ed.price ?? ''}"></div>
       <div class="field"><label>成本</label><input type="number" id="pf-cost" min="0" value="${ed.cost ?? 0}"></div>
       <div class="field"><label>排序</label><input type="number" id="pf-sort" value="${ed.sort ?? 0}"></div>
@@ -3584,8 +4353,8 @@ async function viewSupplies() {
   main().querySelectorAll('[data-out]').forEach(b => b.onclick = () => openSupplyTxn(byId(b.dataset.out), 'out'));
   main().querySelectorAll('[data-txn]').forEach(b => b.onclick = () => openSupplyTxns(byId(b.dataset.txn)));
   if (isAdmin) {
-    main().querySelector('#sup-new').onclick = () => openSupplyForm(null);
-    main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openSupplyForm(byId(b.dataset.edit)));
+    main().querySelector('#sup-new').onclick = () => openSupplyForm(null, distinctCats(rows));
+    main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openSupplyForm(byId(b.dataset.edit), distinctCats(rows)));
   }
 }
 async function openPurchaseOrder() {
@@ -3616,12 +4385,12 @@ async function openPurchaseOrder() {
     };
   });
 }
-function openSupplyForm(s) {
+function openSupplyForm(s, cats) {
   const ed = s || {};
   openModal(ed.id ? '編輯耗材' : '新增耗材', `
     <div class="form-grid">
       <div class="field full"><label>品名 *</label><input id="su-name" value="${esc(ed.name || '')}"></div>
-      <div class="field"><label>分類</label><input id="su-cat" value="${esc(ed.category || '')}"></div>
+      <div class="field"><label>分類</label><input id="su-cat" value="${esc(ed.category || '')}" list="su-cat-list">${dataListValues('su-cat-list', cats)}</div>
       <div class="field"><label>單位</label><input id="su-unit" value="${esc(ed.unit || '')}" placeholder="包/罐/箱"></div>
       ${ed.id ? '' : '<div class="field"><label>期初庫存</label><input type="number" id="su-stock" min="0" value="0"></div>'}
       <div class="field"><label>安全庫存</label><input type="number" id="su-safe" min="0" value="${ed.safety_stock ?? 0}"></div>
@@ -3741,11 +4510,11 @@ async function viewPrograms() {
   });
   main().querySelector('#pg-neworder').onclick = () => openSignupForm(progs.filter(p => p.active));
   if (isAdmin) {
-    main().querySelector('#pg-new').onclick = () => openProgramForm(null);
-    main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openProgramForm(progs.find(p => p.id == b.dataset.edit)));
+    main().querySelector('#pg-new').onclick = () => openProgramForm(null, distinctCats(progs));
+    main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openProgramForm(progs.find(p => p.id == b.dataset.edit), distinctCats(progs)));
   }
 }
-function openProgramForm(p) {
+function openProgramForm(p, cats) {
   const ed = p || {};
   openModal(ed.id ? '編輯課程／服務' : '新增課程／服務', `
     <div class="form-grid">
@@ -3753,7 +4522,7 @@ function openProgramForm(p) {
         <option value="course" ${ed.kind === 'service' ? '' : 'selected'}>課程／活動</option>
         <option value="service" ${ed.kind === 'service' ? 'selected' : ''}>加購服務</option></select></div>
       <div class="field"><label>名稱 *</label><input id="pg-name" value="${esc(ed.name || '')}"></div>
-      <div class="field"><label>分類</label><input id="pg-cat" value="${esc(ed.category || '')}" placeholder="例如：產後服務"></div>
+      <div class="field"><label>分類</label><input id="pg-cat" value="${esc(ed.category || '')}" list="pg-cat-list" placeholder="例如：產後服務">${dataListValues('pg-cat-list', cats)}</div>
       <div class="field"><label>費用</label><input type="number" id="pg-price" min="0" value="${ed.price ?? 0}"></div>
       <div class="field"><label>名額（0=不限）</label><input type="number" id="pg-cap" min="0" value="${ed.capacity ?? 0}"></div>
       <div class="field"><label>時間（課程填，服務可空）</label><input id="pg-when" value="${esc(ed.scheduled_at || '')}" placeholder="2026-07-10 14:00"></div>
@@ -3909,7 +4678,8 @@ const ROLE_PRESETS = {
   '護理師': ['baby_care', 'newborn_medical', 'mother_care', 'handover', 'incidents', 'infection', 'residents', 'rooms', 'meals', 'shifts', 'family'],
   '出納／帳務': ['billing', 'invoices', 'members', 'shop', 'programs', 'coupons'],
   '廚房': ['meals'],
-  '行政': ['residents', 'rooms', 'tours', 'contracts', 'family', 'shop', 'supplies', 'programs', 'members', 'reports']
+  '房務清潔': ['housekeeping', 'rooms'],
+  '行政': ['residents', 'rooms', 'housekeeping', 'tours', 'contracts', 'family', 'shop', 'supplies', 'programs', 'members', 'reports']
 };
 async function viewUsers() {
   const [users, modules] = await Promise.all([api('/users'), api('/modules')]);
@@ -4227,9 +4997,9 @@ function openCertForm(c) {
     <div class="form-grid">
       <div class="field"><label>員工帳號</label><select id="ct-user"><option value="">（手填姓名）</option>${users.map(u => `<option value="${u.id}" ${ed.user_id == u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></div>
       <div class="field"><label>姓名（非帳號者）</label><input id="ct-name" value="${esc(ed.staff_name || '')}"></div>
-      <div class="field"><label>證照名稱 *</label><input id="ct-cert" value="${esc(ed.cert_name || '')}" placeholder="護理師執照 / BLS…"></div>
+      <div class="field"><label>證照名稱 *</label><input id="ct-cert" value="${esc(ed.cert_name || '')}" list="ct-cert-list" placeholder="護理師執照 / BLS…">${dataList('ct-cert-list', 'cert_name_options')}</div>
       <div class="field"><label>證號</label><input id="ct-no" value="${esc(ed.cert_no || '')}"></div>
-      <div class="field"><label>發證單位</label><input id="ct-issuer" value="${esc(ed.issuer || '')}"></div>
+      <div class="field"><label>發證單位</label><input id="ct-issuer" value="${esc(ed.issuer || '')}" list="ct-issuer-list">${dataList('ct-issuer-list', 'cert_issuer_options')}</div>
       <div class="field"><label>發證日</label><input type="date" id="ct-issued" value="${esc(ed.issued_on || '')}"></div>
       <div class="field"><label>到期日</label><input type="date" id="ct-exp" value="${esc(ed.expires_on || '')}"></div>
       <div class="field full"><label>備註</label><input id="ct-note" value="${esc(ed.note || '')}"></div>
@@ -4522,6 +5292,8 @@ const routes = {
   '#/infection': viewInfection,
   '#/residents': viewResidents,
   '#/rooms': viewRooms,
+  '#/bed-planning': viewBedPlanning,
+  '#/housekeeping': viewHousekeeping,
   '#/room-timeline': viewRoomTimeline,
   '#/billing': viewBilling,
   '#/aging': viewAging,
@@ -4539,6 +5311,7 @@ const routes = {
   '#/family': viewFamily,
   '#/crm': viewCrm,
   '#/reports': viewReports,
+  '#/quality-report': viewQualityReport,
   '#/gov': viewGov,
   '#/certifications': viewCerts,
   '#/surveys': viewSurveys,
@@ -4553,10 +5326,10 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/programs': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
-  '#/tours': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports',
+  '#/tours': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
   '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys',
   '#/audit-logs': 'audit', '#/export': 'export', '#/settings': 'settings', '#/users': 'users'
 };

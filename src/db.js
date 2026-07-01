@@ -213,6 +213,30 @@ function init() {
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
 
+  -- 參觀預約的追蹤備註 log（追加式，含時間與經手人，不覆蓋歷史）
+  CREATE TABLE IF NOT EXISTS tour_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tour_id INTEGER NOT NULL REFERENCES tours(id) ON DELETE CASCADE,
+    body TEXT NOT NULL DEFAULT '',
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 房務清潔工作：客服／清潔共用的清潔與備品任務，可排定與完成打卡
+  CREATE TABLE IF NOT EXISTS housekeeping_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id INTEGER REFERENCES rooms(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    task TEXT NOT NULL DEFAULT '',
+    scheduled_for TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','done')),
+    note TEXT DEFAULT '',
+    created_by INTEGER,
+    done_by INTEGER,
+    done_at TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
   -- 電子合約範本（含 {{占位符}}，建立合約時以訂房資料帶入並凍結）
   CREATE TABLE IF NOT EXISTS contract_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -725,14 +749,21 @@ function init() {
 
   // 月子餐：每位媽媽的飲食類型
   if (!mCols.includes('meal_diet')) db.exec("ALTER TABLE mothers ADD COLUMN meal_diet TEXT NOT NULL DEFAULT '一般'");
+  // 房務清潔：住客需求（勿擾時間／哺乳衣／定時清垃圾等），供客服與清潔同步
+  if (!mCols.includes('hk_dnd')) db.exec("ALTER TABLE mothers ADD COLUMN hk_dnd TEXT DEFAULT ''");
+  if (!mCols.includes('hk_needs')) db.exec("ALTER TABLE mothers ADD COLUMN hk_needs TEXT DEFAULT ''");
+  if (!mCols.includes('hk_notes')) db.exec("ALTER TABLE mothers ADD COLUMN hk_notes TEXT DEFAULT ''");
 
   // 合約重簽：記錄取代來源（版本鏈）
   const ctCols = db.prepare('PRAGMA table_info(contracts)').all().map(c => c.name);
   if (!ctCols.includes('replaces_id')) db.exec('ALTER TABLE contracts ADD COLUMN replaces_id INTEGER');
+  if (!ctCols.includes('handler')) db.exec("ALTER TABLE contracts ADD COLUMN handler TEXT DEFAULT ''");
 
   // 應收帳款催收：記錄最後催收時間
   const bkCols = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
   if (!bkCols.includes('dunned_at')) db.exec("ALTER TABLE bookings ADD COLUMN dunned_at TEXT DEFAULT ''");
+  // 寶寶入住日（媽媽入住但寶寶較晚到院時，用於計算未入住扣抵）
+  if (!bkCols.includes('baby_check_in')) db.exec("ALTER TABLE bookings ADD COLUMN baby_check_in TEXT DEFAULT ''");
 
   // 交班未結項目轉待辦
   const hoCols = db.prepare('PRAGMA table_info(handovers)').all().map(c => c.name);
@@ -954,6 +985,15 @@ const DEFAULT_SETTINGS = {
   vomit_options: '溢奶,吐奶,噴射狀',
   activity_options: '活躍,正常,嗜睡,虛弱',
   stool_options: '胎便,轉移便,黃稠便,綠便,水樣便,有血絲',
+  // 產婦照護評估類別選項（一頁式快速評估用，可自訂）
+  wound_options: '乾燥癒合,輕微滲液,紅腫,有分泌物,裂開,無傷口',
+  uterus_options: '收縮良好,收縮不良,子宮底壓痛,硬如球',
+  breast_options: '柔軟,脹奶,硬塊,乳頭破損,乳腺阻塞,泌乳順暢',
+  lochia_options: '紅惡露,漿液性惡露,白惡露,量多,有異味,有血塊',
+  mood_options: '穩定愉快,輕微焦慮,情緒低落,易哭泣,睡眠障礙,需轉介',
+  elimination_options: '正常,排尿困難,頻尿,便秘,腹瀉,血尿',
+  lactation_options: '親餵順利,含乳姿勢需指導,泌乳量不足,塞奶,使用擠乳器,瓶餵',
+  education_options: '母乳哺育,新生兒照護,傷口照護,營養衛教,產後運動,情緒支持,返家準備',
   payment_methods: '現金,匯款轉帳,信用卡',
   charge_presets: '月子餐加購,營養品,嬰兒用品,尿布加購,訪客餐',
   meal_choices: '一般餐,素食餐,不需供餐',
@@ -974,6 +1014,25 @@ const DEFAULT_SETTINGS = {
   // 退費試算參數（依機構定型化契約調整；單位：%）
   refund_handling_fee_pct: '0',      // 退費作業手續費（占已繳金額）
   refund_penalty_pct: '20',          // 未使用天數之違約金上限（占未使用期間費用）
+  // 寶寶尚未入住扣抵：媽媽已入住但寶寶尚未到院，每日扣抵金額（元）
+  baby_absence_daily_deduct: '1000',
+  // 房務清潔：住客需求項目選項、清潔常用任務（逗號分隔）
+  hk_need_options: '哺乳衣,定時清垃圾,加床被,補充衛生紙,免洗餐具,訪客接待,勿擾',
+  hk_task_presets: '全室清潔,更換床單,浴廁清潔,倒垃圾,補充備品,消毒',
+  // 新生兒醫療：常用藥品、給藥途徑、接種部位（快選建議，仍可自行輸入；逗號分隔）
+  med_drug_options: '維生素D3,維生素K1,B型肝炎免疫球蛋白,益生菌',
+  med_route_options: '口服,肌肉注射(IM),靜脈注射(IV),皮下注射(SC),外用',
+  vaccine_site_options: '右大腿,左大腿,右上臂,左上臂',
+  // 異常事件：常見發生地點（快選建議）
+  incident_location_options: '嬰兒室,母嬰同室房,護理站,浴室,走廊,大廳',
+  // 感染管制快選（逗號分隔）
+  hh_area_options: '嬰兒室,母嬰同室房,護理站,配奶室,沐浴室',
+  hh_role_options: '護理師,護理長,照服員,清潔人員,月嫂',
+  disinfect_area_options: '嬰兒室,保溫箱,配奶室,沐浴室,母嬰同室房,公共區域',
+  disinfect_agent_options: '1:100漂白水,1:10漂白水,75%酒精,含氯消毒錠,四級銨消毒液',
+  // 員工證照快選（逗號分隔）
+  cert_name_options: '護理師執照,護士執照,BLS基本救命術,NRP新生兒高級救命術,保母技術士,食品衛生講習',
+  cert_issuer_options: '衛生福利部,中華民國護理師護士公會,美國心臟協會(AHA),勞動部勞動力發展署',
   // 會員點數（商城）：每滿 points_earn_per 元回饋 1 點，1 點折抵 points_value 元
   points_enabled: '1',
   points_earn_per: '100',

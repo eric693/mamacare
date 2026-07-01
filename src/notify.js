@@ -18,8 +18,25 @@ function reportText(report, centerName) {
   if (s.temp_latest != null) lines.push(`最新體溫 ${s.temp_latest} 度C`);
   if (s.weight_latest_g != null) lines.push(`體重 ${s.weight_latest_g} g`);
   if (s.jaundice_latest != null) lines.push(`黃疸值 ${s.jaundice_latest} mg/dL`);
+  const vit = [];
+  if (s.respiration_latest != null) vit.push(`呼吸 ${s.respiration_latest} 次/分`);
+  if (s.heart_rate_latest != null) vit.push(`心跳 ${s.heart_rate_latest} bpm`);
+  if (s.spo2_latest != null) vit.push(`血氧 ${s.spo2_latest}%`);
+  if (vit.length) lines.push(vit.join('、'));
+  const meas = [];
+  if (s.length_latest != null) meas.push(`身長 ${s.length_latest} cm`);
+  if (s.head_circ_latest != null) meas.push(`頭圍 ${s.head_circ_latest} cm`);
+  if (meas.length) lines.push(meas.join('、'));
+  const obs = [];
+  if (s.skin_latest) obs.push(`膚色 ${s.skin_latest}`);
+  if (s.activity_latest) obs.push(`活動力 ${s.activity_latest}`);
+  if (s.stool_latest) obs.push(`大便 ${s.stool_latest}`);
+  if (s.vomit_latest) obs.push(`溢吐奶 ${s.vomit_latest}`);
+  if (s.cord_latest) obs.push(`臍帶 ${s.cord_latest}`);
+  if (obs.length) lines.push(obs.join('、'));
   lines.push(s.bath_done ? '今日已完成沐浴' : '今日未安排沐浴');
   if (report.photos.length) lines.push(`今日有 ${report.photos.length} 張新照片，請至家屬入口查看`);
+  if (report.alerts && report.alerts.length) lines.push(`【注意】${report.alerts.join('；')}`);
   return lines.join('\n');
 }
 

@@ -101,6 +101,7 @@ const MODULES = [
   { key: 'infection', label: '感染管制' },
   { key: 'residents', label: '住客管理' },
   { key: 'rooms', label: '房務與訂房' },
+  { key: 'housekeeping', label: '房務清潔' },
   { key: 'billing', label: '收費帳務' },
   { key: 'shop', label: '商城商品' },
   { key: 'supplies', label: '耗材庫存' },
@@ -161,6 +162,8 @@ const MODULE_RULES = [
   [/^\/api\/audit-logs/, 'audit'],
   [/^\/api\/(export|backups)/, 'export'],
   [/^\/api\/users/, 'users'],
+  [/^\/api\/housekeeping/, 'housekeeping'],
+  [/^\/api\/mothers\/\d+\/housekeeping/, 'housekeeping'],
   // 住客／房務的「異動」才受限，讀取（GET）開放給所有員工以供跨模組顯示
   [/^\/api\/mothers/, 'residents', 'WRITE'],
   [/^\/api\/(rooms|bookings)/, 'rooms', 'WRITE']
@@ -337,15 +340,12 @@ app.get('/api/dashboard', requireStaff, (req, res) => {
   const pendingScreenings = db.prepare(
     `SELECT COUNT(*) c FROM newborn_screenings
      WHERE follow_up_done = 0 AND result IN ('pending','refer','abnormal')`).get().c;
-  // 進行中訂房的未結帳款（應收 = 合約 + 加購；已收 = 訂金 + 繳費）
-  const unpaid = db.prepare(`
-    SELECT COUNT(*) c, COALESCE(SUM(balance), 0) total FROM (
-      SELECT bk.total_amount
-        + COALESCE((SELECT SUM(ci.unit_price * ci.quantity) FROM charge_items ci WHERE ci.booking_id = bk.id), 0)
-        - bk.deposit
-        - COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.booking_id = bk.id), 0) AS balance
-      FROM bookings bk WHERE bk.status IN ('reserved','checked_in')
-    ) WHERE balance > 0`).get();
+  // 進行中訂房的未結帳款（應收 = 合約 + 加購 − 寶寶未入住扣抵；已收 = 訂金 + 繳費）
+  const unpaidRate = babyDeductRate();
+  const unpaidRows = db.prepare(`
+    SELECT bk.*, ${BILLING_SUMS} FROM bookings bk WHERE bk.status IN ('reserved','checked_in')`)
+    .all().map(r => withBalance(r, unpaidRate)).filter(b => b.balance > 0);
+  const unpaid = { c: unpaidRows.length, total: unpaidRows.reduce((s, b) => s + b.balance, 0) };
   const tours = db.prepare(`
     SELECT tour_at, name, phone, note FROM tours
     WHERE status = 'scheduled' AND date(tour_at) >= ?
@@ -623,13 +623,33 @@ function buildDailyReport(babyId, date) {
   const weights = records.filter(r => r.record_type === 'weight');
   const jaundices = records.filter(r => r.record_type === 'jaundice');
   const photos = records.filter(r => r.record_type === 'photo');
+  // 取某型別當日「最新」一筆的值（records 已依時間排序）
+  const lastNum = type => { const rs = records.filter(r => r.record_type === type); return rs.length ? rs[rs.length - 1].value_num : null; };
+  const lastText = type => { const rs = records.filter(r => r.record_type === type); return rs.length ? (rs[rs.length - 1].value_text || null) : null; };
   // 當日紅臀最嚴重程度（取輕→重排序最大者；無評估則為 null）
   const rashWorst = diapers.reduce((worst, r) => {
     const idx = DIAPER_RASH_LEVELS.indexOf(r.diaper_rash);
     return idx > worst ? idx : worst;
   }, -1);
+
+  // 異常提醒：依設定門檻彙整當日異常（體溫／黃疸／紅臀／餵食間隔）
+  const s = getSettings();
+  const alerts = [];
+  for (const t of temps) { const r = abnormalReason('temperature', t.value_num, s); if (r) alerts.push(r); }
+  if (jaundices.length) { const r = abnormalReason('jaundice', jaundices[jaundices.length - 1].value_num, s); if (r) alerts.push(r); }
+  if (rashWorst >= 2) alerts.push(`紅臀${DIAPER_RASH_LEVELS[rashWorst]}，需加強護理`);
+  if (feedings.length >= 2) {
+    const limit = Math.max(0.5, parseFloat(s.feed_interval_hours) || 3);
+    let maxGap = 0;
+    for (let i = 1; i < feedings.length; i++) {
+      const gap = (new Date(feedings[i].recorded_at) - new Date(feedings[i - 1].recorded_at)) / 3600000;
+      if (gap > maxGap) maxGap = gap;
+    }
+    if (maxGap > limit) alerts.push(`餵食間隔最長 ${maxGap.toFixed(1)} 小時（門檻 ${limit}）`);
+  }
+
   return {
-    baby, date, records, photos,
+    baby, date, records, photos, alerts,
     summary: {
       feed_count: feedings.length,
       feed_total_ml: feedings.reduce((s, r) => s + (r.amount_ml || 0), 0),
@@ -639,7 +659,19 @@ function buildDailyReport(babyId, date) {
       temp_latest: temps.length ? temps[temps.length - 1].value_num : null,
       weight_latest_g: weights.length ? weights[weights.length - 1].value_num : null,
       jaundice_latest: jaundices.length ? jaundices[jaundices.length - 1].value_num : null,
-      bath_done: records.some(r => r.record_type === 'bath')
+      bath_done: records.some(r => r.record_type === 'bath'),
+      // 擴充：生命徵象與觀察（取當日最新一筆）
+      respiration_latest: lastNum('respiration'),
+      heart_rate_latest: lastNum('heart_rate'),
+      spo2_latest: lastNum('spo2'),
+      length_latest: lastNum('length'),
+      head_circ_latest: lastNum('head_circ'),
+      sleep_count: records.filter(r => r.record_type === 'sleep').length,
+      skin_latest: lastText('skin'),
+      cord_latest: lastText('cord'),
+      vomit_latest: lastText('vomit'),
+      activity_latest: lastText('activity'),
+      stool_latest: lastText('stool')
     }
   };
 }
@@ -783,6 +815,43 @@ app.post('/api/bookings', requireStaff, (req, res) => {
   res.json({ id: info.lastInsertRowid });
 });
 
+// 設定寶寶入住日（用於計算「寶寶未入住扣抵」）；可清空
+app.put('/api/bookings/:id/baby-check-in', requireStaff, (req, res) => {
+  const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  const v = ((req.body || {}).baby_check_in || '').trim();
+  if (v && bk.check_in && v < bk.check_in) {
+    return res.status(400).json({ error: '寶寶入住日不可早於媽媽入住日' });
+  }
+  db.prepare('UPDATE bookings SET baby_check_in = ? WHERE id = ?').run(v, req.params.id);
+  logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id, summary: `設定寶寶入住日：${v || '(清空)'}` });
+  res.json({ ok: true });
+});
+
+// 入住前準備：調整房間／床位與起迄日（限尚未退房／取消者），含換房衝突檢查
+app.put('/api/bookings/:id', requireStaff, (req, res) => {
+  const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  if (['checked_out', 'cancelled'].includes(bk.status)) {
+    return res.status(400).json({ error: '已退房或已取消的訂房不可調整' });
+  }
+  const b = req.body || {};
+  const roomId = b.room_id || bk.room_id;
+  const checkIn = b.check_in || bk.check_in;
+  const checkOut = b.check_out || bk.check_out;
+  if (checkOut <= checkIn) return res.status(400).json({ error: '退房日需晚於入住日' });
+  const conflict = db.prepare(`
+    SELECT COUNT(*) c FROM bookings
+    WHERE room_id = ? AND id != ? AND status IN ('reserved','checked_in')
+      AND check_in < ? AND check_out > ?`).get(roomId, bk.id, checkOut, checkIn).c;
+  if (conflict) return res.status(409).json({ error: '該房間此期間已有其他訂房' });
+  const total = b.total_amount !== undefined ? Number(b.total_amount) || 0 : bk.total_amount;
+  db.prepare('UPDATE bookings SET room_id = ?, check_in = ?, check_out = ?, total_amount = ? WHERE id = ?')
+    .run(roomId, checkIn, checkOut, total, bk.id);
+  logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id, summary: `入住前調整：房間#${roomId} ${checkIn}~${checkOut}` });
+  res.json({ ok: true });
+});
+
 app.put('/api/bookings/:id/status', requireStaff, (req, res) => {
   const status = (req.body || {}).status;
   if (!['reserved', 'checked_in', 'checked_out', 'cancelled'].includes(status)) {
@@ -827,10 +896,31 @@ const BILLING_SUMS = `
   COALESCE((SELECT SUM(ci.unit_price * ci.quantity) FROM charge_items ci WHERE ci.booking_id = bk.id), 0) AS charges_total,
   COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.booking_id = bk.id), 0) AS payments_total`;
 
-function withBalance(row) {
-  row.total_due = row.total_amount + row.charges_total;
+function babyDeductRate() {
+  return Number(getSettings().baby_absence_daily_deduct) || 0;
+}
+
+// rate 可由呼叫端帶入避免重複讀設定；未帶入時自動讀取
+function withBalance(row, rate) {
+  if (rate === undefined) rate = babyDeductRate();
+  // 寶寶尚未入住扣抵：媽媽入住日 → 寶寶入住日 之間每日扣 rate（不超過總住宿天數）
+  let absentDays = 0;
+  if (rate > 0 && row.baby_check_in && row.check_in && row.baby_check_in > row.check_in) {
+    absentDays = Math.round((new Date(row.baby_check_in) - new Date(row.check_in)) / 86400000);
+    const totalDays = Math.round((new Date(row.check_out) - new Date(row.check_in)) / 86400000);
+    if (totalDays > 0) absentDays = Math.min(absentDays, totalDays);
+    absentDays = Math.max(0, absentDays);
+  }
+  row.baby_absent_days = absentDays;
+  row.baby_deduct = absentDays * rate;
+  row.total_due = row.total_amount + row.charges_total - row.baby_deduct;
   row.total_paid = row.deposit + row.payments_total;
   row.balance = row.total_due - row.total_paid;
+  // 未結餘款拆分：已收款（含訂金）先沖抵合約住宿費（已扣寶寶未入住扣抵），溢額再沖加購消費
+  row.contract_due = row.total_amount - row.baby_deduct;
+  row.addon_due = row.charges_total;
+  row.contract_balance = Math.max(0, row.contract_due - row.total_paid);
+  row.addon_balance = row.balance - row.contract_balance; // 兩者相加恆等於 balance
   return row;
 }
 
@@ -840,7 +930,8 @@ app.get('/api/billing', requireStaff, (req, res) => {
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.status != 'cancelled'
     ORDER BY CASE bk.status WHEN 'checked_in' THEN 0 WHEN 'reserved' THEN 1 ELSE 2 END, bk.check_in`).all();
-  res.json(rows.map(withBalance));
+  const rate = babyDeductRate();
+  res.json(rows.map(r => withBalance(r, rate)));
 });
 
 // 應收帳款帳齡：以退房日為到期基準，逾期分齡（在住者為未到期）
@@ -849,7 +940,7 @@ app.get('/api/billing/aging', requireStaff, (req, res) => {
   const rows = db.prepare(`
     SELECT bk.*, m.name AS mother_name, m.phone, r.name AS room_name, ${BILLING_SUMS}
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
-    WHERE bk.status != 'cancelled'`).all().map(withBalance).filter(b => b.balance > 0);
+    WHERE bk.status != 'cancelled'`).all().map(r => withBalance(r, babyDeductRate())).filter(b => b.balance > 0);
   const buckets = { current: 0, d30: 0, d60: 0, d60p: 0 };
   for (const b of rows) {
     const overdueDays = b.status === 'checked_out' && b.check_out < d
@@ -1744,8 +1835,38 @@ app.get('/api/family/meal-plan', requireFamily, (req, res) => {
 
 // ---------- 參觀預約（潛在客戶追蹤） ----------
 app.get('/api/tours', requireStaff, (req, res) => {
-  const rows = db.prepare('SELECT * FROM tours ORDER BY tour_at DESC LIMIT 300').all();
+  const rows = db.prepare(`
+    SELECT t.*,
+      (SELECT COUNT(*) FROM tour_logs l WHERE l.tour_id = t.id) AS log_count,
+      (SELECT l.body FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log,
+      (SELECT l.created_at FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log_at
+    FROM tours t ORDER BY t.tour_at DESC LIMIT 300`).all();
   res.json(rows);
+});
+
+// 某筆參觀預約的追蹤 log（時間序）
+app.get('/api/tours/:id/logs', requireStaff, (req, res) => {
+  const rows = db.prepare(`
+    SELECT l.*, u.name AS staff_name FROM tour_logs l
+    LEFT JOIN users u ON u.id = l.created_by
+    WHERE l.tour_id = ? ORDER BY l.id DESC`).all(req.params.id);
+  res.json(rows);
+});
+
+// 新增一則追蹤備註（追加式，不覆蓋）
+function addTourLog(tourId, body, userId) {
+  const text = (body || '').trim();
+  if (!text) return;
+  db.prepare('INSERT INTO tour_logs (tour_id, body, created_by) VALUES (?,?,?)').run(tourId, text, userId || null);
+}
+
+app.post('/api/tours/:id/logs', requireStaff, (req, res) => {
+  const tour = db.prepare('SELECT id FROM tours WHERE id = ?').get(req.params.id);
+  if (!tour) return res.status(404).json({ error: '找不到參觀預約' });
+  const text = ((req.body || {}).body || '').trim();
+  if (!text) return res.status(400).json({ error: '備註內容不可空白' });
+  addTourLog(req.params.id, text, req.session.user.id);
+  res.json({ ok: true });
 });
 
 app.post('/api/tours', requireStaff, (req, res) => {
@@ -1767,6 +1888,10 @@ app.put('/api/tours/:id', requireStaff, (req, res) => {
     WHERE id = ?`).run(
     t.name ?? cur.name, t.phone ?? cur.phone, t.due_date ?? cur.due_date, t.tour_at ?? cur.tour_at,
     t.source ?? cur.source, status, t.note ?? cur.note, req.params.id);
+  if (status !== cur.status) {
+    const L = { scheduled: '待參觀', visited: '已參觀', signed: '已簽約', lost: '未成交' };
+    addTourLog(req.params.id, `狀態：${L[cur.status] || cur.status} → ${L[status] || status}`, req.session.user.id);
+  }
   res.json({ ok: true });
 });
 
@@ -1799,7 +1924,9 @@ app.post('/api/tours/:id/sign', requireStaff, (req, res) => {
     db.prepare("UPDATE tours SET status = 'signed' WHERE id = ?").run(req.params.id);
     return { mother_id: motherId, booking_id: bookingId };
   });
-  res.json(tx());
+  const result = tx();
+  addTourLog(req.params.id, `已簽約並建立訂房（房號 ${b.room_id}，入住 ${b.check_in}）`, req.session.user.id);
+  res.json(result);
 });
 
 app.delete('/api/tours/:id', requireAdmin, (req, res) => {
@@ -1879,7 +2006,7 @@ app.get('/api/contracts', requireStaff, (req, res) => {
   const args = req.query.booking_id ? [req.query.booking_id] : [];
   const rows = db.prepare(`
     SELECT c.id, c.booking_id, c.title, c.status, c.sign_token, c.signer_name,
-           c.signer_relation, c.signed_at, c.created_at,
+           c.signer_relation, c.signed_at, c.created_at, c.handler,
            m.name AS mother_name, r.name AS room_name,
            u.name AS created_by_name
     FROM contracts c
@@ -1899,11 +2026,12 @@ app.post('/api/bookings/:id/contracts', requireStaff, (req, res) => {
   const tpl = db.prepare('SELECT * FROM contract_templates WHERE id = ?').get(tplId);
   if (!tpl) return res.status(400).json({ error: '請選擇合約範本' });
   const title = (req.body || {}).title || tpl.name;
+  const handler = ((req.body || {}).handler || '').trim();
   const body = renderTemplate(tpl.body, ctx.map);
   const info = db.prepare(`INSERT INTO contracts
-    (booking_id, template_id, title, body, sign_token, created_by)
-    VALUES (?,?,?,?,?,?)`).run(
-    req.params.id, tpl.id, title, body, genSignToken(), req.session.user.id);
+    (booking_id, template_id, title, body, sign_token, created_by, handler)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    req.params.id, tpl.id, title, body, genSignToken(), req.session.user.id, handler);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -1928,8 +2056,9 @@ app.put('/api/contracts/:id', requireStaff, (req, res) => {
   if (!c) return res.status(404).json({ error: '找不到合約' });
   if (c.status !== 'pending') return res.status(400).json({ error: '已簽署或已作廢的合約不可直接編輯，請使用「重新簽署」' });
   const b = req.body || {};
-  db.prepare('UPDATE contracts SET title = ?, body = ? WHERE id = ?').run(
-    (b.title || c.title), (b.body !== undefined ? b.body : c.body), c.id);
+  db.prepare('UPDATE contracts SET title = ?, body = ?, handler = ? WHERE id = ?').run(
+    (b.title || c.title), (b.body !== undefined ? b.body : c.body),
+    (b.handler !== undefined ? String(b.handler).trim() : c.handler), c.id);
   logAudit(req, { action: 'update', entity: 'contracts', entity_id: c.id, summary: '編輯合約內容' });
   res.json({ ok: true });
 });
@@ -1942,11 +2071,12 @@ app.post('/api/contracts/:id/resign', requireStaff, (req, res) => {
   const b = req.body || {};
   const title = b.title || old.title;
   const body = b.body !== undefined ? b.body : old.body;
+  const handler = b.handler !== undefined ? String(b.handler).trim() : old.handler;
   const tx = db.transaction(() => {
     const info = db.prepare(`INSERT INTO contracts
-      (booking_id, template_id, title, body, sign_token, created_by, replaces_id)
-      VALUES (?,?,?,?,?,?,?)`).run(
-      old.booking_id, old.template_id, title, body, genSignToken(), req.session.user.id, old.id);
+      (booking_id, template_id, title, body, sign_token, created_by, replaces_id, handler)
+      VALUES (?,?,?,?,?,?,?,?)`).run(
+      old.booking_id, old.template_id, title, body, genSignToken(), req.session.user.id, old.id, handler);
     db.prepare(`UPDATE contracts SET status='void', voided_by=?, voided_at=datetime('now','localtime'),
       void_reason=? WHERE id=?`).run(
       req.session.user.id, `重新簽署，由合約#${info.lastInsertRowid} 取代`, old.id);
@@ -2446,13 +2576,12 @@ app.get('/api/reminders', requireStaff, (req, res) => {
     items.push({ type: 'checkout', level: c.check_out <= d ? 'high' : 'mid',
       title: `${c.mother_name}（${c.room_name}房）退房`, due: c.check_out, link: '#/rooms' });
   }
-  // 未結帳款
+  // 未結帳款（與收費帳務一致：含寶寶未入住扣抵）
+  const dunRate = babyDeductRate();
   for (const b of db.prepare(`
-    SELECT bk.id, m.name AS mother_name, r.name AS room_name,
-      bk.total_amount + COALESCE((SELECT SUM(unit_price*quantity) FROM charge_items WHERE booking_id=bk.id),0)
-      - bk.deposit - COALESCE((SELECT SUM(amount) FROM payments WHERE booking_id=bk.id),0) AS balance
+    SELECT bk.*, m.name AS mother_name, r.name AS room_name, ${BILLING_SUMS}
     FROM bookings bk JOIN mothers m ON m.id=bk.mother_id JOIN rooms r ON r.id=bk.room_id
-    WHERE bk.status IN ('reserved','checked_in')`).all().filter(b => b.balance > 0)) {
+    WHERE bk.status IN ('reserved','checked_in')`).all().map(x => withBalance(x, dunRate)).filter(b => b.balance > 0)) {
     items.push({ type: 'unpaid', level: 'mid',
       title: `${b.mother_name}（${b.room_name}房）未結 NT$${Number(b.balance).toLocaleString()}`, link: '#/billing' });
   }
@@ -2535,6 +2664,75 @@ app.get('/api/room-calendar', requireStaff, (req, res) => {
   res.json({ start, end, days, rooms, bookings });
 });
 
+// ---------- 房務清潔 ----------
+// 在住住客的清潔需求總覽（含勿擾時間／需求項目／備註）＋今日任務統計
+app.get('/api/housekeeping', requireStaff, (req, res) => {
+  const date = req.query.date || today();
+  const residents = db.prepare(`
+    SELECT m.id AS mother_id, m.name AS mother_name, m.hk_dnd, m.hk_needs, m.hk_notes,
+           r.id AS room_id, r.name AS room_name, bk.check_in, bk.check_out,
+           (SELECT COUNT(*) FROM housekeeping_logs h WHERE h.mother_id = m.id AND h.status='pending') AS pending_tasks
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'checked_in'
+    ORDER BY r.name`).all();
+  const tasks = db.prepare(`
+    SELECT h.*, r.name AS room_name, m.name AS mother_name,
+           cu.name AS created_name, du.name AS done_name
+    FROM housekeeping_logs h
+    LEFT JOIN rooms r ON r.id = h.room_id
+    LEFT JOIN mothers m ON m.id = h.mother_id
+    LEFT JOIN users cu ON cu.id = h.created_by
+    LEFT JOIN users du ON du.id = h.done_by
+    WHERE h.scheduled_for = ? OR (h.status='pending' AND h.scheduled_for < ?)
+    ORDER BY h.status, h.scheduled_for, h.id DESC`).all(date, date);
+  res.json({ date, residents, tasks });
+});
+
+// 更新某住客的清潔需求
+app.put('/api/mothers/:id/housekeeping', requireStaff, (req, res) => {
+  const m = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!m) return res.status(404).json({ error: '找不到住客' });
+  const b = req.body || {};
+  db.prepare('UPDATE mothers SET hk_dnd = ?, hk_needs = ?, hk_notes = ? WHERE id = ?').run(
+    (b.hk_dnd || '').trim(), (b.hk_needs || '').trim(), (b.hk_notes || '').trim(), req.params.id);
+  res.json({ ok: true });
+});
+
+// 新增清潔任務
+app.post('/api/housekeeping/tasks', requireStaff, (req, res) => {
+  const b = req.body || {};
+  if (!b.task || !String(b.task).trim()) return res.status(400).json({ error: '請輸入清潔任務' });
+  const info = db.prepare(`INSERT INTO housekeeping_logs
+    (room_id, mother_id, task, scheduled_for, note, created_by)
+    VALUES (?,?,?,?,?,?)`).run(
+    b.room_id || null, b.mother_id || null, String(b.task).trim(),
+    b.scheduled_for || today(), b.note || '', req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+
+// 更新清潔任務（完成／取消完成／編輯備註）
+app.put('/api/housekeeping/tasks/:id', requireStaff, (req, res) => {
+  const t = db.prepare('SELECT * FROM housekeeping_logs WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: '找不到任務' });
+  const b = req.body || {};
+  if (b.status === 'done') {
+    db.prepare(`UPDATE housekeeping_logs SET status='done', done_by=?, done_at=datetime('now','localtime'), note=? WHERE id=?`)
+      .run(req.session.user.id, b.note ?? t.note, t.id);
+  } else if (b.status === 'pending') {
+    db.prepare(`UPDATE housekeeping_logs SET status='pending', done_by=NULL, done_at='', note=? WHERE id=?`)
+      .run(b.note ?? t.note, t.id);
+  } else {
+    db.prepare('UPDATE housekeeping_logs SET task=?, scheduled_for=?, note=? WHERE id=?')
+      .run(b.task ?? t.task, b.scheduled_for ?? t.scheduled_for, b.note ?? t.note, t.id);
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/housekeeping/tasks/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM housekeeping_logs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ---------- 退費試算（依機構定型化契約參數） ----------
 app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
   const bk = db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, r.price_per_day
@@ -2556,7 +2754,15 @@ app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
   const penalty = Math.round(unusedDays * dailyRate * penaltyPct / 100); // 未使用期間違約金（上限）
   const handlingPct = Math.min(Math.max(parseFloat(s.refund_handling_fee_pct) || 0, 0), 100);
   const handling = Math.round(paid * handlingPct / 100);      // 作業手續費
-  const deductible = usedFee + charges + penalty + handling;  // 機構可收取合計
+  // 寶寶未入住扣抵：媽媽入住→寶寶入住之間的未入住天數，落在「已使用期間」內者每日扣抵
+  const rate = babyDeductRate();
+  let absentDays = 0;
+  if (rate > 0 && bk.baby_check_in && bk.baby_check_in > bk.check_in) {
+    absentDays = Math.min(Math.round((new Date(bk.baby_check_in) - new Date(bk.check_in)) / 86400000), totalDays);
+  }
+  const babyAbsentUsed = Math.max(0, Math.min(absentDays, usedDays));
+  const babyDeduct = babyAbsentUsed * rate;                   // 已使用期間的寶寶未入住扣抵
+  const deductible = Math.max(0, usedFee + charges + penalty + handling - babyDeduct); // 機構可收取合計
   const refund = Math.max(0, paid - deductible);
   res.json({
     booking_id: bk.id, mother_name: bk.mother_name, room_name: bk.room_name,
@@ -2564,6 +2770,7 @@ app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
     total_days: totalDays, used_days: usedDays, unused_days: unusedDays, daily_rate: dailyRate,
     paid_total: paid, charges_total: charges, used_fee: usedFee,
     penalty_pct: penaltyPct, penalty, handling_pct: handlingPct, handling,
+    baby_absent_days: babyAbsentUsed, baby_deduct: babyDeduct,
     deductible, refund
   });
 });
@@ -2665,10 +2872,10 @@ const EXPORTS = {
   billing: {
     label: '帳務彙總',
     columns: [{ key: 'mother_name', label: '媽媽' }, { key: 'room_name', label: '房間' }, { key: 'total_amount', label: '合約總額' }, { key: 'charges_total', label: '加購' }, { key: 'total_due', label: '應收' }, { key: 'total_paid', label: '已收' }, { key: 'balance', label: '未結餘額' }, { key: 'status', label: '狀態' }],
-    rows: () => db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, ${BILLING_SUMS}
+    rows: () => { const rate = babyDeductRate(); return db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, ${BILLING_SUMS}
       FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
       WHERE bk.status != 'cancelled' ORDER BY bk.check_in DESC`).all()
-      .map(withBalance).map(b => ({ ...b, status: STATUS_TW[b.status] || b.status }))
+      .map(b => withBalance(b, rate)).map(b => ({ ...b, status: STATUS_TW[b.status] || b.status })); }
   },
   payments: {
     label: '繳費明細',
@@ -3059,6 +3266,79 @@ app.get('/api/reports/analytics', requireStaff, (req, res) => {
     };
   });
   res.json({ months: n, total_rooms: totalRooms, series });
+});
+
+// 營運報表：每日入住率 + 評鑑品質 7 大指標（依衛福部產後護理機構評鑑精神，定義可於前端標示）
+app.get('/api/reports/quality', requireStaff, (req, res) => {
+  const month = req.query.month || today().slice(0, 7);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return res.status(400).json({ error: '月份格式需為 YYYY-MM' });
+  const [y, m] = month.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const totalRooms = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active = 1').get().c;
+  const occOn = db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings
+    WHERE status != 'cancelled' AND check_in <= ? AND check_out > ?`);
+
+  // 每日入住率
+  const daily = [];
+  let occupiedDays = 0, staffingOkDays = 0;
+  for (let i = 1; i <= daysInMonth; i++) {
+    const date = `${month}-${String(i).padStart(2, '0')}`;
+    const occ = occOn.get(date, date).c;
+    occupiedDays += occ;
+    const st = staffingCheck(date);
+    const ok = st.shifts.every(s => s.ok);
+    if (ok) staffingOkDays++;
+    daily.push({ date, occupied: occ, total: totalRooms, rate: totalRooms ? Math.round(occ / totalRooms * 1000) / 10 : 0, staffing_ok: ok });
+  }
+  const patientDays = occupiedDays; // 住民日（以每日佔床房數估算）
+  const avgOccupancy = totalRooms ? Math.round(occupiedDays / (totalRooms * daysInMonth) * 1000) / 10 : 0;
+
+  // 異常事件（依發生月份）
+  const incRows = db.prepare(`SELECT category, severity FROM incidents WHERE strftime('%Y-%m', occurred_at) = ?`).all(month);
+  const falls = incRows.filter(r => r.category === 'fall').length;
+  const infections = incRows.filter(r => r.category === 'infection').length;
+  const clusters = db.prepare(`SELECT COUNT(*) c FROM cluster_events WHERE strftime('%Y-%m', onset_date) = ?`).get(month).c;
+  const per1000 = n => patientDays ? Math.round(n / patientDays * 1000 * 100) / 100 : 0;
+
+  // 手部衛生遵從率
+  const hh = db.prepare(`SELECT COALESCE(SUM(opportunities),0) opp, COALESCE(SUM(compliant),0) comp
+    FROM hand_hygiene_audits WHERE strftime('%Y-%m', audit_date) = ?`).get(month);
+  const hhRate = hh.opp ? Math.round(hh.comp / hh.opp * 1000) / 10 : null;
+
+  // 新生兒篩檢異常追蹤完成率（當月建立、結果為需複篩/異常者）
+  const scr = db.prepare(`SELECT result, follow_up_done FROM newborn_screenings
+    WHERE strftime('%Y-%m', created_at) = ? AND result IN ('refer','abnormal')`).all(month);
+  const scrDone = scr.filter(r => r.follow_up_done).length;
+  const screeningFollowRate = scr.length ? Math.round(scrDone / scr.length * 1000) / 10 : null;
+
+  // 顧客滿意度（當月問卷中 rating 題平均，換算百分比；以 5 分制計）
+  const resps = db.prepare(`SELECT r.answers, s.questions FROM survey_responses r
+    JOIN surveys s ON s.id = r.survey_id WHERE strftime('%Y-%m', r.submitted_at) = ?`).all(month);
+  let ratingSum = 0, ratingN = 0;
+  for (const row of resps) {
+    let qs = [], ans = {};
+    try { qs = JSON.parse(row.questions || '[]'); ans = JSON.parse(row.answers || '{}'); } catch (e) { continue; }
+    qs.forEach((q, idx) => {
+      if (q && q.type === 'rating') {
+        const v = Number(ans[idx]);
+        if (v >= 1 && v <= 5) { ratingSum += v; ratingN++; }
+      }
+    });
+  }
+  const satisfaction = ratingN ? Math.round(ratingSum / ratingN / 5 * 1000) / 10 : null;
+  const staffingRate = daysInMonth ? Math.round(staffingOkDays / daysInMonth * 1000) / 10 : 0;
+
+  // 7 大指標（評鑑品管）
+  const indicators = [
+    { key: 'occupancy', name: '平均入住率', value: avgOccupancy, unit: '%', detail: `佔床 ${occupiedDays} 房日 / 可供 ${totalRooms * daysInMonth} 房日` },
+    { key: 'fall_rate', name: '住民跌倒事件率', value: per1000(falls), unit: '‰（每千住民日）', detail: `跌倒 ${falls} 件 / 住民日 ${patientDays}` },
+    { key: 'infection_rate', name: '院內感染事件率', value: per1000(infections), unit: '‰（每千住民日）', detail: `感染事件 ${infections} 件；群聚 ${clusters} 起` },
+    { key: 'hand_hygiene', name: '手部衛生遵從率', value: hhRate, unit: '%', detail: hh.opp ? `${hh.comp} / ${hh.opp} 次稽核` : '當月無稽核' },
+    { key: 'screening_follow', name: '新生兒篩檢異常追蹤完成率', value: screeningFollowRate, unit: '%', detail: scr.length ? `完成 ${scrDone} / 需追蹤 ${scr.length}` : '當月無需追蹤個案' },
+    { key: 'satisfaction', name: '顧客滿意度', value: satisfaction, unit: '%', detail: ratingN ? `${resps.length} 份問卷、${ratingN} 題評分` : '當月無評分問卷' },
+    { key: 'staffing', name: '護理人力配置達標率', value: staffingRate, unit: '%', detail: `達標 ${staffingOkDays} / ${daysInMonth} 天` }
+  ];
+  res.json({ month, total_rooms: totalRooms, days_in_month: daysInMonth, patient_days: patientDays, avg_occupancy: avgOccupancy, daily, indicators });
 });
 
 function computeMonthlyReport(month) {
@@ -3814,7 +4094,7 @@ app.get('/api/family/report', requireFamily, (req, res) => {
   // 家屬端不揭露護理師個資以外的內部備註欄位，僅保留必要資訊
   report.records = report.records.map(r => ({
     record_type: r.record_type, feed_method: r.feed_method, amount_ml: r.amount_ml,
-    diaper_kind: r.diaper_kind, diaper_rash: r.diaper_rash, value_num: r.value_num,
+    diaper_kind: r.diaper_kind, diaper_rash: r.diaper_rash, value_num: r.value_num, value_text: r.value_text,
     photo_file: r.photo_file, note: r.note, recorded_at: r.recorded_at
   }));
   report.photos = report.photos.map(r => ({ photo_file: r.photo_file, note: r.note, recorded_at: r.recorded_at }));
