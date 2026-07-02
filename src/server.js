@@ -70,7 +70,7 @@ function bodySummary(body) {
 
 // 自動記錄所有寫入型 API（POST/PUT/PATCH/DELETE），登入/登出/簽署另行語意化記錄
 const AUDIT_SKIP = new Set(['/api/login', '/api/logout', '/api/family/login', '/api/family/logout',
-  '/api/webhooks/line', '/api/webhooks/facebook', '/api/webhooks/ecpay']);
+  '/api/webhooks/line', '/api/webhooks/facebook', '/api/webhooks/ecpay', '/api/public/tours']);
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') return next();
   if (AUDIT_SKIP.has(req.originalUrl.split('?')[0])) return next();
@@ -95,6 +95,7 @@ app.use('/api', (req, res, next) => {
 const MODULES = [
   { key: 'baby_care', label: '寶寶照護' },
   { key: 'newborn_medical', label: '新生兒醫療' },
+  { key: 'physician', label: '醫師巡診' },
   { key: 'mother_care', label: '媽媽照護' },
   { key: 'handover', label: '護理交班' },
   { key: 'incidents', label: '異常事件' },
@@ -133,6 +134,7 @@ const MODULE_RULES = [
   [/^\/api\/mother-records/, 'mother_care'],
   [/^\/api\/babies\/\d+\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
+  [/^\/api\/physician-visits/, 'physician'],
   [/^\/api\/babies\/\d+\/(records|report|location|photos|trends)/, 'baby_care'],
   [/^\/api\/baby-records/, 'baby_care'],
   [/^\/api\/handovers/, 'handover'],
@@ -862,12 +864,41 @@ app.put('/api/bookings/:id/status', requireStaff, (req, res) => {
   db.prepare('UPDATE bookings SET status = ? WHERE id = ?').run(status, req.params.id);
   if (status === 'checked_in') {
     db.prepare(`UPDATE mothers SET status = 'checked_in' WHERE id = ?`).run(bk.mother_id);
+    maybeWelcome(bk.id); // 首次入住自動發送歡迎關懷（有家屬帳號才送、不重複）
   } else if (status === 'checked_out') {
     db.prepare(`UPDATE mothers SET status = 'checked_out' WHERE id = ?`).run(bk.mother_id);
     if (bk.status !== 'checked_out') pushCheckoutSurvey(bk.mother_id); // 退房時自動推滿意度問卷
   }
   res.json({ ok: true });
 });
+
+// 入住歡迎自動關懷：留言到家屬端，並（已綁定者）LINE 推播；回傳實際發送份數
+function pushWelcome(motherId) {
+  const s = getSettings();
+  const mom = db.prepare('SELECT name FROM mothers WHERE id = ?').get(motherId);
+  const fams = db.prepare(`SELECT f.* FROM family_members f JOIN babies b ON b.id = f.baby_id
+    WHERE b.mother_id = ? AND f.active = 1`).all(motherId);
+  if (!fams.length) return 0;
+  const token = (s.line_channel_access_token || '').trim();
+  const text = `歡迎入住${s.center_name || '本中心'}！\n${mom ? mom.name + ' 媽媽' : '您'}與寶寶的每日照護紀錄、照片與月子餐都能在家屬入口查看，有任何需求都可在「聯絡護理站」留言，祝您與寶寶月子順心愉快 🍼`;
+  const insMsg = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body) VALUES (?,?,?,?,?)`);
+  for (const f of fams) {
+    insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
+    if (token && f.line_user_id) notify.pushText(token, f.line_user_id, text).catch(() => {});
+  }
+  return fams.length;
+}
+
+// 只有實際送出（有家屬帳號）才標記已歡迎，讓家屬帳號較晚建立時仍能補送
+function maybeWelcome(bookingId) {
+  try {
+    const bk = db.prepare('SELECT id, mother_id, welcomed_at, status FROM bookings WHERE id = ?').get(bookingId);
+    if (!bk || bk.welcomed_at || bk.status !== 'checked_in') return;
+    if (pushWelcome(bk.mother_id) > 0) {
+      db.prepare("UPDATE bookings SET welcomed_at = datetime('now','localtime') WHERE id = ?").run(bk.id);
+    }
+  } catch (e) { /* 不影響流程 */ }
+}
 
 // 退房自動推滿意度問卷：留言到家屬端，並（已綁定者）LINE 推播
 function pushCheckoutSurvey(motherId) {
@@ -1872,10 +1903,10 @@ app.post('/api/tours/:id/logs', requireStaff, (req, res) => {
 app.post('/api/tours', requireStaff, (req, res) => {
   const t = req.body || {};
   if (!t.name || !t.tour_at) return res.status(400).json({ error: '姓名與參觀時間必填' });
-  const info = db.prepare(`INSERT INTO tours (name, phone, due_date, tour_at, source, status, note)
-    VALUES (?,?,?,?,?,?,?)`).run(
+  const info = db.prepare(`INSERT INTO tours (name, phone, due_date, tour_at, source, status, note, follow_up_date)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
     t.name, t.phone || '', t.due_date || '', t.tour_at, t.source || '',
-    ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : 'scheduled', t.note || '');
+    ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : 'scheduled', t.note || '', t.follow_up_date || '');
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -1884,10 +1915,10 @@ app.put('/api/tours/:id', requireStaff, (req, res) => {
   const cur = db.prepare('SELECT * FROM tours WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到參觀預約' });
   const status = ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : cur.status;
-  db.prepare(`UPDATE tours SET name = ?, phone = ?, due_date = ?, tour_at = ?, source = ?, status = ?, note = ?
+  db.prepare(`UPDATE tours SET name = ?, phone = ?, due_date = ?, tour_at = ?, source = ?, status = ?, note = ?, follow_up_date = ?
     WHERE id = ?`).run(
     t.name ?? cur.name, t.phone ?? cur.phone, t.due_date ?? cur.due_date, t.tour_at ?? cur.tour_at,
-    t.source ?? cur.source, status, t.note ?? cur.note, req.params.id);
+    t.source ?? cur.source, status, t.note ?? cur.note, t.follow_up_date ?? cur.follow_up_date, req.params.id);
   if (status !== cur.status) {
     const L = { scheduled: '待參觀', visited: '已參觀', signed: '已簽約', lost: '未成交' };
     addTourLog(req.params.id, `狀態：${L[cur.status] || cur.status} → ${L[status] || status}`, req.session.user.id);
@@ -2430,6 +2461,77 @@ app.delete('/api/phototherapy/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- 醫師巡診就醫紀錄（小兒科／婦產科；SOAP） ----------
+const VISIT_SPECIALTIES = ['pediatrics', 'obgyn', 'other'];
+const VISIT_TYPES = ['routine', 'follow_up', 'acute', 'discharge'];
+app.get('/api/physician-visits', requireStaff, (req, res) => {
+  const conds = [], args = {};
+  if (req.query.subject) { conds.push('v.subject_type = @subject'); args.subject = req.query.subject; }
+  if (req.query.specialty) { conds.push('v.specialty = @specialty'); args.specialty = req.query.specialty; }
+  if (req.query.baby_id) { conds.push('v.baby_id = @baby_id'); args.baby_id = req.query.baby_id; }
+  if (req.query.mother_id) { conds.push('v.mother_id = @mother_id'); args.mother_id = req.query.mother_id; }
+  if (req.query.month) { conds.push("strftime('%Y-%m', v.visit_at) = @month"); args.month = req.query.month; }
+  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  const rows = db.prepare(`
+    SELECT v.*, b.name AS baby_name, m.name AS mother_name, u.name AS recorded_by_name
+    FROM physician_visits v
+    LEFT JOIN babies b ON b.id = v.baby_id
+    LEFT JOIN mothers m ON m.id = v.mother_id
+    LEFT JOIN users u ON u.id = v.recorded_by
+    ${where} ORDER BY v.visit_at DESC, v.id DESC`).all(args);
+  res.json(rows);
+});
+
+function normalizeVisit(v) {
+  const subject_type = v.subject_type === 'mother' ? 'mother' : 'baby';
+  return {
+    subject_type,
+    baby_id: subject_type === 'baby' ? (v.baby_id || null) : null,
+    mother_id: subject_type === 'mother' ? (v.mother_id || null) : null,
+    specialty: VISIT_SPECIALTIES.includes(v.specialty) ? v.specialty : 'pediatrics',
+    physician: v.physician || '',
+    visit_at: v.visit_at || '',
+    visit_type: VISIT_TYPES.includes(v.visit_type) ? v.visit_type : 'routine',
+    subjective: v.subjective || '', objective: v.objective || '',
+    assessment: v.assessment || '', plan: v.plan || '',
+    follow_up: v.follow_up || '', referral: v.referral || ''
+  };
+}
+
+app.post('/api/physician-visits', requireStaff, (req, res) => {
+  const v = normalizeVisit(req.body || {});
+  if (!v.visit_at) return res.status(400).json({ error: '巡診時間必填' });
+  if (v.subject_type === 'baby' && !v.baby_id) return res.status(400).json({ error: '請選擇巡診寶寶' });
+  if (v.subject_type === 'mother' && !v.mother_id) return res.status(400).json({ error: '請選擇巡診媽媽' });
+  const info = db.prepare(`INSERT INTO physician_visits
+    (subject_type, baby_id, mother_id, specialty, physician, visit_at, visit_type,
+     subjective, objective, assessment, plan, follow_up, referral, recorded_by)
+    VALUES (@subject_type,@baby_id,@mother_id,@specialty,@physician,@visit_at,@visit_type,
+     @subjective,@objective,@assessment,@plan,@follow_up,@referral,@recorded_by)`)
+    .run({ ...v, recorded_by: req.session.user.id });
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/physician-visits/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM physician_visits WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到巡診紀錄' });
+  const v = normalizeVisit(req.body || {});
+  if (!v.visit_at) return res.status(400).json({ error: '巡診時間必填' });
+  if (v.subject_type === 'baby' && !v.baby_id) return res.status(400).json({ error: '請選擇巡診寶寶' });
+  if (v.subject_type === 'mother' && !v.mother_id) return res.status(400).json({ error: '請選擇巡診媽媽' });
+  db.prepare(`UPDATE physician_visits SET
+    subject_type=@subject_type, baby_id=@baby_id, mother_id=@mother_id, specialty=@specialty,
+    physician=@physician, visit_at=@visit_at, visit_type=@visit_type, subjective=@subjective,
+    objective=@objective, assessment=@assessment, plan=@plan, follow_up=@follow_up, referral=@referral
+    WHERE id=@id`).run({ ...v, id: req.params.id });
+  res.json({ ok: true });
+});
+
+app.delete('/api/physician-visits/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM physician_visits WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ---------- 電子發票／收據（MIG 3.2 對齊；實際上傳大平台需加值中心 API） ----------
 function computeInvoiceAmounts(items, taxType, taxRate) {
   const norm = (Array.isArray(items) ? items : []).map(it => {
@@ -2643,6 +2745,54 @@ app.get('/api/reminders', requireStaff, (req, res) => {
     const expired = c.expires_on < d;
     items.push({ type: 'cert', level: expired ? 'high' : 'mid',
       title: `${c.person} 的「${c.cert_name}」${expired ? '已過期' : '即將到期'}（${c.expires_on}）`, due: c.expires_on, link: '#/certifications' });
+  }
+
+  // 給藥安全：漏給藥（missed）
+  for (const m of db.prepare(`SELECT ma.drug_name, b.name AS baby_name FROM med_administrations ma
+    JOIN babies b ON b.id=ma.baby_id WHERE ma.status='missed'
+    AND EXISTS (SELECT 1 FROM bookings bk WHERE bk.mother_id=b.mother_id AND bk.status='checked_in')`).all()) {
+    items.push({ type: 'med', level: 'high', title: `${m.baby_name} 漏給藥：${m.drug_name}`, link: '#/newborn-medical' });
+  }
+  // 疫苗待接種（status=scheduled）
+  const vaccineTw = { hepb_immunoglobulin: 'B肝免疫球蛋白(HBIG)', hepb: 'B型肝炎疫苗', bcg: '卡介苗', other: '其他' };
+  for (const v of db.prepare(`SELECT vc.vaccine, b.name AS baby_name FROM vaccinations vc
+    JOIN babies b ON b.id=vc.baby_id WHERE vc.status='scheduled'
+    AND EXISTS (SELECT 1 FROM bookings bk WHERE bk.mother_id=b.mother_id AND bk.status='checked_in')`).all()) {
+    items.push({ type: 'vaccine', level: 'mid', title: `${v.baby_name} 待接種疫苗（${vaccineTw[v.vaccine] || v.vaccine}）`, link: '#/newborn-medical' });
+  }
+  // 連續異常趨勢預警：體溫連續偏高、體重連續下降（在住寶寶）
+  const sset = getSettings();
+  const tHigh = parseFloat(sset.temp_high) || 999;
+  for (const b of db.prepare(`SELECT b.id, b.name FROM babies b
+    WHERE EXISTS (SELECT 1 FROM bookings bk WHERE bk.mother_id=b.mother_id AND bk.status='checked_in')`).all()) {
+    const temps = db.prepare(`SELECT value_num FROM baby_records WHERE baby_id=? AND record_type='temperature' AND value_num IS NOT NULL ORDER BY recorded_at DESC LIMIT 2`).all(b.id);
+    if (temps.length === 2 && temps.every(t => t.value_num >= tHigh)) {
+      items.push({ type: 'trend', level: 'high', title: `${b.name} 體溫連續偏高（${temps[1].value_num}→${temps[0].value_num}°C）`, link: '#/baby-care' });
+    }
+    const ws = db.prepare(`SELECT value_num FROM baby_records WHERE baby_id=? AND record_type='weight' AND value_num IS NOT NULL ORDER BY recorded_at DESC LIMIT 3`).all(b.id).map(x => x.value_num);
+    if (ws.length === 3 && ws[0] < ws[1] && ws[1] < ws[2]) {
+      items.push({ type: 'trend', level: 'mid', title: `${b.name} 體重連續下降（${ws[2]}→${ws[1]}→${ws[0]} g）`, link: '#/baby-care' });
+    }
+  }
+  // 參觀跟進：到期（含逾期）的下次跟進
+  for (const t of db.prepare(`SELECT name, follow_up_date FROM tours
+    WHERE status IN ('scheduled','visited') AND follow_up_date != '' AND follow_up_date <= ?
+    ORDER BY follow_up_date`).all(d)) {
+    items.push({ type: 'tour', level: t.follow_up_date < d ? 'high' : 'mid',
+      title: `參觀跟進：${t.name}（${t.follow_up_date}）`, due: t.follow_up_date, link: '#/tours' });
+  }
+  // 關懷：已預約媽媽預產期將近（14 天內），可主動聯繫
+  for (const m of db.prepare(`SELECT DISTINCT m.name, m.due_date FROM mothers m
+    JOIN bookings bk ON bk.mother_id = m.id AND bk.status = 'reserved'
+    WHERE m.due_date != '' AND m.due_date BETWEEN ? AND date(?, '+14 days')
+    ORDER BY m.due_date`).all(d, d)) {
+    items.push({ type: 'care', level: 'mid', title: `${m.name} 預產期將近（${m.due_date}），可致電關懷`, due: m.due_date, link: '#/residents' });
+  }
+  // 關懷：在住寶寶今日滿月（出生滿 30 天）
+  for (const b of db.prepare(`SELECT b.name, b.birth_date FROM babies b
+    WHERE b.birth_date != '' AND date(b.birth_date, '+30 days') = ?
+    AND EXISTS (SELECT 1 FROM bookings bk WHERE bk.mother_id=b.mother_id AND bk.status='checked_in')`).all(d)) {
+    items.push({ type: 'care', level: 'low', title: `${b.name} 今日滿月 🎉，可準備祝福`, link: '#/baby-care' });
   }
 
   const order = { high: 0, mid: 1, low: 2 };
@@ -3726,6 +3876,35 @@ app.get('/api/public/testimonials', ah(async (req, res) => {
     items: await dal.all('SELECT name, title, quote, photo, source_url, video_url FROM testimonials WHERE active = 1 ORDER BY sort, id DESC')
   });
 }));
+
+// 對外線上參觀預約：潛在客戶自助送出，寫入參觀預約（狀態 scheduled、來源=線上預約）
+app.get('/api/public/center', (req, res) => {
+  const s = getSettings();
+  res.json({ center_name: s.center_name || '' });
+});
+app.post('/api/public/tours', (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim().slice(0, 60);
+  const phone = String(b.phone || '').trim().slice(0, 30);
+  const date = String(b.date || '').trim();
+  const time = String(b.time || '').trim() || '14:00';
+  if (!name || !phone) return res.status(400).json({ error: '請填寫姓名與電話' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: '請選擇參觀日期' });
+  const tourAt = `${date} ${/^\d{2}:\d{2}$/.test(time) ? time : '14:00'}`;
+  const note = String(b.note || '').trim().slice(0, 500);
+  const due = /^\d{4}-\d{2}-\d{2}$/.test(String(b.due_date || '')) ? b.due_date : '';
+  db.prepare(`INSERT INTO tours (name, phone, due_date, tour_at, source, status, note)
+    VALUES (?,?,?,?,?, 'scheduled', ?)`).run(name, phone, due, tourAt, '線上預約', note);
+  // 即時通知值班有新預約（若已設定 LINE）
+  try {
+    const s = getSettings();
+    const token = (s.line_channel_access_token || '').trim();
+    if (token && s.line_staff_alert_id) {
+      notify.pushText(token, s.line_staff_alert_id, `🗓️ 新線上參觀預約\n${name}（${phone}）\n希望參觀：${tourAt}${note ? `\n備註：${note}` : ''}`).catch(() => {});
+    }
+  } catch (e) { /* 通知失敗不影響預約 */ }
+  res.json({ ok: true });
+});
 app.get('/api/testimonials', requireStaff, ah(async (req, res) => {
   res.json(await dal.all('SELECT * FROM testimonials ORDER BY active DESC, sort, id DESC'));
 }));
@@ -4050,6 +4229,13 @@ app.post('/api/family-members', requireStaff, (req, res) => {
   const info = db.prepare(`INSERT INTO family_members
     (baby_id, name, relation, access_code, line_user_id) VALUES (?,?,?,?,?)`).run(
     f.baby_id, f.name, f.relation || '', code, (f.line_user_id || '').trim());
+  // 若此寶寶的媽媽已入住但尚未發送過歡迎，於建立家屬帳號時補送
+  try {
+    const bk = db.prepare(`SELECT bk.id FROM bookings bk JOIN babies b ON b.mother_id = bk.mother_id
+      WHERE b.id = ? AND bk.status = 'checked_in' AND (bk.welcomed_at IS NULL OR bk.welcomed_at = '')
+      ORDER BY bk.check_in DESC LIMIT 1`).get(f.baby_id);
+    if (bk) maybeWelcome(bk.id);
+  } catch (e) { /* 不影響建立帳號 */ }
   res.json({ id: info.lastInsertRowid, access_code: code });
 });
 
@@ -4147,6 +4333,16 @@ app.post('/api/family/messages', requireFamily, (req, res) => {
   const f = req.session.family;
   const info = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body, read_by_family)
     VALUES (?,?, 'family', ?, ?, 1)`).run(f.baby_id, f.id, f.name + (f.relation ? `（${f.relation}）` : ''), body);
+  // 即時通知值班：家屬留言推播 LINE（需設定 token 與 line_staff_alert_id）
+  try {
+    const s = getSettings();
+    const token = (s.line_channel_access_token || '').trim();
+    if (token && s.line_staff_alert_id) {
+      const baby = db.prepare('SELECT b.name, m.name AS mother_name FROM babies b JOIN mothers m ON m.id=b.mother_id WHERE b.id=?').get(f.baby_id);
+      const text = `💬 家屬留言\n${baby ? baby.name : '寶寶'}（媽媽：${baby ? baby.mother_name : '-'}）\n${f.name}${f.relation ? `（${f.relation}）` : ''}：${body.slice(0, 200)}\n請至「家屬帳號」頁回覆。`;
+      notify.pushText(token, s.line_staff_alert_id, text).catch(() => {});
+    }
+  } catch (e) { /* 通知失敗不影響留言 */ }
   res.json({ id: info.lastInsertRowid });
 });
 

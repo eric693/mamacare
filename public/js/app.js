@@ -69,6 +69,10 @@ const VACC_STATUS_BADGE = { scheduled: 'yellow', done: 'green', deferred: 'gray'
 const SCREEN_LABEL = { hearing: '聽力篩檢', metabolic: '代謝篩檢', cchd: '心臟血氧(CCHD)', other: '其他' };
 const SCREEN_RESULT_LABEL = { pending: '待報告', pass: '通過', refer: '需複篩/轉介', abnormal: '異常' };
 const SCREEN_RESULT_BADGE = { pending: 'yellow', pass: 'green', refer: 'red', abnormal: 'red' };
+// 醫師巡診
+const VISIT_SPECIALTY_LABEL = { pediatrics: '小兒科', obgyn: '婦產科', other: '其他' };
+const VISIT_TYPE_LABEL = { routine: '常規巡診', follow_up: '追蹤複查', acute: '不適診視', discharge: '出院評估' };
+const VISIT_TYPE_BADGE = { routine: 'teal', follow_up: 'yellow', acute: 'red', discharge: 'gray' };
 const INVOICE_STATUS_LABEL = { issued: '已開立', void: '已作廢', allowance: '已折讓' };
 const INVOICE_STATUS_BADGE = { issued: 'green', void: 'gray', allowance: 'yellow' };
 const DOC_TYPE_LABEL = { invoice: '電子發票', receipt: '收據' };
@@ -206,7 +210,7 @@ function openBabyRecordEdit(r, onDone) {
 async function viewDashboard() {
   const [d, reminders] = await Promise.all([api('/dashboard'), api('/reminders')]);
   const REM_LEVEL = { high: 'red', mid: 'yellow', low: 'gray' };
-  const REM_TYPE = { checkout: '退房', unpaid: '帳款', contract: '合約', screening: '篩檢', incident: '異常', staffing: '人力', message: '留言' };
+  const REM_TYPE = { checkout: '退房', unpaid: '帳款', contract: '合約', screening: '篩檢', incident: '異常', staffing: '人力', message: '留言', crm: '客訊', feeding: '餵奶', handover: '交班', cert: '證照', med: '給藥', vaccine: '疫苗', trend: '趨勢', tour: '跟進', care: '關懷' };
   const remCard = `
     <div class="card">
       <div class="row between"><h3>待辦提醒${reminders.count ? `　<span class="badge ${reminders.high ? 'red' : 'yellow'}">${reminders.count}</span>` : ''}</h3></div>
@@ -404,6 +408,41 @@ function printBabyReport(rpt) {
   win.document.close();
 }
 
+// 巡房批次記錄：一次記錄多位在住寶寶的體溫與餵食，減少逐位切換
+function openBatchRound(babies, onSaved) {
+  if (!babies.length) { openModal('巡房批次', '<div class="empty">目前沒有在住寶寶</div>'); return; }
+  const feeds = feedMethods();
+  const rows = babies.map(b => `
+    <tr>
+      <td data-label="寶寶">${esc(b.name)}<br><small>${esc(b.mother_name)}</small></td>
+      <td data-label="體溫"><input type="number" step="0.1" inputmode="decimal" id="br-temp-${b.id}" style="width:78px" placeholder="°C"></td>
+      <td data-label="餵食方式"><select id="br-fm-${b.id}"><option value="">—</option>${feeds.map(f => `<option>${esc(f)}</option>`).join('')}</select></td>
+      <td data-label="餵食量"><input type="number" inputmode="numeric" id="br-ml-${b.id}" style="width:70px" placeholder="ml"></td>
+    </tr>`).join('');
+  openModal('巡房批次記錄', `
+    <p style="font-size:.82rem;color:var(--muted)">一次記錄多位在住寶寶的體溫與餵食；留空的欄位不建立紀錄。體溫超標會照常觸發異常警示。</p>
+    <div class="table-wrap"><table class="data stack">
+      <thead><tr><th>寶寶</th><th>體溫</th><th>餵食方式</th><th>餵食量</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="row mt"><button class="btn" id="br-save">儲存全部</button><span class="error-msg" id="br-err"></span></div>`, body => {
+    body.querySelector('#br-save').onclick = async () => {
+      const posts = [];
+      for (const b of babies) {
+        const temp = body.querySelector(`#br-temp-${b.id}`).value.trim();
+        if (temp) posts.push([b.id, { record_type: 'temperature', value_num: Number(temp) }]);
+        const fm = body.querySelector(`#br-fm-${b.id}`).value;
+        const ml = body.querySelector(`#br-ml-${b.id}`).value.trim();
+        if (fm) posts.push([b.id, { record_type: 'feeding', feed_method: fm, amount_ml: ml ? Number(ml) : null }]);
+      }
+      if (!posts.length) { body.querySelector('#br-err').textContent = '請至少填寫一項'; return; }
+      try {
+        for (const [id, rec] of posts) await api(`/babies/${id}/records`, { method: 'POST', body: rec });
+        closeModal(); onSaved && onSaved();
+      } catch (e) { body.querySelector('#br-err').textContent = e.message; }
+    };
+  });
+}
+
 /* ---------- 寶寶照護 ---------- */
 async function viewBabyCare() {
   const babies = await api('/babies');
@@ -427,6 +466,7 @@ async function viewBabyCare() {
       </div>
       <div class="row mt">
         <button class="btn" id="bc-add">新增紀錄</button>
+        <button class="btn secondary" id="bc-round">巡房批次</button>
         <button class="btn secondary" id="bc-photo">上傳照片</button>
         <button class="btn secondary" id="bc-report">寶寶日報</button>
         <button class="btn" id="bc-send" style="background:var(--accent)">發送日報給家屬</button>
@@ -538,6 +578,8 @@ async function viewBabyCare() {
       refresh();
     };
   });
+
+  $('#bc-round').onclick = () => openBatchRound(list.filter(b => b.mother_status === 'checked_in'), refresh);
 
   $('#bc-add').onclick = () => {
     const babyId = $('#bc-baby').value;
@@ -2235,6 +2277,7 @@ function tourForm(t = {}) {
       <div class="field"><label>參觀時間</label><input type="time" id="tf-time" value="${esc(tm ? tm.slice(0, 5) : '14:00')}"></div>
       <div class="field"><label>預產期</label><input type="date" id="tf-due" value="${esc(t.due_date || '')}"></div>
       <div class="field"><label>來源</label><input id="tf-source" value="${esc(t.source || '')}" placeholder="官網 / 介紹 / 廣告"></div>
+      <div class="field"><label>下次跟進日</label><input type="date" id="tf-follow" value="${esc(t.follow_up_date || '')}"></div>
       <div class="field full">
         <label>狀態</label>
         <select id="tf-status">${Object.entries(TOUR_STATUS_LABEL).map(([k, v]) =>
@@ -2256,7 +2299,8 @@ function readTourForm(body) {
     tour_at: `${body.querySelector('#tf-date').value} ${body.querySelector('#tf-time').value || '00:00'}`,
     source: body.querySelector('#tf-source').value.trim(),
     status: body.querySelector('#tf-status').value,
-    note: body.querySelector('#tf-note').value
+    note: body.querySelector('#tf-note').value,
+    follow_up_date: body.querySelector('#tf-follow').value
   };
 }
 
@@ -2309,7 +2353,7 @@ async function viewTours() {
               <td data-label="狀態"><span class="badge ${TOUR_STATUS_BADGE[t.status]}">${TOUR_STATUS_LABEL[t.status]}</span></td>
               <td data-label="最近跟進">${t.last_log
                 ? `${esc(t.last_log.length > 24 ? t.last_log.slice(0, 24) + '…' : t.last_log)}<br><small>${esc((t.last_log_at || '').slice(0, 16))}</small>`
-                : (t.note ? esc(t.note.length > 24 ? t.note.slice(0, 24) + '…' : t.note) : '<span style="color:var(--muted)">-</span>')}</td>
+                : (t.note ? esc(t.note.length > 24 ? t.note.slice(0, 24) + '…' : t.note) : '<span style="color:var(--muted)">-</span>')}${t.follow_up_date && ['scheduled', 'visited'].includes(t.status) ? `<br><small style="color:${t.follow_up_date < todayStr() ? 'var(--danger)' : 'var(--primary-dark)'}">📌 跟進 ${esc(t.follow_up_date)}</small>` : ''}</td>
               <td data-label="操作">
                 ${t.status === 'scheduled'
                   ? `<button class="btn small" data-tst="visited" data-id="${t.id}">已參觀</button>` : ''}
@@ -3014,6 +3058,7 @@ async function viewSettings() {
         <div class="field"><label>消毒方式</label><input id="st-dis-agent" value="${esc(s.disinfect_agent_options || '')}"></div>
         <div class="field"><label>證照名稱</label><input id="st-cert-name" value="${esc(s.cert_name_options || '')}"></div>
         <div class="field"><label>發證單位</label><input id="st-cert-issuer" value="${esc(s.cert_issuer_options || '')}"></div>
+        <div class="field"><label>巡診醫師</label><input id="st-visit-physician" value="${esc(s.visit_physician_options || '')}"></div>
         <div class="field full">
           <label>LINE Channel Access Token（設定後，已綁定的家屬改走 LINE 推播）</label>
           <input id="st-line" value="${esc(s.line_channel_access_token)}" placeholder="留空表示僅使用家屬入口">
@@ -3118,6 +3163,7 @@ async function viewSettings() {
           disinfect_agent_options: $('#st-dis-agent').value,
           cert_name_options: $('#st-cert-name').value,
           cert_issuer_options: $('#st-cert-issuer').value,
+          visit_physician_options: $('#st-visit-physician').value,
           line_channel_access_token: $('#st-line').value.trim(),
           line_staff_alert_id: $('#st-line-alert').value.trim(),
           survey_on_checkout: $('#st-survey-co').value,
@@ -3645,6 +3691,109 @@ function incidentForm(i, babies, mothers) {
   });
 }
 
+/* ---------- 醫師巡診就醫紀錄 ---------- */
+async function viewPhysicianVisits() {
+  const isAdmin = currentUser.role === 'admin';
+  const spec = window._pvSpec || '';
+  const [visits, babies, mothers] = await Promise.all([
+    api('/physician-visits' + (spec ? `?specialty=${spec}` : '')), api('/babies'), api('/mothers')
+  ]);
+  const filterBtn = (val, label) => `<button class="btn small ${spec === val ? '' : 'secondary'}" data-filter="${val}">${label}</button>`;
+  main().innerHTML = `
+    <div class="page-title">醫師巡診就醫紀錄</div>
+    <div class="card">
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn" id="pv-new">＋ 新增巡診紀錄</button>
+        <span style="flex:1"></span>
+        ${filterBtn('', '全部')} ${filterBtn('pediatrics', '小兒科')} ${filterBtn('obgyn', '婦產科')} ${filterBtn('other', '其他')}
+      </div>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>巡診時間</th><th>科別/類型</th><th>對象</th><th>醫師</th><th>評估/處置</th><th>追蹤</th><th>操作</th></tr></thead>
+        <tbody>${visits.map(v => `
+          <tr>
+            <td data-label="巡診時間">${esc(v.visit_at)}<br><small>${esc(v.recorded_by_name || '')}</small></td>
+            <td data-label="科別"><span class="badge teal">${VISIT_SPECIALTY_LABEL[v.specialty] || v.specialty}</span><br><small><span class="badge ${VISIT_TYPE_BADGE[v.visit_type] || 'gray'}">${VISIT_TYPE_LABEL[v.visit_type] || ''}</span></small></td>
+            <td data-label="對象">${esc(v.baby_name || v.mother_name || '-')}<br><small>${v.subject_type === 'baby' ? '寶寶' : '媽媽'}</small></td>
+            <td data-label="醫師">${esc(v.physician || '-')}</td>
+            <td data-label="評估/處置">${esc((v.assessment || '').slice(0, 30))}${(v.assessment || '').length > 30 ? '…' : ''}<br><small>處置：${esc((v.plan || '').slice(0, 24))}</small></td>
+            <td data-label="追蹤">${v.referral ? '<span class="badge red">轉診</span> ' : ''}${esc((v.follow_up || '').slice(0, 20))}</td>
+            <td data-label="操作">
+              <button class="btn small secondary" data-edit="${v.id}">檢視/編輯</button>
+              ${isAdmin ? `<button class="btn small danger" data-del="${v.id}">刪除</button>` : ''}
+            </td>
+          </tr>`).join('') || '<tr><td colspan="7"><div class="empty">尚無巡診紀錄</div></td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+  main().querySelectorAll('[data-filter]').forEach(b => b.onclick = () => { window._pvSpec = b.dataset.filter; viewPhysicianVisits(); });
+  $('#pv-new').onclick = () => physicianVisitForm(null, babies, mothers);
+  main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => physicianVisitForm(visits.find(v => v.id == b.dataset.edit), babies, mothers));
+  main().querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定刪除此巡診紀錄？')) return;
+    await api(`/physician-visits/${b.dataset.del}`, { method: 'DELETE' }); viewPhysicianVisits();
+  });
+}
+
+function physicianVisitForm(v, babies, mothers) {
+  v = v || {};
+  const isNew = !v.id;
+  const subject = v.subject_type === 'mother' ? 'mother' : 'baby';
+  const specialty = v.specialty || (subject === 'mother' ? 'obgyn' : 'pediatrics');
+  openModal(isNew ? '新增巡診紀錄' : '醫師巡診紀錄', `
+    <div class="form-grid">
+      <div class="field"><label>巡診對象</label><select id="pv-subject">
+        <option value="baby" ${subject === 'baby' ? 'selected' : ''}>寶寶（小兒科）</option>
+        <option value="mother" ${subject === 'mother' ? 'selected' : ''}>媽媽（婦產科）</option>
+      </select></div>
+      <div class="field" id="pv-baby-wrap"><label>寶寶</label><select id="pv-baby"><option value="">請選擇</option>${selectOptions(babies, 'id', b => `${b.name}（${b.mother_name}）`, v.baby_id)}</select></div>
+      <div class="field" id="pv-mother-wrap"><label>媽媽</label><select id="pv-mother"><option value="">請選擇</option>${selectOptions(mothers, 'id', m => m.name, v.mother_id)}</select></div>
+      <div class="field"><label>科別</label><select id="pv-spec">${Object.entries(VISIT_SPECIALTY_LABEL).map(([k, l]) => `<option value="${k}" ${specialty === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field"><label>巡診類型</label><select id="pv-type">${Object.entries(VISIT_TYPE_LABEL).map(([k, l]) => `<option value="${k}" ${(v.visit_type || 'routine') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field"><label>巡診時間</label><input type="datetime-local" id="pv-at" value="${toDtInput(v.visit_at) || nowDtInput()}"></div>
+      <div class="field"><label>巡診醫師</label><input id="pv-physician" value="${esc(v.physician || '')}" list="pv-physician-list">${dataList('pv-physician-list', 'visit_physician_options')}</div>
+      <div class="field full"><label>主訴／護理或家屬反映（S）</label><textarea id="pv-s" rows="2">${esc(v.subjective || '')}</textarea></div>
+      <div class="field full"><label>理學檢查所見（O）</label><textarea id="pv-o" rows="2">${esc(v.objective || '')}</textarea></div>
+      <div class="field full"><label>診斷／評估（A）</label><textarea id="pv-a" rows="2">${esc(v.assessment || '')}</textarea></div>
+      <div class="field full"><label>處置／醫囑（P）</label><textarea id="pv-p" rows="2">${esc(v.plan || '')}</textarea></div>
+      <div class="field full"><label>追蹤／回診安排</label><input id="pv-follow" value="${esc(v.follow_up || '')}"></div>
+      <div class="field full"><label>轉診／建議就醫院所（填寫代表需轉診）</label><input id="pv-referral" value="${esc(v.referral || '')}"></div>
+      <div class="full row"><button class="btn" id="pv-save">儲存</button><span class="error-msg" id="pv-err"></span></div>
+    </div>`, body => {
+    const syncSubject = () => {
+      const s = body.querySelector('#pv-subject').value;
+      body.querySelector('#pv-baby-wrap').style.display = s === 'baby' ? '' : 'none';
+      body.querySelector('#pv-mother-wrap').style.display = s === 'mother' ? '' : 'none';
+    };
+    syncSubject();
+    body.querySelector('#pv-subject').onchange = syncSubject;
+    body.querySelector('#pv-save').onclick = async () => {
+      const s = body.querySelector('#pv-subject').value;
+      const payload = {
+        subject_type: s,
+        baby_id: s === 'baby' ? (body.querySelector('#pv-baby').value || null) : null,
+        mother_id: s === 'mother' ? (body.querySelector('#pv-mother').value || null) : null,
+        specialty: body.querySelector('#pv-spec').value,
+        visit_type: body.querySelector('#pv-type').value,
+        visit_at: fromDtInput(body.querySelector('#pv-at').value),
+        physician: body.querySelector('#pv-physician').value.trim(),
+        subjective: body.querySelector('#pv-s').value.trim(),
+        objective: body.querySelector('#pv-o').value.trim(),
+        assessment: body.querySelector('#pv-a').value.trim(),
+        plan: body.querySelector('#pv-p').value.trim(),
+        follow_up: body.querySelector('#pv-follow').value.trim(),
+        referral: body.querySelector('#pv-referral').value.trim()
+      };
+      if (!payload.visit_at) { body.querySelector('#pv-err').textContent = '請填巡診時間'; return; }
+      if (s === 'baby' && !payload.baby_id) { body.querySelector('#pv-err').textContent = '請選擇寶寶'; return; }
+      if (s === 'mother' && !payload.mother_id) { body.querySelector('#pv-err').textContent = '請選擇媽媽'; return; }
+      try {
+        if (isNew) await api('/physician-visits', { method: 'POST', body: payload });
+        else await api(`/physician-visits/${v.id}`, { method: 'PUT', body: payload });
+        closeModal(); viewPhysicianVisits();
+      } catch (e) { body.querySelector('#pv-err').textContent = e.message; }
+    };
+  });
+}
+
 /* ---------- 感染管制 ---------- */
 async function viewInfection() {
   const isAdmin = currentUser.role === 'admin';
@@ -3768,6 +3917,39 @@ function clusterForm(c) {
   });
 }
 
+// 另開視窗列印／另存 PDF：新生兒醫療紀錄單（給藥 MAR ＋ 疫苗 ＋ 篩檢 ＋ 光療）
+function printMedicalSheet(d) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const sec = (title, head, rows) => `
+    <h3>${title}</h3>
+    <table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${head.length}" style="text-align:center;color:#888">無紀錄</td></tr>`}</tbody></table>`;
+  const mar = d.meds.map(m => `<tr><td>${esc(m.administered_at || m.scheduled_at || '')}</td><td>${esc(m.drug_name)} ${esc(m.dose || '')}</td><td>${esc(m.route || '')}</td><td>${esc(MED_STATUS_LABEL[m.status] || m.status)}</td><td>${esc(m.nurse_name || '')}</td></tr>`).join('');
+  const vac = d.vaccinations.map(v => `<tr><td>${esc(VACCINE_LABEL[v.vaccine] || v.vaccine)} ${esc(v.dose_no || '')}</td><td>${esc(v.administered_at || '-')}</td><td>${esc(v.lot_no || '')} ${esc(v.site || '')}</td><td>${esc(VACC_STATUS_LABEL[v.status] || v.status)}</td></tr>`).join('');
+  const scr = d.screenings.map(s => `<tr><td>${esc(SCREEN_LABEL[s.screen_type] || s.screen_type)}</td><td>${esc(s.screened_at || '-')}</td><td>${esc(SCREEN_RESULT_LABEL[s.result] || s.result)}</td><td>${esc(s.follow_up || '')}${s.follow_up_done ? '（已完成）' : ''}</td></tr>`).join('');
+  const pho = (d.phototherapy || []).map(p => `<tr><td>${esc(p.start_at)}</td><td>${esc(p.end_at || '進行中')}</td><td>${p.bilirubin_before ?? '-'} → ${p.bilirubin_after ?? '-'}</td><td>${esc(p.device || '')}</td></tr>`).join('');
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>新生兒醫療紀錄單 - ${esc(d.baby.name)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.5;max-width:800px;margin:24px auto;padding:0 24px}
+      h1{font-size:20px;margin:0 0 2px;color:#b03060} .sub{color:#666;font-size:13px;margin-bottom:14px}
+      h3{font-size:15px;margin:16px 0 6px;color:#9c2b58}
+      table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px}
+      th,td{border:1px solid #ccc;padding:5px 8px;text-align:left} th{background:#f2f7f6}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>${esc(center)}　新生兒醫療紀錄單</h1>
+    <div class="sub">${esc(d.baby.name)}　媽媽：${esc(d.baby.mother_name || '')}　列印：${esc(new Date().toLocaleString('zh-TW'))}</div>
+    ${sec('給藥紀錄 (MAR)', ['時間', '藥品/劑量', '途徑', '狀態', '給藥者'], mar)}
+    ${sec('疫苗接種', ['疫苗/劑次', '接種時間', '批號/部位', '狀態'], vac)}
+    ${sec('新生兒篩檢', ['項目', '時間', '結果', '追蹤'], scr)}
+    ${sec('光照治療', ['開始', '結束', '膽紅素(前→後)', '設備'], pho)}
+    <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+    </body></html>`);
+  win.document.close();
+}
+
 /* ---------- 新生兒醫療紀錄 ---------- */
 async function viewNewbornMedical() {
   const babies = await api('/babies');
@@ -3814,6 +3996,7 @@ async function renderNewbornMedical(babyId) {
     <td data-label="設備">${esc(p.device || '')}<br><small>${esc(p.nurse_name || '')} ${esc(p.note || '')}</small></td>
     <td>${delBtn('phototherapy', p.id)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">無光照治療紀錄</div></td></tr>';
   $('#nm-detail').innerHTML = `
+    <div class="row no-print" style="margin-bottom:8px"><button class="btn small secondary" id="nm-print">列印醫療紀錄單</button></div>
     <div class="card"><h3>給藥紀錄 MAR <button class="btn small" id="add-mar">＋ 給藥</button></h3>
       <div class="table-wrap"><table class="data stack"><thead><tr><th>時間</th><th>藥品/劑量</th><th>狀態</th><th>給藥者/備註</th><th></th></tr></thead><tbody>${marRows}</tbody></table></div></div>
     <div class="card"><h3>疫苗接種 <button class="btn small" id="add-vac">＋ 疫苗</button></h3>
@@ -3823,6 +4006,7 @@ async function renderNewbornMedical(babyId) {
     <div class="card"><h3>光照治療 <button class="btn small" id="add-pho">＋ 光照</button></h3>
       <div class="table-wrap"><table class="data stack"><thead><tr><th>開始</th><th>結束</th><th>膽紅素(前→後)</th><th>設備/備註</th><th></th></tr></thead><tbody>${phoRows}</tbody></table></div></div>`;
 
+  $('#nm-print').onclick = () => printMedicalSheet(d);
   $('#add-mar').onclick = () => marForm(babyId);
   $('#add-vac').onclick = () => vaccForm(babyId, null);
   $('#add-scr').onclick = () => screenForm(babyId, null);
@@ -4675,7 +4859,7 @@ function openPointsAdjust(id, name, cur) {
 
 /* ---------- 帳號管理（權限分配） ---------- */
 const ROLE_PRESETS = {
-  '護理師': ['baby_care', 'newborn_medical', 'mother_care', 'handover', 'incidents', 'infection', 'residents', 'rooms', 'meals', 'shifts', 'family'],
+  '護理師': ['baby_care', 'newborn_medical', 'physician', 'mother_care', 'handover', 'incidents', 'infection', 'residents', 'rooms', 'meals', 'shifts', 'family'],
   '出納／帳務': ['billing', 'invoices', 'members', 'shop', 'programs', 'coupons'],
   '廚房': ['meals'],
   '房務清潔': ['housekeeping', 'rooms'],
@@ -5286,6 +5470,7 @@ const routes = {
   '#/dashboard': viewDashboard,
   '#/baby-care': viewBabyCare,
   '#/newborn-medical': viewNewbornMedical,
+  '#/physician-visits': viewPhysicianVisits,
   '#/mother-care': viewMotherCare,
   '#/handover': viewHandover,
   '#/incidents': viewIncidents,
@@ -5324,7 +5509,7 @@ const routes = {
 };
 // 路由 → 所需模組權限（未列者免權限，例如總覽）
 const ROUTE_PERM = {
-  '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/mother-care': 'mother_care',
+  '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
   '#/residents': 'residents', '#/rooms': 'rooms', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/programs': 'programs', '#/members': 'members', '#/coupons': 'coupons',

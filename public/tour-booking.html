@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>預約參觀</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body { background: var(--bg); }
+    .tb-wrap { max-width: 520px; margin: 0 auto; padding: 24px 16px 48px; }
+    .tb-hero { text-align: center; padding: 28px 8px 12px; }
+    .tb-hero h1 { color: var(--primary-dark); font-size: 1.6rem; margin: 0 0 4px; }
+    .tb-hero p { color: var(--muted); margin: 0; }
+    .tb-card { background: #fff; border-radius: 14px; box-shadow: var(--shadow); padding: 20px; }
+    .tb-card label { display: block; font-size: .9rem; color: var(--primary-dark); margin: 12px 0 4px; }
+    .tb-card input, .tb-card textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 1rem; box-sizing: border-box; }
+    .tb-row { display: flex; gap: 10px; }
+    .tb-row > div { flex: 1; }
+    .tb-btn { width: 100%; margin-top: 18px; padding: 12px; font-size: 1.05rem; background: var(--primary); color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    .tb-btn:disabled { opacity: .6; }
+    .tb-msg { margin-top: 12px; text-align: center; font-size: .95rem; }
+    .tb-ok { color: var(--primary-dark); }
+    .tb-err { color: var(--danger); }
+    .tb-done { text-align: center; padding: 20px; }
+    .tb-done .chk { font-size: 3rem; }
+    .req { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="tb-wrap">
+    <div class="tb-hero">
+      <h1 id="tb-title">預約參觀</h1>
+      <p>留下您的資料，我們會盡快與您聯繫確認時間</p>
+    </div>
+    <div class="tb-card" id="tb-card">
+      <label>姓名 <span class="req">*</span></label>
+      <input id="tb-name" maxlength="60" placeholder="您的稱呼">
+      <label>聯絡電話 <span class="req">*</span></label>
+      <input id="tb-phone" maxlength="30" inputmode="tel" placeholder="0912-345-678">
+      <div class="tb-row">
+        <div>
+          <label>希望參觀日期 <span class="req">*</span></label>
+          <input type="date" id="tb-date">
+        </div>
+        <div>
+          <label>時段</label>
+          <input type="time" id="tb-time" value="14:00">
+        </div>
+      </div>
+      <label>預產期（選填）</label>
+      <input type="date" id="tb-due">
+      <label>備註（選填）</label>
+      <textarea id="tb-note" rows="2" maxlength="500" placeholder="想了解的房型、人數或其他需求"></textarea>
+      <button class="tb-btn" id="tb-submit">送出預約</button>
+      <div class="tb-msg" id="tb-msg"></div>
+    </div>
+  </div>
+  <script>
+    const $ = s => document.querySelector(s);
+    // 帶入機構名稱
+    fetch('/api/public/center').then(r => r.json()).then(d => {
+      if (d.center_name) { $('#tb-title').textContent = d.center_name + ' 預約參觀'; document.title = d.center_name + ' 預約參觀'; }
+    }).catch(() => {});
+    // 參觀日不早於今天
+    const t = new Date(); const iso = new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    $('#tb-date').min = iso;
+    $('#tb-submit').onclick = async () => {
+      const msg = $('#tb-msg'); msg.textContent = ''; msg.className = 'tb-msg';
+      const body = {
+        name: $('#tb-name').value.trim(), phone: $('#tb-phone').value.trim(),
+        date: $('#tb-date').value, time: $('#tb-time').value,
+        due_date: $('#tb-due').value, note: $('#tb-note').value.trim()
+      };
+      if (!body.name || !body.phone) { msg.textContent = '請填寫姓名與電話'; msg.classList.add('tb-err'); return; }
+      if (!body.date) { msg.textContent = '請選擇希望參觀日期'; msg.classList.add('tb-err'); return; }
+      $('#tb-submit').disabled = true;
+      try {
+        const r = await fetch('/api/public/tours', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || '送出失敗');
+        $('#tb-card').innerHTML = '<div class="tb-done"><div class="chk">✅</div><h2>預約已送出！</h2><p style="color:var(--muted)">感謝您的預約，我們會盡快與您聯繫確認參觀時間。</p></div>';
+      } catch (e) {
+        msg.textContent = e.message; msg.classList.add('tb-err');
+        $('#tb-submit').disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

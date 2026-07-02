@@ -422,6 +422,28 @@ function init() {
   );
   CREATE INDEX IF NOT EXISTS idx_photo_baby ON phototherapy_logs(baby_id);
 
+  -- 醫師巡診就醫紀錄（小兒科／婦產科）：以 SOAP 格式記錄特約醫師到院巡診
+  CREATE TABLE IF NOT EXISTS physician_visits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_type TEXT NOT NULL DEFAULT 'baby' CHECK (subject_type IN ('baby','mother')),
+    baby_id INTEGER REFERENCES babies(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    specialty TEXT NOT NULL DEFAULT 'pediatrics',   -- pediatrics/obgyn/other 小兒科/婦產科/其他
+    physician TEXT DEFAULT '',                       -- 巡診醫師
+    visit_at TEXT NOT NULL,                          -- 巡診時間
+    visit_type TEXT NOT NULL DEFAULT 'routine' CHECK (visit_type IN ('routine','follow_up','acute','discharge')),
+    subjective TEXT DEFAULT '',                      -- S 主訴／護理或家屬反映
+    objective TEXT DEFAULT '',                       -- O 理學檢查所見
+    assessment TEXT DEFAULT '',                      -- A 診斷／評估
+    plan TEXT DEFAULT '',                            -- P 處置／醫囑
+    follow_up TEXT DEFAULT '',                       -- 追蹤／回診安排
+    referral TEXT DEFAULT '',                        -- 轉診／建議就醫院所（有值代表需轉診）
+    recorded_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pv_baby ON physician_visits(baby_id, visit_at);
+  CREATE INDEX IF NOT EXISTS idx_pv_mother ON physician_visits(mother_id, visit_at);
+
   -- 電子發票／收據（欄位對齊財政部電子發票 MIG 3.2；實際上傳大平台需加值中心 API）
   CREATE TABLE IF NOT EXISTS invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -765,6 +787,12 @@ function init() {
   // 寶寶入住日（媽媽入住但寶寶較晚到院時，用於計算未入住扣抵）
   if (!bkCols.includes('baby_check_in')) db.exec("ALTER TABLE bookings ADD COLUMN baby_check_in TEXT DEFAULT ''");
 
+  // 參觀預約：下次跟進日（到期併入待辦提醒）；歡迎訊息是否已發（避免重複）
+  const tourCols = db.prepare('PRAGMA table_info(tours)').all().map(c => c.name);
+  if (!tourCols.includes('follow_up_date')) db.exec("ALTER TABLE tours ADD COLUMN follow_up_date TEXT DEFAULT ''");
+  const bkCols2 = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
+  if (!bkCols2.includes('welcomed_at')) db.exec("ALTER TABLE bookings ADD COLUMN welcomed_at TEXT DEFAULT ''");
+
   // 交班未結項目轉待辦
   const hoCols = db.prepare('PRAGMA table_info(handovers)').all().map(c => c.name);
   if (!hoCols.includes('follow_up')) db.exec("ALTER TABLE handovers ADD COLUMN follow_up TEXT DEFAULT ''");
@@ -1033,6 +1061,8 @@ const DEFAULT_SETTINGS = {
   // 員工證照快選（逗號分隔）
   cert_name_options: '護理師執照,護士執照,BLS基本救命術,NRP新生兒高級救命術,保母技術士,食品衛生講習',
   cert_issuer_options: '衛生福利部,中華民國護理師護士公會,美國心臟協會(AHA),勞動部勞動力發展署',
+  // 醫師巡診快選（逗號分隔）：巡診醫師姓名
+  visit_physician_options: '',
   // 會員點數（商城）：每滿 points_earn_per 元回饋 1 點，1 點折抵 points_value 元
   points_enabled: '1',
   points_earn_per: '100',

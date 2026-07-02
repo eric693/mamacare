@@ -59,7 +59,7 @@ CREATE TABLE bookings (
     status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved','checked_in','checked_out','cancelled')),
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  , dunned_at TEXT DEFAULT '', baby_check_in TEXT DEFAULT '');
+  , dunned_at TEXT DEFAULT '', baby_check_in TEXT DEFAULT '', welcomed_at TEXT DEFAULT '');
 
 CREATE TABLE handovers (
     id SERIAL PRIMARY KEY,
@@ -148,7 +148,7 @@ CREATE TABLE tours (
     status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','visited','signed','lost')),
     note TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
+  , follow_up_date TEXT DEFAULT '');
 
 CREATE TABLE tour_logs (
     id SERIAL PRIMARY KEY,
@@ -342,6 +342,25 @@ CREATE TABLE phototherapy_logs (
     device TEXT DEFAULT '',
     nurse_id INTEGER REFERENCES users(id),
     note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+CREATE TABLE physician_visits (
+    id SERIAL PRIMARY KEY,
+    subject_type TEXT NOT NULL DEFAULT 'baby' CHECK (subject_type IN ('baby','mother')),
+    baby_id INTEGER REFERENCES babies(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    specialty TEXT NOT NULL DEFAULT 'pediatrics',   -- pediatrics/obgyn/other 小兒科/婦產科/其他
+    physician TEXT DEFAULT '',
+    visit_at TEXT NOT NULL,
+    visit_type TEXT NOT NULL DEFAULT 'routine' CHECK (visit_type IN ('routine','follow_up','acute','discharge')),
+    subjective TEXT DEFAULT '',
+    objective TEXT DEFAULT '',
+    assessment TEXT DEFAULT '',
+    plan TEXT DEFAULT '',
+    follow_up TEXT DEFAULT '',
+    referral TEXT DEFAULT '',
+    recorded_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
