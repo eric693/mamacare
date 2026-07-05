@@ -5298,8 +5298,11 @@ async function viewPrograms() {
 /* ---------- 課程行事曆（月／週檢視） ---------- */
 let _pcState = null;
 async function viewProgramCalendar() {
-  const progs = (await api('/programs')).filter(p => p.active && p.scheduled_at && /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at));
+  const allProgs = await api('/programs');
+  const progs = allProgs.filter(p => p.active && p.scheduled_at && /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at));
   const KIND = { course: '課程', service: '服務' };
+  const isAdmin = currentUser.role === 'admin';
+  const cats = distinctCats(allProgs);
   // 以日期分組
   const byDate = {};
   for (const p of progs) { const d = p.scheduled_at.slice(0, 10); (byDate[d] = byDate[d] || []).push(p); }
@@ -5313,7 +5316,7 @@ async function viewProgramCalendar() {
     const key = fmtD(d);
     const items = (byDate[key] || []).map(p => `<div class="pc-item" title="${esc(p.name)}" data-pc="${p.id}"><span class="dot ${p.kind === 'course' ? 'teal' : 'gray'}"></span>${esc((p.scheduled_at.slice(11, 16) || ''))} ${esc(p.name.length > 8 ? p.name.slice(0, 8) + '…' : p.name)}</div>`).join('');
     const isToday = key === todayStr();
-    return `<td class="pc-day${isToday ? ' pc-today' : ''}" style="vertical-align:top;height:88px;min-width:90px"><div style="font-size:.8rem;color:var(--muted)">${d.getDate()}</div>${items}</td>`;
+    return `<td class="pc-day${isToday ? ' pc-today' : ''}" ${isAdmin ? `data-add="${key}" style="vertical-align:top;height:88px;min-width:90px;cursor:pointer"` : 'style="vertical-align:top;height:88px;min-width:90px"'}><div style="font-size:.8rem;color:var(--muted)">${d.getDate()}${isAdmin ? '<span class="pc-plus" style="float:right;color:var(--primary);font-weight:700">＋</span>' : ''}</div>${items}</td>`;
   };
   let grid = '', title = '';
   if (st.mode === 'month') {
@@ -5355,7 +5358,7 @@ async function viewProgramCalendar() {
           <button class="btn small ${st.mode === 'week' ? '' : 'secondary'}" id="pc-week">週</button>
         </div>
       </div>
-      <small style="color:var(--muted)"><span class="dot teal"></span> 課程　<span class="dot gray"></span> 服務　（僅顯示有排定時段的項目）${canAccess('#/programs') ? '　點課程可代客報名' : ''}</small>
+      <small style="color:var(--muted)"><span class="dot teal"></span> 課程　<span class="dot gray"></span> 服務　（僅顯示有排定時段的項目）${canAccess('#/programs') ? '　點課程可代客報名' : ''}${isAdmin ? '　點空白日期可新增課程（＋）' : ''}</small>
     </div>
     <div class="card">
       <div class="table-wrap">
@@ -5381,7 +5384,11 @@ async function viewProgramCalendar() {
   $('#pc-month').onclick = () => { st.mode = 'month'; viewProgramCalendar(); };
   $('#pc-week').onclick = () => { st.mode = 'week'; viewProgramCalendar(); };
   const canSignup = canAccess('#/programs');
-  main().querySelectorAll('[data-pc]').forEach(el => el.onclick = () => {
+  if (isAdmin) main().querySelectorAll('[data-add]').forEach(td => td.onclick = () => {
+    openProgramForm({ scheduled_at: td.dataset.add + ' 10:00' }, cats, viewProgramCalendar);
+  });
+  main().querySelectorAll('[data-pc]').forEach(el => el.onclick = (e) => {
+    e.stopPropagation(); // 避免觸發整格的「新增課程」
     const p = progs.find(x => x.id == el.dataset.pc); if (!p) return;
     openModal(p.name, `
       <div class="field"><label>類型</label><div>${KIND[p.kind]}${p.category ? '｜' + esc(p.category) : ''}</div></div>
@@ -5395,8 +5402,9 @@ async function viewProgramCalendar() {
     });
   });
 }
-function openProgramForm(p, cats) {
+function openProgramForm(p, cats, onSaved) {
   const ed = p || {};
+  const done = () => { closeModal(); (onSaved || viewPrograms)(); };
   openModal(ed.id ? '編輯課程／服務' : '新增課程／服務', `
     <div class="form-grid">
       <div class="field"><label>類型</label><select id="pg-kind">
@@ -5422,12 +5430,12 @@ function openProgramForm(p, cats) {
         description: v('#pg-desc').value, active: v('#pg-active').checked ? 1 : 0 };
       try { if (ed.id) await api(`/programs/${ed.id}`, { method: 'PUT', body: payload });
         else await api('/programs', { method: 'POST', body: payload });
-        closeModal(); viewPrograms();
+        done();
       } catch (e) { v('#pg-err').textContent = e.message; }
     };
     if (ed.id) v('#pg-del').onclick = async () => {
       if (!confirm('確定刪除？（已有報名者改為停止報名）')) return;
-      try { await api(`/programs/${ed.id}`, { method: 'DELETE' }); closeModal(); viewPrograms(); }
+      try { await api(`/programs/${ed.id}`, { method: 'DELETE' }); done(); }
       catch (e) { v('#pg-err').textContent = e.message; }
     };
   });
