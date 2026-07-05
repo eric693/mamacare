@@ -609,7 +609,7 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
   padding: 11px 22px; border: none; background: transparent; color: inherit; font: inherit;
   cursor: pointer; text-align: left; }
 .nav-group-hd:hover { background: rgba(255,255,255,.06); }
-.nav-group-hd .chev { transition: transform .15s; font-size: .8em; color: var(--muted); }
+.nav-group-hd .chev { transition: transform .15s; font-size: 1.35em; line-height: 1; font-weight: 700; color: inherit; opacity: .85; margin-left: 8px; }
 .nav-group.open .nav-group-hd .chev { transform: rotate(180deg); }
 .nav-group-body { display: none; }
 .nav-group.open .nav-group-body { display: block; }
