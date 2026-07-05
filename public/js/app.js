@@ -5538,14 +5538,17 @@ function openPointsAdjust(id, name, cur) {
 /* ---------- 帳號管理（權限分配） ---------- */
 const ROLE_PRESETS = {
   '護理師': ['baby_care', 'newborn_medical', 'physician', 'mother_care', 'handover', 'incidents', 'infection', 'residents', 'rooms', 'meals', 'shifts', 'family'],
-  '出納／帳務': ['billing', 'invoices', 'members', 'shop', 'programs', 'coupons'],
+  '出納／帳務': ['billing', 'shop', 'programs'],
   '廚房': ['meals'],
   '房務清潔': ['housekeeping', 'rooms'],
-  '行政': ['residents', 'rooms', 'housekeeping', 'tours', 'contracts', 'family', 'shop', 'supplies', 'programs', 'members', 'reports']
+  '行政': ['residents', 'rooms', 'housekeeping', 'tours', 'contracts', 'family', 'shop', 'supplies', 'programs', 'reports']
 };
+// 已從系統隱藏（無可見入口）的模組：不在帳號管理權限勾選中出現
+const HIDDEN_PERM_MODULES = ['members', 'invoices', 'crm', 'testimonials', 'coupons', 'audit'];
 async function viewUsers() {
   const [users, modules] = await Promise.all([api('/users'), api('/modules')]);
-  window._modules = modules;
+  // 勾選表單只顯示仍在使用的模組；完整清單（modules）仍用於「可用模組」欄位顯示既有權限標籤
+  window._modules = modules.filter(m => !HIDDEN_PERM_MODULES.includes(m.key));
   main().innerHTML = `
     <div class="page-title">帳號管理</div>
     <div class="card">
