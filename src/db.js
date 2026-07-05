@@ -1155,6 +1155,26 @@ function init() {
   // 參觀預約：下次跟進日（到期併入待辦提醒）；歡迎訊息是否已發（避免重複）
   const tourCols = db.prepare('PRAGMA table_info(tours)').all().map(c => c.name);
   if (!tourCols.includes('follow_up_date')) db.exec("ALTER TABLE tours ADD COLUMN follow_up_date TEXT DEFAULT ''");
+  // 預約參觀管理：胎次／是否出席／生產醫院／取消明細（原因・時間・取消人）
+  if (!tourCols.includes('parity')) db.exec("ALTER TABLE tours ADD COLUMN parity TEXT DEFAULT ''");
+  if (!tourCols.includes('attended')) db.exec("ALTER TABLE tours ADD COLUMN attended TEXT DEFAULT ''");   // ''/是/否
+  if (!tourCols.includes('birth_hospital')) db.exec("ALTER TABLE tours ADD COLUMN birth_hospital TEXT DEFAULT ''");
+  if (!tourCols.includes('cancel_reason')) db.exec("ALTER TABLE tours ADD COLUMN cancel_reason TEXT DEFAULT ''");
+  if (!tourCols.includes('cancel_at')) db.exec("ALTER TABLE tours ADD COLUMN cancel_at TEXT DEFAULT ''");
+  if (!tourCols.includes('cancel_by')) db.exec('ALTER TABLE tours ADD COLUMN cancel_by INTEGER');
+  if (!tourCols.includes('created_by')) db.exec('ALTER TABLE tours ADD COLUMN created_by INTEGER');
+  // 預約參觀時段設定：指定日期時段／不開放參觀日
+  db.exec(`CREATE TABLE IF NOT EXISTS tour_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slot_date TEXT NOT NULL,
+    closed INTEGER NOT NULL DEFAULT 0,
+    open_from TEXT DEFAULT '',
+    open_to TEXT DEFAULT '',
+    slot_minutes INTEGER NOT NULL DEFAULT 60,
+    capacity INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  )`);
   const bkCols2 = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
   if (!bkCols2.includes('welcomed_at')) db.exec("ALTER TABLE bookings ADD COLUMN welcomed_at TEXT DEFAULT ''");
 
@@ -1519,14 +1539,22 @@ const DEFAULT_SETTINGS = {
   // 產後系統其他設定（各選項清單逗號分隔）
   tour_source_options: '親友介紹,員工,產檢得知,網路,路過,官網,FB,友人介紹,其他',
   tour_visit_limit: '1',                 // 每時段預約參觀人數上限
-  formula_brand_options: '亞培,惠氏,雀巢,美強生,桂格,其他',
-  door_light_options: '一般模式,勿擾模式,夜燈模式,清潔中,維修中',
-  referral_hospital_options: '',         // 護理後送醫院清單
-  contact_class_options: '先生,父母,兄弟姊妹,朋友,其他',
-  discharge_med_options: '',             // 出院帶藥藥品清單
+  tour_open_from: '11:00',               // 一般開放參觀時間（起）
+  tour_open_to: '19:00',                 // 一般開放參觀時間（迄）
+  tour_slot_minutes: '60',               // 每時段分鐘數
+  formula_brand_options: '優生A＋,能恩HA,亞培,S-26,雪印,明治,諾貝兒,卡洛塔妮,雀巢無乳,wakodo,亞培親護,新安琪兒,亞培早產兒,A+水解,亞培經典,優生水解,桂格,啟賦,優生奶水,貝比卡兒,固力果,S26水解,韓國奶粉,佑爾康,雀巢寶兒,優生早產,金可貝可,能恩NAN,森永,S26早產兒,Enspire,德國奶粉,瑞士奶粉,好敏瑞,Holle,Hipp,諾優貝,新諾兒,啟賦水解,超級能恩水解,哺力美,啟賦生機,能恩早產兒,美強生純睿,能恩全護',
+  // 門燈控制設定：房況狀態 → 色碼（JSON）
+  door_light_options: '{"空房":"#057505","入住準備":"#409fff","媽媽入住":"#ff244a","母嬰同室":"#8c0fff","出住打掃":"#e0e070","等待檢查":"#ff9f40","保留":"#f53bd6","維修":"#9e9e9e"}',
+  referral_hospital_options: '台大,國泰', // 護理後送醫院清單
+  contact_class_options: '配偶,朋友,同事,好朋友,姊妹,父女,母女,婆媳,其他,父母',
+  // 出院帶藥藥品設定：藥品種類＋藥品名稱（JSON 陣列）
+  discharge_med_options: '[{"cat":"軟便劑","name":"MgO"},{"cat":"止痛劑","name":"Acetaminophen"},{"cat":"抗生素","name":"Amoxicilline"}]',
+  discount_class_options: '一般客戶,VIP,舊客回住,員工親友,其他',  // 房價折扣客戶分類
   // 打掃定期工作設定：媽媽房間每 N 天換床單／每 N 天更新備品
   hk_sheet_days: '7',
-  hk_supply_days: '1'
+  hk_supply_days: '1',
+  hk_updated_by: '',                     // 打掃定期工作最後異動人
+  hk_updated_at: ''                      // 打掃定期工作最後異動時間
 };
 
 function ensureSettings() {

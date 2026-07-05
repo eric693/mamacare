@@ -163,6 +163,7 @@ const MODULE_RULES = [
   [/^\/api\/coupons/, 'coupons'],
   [/^\/api\/(meals|meal-menu|meal-plan|meal-config)/, 'meals'],
   [/^\/api\/tours/, 'tours'],
+  [/^\/api\/tour-slots/, 'tours'],
   [/^\/api\/customers/, 'tours'],
   [/^\/api\/customer-logs/, 'tours'],
   [/^\/api\/client-contracts/, 'tours'],
@@ -314,6 +315,11 @@ app.put('/api/settings', requireAdmin, (req, res) => {
   }
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
     if (body[key] !== undefined) setSetting(key, body[key]);
+  }
+  // 打掃定期工作設定異動時，伺服器端記錄異動人與時間（不信任前端傳入）
+  if (body.hk_sheet_days !== undefined || body.hk_supply_days !== undefined) {
+    setSetting('hk_updated_by', req.session.user.name || '');
+    setSetting('hk_updated_at', new Date().toLocaleString('sv-SE').slice(0, 19));
   }
   res.json({ ok: true, settings: getSettings() });
 });
@@ -2265,6 +2271,29 @@ app.post('/api/room-discounts', requireAdmin, (req, res) => {
     String(b.note || '').slice(0, 200));
   res.json({ id: info.lastInsertRowid });
 });
+app.post('/api/room-discounts/batch', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  const types = Array.isArray(b.room_types) ? b.room_types.map(t => String(t || '').trim()).filter(Boolean) : [];
+  if (!types.length) return res.status(400).json({ error: '請至少選擇一個房型' });
+  const type = ['percent', 'amount', 'gift'].includes(b.discount_type) ? b.discount_type : 'percent';
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(b.start_date || '') ? b.start_date : '';
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(b.end_date || '') ? b.end_date : '';
+  const ins = db.prepare(`INSERT INTO room_discounts
+    (room_type, customer_class, plan_name, start_date, end_date, stay_days, discount_type, discount_value, bonus_days, note)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  let added = 0;
+  const tx = db.transaction(() => {
+    for (const rt of types) {
+      ins.run(rt.slice(0, 50), String(b.customer_class || '一般客戶').slice(0, 30),
+        String(b.plan_name || '').slice(0, 50), start, end,
+        Number(b.stay_days) || 0, type, Number(b.discount_value) || 0, Number(b.bonus_days) || 0,
+        String(b.note || '').slice(0, 200));
+      added++;
+    }
+  });
+  tx();
+  res.json({ added });
+});
 app.put('/api/room-discounts/:id', requireAdmin, (req, res) => {
   const cur = db.prepare('SELECT * FROM room_discounts WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到折扣設定' });
@@ -3417,10 +3446,14 @@ app.get('/api/family/meal-plan', requireFamily, (req, res) => {
 app.get('/api/tours', requireStaff, (req, res) => {
   const rows = db.prepare(`
     SELECT t.*,
+      uc.name AS created_by_name, ux.name AS cancel_by_name,
       (SELECT COUNT(*) FROM tour_logs l WHERE l.tour_id = t.id) AS log_count,
       (SELECT l.body FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log,
       (SELECT l.created_at FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log_at
-    FROM tours t ORDER BY t.tour_at DESC LIMIT 300`).all();
+    FROM tours t
+    LEFT JOIN users uc ON uc.id = t.created_by
+    LEFT JOIN users ux ON ux.id = t.cancel_by
+    ORDER BY t.tour_at DESC LIMIT 300`).all();
   res.json(rows);
 });
 
@@ -3452,10 +3485,13 @@ app.post('/api/tours/:id/logs', requireStaff, (req, res) => {
 app.post('/api/tours', requireStaff, (req, res) => {
   const t = req.body || {};
   if (!t.name || !t.tour_at) return res.status(400).json({ error: '姓名與參觀時間必填' });
-  const info = db.prepare(`INSERT INTO tours (name, phone, due_date, tour_at, source, status, note, follow_up_date)
-    VALUES (?,?,?,?,?,?,?,?)`).run(
+  const info = db.prepare(`INSERT INTO tours
+    (name, phone, due_date, tour_at, source, status, note, follow_up_date, parity, attended, birth_hospital, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     t.name, t.phone || '', t.due_date || '', t.tour_at, t.source || '',
-    ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : 'scheduled', t.note || '', t.follow_up_date || '');
+    ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : 'scheduled', t.note || '', t.follow_up_date || '',
+    String(t.parity || '').slice(0, 20), ['是', '否'].includes(t.attended) ? t.attended : '',
+    String(t.birth_hospital || '').slice(0, 50), req.session.user.id);
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -3464,10 +3500,14 @@ app.put('/api/tours/:id', requireStaff, (req, res) => {
   const cur = db.prepare('SELECT * FROM tours WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到參觀預約' });
   const status = ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : cur.status;
-  db.prepare(`UPDATE tours SET name = ?, phone = ?, due_date = ?, tour_at = ?, source = ?, status = ?, note = ?, follow_up_date = ?
-    WHERE id = ?`).run(
+  db.prepare(`UPDATE tours SET name = ?, phone = ?, due_date = ?, tour_at = ?, source = ?, status = ?, note = ?, follow_up_date = ?,
+    parity = ?, attended = ?, birth_hospital = ? WHERE id = ?`).run(
     t.name ?? cur.name, t.phone ?? cur.phone, t.due_date ?? cur.due_date, t.tour_at ?? cur.tour_at,
-    t.source ?? cur.source, status, t.note ?? cur.note, t.follow_up_date ?? cur.follow_up_date, req.params.id);
+    t.source ?? cur.source, status, t.note ?? cur.note, t.follow_up_date ?? cur.follow_up_date,
+    t.parity !== undefined ? String(t.parity).slice(0, 20) : cur.parity,
+    t.attended !== undefined ? (['是', '否'].includes(t.attended) ? t.attended : '') : cur.attended,
+    t.birth_hospital !== undefined ? String(t.birth_hospital).slice(0, 50) : cur.birth_hospital,
+    req.params.id);
   if (status !== cur.status) {
     const L = { scheduled: '待參觀', visited: '已參觀', signed: '已簽約', lost: '未成交' };
     addTourLog(req.params.id, `狀態：${L[cur.status] || cur.status} → ${L[status] || status}`, req.session.user.id);
@@ -3507,6 +3547,46 @@ app.post('/api/tours/:id/sign', requireStaff, (req, res) => {
   const result = tx();
   addTourLog(req.params.id, `已簽約並建立訂房（房號 ${b.room_id}，入住 ${b.check_in}）`, req.session.user.id);
   res.json(result);
+});
+
+// 取消預約：狀態轉未成交並記錄取消原因／時間／取消人
+app.post('/api/tours/:id/cancel', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM tours WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到參觀預約' });
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
+  if (!reason) return res.status(400).json({ error: '請填寫取消原因' });
+  const now = new Date().toLocaleString('sv-SE').slice(0, 19);
+  db.prepare("UPDATE tours SET status = 'lost', cancel_reason = ?, cancel_at = ?, cancel_by = ? WHERE id = ?")
+    .run(reason, now, req.session.user.id, req.params.id);
+  addTourLog(req.params.id, `取消預約：${reason}`, req.session.user.id);
+  res.json({ ok: true });
+});
+
+// ---------- 預約參觀時段設定：指定日期時段／不開放參觀日 ----------
+app.get('/api/tour-slots', requireStaff, (req, res) => {
+  const from = String(req.query.from || '');
+  const to = String(req.query.to || '');
+  const cond = [], args = [];
+  if (/^\d{4}-\d{2}(-\d{2})?$/.test(from)) { cond.push('slot_date >= ?'); args.push(from.length === 7 ? from + '-01' : from); }
+  if (/^\d{4}-\d{2}(-\d{2})?$/.test(to)) { cond.push('slot_date <= ?'); args.push(to.length === 7 ? to + '-31' : to); }
+  const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+  const rows = db.prepare(`SELECT s.*, u.name AS created_by_name FROM tour_slots s
+    LEFT JOIN users u ON u.id = s.created_by ${where} ORDER BY s.slot_date`).all(...args);
+  res.json(rows);
+});
+app.post('/api/tour-slots', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.slot_date || '')) return res.status(400).json({ error: '請選擇指定日期' });
+  const closed = b.closed ? 1 : 0;
+  const info = db.prepare(`INSERT INTO tour_slots (slot_date, closed, open_from, open_to, slot_minutes, capacity, created_by)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    b.slot_date, closed, closed ? '' : String(b.open_from || '').slice(0, 5), closed ? '' : String(b.open_to || '').slice(0, 5),
+    Number(b.slot_minutes) || 60, Number(b.capacity) || 1, req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+app.delete('/api/tour-slots/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM tour_slots WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 // ---------- 客戶管理（潛在客戶＝mothers status='reserved'＋customer_profiles 擴充） ----------

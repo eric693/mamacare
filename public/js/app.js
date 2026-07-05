@@ -5374,12 +5374,12 @@ const APGAR_ITEMS = [
 ];
 // 愛丁堡產後憂鬱量表 EPDS：10 題，每題選項獨立（[標籤, 分數] 依顯示順序）
 const EPDS_ITEMS = [
-  ['您能看到事物有趣的一面，並笑得開心', [['完全不能', 3], ['肯定比以前少', 2], ['沒有以前那麼多', 1], ['同以前一樣', 0]]],
-  ['您欣然期待未來的一切', [['完全不能', 3], ['肯定比以前少', 2], ['沒有以前那麼多', 1], ['同以前一樣', 0]]],
-  ['當事情出錯時，您會不必要地責備自己', [['沒有這樣', 0], ['不經常這樣', 1], ['有時候這樣', 2], ['大部分時候這樣', 3]]],
-  ['你無緣無故感到焦慮和擔心', [['經常這樣', 3], ['有時候這樣', 2], ['極少有', 1], ['一點也沒有', 0]]],
-  ['您無緣無故感到害怕和驚慌', [['一點也沒有', 0], ['不經常這樣', 1], ['有時候這樣', 2], ['相當多時候這樣', 3]]],
-  ['很多事情衝著您來時，使您透不過氣', [['您一直都能應付的好', 0], ['大部分時候您都能像平時那樣應付的好', 1], ['有時候您不能像平時那樣應付的好', 2], ['大多數時候您都不能應付', 3]]],
+  ['您能看到事物有趣的一面，並笑得開心', [['同以前一樣', 0], ['沒有以前那麼多', 1], ['肯定比以前少', 2], ['完全不能', 3]]],
+  ['您欣然期待未來的一切', [['同以前一樣', 0], ['沒有以前那麼多', 1], ['肯定比以前少', 2], ['完全不能', 3]]],
+  ['當事情出錯時，您會不必要地責備自己', [['大部分時候這樣', 3], ['有時候這樣', 2], ['不經常這樣', 1], ['沒有這樣', 0]]],
+  ['你無緣無故感到焦慮和擔心', [['一點也沒有', 0], ['極少有', 1], ['有時候這樣', 2], ['經常這樣', 3]]],
+  ['您無緣無故感到害怕和驚慌', [['相當多時候這樣', 3], ['有時候這樣', 2], ['不經常這樣', 1], ['一點也沒有', 0]]],
+  ['很多事情衝著您來時，使您透不過氣', [['大多數時候您都不能應付', 3], ['有時候您不能像平時那樣應付的好', 2], ['大部分時候您都能像平時那樣應付的好', 1], ['您一直都能應付的好', 0]]],
   ['您很不開心，以致失眠', [['大部分時候這樣', 3], ['有時候這樣', 2], ['不經常這樣', 1], ['一點也沒有', 0]]],
   ['您感到難過和悲傷', [['大部分時候這樣', 3], ['相當時候這樣', 2], ['不經常這樣', 1], ['一點也沒有', 0]]],
   ['您不開心到哭泣', [['大部分時候這樣', 3], ['有時候這樣', 2], ['只是偶爾這樣', 1], ['沒有這樣', 0]]],
@@ -10002,19 +10002,24 @@ function batchRooms(typeOpts) {
 
 /* ---------- 房間資料管理：房價折扣設定 ---------- */
 const DISC_TYPE = { percent: '折扣百分比', amount: '折抵金額', gift: '專案贈送' };
+const DISC_DEFAULT_CLASSES = ['一般客戶', 'VIP', '舊客回住', '員工親友', '其他'];
 async function viewRoomDiscounts() {
-  const [types, discounts] = await Promise.all([api('/room-types'), api('/room-discounts')]);
+  const [types, discounts, settings] = await Promise.all([api('/room-types'), api('/room-discounts'), api('/settings')]);
   const canWrite = currentUser.role === 'admin';
   const typeOpts = types.map(t => t.name);
+  const classOpts = (settings.discount_class_options || '').split(',').map(x => x.trim()).filter(Boolean);
+  const classes = classOpts.length ? classOpts : DISC_DEFAULT_CLASSES;
   main().innerHTML = `
     <div class="page-title">房價折扣設定</div>
     <div class="card no-print">
       <div class="sec-hd">房價折扣設定（資料查詢）</div>
       <div class="form-grid">
         <div class="field"><label>房型名稱</label><select id="rd-filter"><option value="">全部</option>${typeOpts.map(t => `<option>${esc(t)}</option>`).join('')}</select></div>
-        <div class="full row" style="gap:10px;justify-content:center">
+        <div class="full row" style="gap:10px;justify-content:center;flex-wrap:wrap">
           <button class="btn" id="rd-go">送出查詢</button>
-          ${canWrite ? '<button class="btn secondary" id="rd-add">資料新增</button>' : ''}
+          ${canWrite ? `<button class="btn secondary" id="rd-add">資料新增</button>
+            <button class="btn secondary" id="rd-batch">批次新增</button>
+            <button class="btn secondary" id="rd-class">折扣客戶分類</button>` : ''}
         </div>
       </div>
     </div>
@@ -10024,11 +10029,11 @@ async function viewRoomDiscounts() {
     </div>`;
   const render = (list) => {
     $('#rd-result').innerHTML = `<table class="data stack">
-      <thead><tr><th>筆數</th><th>折扣專案期間</th><th>客戶分類</th><th>房型名稱</th><th>折扣方案名稱</th><th>住宿天數</th><th>折扣方式</th><th>折扣值</th><th>優惠天數</th><th class="no-print"></th></tr></thead>
+      <thead><tr><th>筆數</th><th>折扣專案／專案贈送方式</th><th>客戶分類</th><th>房型名稱</th><th>折扣方案名稱</th><th>住宿天數</th><th>折扣方式</th><th>折扣值</th><th>優惠天數</th><th class="no-print"></th></tr></thead>
       <tbody>${list.map((r, i) => `
         <tr>
           <td data-label="筆數">${i + 1}</td>
-          <td data-label="期間"><small>${esc(r.start_date || '—')} ~ ${esc(r.end_date || '—')}</small></td>
+          <td data-label="折扣專案／專案贈送方式"><small>${esc(r.start_date || '—')} ~ ${esc(r.end_date || '—')} ${r.stay_days || 0} (${r.bonus_days || 0})</small></td>
           <td data-label="客戶分類">${esc(r.customer_class || '—')}</td>
           <td data-label="房型名稱">${esc(r.room_type)}</td>
           <td data-label="折扣方案名稱">${esc(r.plan_name || '—')}</td>
@@ -10039,7 +10044,7 @@ async function viewRoomDiscounts() {
           <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>
             <button class="btn small danger" data-del="${r.id}">刪</button>` : ''}</td>
         </tr>`).join('') || '<tr><td colspan="10"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
-    $('#rd-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => discForm(discounts.find(x => x.id == b.dataset.edit), typeOpts));
+    $('#rd-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => discForm(discounts.find(x => x.id == b.dataset.edit), typeOpts, classes));
     $('#rd-result').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
       if (!confirm('確定刪除此折扣設定？')) return;
       await api(`/room-discounts/${b.dataset.del}`, { method: 'DELETE' }); viewRoomDiscounts();
@@ -10049,10 +10054,12 @@ async function viewRoomDiscounts() {
   $('#rd-go').onclick = doFilter;
   render(discounts);
   if (!canWrite) return;
-  $('#rd-add').onclick = () => discForm(null, typeOpts);
+  $('#rd-add').onclick = () => discForm(null, typeOpts, classes);
+  $('#rd-batch').onclick = () => discBatchForm(typeOpts, classes);
+  $('#rd-class').onclick = () => discClassManager(settings.discount_class_options || '');
 }
-function discForm(r, typeOpts) {
-  const CLASSES = ['一般客戶', 'VIP', '舊客回住', '員工親友', '其他'];
+function discForm(r, typeOpts, classes) {
+  const CLASSES = classes && classes.length ? classes : DISC_DEFAULT_CLASSES;
   openModal(r ? '編輯折扣設定' : '新增折扣設定', `
     <div class="field"><label>房型 <b class="req">*</b></label><select id="d-type">${typeOpts.map(t => `<option ${r && r.room_type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
     <div class="field"><label>客戶分類</label><select id="d-class">${CLASSES.map(c => `<option ${r && r.customer_class === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
@@ -10078,6 +10085,85 @@ function discForm(r, typeOpts) {
     };
   });
 }
+// 折扣批次新增：一次套用相同折扣條件到多個房型
+function discBatchForm(typeOpts, classes) {
+  const CLASSES = classes && classes.length ? classes : DISC_DEFAULT_CLASSES;
+  openModal('折扣批次新增', `
+    <div class="field"><label>套用房型 <b class="req">*</b><small>（可複選）</small></label>
+      <div class="row" style="gap:6px 16px;flex-wrap:wrap;padding-top:4px">
+        ${typeOpts.map((t, i) => `<label class="bna-chk"><input type="checkbox" class="db-type" value="${esc(t)}"> ${esc(t)}</label>`).join('') || '<small style="color:var(--muted)">尚未設定房型</small>'}
+      </div>
+      <div class="row" style="gap:12px;padding-top:6px"><a href="javascript:void 0" id="db-all">全選</a><a href="javascript:void 0" id="db-none">全不選</a></div></div>
+    <div class="field"><label>客戶分類</label><select id="db-class">${CLASSES.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
+    <div class="field"><label>折扣方案名稱</label><input id="db-plan" maxlength="50" placeholder="例如：牌價／早鳥／續住"></div>
+    <div class="field"><label>專案期間（起）</label><input type="date" id="db-start"></div>
+    <div class="field"><label>專案期間（迄）</label><input type="date" id="db-end"></div>
+    <div class="field"><label>住宿天數</label><input type="number" min="0" id="db-days" value="0"></div>
+    <div class="field"><label>折扣方式</label><select id="db-dtype">${Object.entries(DISC_TYPE).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+    <div class="field"><label>折扣值<small>（百分比填 85＝85折）</small></label><input type="number" min="0" id="db-val" value="100"></div>
+    <div class="field"><label>優惠贈送天數</label><input type="number" min="0" id="db-bonus" value="0"></div>
+    <div class="row mt"><button class="btn" id="db-save">批次建立</button><span class="error-msg" id="db-err"></span></div>`, body => {
+    const chks = () => [...body.querySelectorAll('.db-type')];
+    body.querySelector('#db-all').onclick = () => chks().forEach(c => c.checked = true);
+    body.querySelector('#db-none').onclick = () => chks().forEach(c => c.checked = false);
+    body.querySelector('#db-save').onclick = async () => {
+      const room_types = chks().filter(c => c.checked).map(c => c.value);
+      if (!room_types.length) { body.querySelector('#db-err').textContent = '請至少選擇一個房型'; return; }
+      const b = { room_types, customer_class: body.querySelector('#db-class').value,
+        plan_name: body.querySelector('#db-plan').value.trim(), start_date: body.querySelector('#db-start').value,
+        end_date: body.querySelector('#db-end').value, stay_days: body.querySelector('#db-days').value,
+        discount_type: body.querySelector('#db-dtype').value, discount_value: body.querySelector('#db-val').value,
+        bonus_days: body.querySelector('#db-bonus').value };
+      try {
+        const r = await api('/room-discounts/batch', { method: 'POST', body: b });
+        alert(`成功新增 ${r.added} 筆折扣設定`);
+        closeModal(); viewRoomDiscounts();
+      } catch (e) { body.querySelector('#db-err').textContent = e.message; }
+    };
+  });
+}
+// 折扣客戶分類維護：清單存於 settings.discount_class_options（逗號分隔）
+function discClassManager(csv) {
+  let items = (csv || '').split(',').map(x => x.trim()).filter(Boolean);
+  const save = async (list) => {
+    await api('/settings', { method: 'PUT', body: { discount_class_options: list.join(',') } });
+    closeModal(); viewRoomDiscounts();
+  };
+  const render = (body) => {
+    body.querySelector('#dc-list').innerHTML = items.map((v, i) => `
+      <tr>
+        <td data-label="筆數">${i + 1}</td>
+        <td data-label="客戶分類">${esc(v)}</td>
+        <td data-label="" class="no-print"><button class="btn small secondary" data-edit="${i}">編輯</button>
+          <button class="btn small danger" data-del="${i}">刪</button></td>
+      </tr>`).join('') || '<tr><td colspan="3"><div class="empty">尚未設定客戶分類</div></td></tr>';
+    body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+      const i = Number(b.dataset.edit); const v = prompt('編輯客戶分類：', items[i]);
+      if (v == null || !v.trim()) return;
+      if (items.some((x, j) => j !== i && x === v.trim())) { alert('已存在'); return; }
+      items[i] = v.trim(); render(body);
+    });
+    body.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+      if (!confirm('確定刪除此分類？（不影響既有折扣設定）')) return;
+      items = items.filter((_, i) => i !== Number(b.dataset.del)); render(body);
+    });
+  };
+  openModal('折扣客戶分類', `
+    <div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn small" id="dc-add">新增分類</button></div>
+    <div class="table-wrap"><table class="data stack">
+      <thead><tr><th style="width:70px">筆數</th><th>客戶分類</th><th class="no-print" style="width:130px"></th></tr></thead>
+      <tbody id="dc-list"></tbody></table></div>
+    <div class="row mt"><button class="btn" id="dc-save">儲存</button><small style="color:var(--muted)">＊儲存後套用於折扣新增／編輯的客戶分類選項。</small></div>`, body => {
+    render(body);
+    body.querySelector('#dc-add').onclick = () => {
+      const v = prompt('新增客戶分類：', '');
+      if (v == null || !v.trim()) return;
+      if (items.includes(v.trim())) { alert('已存在'); return; }
+      items.push(v.trim()); render(body);
+    };
+    body.querySelector('#dc-save').onclick = () => save(items);
+  });
+}
 
 /* ---------- 房間資料管理：嬰兒床位設定 ---------- */
 async function viewBabyBeds() {
@@ -10089,6 +10175,10 @@ async function viewBabyBeds() {
       <div class="sec-hd">嬰兒床位設定（資料查詢）</div>
       <div class="form-grid">
         <div class="field"><label>查詢關鍵字</label><input id="bb-kw"></div>
+        <div class="field"><label>關鍵字欄位</label>
+          <div class="row" style="gap:12px;padding-top:8px">
+            <label class="bna-chk"><input type="radio" name="bb-kf" value="bed_no" checked> 房間號碼</label>
+          </div></div>
         <div class="full row" style="gap:10px;justify-content:center">
           <button class="btn" id="bb-go">送出查詢</button>
           ${canWrite ? '<button class="btn secondary" id="bb-add">單筆床號新增</button><button class="btn secondary" id="bb-batch">多筆床號新增</button>' : ''}
@@ -10173,10 +10263,8 @@ const SYS_OPT_PAGES = {
   tour_source: { key: 'tour_source_options', title: '預約參觀訊息來源', label: '訊息來源',
     extra: { key: 'tour_visit_limit', label: '設定預約參觀人數限制' } },
   formula_brand: { key: 'formula_brand_options', title: '寶寶奶粉廠牌設定', label: '奶粉廠牌' },
-  door_light: { key: 'door_light_options', title: '門燈控制設定', label: '門燈模式' },
-  referral_hospital: { key: 'referral_hospital_options', title: '護理後送醫院', label: '醫院名稱' },
-  contact_class: { key: 'contact_class_options', title: '產後客戶聯絡人分類', label: '聯絡人分類' },
-  discharge_med: { key: 'discharge_med_options', title: '出院帶藥藥品設定', label: '藥品名稱' }
+  referral_hospital: { key: 'referral_hospital_options', title: '護理後送醫院', label: '後送醫院' },
+  contact_class: { key: 'contact_class_options', title: '產後客戶聯絡人分類', label: '產後客戶聯絡人關係' }
 };
 async function viewSysOption() {
   const which = (location.hash.split('?k=')[1] || '').split('&')[0];
@@ -10252,6 +10340,8 @@ async function viewCleaningSchedule() {
           <div class="row" style="gap:8px;align-items:center">媽媽房間每 <input type="number" min="1" id="cs-sheet" value="${esc(s.hk_sheet_days || '7')}" style="width:90px" ${canWrite ? '' : 'disabled'}> 天換一次床單</div></div>
         <div class="field"><label>定期更新房內備品</label>
           <div class="row" style="gap:8px;align-items:center">媽媽房間每 <input type="number" min="1" id="cs-supply" value="${esc(s.hk_supply_days || '1')}" style="width:90px" ${canWrite ? '' : 'disabled'}> 天更新一次備品</div></div>
+        <div class="field"><label>異動狀態</label>
+          <div id="cs-log" style="color:#b23">${s.hk_updated_by ? `${esc(s.hk_updated_by)}<br>${esc(s.hk_updated_at || '')}` : '<span style="color:var(--muted)">尚無異動紀錄</span>'}</div></div>
         ${canWrite ? '<div class="full row" style="justify-content:center;margin-top:6px"><button class="btn" id="cs-save">資料存檔</button><span class="error-msg" id="cs-err"></span></div>' : '<div class="full"><small style="color:var(--muted)">僅管理員可維護</small></div>'}
       </div>
       <small style="color:var(--muted)">＊此設定供房務清潔排程提醒使用（媽媽房況「有待辦房務」與房務任務排定）。</small>
@@ -10259,10 +10349,424 @@ async function viewCleaningSchedule() {
   if (!canWrite) return;
   $('#cs-save').onclick = async () => {
     try {
-      await api('/settings', { method: 'PUT', body: { hk_sheet_days: $('#cs-sheet').value, hk_supply_days: $('#cs-supply').value } });
+      const r = await api('/settings', { method: 'PUT', body: { hk_sheet_days: $('#cs-sheet').value, hk_supply_days: $('#cs-supply').value } });
+      const ns = (r && r.settings) || {};
+      if (ns.hk_updated_by) $('#cs-log').innerHTML = `${esc(ns.hk_updated_by)}<br>${esc(ns.hk_updated_at || '')}`;
       $('#cs-save').textContent = '已存檔 ✓';
       setTimeout(() => { const b = $('#cs-save'); if (b) b.textContent = '資料存檔'; }, 1500);
     } catch (e) { $('#cs-err').textContent = e.message; }
+  };
+}
+
+/* ---------- 產後系統其他設定：門燈控制設定（房況狀態 → 色碼） ---------- */
+const DOOR_LIGHT_STATES = ['空房', '入住準備', '媽媽入住', '母嬰同室', '出住打掃', '等待檢查', '保留', '維修'];
+const DOOR_LIGHT_DEFAULT = { '空房': '#057505', '入住準備': '#409fff', '媽媽入住': '#ff244a', '母嬰同室': '#8c0fff', '出住打掃': '#e0e070', '等待檢查': '#ff9f40', '保留': '#f53bd6', '維修': '#9e9e9e' };
+const DOOR_LIGHT_PRESETS = [['綠', '#057505'], ['藍', '#409fff'], ['紅', '#ff244a'], ['紫', '#8c0fff'], ['黃', '#e0e070'], ['橘', '#ff9f40'], ['桃紅', '#f53bd6'], ['灰', '#9e9e9e'], ['黑', '#333333']];
+function parseJsonSetting(v, fallback) {
+  try { const o = JSON.parse(v); return (o && typeof o === 'object') ? o : fallback; } catch (e) { return fallback; }
+}
+async function viewDoorLight() {
+  const canWrite = currentUser.role === 'admin';
+  const s = await api('/settings');
+  const colors = { ...DOOR_LIGHT_DEFAULT, ...parseJsonSetting(s.door_light_options, {}) };
+  const dis = canWrite ? '' : 'disabled';
+  main().innerHTML = `
+    <div class="page-title">門燈控制設定</div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th style="width:60px">No</th><th style="width:110px">狀態</th><th>前台媽媽房況顏色</th><th style="width:120px">顏色預覽</th></tr></thead>
+          <tbody>${DOOR_LIGHT_STATES.map((st, i) => `
+            <tr>
+              <td>${i + 1}</td>
+              <td>${esc(st)}</td>
+              <td>
+                <div class="row" style="gap:8px 18px;flex-wrap:wrap;align-items:center">
+                  <span>選擇預設顏色：<select class="dl-preset" data-st="${esc(st)}" ${dis}><option value="">請選擇預設顏色</option>${DOOR_LIGHT_PRESETS.map(([n, c]) => `<option value="${c}">${esc(n)}（${c}）</option>`).join('')}</select></span>
+                  <span>自行填入色碼：<input class="dl-hex" data-st="${esc(st)}" value="${esc(colors[st] || '')}" placeholder="#rrggbb" maxlength="7" style="width:120px" ${dis}></span>
+                </div>
+              </td>
+              <td><div class="dl-prev" data-st="${esc(st)}" style="width:100%;height:34px;border:1px solid var(--border);border-radius:4px;background:${esc(colors[st] || '#ffffff')}"></div></td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>
+      ${canWrite ? '<div class="row mt" style="margin-top:12px"><button class="btn" id="dl-save">資料存檔</button><span class="error-msg" id="dl-err"></span></div>' : '<small style="color:var(--muted)">僅管理員可維護</small>'}
+      <small style="color:var(--muted)">＊此設定儲存各房況狀態的顯示色碼；色碼格式為 #rrggbb。</small>
+    </div>`;
+  const prev = st => main().querySelector(`.dl-prev[data-st="${st}"]`);
+  main().querySelectorAll('.dl-hex').forEach(inp => inp.oninput = () => {
+    const v = inp.value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) prev(inp.dataset.st).style.background = v;
+  });
+  main().querySelectorAll('.dl-preset').forEach(sel => sel.onchange = () => {
+    if (!sel.value) return;
+    const hex = main().querySelector(`.dl-hex[data-st="${sel.dataset.st}"]`);
+    hex.value = sel.value; prev(sel.dataset.st).style.background = sel.value;
+  });
+  if (!canWrite) return;
+  $('#dl-save').onclick = async () => {
+    const out = {};
+    for (const inp of main().querySelectorAll('.dl-hex')) {
+      const v = inp.value.trim();
+      if (v && !/^#[0-9a-fA-F]{6}$/.test(v)) { $('#dl-err').textContent = `「${inp.dataset.st}」色碼格式需為 #rrggbb`; return; }
+      out[inp.dataset.st] = v || DOOR_LIGHT_DEFAULT[inp.dataset.st];
+    }
+    try {
+      await api('/settings', { method: 'PUT', body: { door_light_options: JSON.stringify(out) } });
+      $('#dl-save').textContent = '已存檔 ✓';
+      setTimeout(() => { const b = $('#dl-save'); if (b) b.textContent = '資料存檔'; }, 1500);
+    } catch (e) { $('#dl-err').textContent = e.message; }
+  };
+}
+
+/* ---------- 產後系統其他設定：出院帶藥藥品設定（藥品種類＋藥品名稱） ---------- */
+function parseJsonArraySetting(v, fallback) {
+  try { const a = JSON.parse(v); return Array.isArray(a) ? a : fallback; } catch (e) { return fallback; }
+}
+async function viewDischargeMeds() {
+  const canWrite = currentUser.role === 'admin';
+  const s = await api('/settings');
+  let items = parseJsonArraySetting(s.discharge_med_options, []).filter(x => x && (x.cat || x.name));
+  const save = async (list) => {
+    await api('/settings', { method: 'PUT', body: { discharge_med_options: JSON.stringify(list) } });
+    items = list; render();
+  };
+  const render = () => {
+    $('#dm-list').innerHTML = items.map((r, i) => `
+      <tr>
+        <td data-label="筆數">${i + 1}</td>
+        <td data-label="藥品種類">${esc(r.cat || '')}</td>
+        <td data-label="藥品名稱">${esc(r.name || '')}</td>
+        <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${i}">編輯</button>
+          <button class="btn small danger" data-del="${i}">刪</button>` : ''}</td>
+      </tr>`).join('') || '<tr><td colspan="4"><div class="empty">尚未設定藥品</div></td></tr>';
+    main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => form(Number(b.dataset.edit)));
+    main().querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+      if (!confirm('確定刪除此藥品？')) return;
+      save(items.filter((_, i) => i !== Number(b.dataset.del)));
+    });
+  };
+  const form = (idx) => {
+    const r = idx == null ? { cat: '', name: '' } : items[idx];
+    openModal(idx == null ? '新增藥品' : '編輯藥品', `
+      <div class="field"><label>藥品種類 <b class="req">*</b></label><input id="dm-cat" maxlength="30" value="${esc(r.cat || '')}"></div>
+      <div class="field"><label>藥品名稱 <b class="req">*</b></label><input id="dm-name" maxlength="60" value="${esc(r.name || '')}"></div>
+      <div class="row mt"><button class="btn" id="dm-save">存檔</button><span class="error-msg" id="dm-err"></span></div>`, body => {
+      body.querySelector('#dm-save').onclick = () => {
+        const cat = body.querySelector('#dm-cat').value.trim(), name = body.querySelector('#dm-name').value.trim();
+        if (!cat || !name) { body.querySelector('#dm-err').textContent = '請填寫藥品種類與名稱'; return; }
+        const next = [...items];
+        if (idx == null) next.push({ cat, name }); else next[idx] = { cat, name };
+        closeModal(); save(next);
+      };
+    });
+  };
+  main().innerHTML = `
+    <div class="page-title">出院帶藥藥品設定</div>
+    <div class="card no-print">
+      ${canWrite ? '<button class="btn" id="dm-add">新增資料</button>' : '<small style="color:var(--muted)">僅管理員可維護</small>'}
+    </div>
+    <div class="card">
+      <div class="sec-hd">出院帶藥藥品設定（資料明細）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th style="width:80px">筆數</th><th>藥品種類</th><th>藥品名稱</th><th class="no-print" style="width:130px"></th></tr></thead>
+          <tbody id="dm-list"></tbody>
+        </table>
+      </div>
+    </div>`;
+  render();
+  if (canWrite) $('#dm-add').onclick = () => form(null);
+}
+
+/* ========== 預約參觀管理模組 ========== */
+// 依「日期欄位條件」取得該筆的比對日期：tour=預約參觀日、due=預產期、reg=報名日期
+function tourFieldDate(t, f) { return f === 'due' ? (t.due_date || '') : f === 'reg' ? (t.created_at || '').slice(0, 10) : (t.tour_at || '').slice(0, 10); }
+// 本月起迄（YYYY-MM-DD）
+function monthBounds() { const s = todayStr().slice(0, 7); const d = new Date(); const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); return [s + '-01', s + '-' + String(last).padStart(2, '0')]; }
+// 產生 CSV 並下載（含 BOM，Excel 可正確顯示中文）
+function downloadCsv(filename, header, rows) {
+  const q = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const body = [header.map(q).join(','), ...rows.map(r => r.map(q).join(','))].join('\r\n');
+  const blob = new Blob(['﻿' + body], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+const TOUR_DATE_FIELDS = [['tour', '以預約參觀日查詢'], ['due', '以預產期查詢'], ['reg', '以報名日期查詢']];
+function tourQueryForm(prefix, { fromDefault, toDefault, withName = true } = {}) {
+  return `
+    <div class="form-grid">
+      <div class="field"><label>查詢日期區間</label>
+        <div class="row" style="gap:6px;align-items:center">
+          <input type="date" id="${prefix}-from" value="${fromDefault}"><span>to</span><input type="date" id="${prefix}-to" value="${toDefault}"></div></div>
+      <div class="field full"><label>日期欄位條件</label>
+        <div class="row" style="gap:16px;padding-top:6px;flex-wrap:wrap">${TOUR_DATE_FIELDS.map(([v, l], i) =>
+          `<label class="bna-chk"><input type="radio" name="${prefix}-fld" value="${v}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}</div></div>
+      ${withName ? `<div class="field"><label>媽媽姓名</label><input id="${prefix}-name"></div>
+      <div class="field"><label>連絡電話</label><input id="${prefix}-phone"></div>` : ''}
+    </div>`;
+}
+function tourQueryRead(prefix, withName = true) {
+  return {
+    from: $(`#${prefix}-from`).value, to: $(`#${prefix}-to`).value,
+    fld: main().querySelector(`input[name="${prefix}-fld"]:checked`).value,
+    name: withName ? $(`#${prefix}-name`).value.trim() : '', phone: withName ? $(`#${prefix}-phone`).value.trim() : ''
+  };
+}
+function tourMatch(t, q) {
+  const d = tourFieldDate(t, q.fld);
+  if (q.from && (!d || d < q.from)) return false;
+  if (q.to && (!d || d > q.to)) return false;
+  if (q.name && !(t.name || '').includes(q.name)) return false;
+  if (q.phone && !(t.phone || '').includes(q.phone)) return false;
+  return true;
+}
+
+// 1. 潛在客戶資料
+async function viewProspects() {
+  const tours = await api('/tours');
+  const [mf, mt] = monthBounds();
+  main().innerHTML = `
+    <div class="page-title">潛在客戶資料</div>
+    <div class="card no-print">
+      <div class="sec-hd">潛在客戶資料（資料查詢）</div>
+      ${tourQueryForm('pc', { fromDefault: mf, toDefault: mt })}
+      <div class="row" style="justify-content:center;margin-top:8px"><button class="btn" id="pc-go">送出查詢</button></div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">潛在客戶資料（查詢結果）</div>
+      <div class="table-wrap" id="pc-result"></div>
+    </div>`;
+  const render = (list) => {
+    $('#pc-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>媽媽姓名</th><th>預產期<br>預約參觀日<br>報名日期</th><th>聯絡電話</th><th>生產醫院<br>訊息來源</th><th>備註</th><th>建檔人</th></tr></thead>
+      <tbody>${list.map((t, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="媽媽姓名">${esc(t.name)}</td>
+          <td data-label="預產期/參觀/報名"><small>${esc(t.due_date || '—')}<br><span style="color:#b23">${esc((t.tour_at || '—').slice(0, 16))}</span><br><span style="color:#2a7f78">${esc((t.created_at || '—').slice(0, 10))}</span></small></td>
+          <td data-label="聯絡電話">${esc(t.phone || '—')}</td>
+          <td data-label="生產醫院/來源"><small>${esc(t.birth_hospital || '—')}<br>${esc(t.source || '—')}</small></td>
+          <td data-label="備註">${esc(t.note || '—')}</td>
+          <td data-label="建檔人">${esc(t.created_by_name || '—')}</td>
+        </tr>`).join('') || '<tr><td colspan="7"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+  };
+  const go = () => render(tours.filter(t => tourMatch(t, tourQueryRead('pc'))));
+  $('#pc-go').onclick = go;
+  go();
+}
+
+// 2. 預約參觀報名資料
+async function viewTourSignups() {
+  const tours = await api('/tours');
+  const canWrite = canAccess('#/tours');
+  main().innerHTML = `
+    <div class="page-title">預約參觀報名資料</div>
+    <div class="card no-print">
+      <div class="sec-hd">預約參觀報名資料（資料查詢）</div>
+      ${tourQueryForm('ts', { fromDefault: todayStr(), toDefault: todayStr() })}
+      <div class="row" style="gap:10px;justify-content:center;margin-top:8px">
+        <button class="btn" id="ts-go">送出查詢</button>
+        <a class="btn secondary" href="#/tour-calendar">預約參觀行事曆</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">預約參觀報名資料（查詢結果）</div>
+      <div class="table-wrap" id="ts-result"></div>
+    </div>`;
+  const render = (list) => {
+    $('#ts-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>參觀日期-時段</th><th>媽媽姓名</th><th>預產期-胎次</th><th>聯絡電話</th><th>填寫日期<br>訊息來源</th><th>是否出席</th><th>建檔人/日期</th><th class="no-print">列印</th></tr></thead>
+      <tbody>${list.map((t, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="參觀日期-時段">${esc((t.tour_at || '').slice(0, 10))}<br><small>${esc((t.tour_at || '').slice(11, 16))}</small></td>
+          <td data-label="媽媽姓名">${esc(t.name)}</td>
+          <td data-label="預產期-胎次">${esc(t.due_date || '—')}${t.parity ? `<br><small>${esc(t.parity)}</small>` : ''}</td>
+          <td data-label="聯絡電話">${esc(t.phone || '—')}</td>
+          <td data-label="填寫日期/來源"><small>${esc((t.created_at || '').slice(0, 10))}<br>${esc(t.source || '—')}</small></td>
+          <td data-label="是否出席">${t.attended === '是' ? '<span class="badge green">出席</span>' : t.attended === '否' ? '<span class="badge gray">未到</span>' : '—'}
+            ${canWrite ? `<div class="row no-print" style="gap:4px;margin-top:4px"><button class="btn small secondary" data-att="是" data-id="${t.id}">出席</button><button class="btn small secondary" data-att="否" data-id="${t.id}">未到</button></div>` : ''}</td>
+          <td data-label="建檔人/日期"><small>${esc(t.created_by_name || '—')}<br>${esc((t.created_at || '').slice(0, 16))}</small></td>
+          <td data-label="" class="no-print"><button class="btn small secondary" data-print="${t.id}">列印</button></td>
+        </tr>`).join('') || '<tr><td colspan="9"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#ts-result').querySelectorAll('[data-att]').forEach(b => b.onclick = async () => {
+      await api(`/tours/${b.dataset.id}`, { method: 'PUT', body: { attended: b.dataset.att } });
+      const t = tours.find(x => x.id == b.dataset.id); if (t) t.attended = b.dataset.att; go();
+    });
+    $('#ts-result').querySelectorAll('[data-print]').forEach(b => b.onclick = () => printTourSignup(tours.find(x => x.id == b.dataset.print)));
+  };
+  const go = () => render(tours.filter(t => tourMatch(t, tourQueryRead('ts'))));
+  $('#ts-go').onclick = go;
+  go();
+}
+function printTourSignup(t) {
+  if (!t) return;
+  const w = window.open('', '_blank', 'width=520,height=640');
+  if (!w) { alert('請允許彈出視窗以進行列印'); return; }
+  const row = (k, v) => `<tr><th style="text-align:left;padding:6px 12px;background:#f4f7f4;white-space:nowrap">${k}</th><td style="padding:6px 12px">${escHtml(v || '—')}</td></tr>`;
+  w.document.write(`<html><head><meta charset="utf-8"><title>預約參觀報名單</title></head>
+    <body style="font-family:sans-serif;padding:24px;color:#222">
+      <h2 style="text-align:center">預約參觀報名單</h2>
+      <table style="border-collapse:collapse;width:100%;border:1px solid #ccc">
+        ${row('媽媽姓名', t.name)}${row('聯絡電話', t.phone)}${row('參觀日期-時段', (t.tour_at || '').slice(0, 16))}
+        ${row('預產期', t.due_date)}${row('胎次', t.parity)}${row('訊息來源', t.source)}
+        ${row('是否出席', t.attended)}${row('建檔人', t.created_by_name)}${row('備註', t.note)}
+      </table>
+      <p style="margin-top:24px;color:#888;font-size:12px;text-align:right">列印時間：${new Date().toLocaleString('sv-SE').slice(0, 16)}</p>
+    </body></html>`);
+  w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+}
+function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+// 3. 取消預約明細表
+async function viewTourCancellations() {
+  const tours = (await api('/tours')).filter(t => t.cancel_at);
+  const [mf, mt] = monthBounds();
+  main().innerHTML = `
+    <div class="page-title">取消預約明細表</div>
+    <div class="card no-print">
+      <div class="sec-hd">取消預約明細表（資料查詢）</div>
+      ${tourQueryForm('tc', { fromDefault: mf, toDefault: mt, withName: false })}
+      <div class="row" style="justify-content:center;margin-top:8px"><button class="btn" id="tc-go">送出查詢</button></div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">取消預約明細表（查詢結果）</div>
+      <div class="row no-print" style="justify-content:flex-end;margin-bottom:6px"><button class="btn small" id="tc-csv">匯出 Excel（CSV）</button></div>
+      <div class="table-wrap" id="tc-result"></div>
+    </div>`;
+  let current = [];
+  const render = (list) => {
+    current = list;
+    $('#tc-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>媽媽姓名</th><th>聯絡電話</th><th>原預約日期<br>時段</th><th>預產期<br>報名日期</th><th>取消時間</th><th>取消原因</th><th>取消人</th></tr></thead>
+      <tbody>${list.map((t, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="媽媽姓名">${esc(t.name)}</td>
+          <td data-label="聯絡電話">${esc(t.phone || '—')}</td>
+          <td data-label="原預約日期/時段">${esc((t.tour_at || '').slice(0, 10))}<br><small>${esc((t.tour_at || '').slice(11, 16))}</small></td>
+          <td data-label="預產期/報名日期"><small>${esc(t.due_date || '—')}<br>${esc((t.created_at || '').slice(0, 10))}</small></td>
+          <td data-label="取消時間">${esc(t.cancel_at || '—')}</td>
+          <td data-label="取消原因">${esc(t.cancel_reason || '—')}</td>
+          <td data-label="取消人">${esc(t.cancel_by_name || '—')}</td>
+        </tr>`).join('') || '<tr><td colspan="8"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+  };
+  const go = () => render(tours.filter(t => tourMatch(t, tourQueryRead('tc', false))));
+  $('#tc-go').onclick = go;
+  $('#tc-csv').onclick = () => {
+    if (!current.length) { alert('查無資料可匯出'); return; }
+    downloadCsv(`取消預約明細_${todayStr()}.csv`,
+      ['媽媽姓名', '聯絡電話', '原預約時段', '預產期', '報名日期', '取消時間', '取消原因', '取消人'],
+      current.map(t => [t.name, t.phone || '', (t.tour_at || '').slice(0, 16), t.due_date || '', (t.created_at || '').slice(0, 10), t.cancel_at || '', t.cancel_reason || '', t.cancel_by_name || '']));
+  };
+  go();
+}
+
+// 4. 預約參觀時段設定
+async function viewTourSlots() {
+  const canWrite = currentUser.role === 'admin';
+  const [s, slots] = await Promise.all([api('/settings'), api('/tour-slots')]);
+  const [mf, mt] = monthBounds();
+  const dis = canWrite ? '' : 'disabled';
+  main().innerHTML = `
+    <div class="page-title">預約參觀時段設定</div>
+    <div class="card">
+      <div class="sec-hd">預約參觀時段設定</div>
+      <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+        一般開放參觀時間：從 <input type="time" id="tsl-from" value="${esc(s.tour_open_from || '11:00')}" ${dis}>
+        ~ <input type="time" id="tsl-to" value="${esc(s.tour_open_to || '19:00')}" ${dis}>
+        ，每 <input type="number" min="5" step="5" id="tsl-min" value="${esc(s.tour_slot_minutes || '60')}" style="width:80px" ${dis}> 分鐘，
+        開放 <input type="number" min="1" id="tsl-cap" value="${esc(s.tour_visit_limit || '1')}" style="width:70px" ${dis}> 人預約
+        ${canWrite ? '<button class="btn small" id="tsl-save">資料存檔</button>' : ''}
+        <span class="error-msg" id="tsl-err"></span>
+      </div>
+    </div>
+    <div class="card no-print">
+      <div class="sec-hd">指定日期參觀時段設定（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢日期區間</label>
+          <div class="row" style="gap:6px;align-items:center"><input type="date" id="tsl-qf" value="${mf}"><span>to</span><input type="date" id="tsl-qt" value="${mt}"></div></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="tsl-go">送出查詢</button>
+          ${canWrite ? '<button class="btn secondary" id="tsl-add">資料新增</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">指定日期參觀時段設定（查詢結果）</div>
+      <div class="row no-print" style="justify-content:flex-end;margin-bottom:6px"><button class="btn small" id="tsl-csv">匯出 Excel（CSV）</button></div>
+      <div class="table-wrap" id="tsl-result"></div>
+    </div>`;
+  let all = slots.slice();
+  let current = [];
+  const render = (list) => {
+    current = list;
+    $('#tsl-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>不開放參觀日期</th><th>指定日期</th><th>開放時段</th><th>每時段開放人數</th><th>建檔人</th><th class="no-print"></th></tr></thead>
+      <tbody>${list.map((r, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="不開放參觀日期">${r.closed ? esc(r.slot_date) : '—'}</td>
+          <td data-label="指定日期">${r.closed ? '—' : esc(r.slot_date)}</td>
+          <td data-label="開放時段">${r.closed ? '—' : `${esc(r.open_from || '')}~${esc(r.open_to || '')}（每 ${r.slot_minutes} 分）`}</td>
+          <td data-label="每時段開放人數">${r.closed ? '—' : r.capacity}</td>
+          <td data-label="建檔人">${esc(r.created_by_name || '—')}</td>
+          <td data-label="" class="no-print">${canWrite ? `<button class="btn small danger" data-del="${r.id}">刪</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="7"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#tsl-result').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('確定刪除此時段設定？')) return;
+      await api(`/tour-slots/${b.dataset.del}`, { method: 'DELETE' });
+      all = all.filter(x => x.id != b.dataset.del); go();
+    });
+  };
+  const go = () => {
+    const f = $('#tsl-qf').value, t = $('#tsl-qt').value;
+    render(all.filter(r => (!f || r.slot_date >= f) && (!t || r.slot_date <= t)));
+  };
+  $('#tsl-go').onclick = go;
+  $('#tsl-csv').onclick = () => {
+    if (!current.length) { alert('查無資料可匯出'); return; }
+    downloadCsv(`參觀時段設定_${todayStr()}.csv`,
+      ['指定日期', '不開放', '開放時段起', '開放時段迄', '每時段分鐘', '每時段人數', '建檔人'],
+      current.map(r => [r.slot_date, r.closed ? 'V' : '', r.open_from || '', r.open_to || '', r.slot_minutes, r.closed ? '' : r.capacity, r.created_by_name || '']));
+  };
+  render(all.filter(r => (!mf || r.slot_date >= mf) && (!mt || r.slot_date <= mt)));
+  if (!canWrite) return;
+  $('#tsl-save').onclick = async () => {
+    try {
+      await api('/settings', { method: 'PUT', body: { tour_open_from: $('#tsl-from').value, tour_open_to: $('#tsl-to').value, tour_slot_minutes: $('#tsl-min').value, tour_visit_limit: $('#tsl-cap').value } });
+      $('#tsl-save').textContent = '已存檔 ✓';
+      setTimeout(() => { const b = $('#tsl-save'); if (b) b.textContent = '資料存檔'; }, 1500);
+    } catch (e) { $('#tsl-err').textContent = e.message; }
+  };
+  $('#tsl-add').onclick = () => {
+    openModal('新增指定日期時段', `
+      <div class="field"><label>指定日期 <b class="req">*</b></label><input type="date" id="sl-date"></div>
+      <div class="field"><label><input type="checkbox" id="sl-closed"> 此日不開放參觀</label></div>
+      <div id="sl-open">
+        <div class="field"><label>開放時段（起）</label><input type="time" id="sl-from" value="${esc(s.tour_open_from || '11:00')}"></div>
+        <div class="field"><label>開放時段（迄）</label><input type="time" id="sl-to" value="${esc(s.tour_open_to || '19:00')}"></div>
+        <div class="field"><label>每時段分鐘</label><input type="number" min="5" step="5" id="sl-min" value="${esc(s.tour_slot_minutes || '60')}"></div>
+        <div class="field"><label>每時段開放人數</label><input type="number" min="1" id="sl-cap" value="${esc(s.tour_visit_limit || '1')}"></div>
+      </div>
+      <div class="row mt"><button class="btn" id="sl-save">存檔</button><span class="error-msg" id="sl-err"></span></div>`, body => {
+      const openBox = body.querySelector('#sl-open');
+      body.querySelector('#sl-closed').onchange = e => { openBox.style.display = e.target.checked ? 'none' : ''; };
+      body.querySelector('#sl-save').onclick = async () => {
+        const closed = body.querySelector('#sl-closed').checked;
+        const payload = { slot_date: body.querySelector('#sl-date').value, closed,
+          open_from: body.querySelector('#sl-from').value, open_to: body.querySelector('#sl-to').value,
+          slot_minutes: body.querySelector('#sl-min').value, capacity: body.querySelector('#sl-cap').value };
+        if (!payload.slot_date) { body.querySelector('#sl-err').textContent = '請選擇指定日期'; return; }
+        try {
+          const r = await api('/tour-slots', { method: 'POST', body: payload });
+          all.push({ id: r.id, ...payload, closed: closed ? 1 : 0, slot_minutes: Number(payload.slot_minutes) || 60, capacity: Number(payload.capacity) || 1, created_by_name: currentUser.name });
+          closeModal(); go();
+        } catch (e) { body.querySelector('#sl-err').textContent = e.message; }
+      };
+    });
   };
 }
 
@@ -11072,6 +11576,8 @@ const routes = {
   '#/rooms': viewRooms,
   '#/sys-option': viewSysOption,
   '#/cleaning-schedule': viewCleaningSchedule,
+  '#/door-light': viewDoorLight,
+  '#/discharge-meds': viewDischargeMeds,
   '#/epds-template': viewEpdsTemplate,
   '#/room-types': viewRoomTypes,
   '#/room-list': viewRoomList,
@@ -11122,6 +11628,10 @@ const routes = {
   '#/meals': viewMeals,
   '#/meal-plan': viewMealPlan,
   '#/tours': viewTours,
+  '#/prospects': viewProspects,
+  '#/tour-signups': viewTourSignups,
+  '#/tour-cancellations': viewTourCancellations,
+  '#/tour-slots': viewTourSlots,
   '#/shifts': viewShifts,
   '#/family': viewFamily,
   '#/crm': viewCrm,
@@ -11141,13 +11651,13 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': 'baby_care', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/programs': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
-  '#/tours': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
+  '#/tours': 'tours', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
   '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys',
   '#/audit-logs': 'audit', '#/export': 'export', '#/settings': 'settings', '#/users': 'users'
 };
