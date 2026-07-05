@@ -133,13 +133,18 @@ const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolat
 // 路由 → 模組對照（依序比對，先精準後一般）；未命中者視為基礎共用端點，任何登入員工皆可存取
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
-  [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake)/, 'mother_care'],
-  [/^\/api\/(mother-records|mother-nursing|mother-scales|mother-guidance|mother-health-problems|mother-breast-photos)/, 'mother_care'],
+  [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake|handovers|handover-profile|closure)/, 'mother_care'],
+  [/^\/api\/(mother-records|mother-nursing|mother-scales|mother-guidance|mother-health-problems|mother-breast-photos|mother-handovers|mother-closures)/, 'mother_care'],
   [/^\/api\/babies\/\d+\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/physician-visits/, 'physician'],
   [/^\/api\/babies\/\d+\/doctor-visits/, 'physician'],
   [/^\/api\/baby-doctor-visits/, 'physician'],
+  [/^\/api\/mothers\/\d+\/doctor-visits/, 'physician'],
+  [/^\/api\/mother-doctor-visits/, 'physician'],
+  [/^\/api\/physician-rounds/, 'physician'],
+  [/^\/api\/baby-announcements/, 'baby_care'],
+  [/^\/api\/medical-records/, 'mother_care'],
   [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|breastfeeding|eval|eval-profile|intake-assessments|handovers|closure)/, 'baby_care'],
   [/^\/api\/(baby-records|baby-nursing|baby-rooming|breastfeeding|baby-intake|baby-handovers|baby-closures)/, 'baby_care'],
   [/^\/api\/handovers/, 'handover'],
@@ -158,6 +163,11 @@ const MODULE_RULES = [
   [/^\/api\/coupons/, 'coupons'],
   [/^\/api\/(meals|meal-menu|meal-plan|meal-config)/, 'meals'],
   [/^\/api\/tours/, 'tours'],
+  [/^\/api\/customers/, 'tours'],
+  [/^\/api\/customer-logs/, 'tours'],
+  [/^\/api\/client-contracts/, 'tours'],
+  [/^\/api\/pp-reports/, 'reports'],
+  [/^\/api\/tour-calendar/, 'tours'],
   [/^\/api\/(shifts|staffing-check)/, 'shifts'],
   [/^\/api\/family-members/, 'family'],
   [/^\/api\/crm/, 'crm'],
@@ -173,6 +183,7 @@ const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/housekeeping/, 'housekeeping'],
   // 住客／房務的「異動」才受限，讀取（GET）開放給所有員工以供跨模組顯示
   [/^\/api\/mothers/, 'residents', 'WRITE'],
+  [/^\/api\/(room-types|room-discounts|baby-beds)/, 'rooms', 'WRITE'],
   [/^\/api\/(rooms|bookings)/, 'rooms', 'WRITE']
 ];
 function moduleForRequest(method, fullPath) {
@@ -213,6 +224,20 @@ const upload = multer({
   }
 });
 
+// 文件上傳（後台文件區）：允許常見文件與圖片格式，20MB
+const DOC_MIMES = /^(image\/|application\/pdf|application\/msword|application\/vnd\.openxmlformats|application\/vnd\.ms-excel|application\/vnd\.ms-powerpoint|text\/plain|application\/zip)/;
+const docUpload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '').toLowerCase().slice(0, 10);
+      cb(null, 'doc-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex') + ext);
+    }
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => { cb(null, DOC_MIMES.test(file.mimetype)); }
+});
+
 // 刪除單一上傳檔（接受裸檔名或 /uploads/xxx；以 basename 防路徑穿越）
 function removeUploadFile(ref) {
   if (!ref) return;
@@ -228,6 +253,7 @@ function sweepOrphanUploads() {
     for (const r of db.prepare("SELECT image FROM products WHERE image != ''").all()) referenced.add(path.basename(r.image));
     for (const r of db.prepare("SELECT photo FROM testimonials WHERE photo != ''").all()) referenced.add(path.basename(r.photo));
     for (const r of db.prepare("SELECT photo_file FROM mother_breast_photos WHERE photo_file != ''").all()) referenced.add(path.basename(r.photo_file));
+    for (const r of db.prepare("SELECT filename FROM documents WHERE filename != ''").all()) referenced.add(path.basename(r.filename));
     const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 僅刪 1 天前，避開上傳途中
     let removed = 0;
     for (const f of fs.readdirSync(UPLOAD_DIR)) {
@@ -955,6 +981,84 @@ app.delete('/api/baby-doctor-visits/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- 產科醫師診視紀錄（醫師巡診；媽媽） ----------
+// data 僅收白名單欄位；多選以陣列、單選／補述以字串保存
+const MDV_FIELDS = [
+  'postpartum_days', 'parity', 'delivery_mode',
+  'mood', 'epds_score', 'complaint', 'complaint_text',
+  'feeding', 'breast',
+  'ep_wound', 'ep_med', 'ep_med_text',
+  'fundus_height', 'uterus_state',
+  'lochia_amount', 'lochia_color',
+  'urine', 'stool', 'laxative', 'laxative_text',
+  'hemorrhoid', 'hem_ointment', 'hem_text',
+  'edema_none', 'edema_right', 'edema_left'
+];
+function normalizeMotherVisit(b) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.visit_date || '') ? b.visit_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.visit_time || '') ? b.visit_time.slice(0, 5) : '';
+  const data = {};
+  for (const k of MDV_FIELDS) if (b[k] !== undefined) {
+    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+  }
+  return { date, time, data, note: String(b.note || '').slice(0, 600) };
+}
+
+app.get('/api/mothers/:id/doctor-visits', requireStaff, (req, res) => {
+  const mother = db.prepare(`
+    SELECT m.*,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_out
+    FROM mothers m WHERE m.id = ?`).get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const rows = db.prepare(`
+    SELECT v.*, u.name AS recorded_by_name, e.name AS edited_by_name
+    FROM mother_doctor_visits v
+    LEFT JOIN users u ON u.id = v.recorded_by
+    LEFT JOIN users e ON e.id = v.edited_by
+    WHERE v.mother_id = ? ORDER BY v.visit_date DESC, v.visit_time DESC, v.id DESC LIMIT 200`).all(mother.id);
+  for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
+  res.json({ mother, rows });
+});
+
+app.post('/api/mothers/:id/doctor-visits', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.visit_time || '')) return res.status(400).json({ error: '請填寫診視時間' });
+  const v = normalizeMotherVisit(b);
+  const info = db.prepare(`INSERT INTO mother_doctor_visits
+    (mother_id, recorded_by, visit_date, visit_time, data, note)
+    VALUES (?,?,?,?,?,?)`).run(
+    mother.id, req.session.user.id, v.date, v.time,
+    JSON.stringify(v.data).slice(0, 8000), v.note);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/mother-doctor-visits/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM mother_doctor_visits WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到診視紀錄' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.visit_time || '')) return res.status(400).json({ error: '請填寫診視時間' });
+  const v = normalizeMotherVisit(b);
+  db.prepare(`UPDATE mother_doctor_visits SET visit_date=?, visit_time=?, data=?, note=?,
+    edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
+    v.date, v.time, JSON.stringify(v.data).slice(0, 8000), v.note,
+    req.session.user.id, cur.id);
+  logAudit(req, { action: 'update', entity: 'mother_doctor_visits', entity_id: cur.id, summary: '產科醫師診視紀錄修改' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/mother-doctor-visits/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM mother_doctor_visits WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ---------- 新生兒交班單 ----------
 const BHO_FEED = ['瓶', '針', '杯'];
 const BHO_PACIFIER = ['可吃', '禁嘴', '必要時可吃'];
@@ -1104,6 +1208,333 @@ app.delete('/api/baby-handovers/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- 產婦交班單 ----------
+function normalizeMotherHandover(b) {
+  return {
+    date: /^\d{4}-\d{2}-\d{2}$/.test(b.handover_date || '') ? b.handover_date : today(),
+    time: /^\d{2}:\d{2}/.test(b.handover_time || '') ? b.handover_time.slice(0, 5) : '',
+    fundus: String(b.fundus || '').slice(0, 100),
+    lochia: String(b.lochia || '').slice(0, 200),
+    note: String(b.note || '').slice(0, 600)
+  };
+}
+// 重要備註／特殊飲品及特殊餐：存產婦入住評估 profile（每媽媽一筆）
+const MHO_PROFILE_FIELDS = ['handover_note', 'sp_shenghua', 'sp_redbean', 'sp_barley', 'sp_weaning'];
+
+app.get('/api/mothers/:id/handovers', requireStaff, (req, res) => {
+  const mother = db.prepare(`
+    SELECT m.*,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+    FROM mothers m WHERE m.id = ?`).get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const rows = db.prepare(`
+    SELECT h.*, u.name AS nurse_name, e.name AS edited_by_name
+    FROM mother_handovers h
+    LEFT JOIN users u ON u.id = h.nurse_id
+    LEFT JOIN users e ON e.id = h.edited_by
+    WHERE h.mother_id = ? ORDER BY h.handover_date DESC, h.handover_time DESC, h.id DESC LIMIT 200`).all(mother.id);
+
+  // 產婦入住評估 profile：重要備註/特殊餐/藥物過敏/胎次（未填→前端顯示紅字提醒）
+  const mia = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(mother.id);
+  let miaData = null;
+  if (mia) { try { miaData = JSON.parse(mia.data); } catch (e) { miaData = {}; } }
+
+  // 表頭彙整：第一位寶寶（生產醫院/出生日期/週數/奶品/胎次 fallback）
+  const baby = db.prepare('SELECT * FROM babies WHERE mother_id = ? ORDER BY id LIMIT 1').get(mother.id);
+  let birthPlace = '', gestWeeks = '', parityBfa = '', milkBrand = '';
+  if (baby) {
+    const prof = db.prepare('SELECT data FROM baby_case_profiles WHERE baby_id = ?').get(baby.id);
+    if (prof) { try { birthPlace = JSON.parse(prof.data).birth_place || ''; } catch (e) { /* */ } }
+    const bdv = db.prepare(`SELECT data FROM baby_doctor_visits
+      WHERE baby_id = ? ORDER BY visit_date DESC, visit_time DESC, id DESC LIMIT 1`).get(baby.id);
+    if (bdv) { try { gestWeeks = JSON.parse(bdv.data).gest_weeks || ''; } catch (e) { /* */ } }
+    const bfa = db.prepare(`SELECT parity, milk_brand FROM breastfeeding_assessments
+      WHERE baby_id = ? ORDER BY assess_date DESC, id DESC LIMIT 1`).get(baby.id);
+    if (bfa) { parityBfa = bfa.parity || ''; milkBrand = bfa.milk_brand || ''; }
+  }
+
+  // 宮底高度/惡露：最近一筆媽媽護理評估 vs 交班單，取日期時間較新者
+  const mna = db.prepare(`SELECT assess_date, assess_time, data FROM mother_nursing_assessments
+    WHERE mother_id = ? ORDER BY assess_date DESC, assess_time DESC, id DESC LIMIT 1`).get(mother.id);
+  let mnaData = {};
+  if (mna) { try { mnaData = JSON.parse(mna.data); } catch (e) { mnaData = {}; } }
+  const hoLatest = rows.find(r => r.fundus || r.lochia);
+  const mnaAt = mna ? `${mna.assess_date} ${mna.assess_time}` : '';
+  const hoAt = hoLatest ? `${hoLatest.handover_date} ${hoLatest.handover_time}` : '';
+  const useHo = hoLatest && (!mna || hoAt >= mnaAt);
+  const fundusNow = useHo ? { value: hoLatest.fundus, at: hoLatest.handover_date }
+    : (mna ? { value: [mnaData.uterus, mnaData.fundus_note].filter(Boolean).join('／'), at: mna.assess_date } : null);
+  const lochiaNow = useHo ? { value: hoLatest.lochia, at: hoLatest.handover_date }
+    : (mna ? { value: [mnaData.lochia_amount, mnaData.lochia_color].filter(Boolean).join('／'), at: mna.assess_date } : null);
+
+  const header = {
+    birth_place: birthPlace,
+    baby_birth_date: baby ? baby.birth_date : '',
+    gest_weeks: gestWeeks,
+    parity: (miaData && miaData.parity) || parityBfa || '',
+    milk_brand: milkBrand,
+    allergy_drug: (miaData && miaData.allergy_drug) || '',
+    postpartum_days: mother.delivery_date
+      ? Math.max(0, Math.floor((new Date(today()) - new Date(mother.delivery_date)) / 86400000)) : null,
+    fundus_now: fundusNow && fundusNow.value ? fundusNow : null,
+    lochia_now: lochiaNow && lochiaNow.value ? lochiaNow : null,
+    intake_filled: !!miaData,
+    handover_note: (miaData && miaData.handover_note) || '',
+    sp_shenghua: (miaData && miaData.sp_shenghua) || '',
+    sp_redbean: (miaData && miaData.sp_redbean) || '',
+    sp_barley: (miaData && miaData.sp_barley) || '',
+    sp_weaning: (miaData && miaData.sp_weaning) || ''
+  };
+  res.json({ mother, rows, header });
+});
+
+// 飲食禁忌（mothers.diet_notes）＋重要備註/特殊飲品餐（入住評估 profile 合併）存檔
+app.put('/api/mothers/:id/handover-profile', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  if (typeof b.diet_notes === 'string') {
+    db.prepare('UPDATE mothers SET diet_notes = ? WHERE id = ?').run(b.diet_notes.slice(0, 500), mother.id);
+  }
+  if (MHO_PROFILE_FIELDS.some(k => b[k] !== undefined)) {
+    const cur = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(mother.id);
+    let data = {};
+    if (cur) { try { data = JSON.parse(cur.data); } catch (e) { data = {}; } }
+    for (const k of MHO_PROFILE_FIELDS) if (b[k] !== undefined) data[k] = String(b[k]).slice(0, 500);
+    const json = JSON.stringify(data).slice(0, 16000);
+    if (cur) {
+      db.prepare(`UPDATE mother_intake_assessments SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+        .run(json, mother.id);
+    } else {
+      db.prepare('INSERT INTO mother_intake_assessments (mother_id, nurse_id, data) VALUES (?,?,?)')
+        .run(mother.id, req.session.user.id, json);
+    }
+  }
+  logAudit(req, { action: 'update', entity: 'mother_handover_profile', entity_id: mother.id, summary: '產婦交班單備註/飲食/特殊餐' });
+  res.json({ ok: true });
+});
+
+app.post('/api/mothers/:id/handovers', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.handover_time || '')) return res.status(400).json({ error: '請填寫交班時間' });
+  const v = normalizeMotherHandover(b);
+  const info = db.prepare(`INSERT INTO mother_handovers
+    (mother_id, nurse_id, handover_date, handover_time, fundus, lochia, note)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    mother.id, req.session.user.id, v.date, v.time, v.fundus, v.lochia, v.note);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/mother-handovers/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM mother_handovers WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到交班紀錄' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.handover_time || '')) return res.status(400).json({ error: '請填寫交班時間' });
+  const v = normalizeMotherHandover(b);
+  db.prepare(`UPDATE mother_handovers SET handover_date=?, handover_time=?, fundus=?, lochia=?, note=?,
+    edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
+    v.date, v.time, v.fundus, v.lochia, v.note, req.session.user.id, cur.id);
+  logAudit(req, { action: 'update', entity: 'mother_handovers', entity_id: cur.id, summary: '產婦交班單修改' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/mother-handovers/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM mother_handovers WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 產婦結案 ----------
+const MCL_REASONS = ['期滿結案', '提前退住', '轉院', '其他'];
+const MCL_DEST = ['返家', '轉至醫療院所', '其他'];
+const MCL_EDU = ['產後回診提醒', '惡露觀察', '傷口護理', '乳房護理與哺乳', '避孕與月經恢復',
+  '情緒調適與憂鬱徵兆', '飲食與活動', '緊急就醫指徵'];
+const MCL_FIELDS = ['reason', 'reason_other', 'destination', 'hospital', 'destination_other', 'educations', 'follow_up'];
+
+app.get('/api/mothers/:id/closure', requireStaff, (req, res) => {
+  const mother = db.prepare(`
+    SELECT m.*,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_out
+    FROM mothers m WHERE m.id = ?`).get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const closure = db.prepare(`
+    SELECT c.*, u.name AS nurse_name, e.name AS edited_by_name FROM mother_closures c
+    LEFT JOIN users u ON u.id = c.nurse_id
+    LEFT JOIN users e ON e.id = c.edited_by WHERE c.mother_id = ?`).get(mother.id);
+  if (closure) { try { closure.data = JSON.parse(closure.data); } catch (e) { closure.data = {}; } }
+  // 住期摘要：最近生命徵象／宮底惡露（媽媽護理評估）、最新 EPDS、未結案健康問題、指導單完成度
+  const mna = db.prepare(`SELECT * FROM mother_nursing_assessments
+    WHERE mother_id = ? ORDER BY assess_date DESC, assess_time DESC, id DESC LIMIT 1`).get(mother.id);
+  let mnaData = {};
+  if (mna) { try { mnaData = JSON.parse(mna.data); } catch (e) { mnaData = {}; } }
+  const epds = db.prepare(`SELECT total, fill_date FROM mother_scales
+    WHERE mother_id = ? AND kind = 'epds' ORDER BY fill_date DESC, id DESC LIMIT 1`).get(mother.id);
+  const openProblems = db.prepare(`SELECT COUNT(*) c FROM mother_health_problems
+    WHERE mother_id = ? AND (end_date IS NULL OR end_date = '')`).get(mother.id).c;
+  const { reminders } = motherGuidanceData(mother);
+  const summary = {
+    vitals: mna ? { at: `${mna.assess_date} ${mna.assess_time}`, temperature: mna.temperature,
+      pulse: mna.pulse, respiration: mna.respiration, systolic: mna.systolic, diastolic: mna.diastolic } : null,
+    fundus_last: mna ? [mnaData.uterus, mnaData.fundus_note].filter(Boolean).join('／') : '',
+    lochia_last: mna ? [mnaData.lochia_amount, mnaData.lochia_color].filter(Boolean).join('／') : '',
+    epds: epds || null,
+    open_problems: openProblems,
+    guidance_done: reminders.filter(r => r.done_date).length,
+    guidance_total: reminders.length
+  };
+  res.json({ mother, closure: closure || null, summary, options: {
+    reasons: MCL_REASONS, destinations: MCL_DEST, educations: MCL_EDU
+  } });
+});
+
+// 結案存檔（已結案則更新）
+app.put('/api/mothers/:id/closure', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.close_date || '') ? b.close_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.close_time || '') ? b.close_time.slice(0, 5) : '';
+  if (!time) return res.status(400).json({ error: '請填寫結案時間' });
+  if (!MCL_REASONS.includes(b.reason)) return res.status(400).json({ error: '請選擇結案原因' });
+  if (!MCL_DEST.includes(b.destination)) return res.status(400).json({ error: '請選擇去向' });
+  if (b.reason === '其他' && !String(b.reason_other || '').trim()) return res.status(400).json({ error: '結案原因選「其他」時，補述必填' });
+  if (b.destination === '轉至醫療院所' && !String(b.hospital || '').trim()) return res.status(400).json({ error: '去向選「轉至醫療院所」時，院所名稱必填' });
+  if (b.destination === '其他' && !String(b.destination_other || '').trim()) return res.status(400).json({ error: '去向選「其他」時，補述必填' });
+  const data = {};
+  for (const k of MCL_FIELDS) if (b[k] !== undefined) {
+    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+  }
+  data.educations = (Array.isArray(b.educations) ? b.educations : []).filter(x => MCL_EDU.includes(x));
+  const note = String(b.note || '').slice(0, 600);
+  const cur = db.prepare('SELECT id FROM mother_closures WHERE mother_id = ?').get(mother.id);
+  const json = JSON.stringify(data).slice(0, 8000);
+  if (cur) {
+    db.prepare(`UPDATE mother_closures SET close_date=?, close_time=?, data=?, note=?,
+      edited_at=datetime('now','localtime'), edited_by=? WHERE mother_id=?`)
+      .run(date, time, json, note, req.session.user.id, mother.id);
+  } else {
+    db.prepare(`INSERT INTO mother_closures (mother_id, nurse_id, close_date, close_time, data, note)
+      VALUES (?,?,?,?,?,?)`).run(mother.id, req.session.user.id, date, time, json, note);
+  }
+  logAudit(req, { action: cur ? 'update' : 'create', entity: 'mother_closures', entity_id: mother.id, summary: '產婦結案' });
+  res.json({ ok: true });
+});
+
+// 解除結案（管理員）
+app.delete('/api/mother-closures/:motherId', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM mother_closures WHERE mother_id = ?').run(req.params.motherId);
+  logAudit(req, { action: 'delete', entity: 'mother_closures', entity_id: req.params.motherId, summary: '解除產婦結案' });
+  res.json({ ok: true });
+});
+
+// ---------- 產科醫師查房清單（在住媽媽工作清單；醫師評估欄留白供手寫） ----------
+app.get('/api/physician-rounds', requireStaff, (req, res) => {
+  const moms = db.prepare(`
+    SELECT m.*, r.name AS room_name FROM bookings bk
+    JOIN mothers m ON m.id = bk.mother_id
+    JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'checked_in' ORDER BY r.name`).all();
+  const rows = moms.map(m => {
+    // 胎次：入住評估表 → 母乳哺育評估
+    const mia = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(m.id);
+    let parity = '';
+    if (mia) { try { parity = JSON.parse(mia.data).parity || ''; } catch (e) { /* */ } }
+    if (!parity) {
+      const bfa = db.prepare(`SELECT a.parity FROM breastfeeding_assessments a
+        JOIN babies b ON b.id = a.baby_id WHERE b.mother_id = ?
+        ORDER BY a.assess_date DESC, a.id DESC LIMIT 1`).get(m.id);
+      if (bfa) parity = bfa.parity || '';
+    }
+    const ppDays = m.delivery_date
+      ? Math.max(0, Math.floor((new Date(today()) - new Date(m.delivery_date)) / 86400000)) : null;
+    // 媽媽問題：未結案健康問題＋最近巡診主訴
+    const problems = db.prepare(`SELECT item FROM mother_health_problems
+      WHERE mother_id = ? AND (end_date IS NULL OR end_date = '') ORDER BY start_date DESC LIMIT 5`).all(m.id)
+      .map(p => p.item);
+    const mdv = db.prepare(`SELECT visit_date, data, note FROM mother_doctor_visits
+      WHERE mother_id = ? ORDER BY visit_date DESC, visit_time DESC, id DESC LIMIT 1`).get(m.id);
+    let mdvData = {};
+    if (mdv) { try { mdvData = JSON.parse(mdv.data); } catch (e) { mdvData = {}; } }
+    if (mdvData.complaint === '有' && mdvData.complaint_text) problems.push(`主訴：${mdvData.complaint_text}`);
+    // 護理評估發現：最近一筆媽媽護理評估摘要
+    const mna = db.prepare(`SELECT * FROM mother_nursing_assessments
+      WHERE mother_id = ? ORDER BY assess_date DESC, assess_time DESC, id DESC LIMIT 1`).get(m.id);
+    let nursing = '';
+    if (mna) {
+      let d = {};
+      try { d = JSON.parse(mna.data); } catch (e) { d = {}; }
+      nursing = [
+        `${mna.assess_date} ${mna.temperature}°C ${mna.systolic}/${mna.diastolic}`,
+        d.uterus ? `宮縮:${d.uterus}` : '', d.lochia_amount ? `惡露:${d.lochia_amount}/${d.lochia_color || ''}` : '',
+        d.wound && d.wound !== '平整' ? `傷口:${d.wound}` : '',
+        d.breast_l_mastitis === '有' || d.breast_r_mastitis === '有' ? '⚠乳腺炎' : ''
+      ].filter(Boolean).join('　');
+    }
+    // 醫師評估記錄：最近巡診（無則留白供手寫）
+    const doctor = mdv ? [`${mdv.visit_date}`, mdvData.mood || '', (mdv.note || '').slice(0, 60)].filter(Boolean).join('　') : '';
+    return {
+      room_name: m.room_name, name: m.name, parity,
+      delivery_type: m.delivery_type || '', postpartum_days: ppDays,
+      problems: problems.join('；'), nursing_findings: nursing, doctor_note: doctor
+    };
+  });
+  if (req.query.format === 'xlsx') {
+    const buf = buildWorkbook('產科醫師查房清單', [
+      { key: 'room_name', label: '房號' }, { key: 'name', label: '姓名' },
+      { key: 'parity', label: '胎次' }, { key: 'delivery_type', label: '生產方式' },
+      { key: 'postpartum_days', label: '生產天數' }, { key: 'problems', label: '媽媽問題' },
+      { key: 'nursing_findings', label: '護理評估發現' }, { key: 'doctor_note', label: '醫師評估記錄' }
+    ], rows);
+    const fname = encodeURIComponent(`產科醫師查房清單-${today()}.xlsx`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="physician-rounds-${today()}.xlsx"; filename*=UTF-8''${fname}`);
+    return res.send(buf);
+  }
+  res.json({ date: today(), center_name: getSettings().center_name || '', rows });
+});
+
+// ---------- 寶寶報喜（依生產日查詢新生寶寶與預計入住） ----------
+app.get('/api/baby-announcements', requireStaff, (req, res) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : today();
+  const rows = db.prepare(`
+    SELECT b.id, b.name AS baby_name, b.gender, b.birth_date, b.birth_weight_g,
+      m.id AS mother_id, m.name AS mother_name, m.delivery_type,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS mother_check_in,
+      (SELECT bk.baby_check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS baby_check_in,
+      (SELECT r.value_num FROM baby_records r WHERE r.baby_id = b.id AND r.record_type = 'jaundice'
+        AND r.value_num IS NOT NULL ORDER BY r.recorded_at DESC LIMIT 1) AS jaundice
+    FROM babies b JOIN mothers m ON m.id = b.mother_id
+    WHERE b.birth_date = ? ORDER BY m.name`).all(date);
+  res.json({ date, rows });
+});
+
+// ---------- 病歷資料（依媽媽姓名查歷史住客；點選再取護理紀錄） ----------
+app.get('/api/medical-records', requireStaff, (req, res) => {
+  const name = String(req.query.name || '').trim();
+  if (!name) return res.status(400).json({ error: '請輸入媽媽姓名' });
+  const rows = db.prepare(`
+    SELECT m.id, m.name, m.phone, m.delivery_type, m.delivery_date, m.status,
+      (SELECT bk.check_in || ' ~ ' || bk.check_out FROM bookings bk WHERE bk.mother_id = m.id
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS stay_range,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id WHERE bk.mother_id = m.id
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT GROUP_CONCAT(CASE b.gender WHEN 'male' THEN '男' WHEN 'female' THEN '女' ELSE '未填' END, '、')
+        FROM babies b WHERE b.mother_id = m.id) AS baby_genders
+    FROM mothers m WHERE m.name LIKE ? ORDER BY m.id DESC LIMIT 50`).all(`%${name}%`);
+  res.json({ rows });
+});
+
 // ---------- 產後嬰兒結案 ----------
 const BCL_REASONS = ['期滿結案', '提前退住', '轉院', '其他'];
 const BCL_DEST = ['返家', '轉至醫療院所', '其他'];
@@ -1233,6 +1664,23 @@ const MNA_FIELDS = [
 const motherMedicalNo = m => m.member_no || ('M' + String(m.id).padStart(5, '0'));
 // 護理指導單提醒排程：入住第 1／3／7／10 天
 const GUIDANCE_DAYS = [1, 3, 7, 10];
+// 指導紀錄＋提醒配對（媽媽護理頁與護理指導頁共用；mother 需含 check_in）
+function motherGuidanceData(mother) {
+  const guidance = db.prepare(`SELECT g.*, u.name AS nurse_name FROM mother_guidance_logs g
+    LEFT JOIN users u ON u.id = g.nurse_id WHERE g.mother_id = ? ORDER BY g.done_date, g.id`).all(mother.id);
+  let reminders = [];
+  if (mother.check_in) {
+    const used = new Set();
+    reminders = GUIDANCE_DAYS.map(day => {
+      const remind = new Date(new Date(mother.check_in).getTime() + (day - 1) * 86400000).toISOString().slice(0, 10);
+      const log = guidance.find(g => !used.has(g.id) && g.done_date >= remind);
+      if (log) used.add(log.id);
+      return { remind_date: remind, day_label: `入住 第${day}天`,
+        done_date: log ? log.done_date : '', done_by: log ? (log.nurse_name || '') : '', kind: log ? log.kind : '' };
+    });
+  }
+  return { guidance, reminders };
+}
 
 app.get('/api/mothers/:id/nursing', requireStaff, (req, res) => {
   const mother = db.prepare(`
@@ -1256,20 +1704,7 @@ app.get('/api/mothers/:id/nursing', requireStaff, (req, res) => {
   const scales = db.prepare(`SELECT s.*, u.name AS nurse_name FROM mother_scales s
     LEFT JOIN users u ON u.id = s.nurse_id WHERE s.mother_id = ? ORDER BY s.fill_date DESC, s.id DESC LIMIT 100`).all(mother.id);
   for (const s of scales) { try { s.answers = JSON.parse(s.answers); } catch (e) { s.answers = []; } }
-  const guidance = db.prepare(`SELECT g.*, u.name AS nurse_name FROM mother_guidance_logs g
-    LEFT JOIN users u ON u.id = g.nurse_id WHERE g.mother_id = ? ORDER BY g.done_date, g.id`).all(mother.id);
-  // 護理指導單提醒（入住第 1/3/7/10 天；依序以任一指導單執行紀錄視為完成）
-  let reminders = [];
-  if (mother.check_in) {
-    const used = new Set();
-    reminders = GUIDANCE_DAYS.map(day => {
-      const remind = new Date(new Date(mother.check_in).getTime() + (day - 1) * 86400000).toISOString().slice(0, 10);
-      const log = guidance.find(g => !used.has(g.id) && g.done_date >= remind);
-      if (log) used.add(log.id);
-      return { remind_date: remind, day_label: `入住 第${day}天`,
-        done_date: log ? log.done_date : '', done_by: log ? (log.nurse_name || '') : '', kind: log ? log.kind : '' };
-    });
-  }
+  const { guidance, reminders } = motherGuidanceData(mother);
   const todayPhoto = db.prepare(`SELECT * FROM mother_breast_photos
     WHERE mother_id = ? AND taken_date = ? ORDER BY id DESC LIMIT 1`).get(mother.id, today());
   // 寶寶基本資料（母乳認知與支持評估表頭）：性別/出生/體重＋週數（醫師巡診）＋生產醫院（寶寶評估單）＋胎次（母乳哺育評估）
@@ -1328,6 +1763,23 @@ app.post('/api/mothers/:id/nursing', requireStaff, (req, res) => {
 app.delete('/api/mother-nursing/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM mother_nursing_assessments WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
+});
+
+// 護理指導：獨立頁讀取（提醒排程＋執行紀錄）
+app.get('/api/mothers/:id/guidance', requireStaff, (req, res) => {
+  const mother = db.prepare(`
+    SELECT m.*,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_out
+    FROM mothers m WHERE m.id = ?`).get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const { guidance, reminders } = motherGuidanceData(mother);
+  res.json({ mother, guidance, reminders });
 });
 
 // 護理指導單執行（產婦護理／母乳哺育）
@@ -1717,12 +2169,168 @@ app.post('/api/rooms', requireAdmin, (req, res) => {
   const r = req.body || {};
   if (!r.name) return res.status(400).json({ error: '房號必填' });
   try {
-    const info = db.prepare('INSERT INTO rooms (name, room_type, price_per_day, notes) VALUES (?,?,?,?)')
-      .run(r.name, r.room_type || '標準房', r.price_per_day || 0, r.notes || '');
+    const info = db.prepare(`INSERT INTO rooms (name, room_type, price_per_day, notes, call_ext, service_ext, sort)
+      VALUES (?,?,?,?,?,?,?)`).run(r.name, r.room_type || '標準房', r.price_per_day || 0, r.notes || '',
+      r.call_ext || '', r.service_ext || '', Number(r.sort) || 0);
     res.json({ id: info.lastInsertRowid });
   } catch (e) {
     res.status(400).json({ error: '房號重複' });
   }
+});
+
+app.put('/api/rooms/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到房間' });
+  const r = req.body || {};
+  try {
+    db.prepare(`UPDATE rooms SET name=?, room_type=?, price_per_day=?, notes=?, call_ext=?, service_ext=?, sort=?, active=? WHERE id=?`)
+      .run(String(r.name ?? cur.name).trim() || cur.name, r.room_type ?? cur.room_type,
+        r.price_per_day !== undefined ? Number(r.price_per_day) || 0 : cur.price_per_day,
+        r.notes ?? cur.notes, r.call_ext ?? cur.call_ext, r.service_ext ?? cur.service_ext,
+        r.sort !== undefined ? Number(r.sort) || 0 : cur.sort,
+        r.active !== undefined ? (r.active ? 1 : 0) : cur.active, cur.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: '房號重複' }); }
+});
+
+app.post('/api/rooms/batch', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  const list = Array.isArray(b.rooms) ? b.rooms : [];
+  if (!list.length) return res.status(400).json({ error: '請提供房號清單' });
+  const ins = db.prepare(`INSERT OR IGNORE INTO rooms (name, room_type, price_per_day, call_ext, service_ext, sort)
+    VALUES (?,?,?,?,?,?)`);
+  let added = 0;
+  const tx = db.transaction(() => {
+    for (const r of list) {
+      const name = String(r.name || '').trim();
+      if (!name) continue;
+      const info = ins.run(name, r.room_type || '標準房', Number(r.price_per_day) || 0,
+        r.call_ext || name, r.service_ext || name, Number(r.sort) || 0);
+      if (info.changes) added++;
+    }
+  });
+  tx();
+  res.json({ added });
+});
+
+// ---------- 房間資料管理：房型設定 ----------
+app.get('/api/room-types', requireStaff, (req, res) => {
+  res.json(db.prepare('SELECT * FROM room_types ORDER BY sort, id').all());
+});
+app.post('/api/room-types', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  if (!String(b.name || '').trim()) return res.status(400).json({ error: '請填寫房型名稱' });
+  try {
+    const info = db.prepare('INSERT INTO room_types (name, price, sort) VALUES (?,?,?)')
+      .run(String(b.name).trim().slice(0, 50), Number(b.price) || 0, Number(b.sort) || 0);
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) { res.status(400).json({ error: '房型名稱重複' }); }
+});
+app.put('/api/room-types/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM room_types WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到房型' });
+  const b = req.body || {};
+  try {
+    db.prepare('UPDATE room_types SET name=?, price=?, sort=?, active=? WHERE id=?').run(
+      String(b.name ?? cur.name).trim() || cur.name, b.price !== undefined ? Number(b.price) || 0 : cur.price,
+      b.sort !== undefined ? Number(b.sort) || 0 : cur.sort,
+      b.active !== undefined ? (b.active ? 1 : 0) : cur.active, cur.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: '房型名稱重複' }); }
+});
+app.delete('/api/room-types/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM room_types WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 房間資料管理：房價折扣設定 ----------
+app.get('/api/room-discounts', requireStaff, (req, res) => {
+  const rt = String(req.query.room_type || '');
+  const where = rt ? 'WHERE room_type = ?' : '';
+  const args = rt ? [rt] : [];
+  res.json(db.prepare(`SELECT * FROM room_discounts ${where} ORDER BY id DESC`).all(...args));
+});
+app.post('/api/room-discounts', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  if (!String(b.room_type || '').trim()) return res.status(400).json({ error: '請選擇房型' });
+  const type = ['percent', 'amount', 'gift'].includes(b.discount_type) ? b.discount_type : 'percent';
+  const info = db.prepare(`INSERT INTO room_discounts
+    (room_type, customer_class, plan_name, start_date, end_date, stay_days, discount_type, discount_value, bonus_days, note)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    String(b.room_type).slice(0, 50), String(b.customer_class || '一般客戶').slice(0, 30),
+    String(b.plan_name || '').slice(0, 50),
+    /^\d{4}-\d{2}-\d{2}$/.test(b.start_date || '') ? b.start_date : '',
+    /^\d{4}-\d{2}-\d{2}$/.test(b.end_date || '') ? b.end_date : '',
+    Number(b.stay_days) || 0, type, Number(b.discount_value) || 0, Number(b.bonus_days) || 0,
+    String(b.note || '').slice(0, 200));
+  res.json({ id: info.lastInsertRowid });
+});
+app.put('/api/room-discounts/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM room_discounts WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到折扣設定' });
+  const b = req.body || {};
+  const type = ['percent', 'amount', 'gift'].includes(b.discount_type) ? b.discount_type : cur.discount_type;
+  db.prepare(`UPDATE room_discounts SET room_type=?, customer_class=?, plan_name=?, start_date=?, end_date=?,
+    stay_days=?, discount_type=?, discount_value=?, bonus_days=?, note=?, active=? WHERE id=?`).run(
+    b.room_type ?? cur.room_type, b.customer_class ?? cur.customer_class, b.plan_name ?? cur.plan_name,
+    b.start_date !== undefined ? (/^\d{4}-\d{2}-\d{2}$/.test(b.start_date) ? b.start_date : '') : cur.start_date,
+    b.end_date !== undefined ? (/^\d{4}-\d{2}-\d{2}$/.test(b.end_date) ? b.end_date : '') : cur.end_date,
+    b.stay_days !== undefined ? Number(b.stay_days) || 0 : cur.stay_days, type,
+    b.discount_value !== undefined ? Number(b.discount_value) || 0 : cur.discount_value,
+    b.bonus_days !== undefined ? Number(b.bonus_days) || 0 : cur.bonus_days,
+    b.note ?? cur.note, b.active !== undefined ? (b.active ? 1 : 0) : cur.active, cur.id);
+  res.json({ ok: true });
+});
+app.delete('/api/room-discounts/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM room_discounts WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 房間資料管理：嬰兒床位設定 ----------
+app.get('/api/baby-beds', requireStaff, (req, res) => {
+  const kw = String(req.query.keyword || '').trim();
+  const where = kw ? 'WHERE bed_no LIKE ?' : '';
+  const args = kw ? [`%${kw}%`] : [];
+  res.json(db.prepare(`SELECT * FROM baby_beds ${where} ORDER BY zone, bed_no`).all(...args));
+});
+app.post('/api/baby-beds', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  if (!String(b.bed_no || '').trim()) return res.status(400).json({ error: '請填寫嬰兒床號碼' });
+  try {
+    const info = db.prepare('INSERT INTO baby_beds (bed_no, zone, note) VALUES (?,?,?)')
+      .run(String(b.bed_no).trim().slice(0, 30), String(b.zone || 'A').slice(0, 10), String(b.note || '').slice(0, 100));
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) { res.status(400).json({ error: '床號重複' }); }
+});
+app.post('/api/baby-beds/batch', requireAdmin, (req, res) => {
+  const list = Array.isArray((req.body || {}).beds) ? req.body.beds : [];
+  if (!list.length) return res.status(400).json({ error: '請提供床號清單' });
+  const ins = db.prepare('INSERT OR IGNORE INTO baby_beds (bed_no, zone) VALUES (?,?)');
+  let added = 0;
+  const tx = db.transaction(() => {
+    for (const b of list) {
+      const no = String(b.bed_no || '').trim();
+      if (!no) continue;
+      if (ins.run(no.slice(0, 30), String(b.zone || 'A').slice(0, 10)).changes) added++;
+    }
+  });
+  tx();
+  res.json({ added });
+});
+app.put('/api/baby-beds/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM baby_beds WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到床位' });
+  const b = req.body || {};
+  try {
+    db.prepare('UPDATE baby_beds SET bed_no=?, zone=?, note=?, active=? WHERE id=?').run(
+      String(b.bed_no ?? cur.bed_no).trim() || cur.bed_no, b.zone ?? cur.zone, b.note ?? cur.note,
+      b.active !== undefined ? (b.active ? 1 : 0) : cur.active, cur.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: '床號重複' }); }
+});
+app.delete('/api/baby-beds/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM baby_beds WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 app.get('/api/bookings', requireStaff, (req, res) => {
@@ -1798,6 +2406,11 @@ app.put('/api/bookings/:id/status', requireStaff, (req, res) => {
   const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
   if (!bk) return res.status(404).json({ error: '找不到訂房' });
   db.prepare('UPDATE bookings SET status = ? WHERE id = ?').run(status, req.params.id);
+  if (status === 'checked_out' && !bk.actual_check_out) {
+    // 記錄實際退房日；早於預退日視為提前退房（原因可由前端帶入）
+    db.prepare('UPDATE bookings SET actual_check_out = ?, early_reason = ? WHERE id = ?')
+      .run(today(), String((req.body || {}).reason || '').slice(0, 200), bk.id);
+  }
   if (status === 'checked_in') {
     db.prepare(`UPDATE mothers SET status = 'checked_in' WHERE id = ?`).run(bk.mother_id);
     maybeWelcome(bk.id); // 首次入住自動發送歡迎關懷（有家屬帳號才送、不重複）
@@ -2896,6 +3509,1112 @@ app.post('/api/tours/:id/sign', requireStaff, (req, res) => {
   res.json(result);
 });
 
+// ---------- 客戶管理（潛在客戶＝mothers status='reserved'＋customer_profiles 擴充） ----------
+const CUST_FIELDS = [
+  'identity', 'source', 'delivery_mode', 'stay_days', 'care_exp', 'hospital', 'parity',
+  'region', 'room_pref', 'email', 'address', 'tel', 'note',
+  'contact_name', 'contact_relation', 'contact_mobile', 'contact_tel', 'contact_email', 'contact_address',
+  'baby_gender', 'father_age', 'referrer', 'referrer_fee', 'referrer_note'
+];
+function custProfileUpsert(motherId, b, userId) {
+  const cur = db.prepare('SELECT data FROM customer_profiles WHERE mother_id = ?').get(motherId);
+  let data = {};
+  if (cur) { try { data = JSON.parse(cur.data); } catch (e) { data = {}; } }
+  for (const k of CUST_FIELDS) if (b[k] !== undefined) data[k] = String(b[k] ?? '').slice(0, 500);
+  const json = JSON.stringify(data).slice(0, 12000);
+  if (cur) {
+    db.prepare(`UPDATE customer_profiles SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+      .run(json, motherId);
+  } else {
+    db.prepare('INSERT INTO customer_profiles (mother_id, data, created_by) VALUES (?,?,?)')
+      .run(motherId, json, userId);
+  }
+}
+
+// 查詢：姓名/電話（模糊）＋預產期（精準）＋合約編號（contracts.id）
+app.get('/api/customers', requireStaff, (req, res) => {
+  const name = String(req.query.name || '').trim();
+  const phone = String(req.query.phone || '').trim();
+  const due = String(req.query.due_date || '').trim();
+  const contract = String(req.query.contract_no || '').trim().replace(/\D/g, '');
+  if (!name && !phone && !due && !contract) return res.status(400).json({ error: '請至少輸入一個查詢條件' });
+  const conds = [], args = [];
+  if (name) { conds.push('m.name LIKE ?'); args.push(`%${name}%`); }
+  if (phone) { conds.push('m.phone LIKE ?'); args.push(`%${phone}%`); }
+  if (due) { conds.push('m.due_date = ?'); args.push(due); }
+  if (contract) {
+    conds.push(`(EXISTS (SELECT 1 FROM customer_contracts cc WHERE cc.mother_id = m.id AND cc.contract_no LIKE ?)
+      OR EXISTS (SELECT 1 FROM contracts c JOIN bookings bk ON bk.id = c.booking_id
+      WHERE bk.mother_id = m.id AND CAST(c.id AS TEXT) LIKE ?))`);
+    args.push(`%${contract}`, `%${contract}`);
+  }
+  const rows = db.prepare(`
+    SELECT m.id, m.name, m.phone, m.id_no, m.due_date, m.status,
+      (SELECT cc.contract_no FROM customer_contracts cc WHERE cc.mother_id = m.id) AS contract_no,
+      (SELECT c.id FROM contracts c JOIN bookings bk ON bk.id = c.booking_id
+        WHERE bk.mother_id = m.id AND c.status != 'void' ORDER BY c.id DESC LIMIT 1) AS contract_id,
+      (SELECT COUNT(*) FROM customer_profiles p WHERE p.mother_id = m.id) AS has_profile
+    FROM mothers m WHERE ${conds.join(' AND ')} ORDER BY m.id DESC LIMIT 100`).all(...args);
+  res.json({ rows });
+});
+
+app.get('/api/customers/:motherId', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT * FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!mother) return res.status(404).json({ error: '找不到客戶' });
+  const prof = db.prepare('SELECT data, updated_at FROM customer_profiles WHERE mother_id = ?').get(mother.id);
+  let data = {};
+  if (prof) { try { data = JSON.parse(prof.data); } catch (e) { data = {}; } }
+  // 關聯資料同步帶出：互動紀錄／參觀／合約／訂房收款
+  const logs = db.prepare(`SELECT l.*, u.name AS staff_name FROM customer_logs l
+    LEFT JOIN users u ON u.id = l.created_by WHERE l.mother_id = ? ORDER BY l.id DESC LIMIT 100`).all(mother.id);
+  const tours = db.prepare(`SELECT id, tour_at, status, note FROM tours
+    WHERE name = ? OR (? != '' AND phone = ?) ORDER BY tour_at DESC LIMIT 50`)
+    .all(mother.name, mother.phone || '', mother.phone || '');
+  const contracts = db.prepare(`
+    SELECT c.id, c.title, c.status, c.created_at, c.signed_at, bk.check_in, bk.check_out, bk.room_id,
+      r.name AS room_name, bk.total_amount
+    FROM contracts c JOIN bookings bk ON bk.id = c.booking_id
+    LEFT JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.mother_id = ? ORDER BY c.id DESC LIMIT 50`).all(mother.id);
+  const bookings = db.prepare(`
+    SELECT bk.id, bk.check_in, bk.check_out, bk.status, bk.total_amount, r.name AS room_name, r.room_type,
+      (SELECT COALESCE(SUM(p.amount),0) FROM payments p WHERE p.booking_id = bk.id) AS paid,
+      (SELECT COALESCE(SUM(ci.unit_price*ci.quantity),0) FROM charge_items ci WHERE ci.booking_id = bk.id) AS addon
+    FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.mother_id = ? ORDER BY bk.check_in DESC LIMIT 50`).all(mother.id);
+  // 消費明細與收款紀錄（該媽媽所有訂房）
+  const charges = db.prepare(`
+    SELECT ci.booking_id, ci.item_name, ci.unit_price, ci.quantity, ci.charged_on, ci.note
+    FROM charge_items ci JOIN bookings bk ON bk.id = ci.booking_id
+    WHERE bk.mother_id = ? ORDER BY ci.charged_on DESC, ci.id DESC LIMIT 200`).all(mother.id);
+  const payments = db.prepare(`
+    SELECT p.booking_id, p.amount, p.method, p.paid_on, p.note, u.name AS received_name
+    FROM payments p JOIN bookings bk ON bk.id = p.booking_id
+    LEFT JOIN users u ON u.id = p.received_by
+    WHERE bk.mother_id = ? ORDER BY p.paid_on DESC, p.id DESC LIMIT 200`).all(mother.id);
+  // 客戶合約資料＋房型清單（合約明細下拉用）
+  const contract = getCustomerContract(mother.id);
+  const roomTypes = db.prepare(`SELECT room_type AS name, MIN(price_per_day) AS price
+    FROM rooms WHERE active = 1 GROUP BY room_type ORDER BY price DESC`).all();
+  // 膳食資訊：飲食類型/禁忌＋未來 7 天供餐預覽（依產後階段與飲食類型挑菜單）
+  const mealCfg = mealConfig();
+  const mealWeek = [];
+  {
+    const bk = db.prepare(`SELECT check_in FROM bookings WHERE mother_id = ? AND status IN ('checked_in','reserved')
+      ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(mother.id);
+    const mm = { ...mother, check_in: bk ? bk.check_in : '' };
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(new Date(today()).getTime() + i * 86400000).toISOString().slice(0, 10);
+      const menus = db.prepare('SELECT * FROM meal_menu WHERE menu_date = ?').all(date);
+      const stage = motherStage(mm, date, mealCfg.stages);
+      const diet = mother.meal_diet || (mealCfg.diets[0] || '一般');
+      const slots = {};
+      for (const slot of mealCfg.slots) {
+        const mu = pickMenu(menus.filter(x => x.slot === slot), stage.name, diet);
+        slots[slot] = mu ? [mu.staple, mu.main, mu.soup].filter(Boolean).join('／') : '';
+      }
+      mealWeek.push({ date, day: stage.day, stage: stage.name, slots });
+    }
+  }
+  const babies = db.prepare('SELECT id, name, gender, birth_date, birth_weight_g, location FROM babies WHERE mother_id = ?').all(mother.id);
+  res.json({ mother, profile: data, profile_updated_at: prof ? prof.updated_at : '',
+    logs, tours, contracts, bookings, charges, payments, contract, room_types: roomTypes, babies,
+    meals: { diet: mother.meal_diet || '', diet_notes: mother.diet_notes || '',
+      diets: mealCfg.diets, slots: mealCfg.slots, week: mealWeek } });
+});
+
+// ---------- 客戶合約資料（每媽媽一筆） ----------
+const CCT_FIELDS = [
+  'handler', 'sign_date', 'parity_no', 'baby_count', 'checkup_hospital', 'checkup_doctor',
+  'birth_hospital', 'butler', 'diet_ban', 'note',
+  'fc_return_date', 'fc_no', 'fc_by',
+  'room_card_given_date', 'room_card_no', 'room_card_given_by',
+  'room_card_used_date', 'room_card_used_no', 'room_card_used_by',
+  'share_card_given_date', 'share_card_no', 'share_card_given_by',
+  'share_card_used_date', 'share_card_used_no', 'share_card_used_by',
+  'consult_date', 'consult_note', 'consult_by'
+];
+function getCustomerContract(motherId) {
+  const c = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(motherId);
+  if (!c) return null;
+  try { c.data = JSON.parse(c.data); } catch (e) { c.data = {}; }
+  try { c.items = JSON.parse(c.items); } catch (e) { c.items = []; }
+  c.total = c.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  return c;
+}
+function ensureCustomerContract(motherId, userId) {
+  let c = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(motherId);
+  if (c) return c;
+  // 合約編號：YYYYMM＋3 碼流水（依當月既有數量遞增，衝突時往後找）
+  const ym = today().slice(0, 7).replace('-', '');
+  let seq = db.prepare("SELECT COUNT(*) c FROM customer_contracts WHERE contract_no LIKE ?").get(`${ym}%`).c + 1;
+  let no = '';
+  for (let i = 0; i < 999; i++) {
+    no = `${ym}${String(seq + i).padStart(3, '0')}`;
+    if (!db.prepare('SELECT 1 FROM customer_contracts WHERE contract_no = ?').get(no)) break;
+  }
+  db.prepare('INSERT INTO customer_contracts (mother_id, contract_no, created_by) VALUES (?,?,?)')
+    .run(motherId, no, userId);
+  return db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(motherId);
+}
+
+// 合約資料存檔（部分欄位合併；同步 mothers 的預產期/生產方式/飲食禁忌）
+app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!mother) return res.status(404).json({ error: '找不到客戶' });
+  const b = req.body || {};
+  const cur = ensureCustomerContract(mother.id, req.session.user.id);
+  let data = {};
+  try { data = JSON.parse(cur.data); } catch (e) { data = {}; }
+  for (const k of CCT_FIELDS) if (b[k] !== undefined) data[k] = String(b[k] ?? '').slice(0, 600);
+  db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    .run(JSON.stringify(data).slice(0, 12000), mother.id);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) {
+    db.prepare('UPDATE mothers SET due_date = ? WHERE id = ?').run(b.due_date, mother.id);
+  }
+  if (b.delivery_mode !== undefined) {
+    db.prepare('UPDATE mothers SET delivery_type = ? WHERE id = ?').run(String(b.delivery_mode).slice(0, 20), mother.id);
+  }
+  if (b.diet_ban !== undefined) {
+    db.prepare('UPDATE mothers SET diet_notes = ? WHERE id = ?').run(String(b.diet_ban).slice(0, 500), mother.id);
+  }
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id, summary: '客戶合約資料修改' });
+  res.json({ ok: true, contract_no: cur.contract_no });
+});
+
+// 合約明細：新增銷售房型（qty=訂房天數；price 未帶則取該房型每日房價）
+app.post('/api/customers/:motherId/contract/items', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!mother) return res.status(404).json({ error: '找不到客戶' });
+  const b = req.body || {};
+  const name = String(b.name || '').trim().slice(0, 100);
+  const qty = Number(b.qty);
+  if (!name) return res.status(400).json({ error: '請選擇銷售房型' });
+  if (!(qty > 0 && qty <= 999)) return res.status(400).json({ error: '訂房天數需為 1～999' });
+  let price = Number(b.price);
+  if (!(price >= 0)) {
+    const r = db.prepare('SELECT MIN(price_per_day) p FROM rooms WHERE room_type = ? AND active = 1').get(name);
+    price = (r && r.p) || 0;
+  }
+  const cur = ensureCustomerContract(mother.id, req.session.user.id);
+  let items = [];
+  try { items = JSON.parse(cur.items); } catch (e) { items = []; }
+  if (items.length >= 50) return res.status(400).json({ error: '明細筆數已達上限' });
+  items.push({ name, qty, price: Math.round(price), by: req.session.user.name, at: today() });
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    .run(JSON.stringify(items).slice(0, 12000), mother.id);
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id, summary: `合約明細新增 ${name} ${qty}天` });
+  res.json({ ok: true });
+});
+
+// 合約明細：刪除（需刪除說明，記入稽核）
+app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, res) => {
+  const b = req.body || {};
+  const idx = Number(b.index);
+  const reason = String(b.reason || '').trim().slice(0, 200);
+  if (!reason) return res.status(400).json({ error: '請填寫刪除說明' });
+  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  if (!cur) return res.status(404).json({ error: '找不到合約資料' });
+  let items = [];
+  try { items = JSON.parse(cur.items); } catch (e) { items = []; }
+  if (!(idx >= 0 && idx < items.length)) return res.status(400).json({ error: '明細序號錯誤' });
+  const removed = items.splice(idx, 1)[0];
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    .run(JSON.stringify(items), cur.mother_id);
+  logAudit(req, { action: 'delete', entity: 'customer_contracts', entity_id: cur.mother_id,
+    summary: `合約明細刪除 ${removed.name} ${removed.qty}天（${reason}）` });
+  res.json({ ok: true });
+});
+
+// ---------- 後台：公佈欄及交辦事項 ----------
+app.get('/api/bulletins', requireStaff, (req, res) => {
+  const rows = db.prepare(`SELECT b.*, u.name AS created_name, a.name AS assigned_name, dn.name AS done_name
+    FROM bulletins b
+    LEFT JOIN users u ON u.id = b.created_by
+    LEFT JOIN users a ON a.id = b.assigned_to
+    LEFT JOIN users dn ON dn.id = b.done_by
+    ORDER BY b.pinned DESC, b.done, b.id DESC LIMIT 300`).all();
+  res.json(rows);
+});
+app.post('/api/bulletins', requireStaff, (req, res) => {
+  const b = req.body || {};
+  if (!String(b.title || '').trim()) return res.status(400).json({ error: '請填寫標題' });
+  const kind = b.kind === 'task' ? 'task' : 'notice';
+  const info = db.prepare(`INSERT INTO bulletins (kind, title, body, assigned_to, due_date, pinned, created_by)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    kind, String(b.title).trim().slice(0, 100), String(b.body || '').slice(0, 2000),
+    kind === 'task' ? (b.assigned_to || null) : null,
+    /^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '') ? b.due_date : '',
+    b.pinned ? 1 : 0, req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+app.put('/api/bulletins/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM bulletins WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到公告/交辦' });
+  const b = req.body || {};
+  if (b.done !== undefined) { // 交辦結案／重開
+    db.prepare(`UPDATE bulletins SET done=?, done_at=CASE WHEN ? THEN datetime('now','localtime') ELSE '' END,
+      done_by=CASE WHEN ? THEN ? ELSE NULL END WHERE id=?`)
+      .run(b.done ? 1 : 0, b.done ? 1 : 0, b.done ? 1 : 0, req.session.user.id, cur.id);
+    return res.json({ ok: true });
+  }
+  db.prepare(`UPDATE bulletins SET title=?, body=?, assigned_to=?, due_date=?, pinned=? WHERE id=?`).run(
+    String(b.title ?? cur.title).trim().slice(0, 100), String(b.body ?? cur.body).slice(0, 2000),
+    b.assigned_to !== undefined ? (b.assigned_to || null) : cur.assigned_to,
+    b.due_date !== undefined ? (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date) ? b.due_date : '') : cur.due_date,
+    b.pinned !== undefined ? (b.pinned ? 1 : 0) : cur.pinned, cur.id);
+  res.json({ ok: true });
+});
+app.delete('/api/bulletins/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM bulletins WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 後台：文件上傳下載區 ----------
+app.get('/api/documents', requireStaff, (req, res) => {
+  const rows = db.prepare(`SELECT d.*, u.name AS uploaded_name FROM documents d
+    LEFT JOIN users u ON u.id = d.uploaded_by ORDER BY d.id DESC LIMIT 500`).all();
+  res.json(rows);
+});
+app.post('/api/documents', requireStaff, docUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '請選擇檔案（支援 PDF／Office／圖片／文字／ZIP，20MB 內）' });
+  const b = req.body || {};
+  const info = db.prepare(`INSERT INTO documents (title, category, filename, orig_name, size, note, uploaded_by)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    String(b.title || req.file.originalname).trim().slice(0, 100),
+    String(b.category || '').slice(0, 50), req.file.filename,
+    String(req.file.originalname || '').slice(0, 200), req.file.size,
+    String(b.note || '').slice(0, 200), req.session.user.id);
+  res.json({ id: info.lastInsertRowid, file: req.file.filename });
+});
+app.delete('/api/documents/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT filename FROM documents WHERE id = ?').get(req.params.id);
+  if (cur) removeUploadFile(cur.filename);
+  db.prepare('DELETE FROM documents WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 後台：客戶退訂資料／合約轉住房資料 ----------
+app.get('/api/cancellations', requireStaff, (req, res) => {
+  const bookings = db.prepare(`
+    SELECT bk.id, bk.check_in, bk.check_out, bk.deposit, bk.total_amount, bk.notes, bk.created_at,
+      m.name AS mother_name, m.phone, r.name AS room_name, r.room_type,
+      (SELECT COALESCE(SUM(p.amount),0) FROM payments p WHERE p.booking_id = bk.id) AS paid
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'cancelled' ORDER BY bk.id DESC LIMIT 200`).all();
+  const tours = db.prepare(`SELECT id, name, phone, tour_at, note FROM tours
+    WHERE status = 'lost' ORDER BY tour_at DESC LIMIT 200`).all();
+  res.json({ bookings, tours });
+});
+app.get('/api/contract-transfers', requireStaff, (req, res) => {
+  const rows = db.prepare(`
+    SELECT cc.contract_no, cc.updated_at, m.id AS mother_id, m.name, m.phone, m.due_date, m.status,
+      cc.items, cc.data,
+      (SELECT bk.id FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_id,
+      (SELECT bk.status FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_status,
+      (SELECT bk.check_in || ' ~ ' || bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS stay_range,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+    FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
+    ORDER BY cc.id DESC LIMIT 200`).all();
+  for (const r of rows) {
+    try { r.total = JSON.parse(r.items).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0); }
+    catch (e) { r.total = 0; }
+    try { r.sign_date = (JSON.parse(r.data) || {}).sign_date || ''; } catch (e) { r.sign_date = ''; }
+    delete r.items; delete r.data;
+  }
+  res.json({ rows });
+});
+
+// ---------- 客戶及簽約資料查詢（簽約中/退訂/已轉住房 三模式共用；?format=xlsx 匯出） ----------
+// mode=signed：有效合約且尚未排房；cancelled：已退訂；transferred：有效且已排房/入住/退住
+app.get('/api/client-contracts', requireStaff, (req, res) => {
+  const mode = ['signed', 'cancelled', 'transferred'].includes(req.query.mode) ? req.query.mode : 'signed';
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
+  const dateField = String(req.query.date_field || '');
+  const name = String(req.query.name || '').trim();
+  const kw = String(req.query.keyword || '').trim();
+  const kwType = String(req.query.keyword_type || 'contract');
+  const all = db.prepare(`
+    SELECT cc.contract_no, cc.status, cc.items, cc.data, cc.updated_at,
+      m.id AS mother_id, m.name, m.id_no, m.phone, m.due_date, m.status AS mother_status,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_check_in,
+      (SELECT bk.status FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_status,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+    FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
+    ORDER BY cc.id DESC LIMIT 500`).all();
+  let rows = all.map(r => {
+    let items = [], data = {};
+    try { items = JSON.parse(r.items); } catch (e) { items = []; }
+    try { data = JSON.parse(r.data); } catch (e) { data = {}; }
+    return {
+      mother_id: r.mother_id, contract_no: r.contract_no, name: r.name, id_no: r.id_no || '',
+      phone: r.phone || '', due_date: r.due_date || '', sign_date: data.sign_date || '',
+      handler: data.handler || '', summary: items.map(it => `${it.name}×${it.qty}天`).join('、'),
+      days: items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
+      total: items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0),
+      cancel_date: data.cancel_date || '', cancel_reason: data.cancel_reason || '', cancel_by: data.cancel_by || '',
+      checkin_date: r.booking_check_in || '', booking_status: r.booking_status || '', room_name: r.room_name || '',
+      cancelled: r.status === 'cancelled'
+    };
+  });
+  rows = rows.filter(r => mode === 'cancelled' ? r.cancelled
+    : mode === 'transferred' ? (!r.cancelled && r.booking_status)
+    : (!r.cancelled && !r.booking_status));
+  // 日期區間（欄位依 mode：預產期/簽約日/退訂日/入住日）
+  const DF = { due: 'due_date', sign: 'sign_date', cancel: 'cancel_date', checkin: 'checkin_date' };
+  const df = DF[dateField] || (mode === 'transferred' ? 'checkin_date' : 'due_date');
+  if (from) rows = rows.filter(r => r[df] && r[df] >= from);
+  if (to) rows = rows.filter(r => r[df] && r[df] <= to);
+  if (name) rows = rows.filter(r => r.name.includes(name));
+  if (kw) {
+    if (kwType === 'idno') rows = rows.filter(r => r.id_no.includes(kw));
+    else if (kwType === 'phone') rows = rows.filter(r => r.phone.includes(kw));
+    else rows = rows.filter(r => r.contract_no.includes(kw));
+  }
+  if (req.query.format === 'xlsx') {
+    const LABEL = { signed: '客戶簽約資料', cancelled: '客戶退訂資料', transferred: '合約轉住房資料' };
+    const cols = [
+      { key: 'contract_no', label: '合約號碼' }, { key: 'name', label: '媽媽姓名' },
+      { key: 'id_no', label: '身分證號' }, { key: 'phone', label: '聯絡電話' },
+      { key: 'due_date', label: '預產期' }, { key: 'sign_date', label: '簽約日期' },
+      ...(mode === 'cancelled' ? [{ key: 'cancel_date', label: '退訂日期' }, { key: 'cancel_reason', label: '退訂原因' }, { key: 'cancel_by', label: '退訂人' }] : []),
+      ...(mode === 'transferred' ? [{ key: 'checkin_date', label: '入住日期' }, { key: 'room_name', label: '房號' }] : []),
+      { key: 'summary', label: '合約住宿摘要' }, { key: 'days', label: '天數' },
+      { key: 'total', label: '合約總額' }, { key: 'handler', label: '經手人' }
+    ];
+    const buf = buildWorkbook(LABEL[mode], cols, rows);
+    const fname = encodeURIComponent(`${LABEL[mode]}-${today()}.xlsx`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="client-contracts-${mode}.xlsx"; filename*=UTF-8''${fname}`);
+    return res.send(buf);
+  }
+  res.json({ mode, rows });
+});
+
+// 合約退訂（原因必填；記稽核）／取消退訂（admin）
+app.post('/api/customers/:motherId/contract/cancel', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  if (!cur) return res.status(404).json({ error: '尚未建立合約資料' });
+  if (cur.status === 'cancelled') return res.status(400).json({ error: '此合約已退訂' });
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
+  if (!reason) return res.status(400).json({ error: '請填寫退訂原因' });
+  let data = {};
+  try { data = JSON.parse(cur.data); } catch (e) { data = {}; }
+  data.cancel_date = today();
+  data.cancel_reason = reason;
+  data.cancel_by = req.session.user.name;
+  db.prepare(`UPDATE customer_contracts SET status='cancelled', data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    .run(JSON.stringify(data).slice(0, 12000), cur.mother_id);
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id, summary: `合約退訂（${reason}）` });
+  res.json({ ok: true });
+});
+app.post('/api/customers/:motherId/contract/restore', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  if (!cur) return res.status(404).json({ error: '尚未建立合約資料' });
+  let data = {};
+  try { data = JSON.parse(cur.data); } catch (e) { data = {}; }
+  delete data.cancel_date; delete data.cancel_reason; delete data.cancel_by;
+  db.prepare(`UPDATE customer_contracts SET status='active', data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    .run(JSON.stringify(data), cur.mother_id);
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id, summary: '取消合約退訂（恢復有效）' });
+  res.json({ ok: true });
+});
+
+// ---------- 產後報表查詢（19 張報表共用引擎；?format=xlsx 匯出） ----------
+// 每張報表＝{ label, columns, run(from,to)→rows }；日期預設當月
+const ppDays = (from, to) => {
+  const out = [];
+  for (let d = new Date(from); d <= new Date(to) && out.length < 366; d.setDate(d.getDate() + 1)) {
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+};
+const ppMonths = (from, to) => {
+  const out = [];
+  let d = new Date(from.slice(0, 7) + '-01');
+  const end = new Date(to.slice(0, 7) + '-01');
+  while (d <= end && out.length < 36) {
+    out.push(d.toISOString().slice(0, 7));
+    d.setMonth(d.getMonth() + 1);
+  }
+  return out;
+};
+// 某日佔用房數（reserved 不算、checked_in/checked_out 依期間涵蓋）
+const ppOccupiedOn = date => db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings
+  WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).get(date, date).c;
+
+const PP_REPORTS = {
+  pay_daily_sum: { label: '產後每日收款統計表', columns: [
+    ['d', '收款日'], ['cash', '現金'], ['remit', '匯款'], ['other_m', '其他(方式)'],
+    ['deposit', '訂金'], ['stay', '入住款項'], ['final', '尾款'], ['other_i', '其他(項目)'],
+    ['income', '收入小計'], ['retail', '產品零售'], ['grand', '全部合計']],
+    run: (f, t) => {
+      const pays = db.prepare(`SELECT paid_on, amount, method, note FROM payments
+        WHERE paid_on BETWEEN ? AND ? ORDER BY paid_on`).all(f, t);
+      const byDay = {};
+      for (const p of pays) {
+        const r = byDay[p.paid_on] = byDay[p.paid_on] || { d: p.paid_on, cash: 0, remit: 0, other_m: 0,
+          deposit: 0, stay: 0, final: 0, other_i: 0, income: 0, retail: 0, grand: 0 };
+        const isRetail = (p.note || '').includes('產品零售');
+        const m = (p.method || '').includes('現金') ? 'cash' : /匯|轉帳/.test(p.method || '') ? 'remit' : 'other_m';
+        r[m] += p.amount;
+        if (isRetail) r.retail += p.amount;
+        else {
+          const n = p.note || '';
+          if (n.startsWith('訂金')) r.deposit += p.amount;
+          else if (n.startsWith('房費') || n.includes('入住')) r.stay += p.amount;
+          else if (n.startsWith('尾款')) r.final += p.amount;
+          else r.other_i += p.amount;
+          r.income += p.amount;
+        }
+        r.grand += p.amount;
+      }
+      return Object.values(byDay);
+    } },
+  pay_daily_detail: { label: '產後每日收款明細表', columns: [
+    ['paid_on', '收款日期'], ['mother', '媽媽姓名'], ['room', '房號'], ['method', '收款方式'],
+    ['deposit', '訂金10%'], ['d10', '10日款'], ['d20', '20日款'], ['final', '尾款'],
+    ['other', '其他收入'], ['adjust', '加退費款項'], ['subtotal', '小計']],
+    run: (f, t) => db.prepare(`SELECT p.paid_on, m.name mother, r.name room, p.method, p.note, p.amount
+      FROM payments p JOIN bookings bk ON bk.id = p.booking_id
+      JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+      WHERE p.paid_on BETWEEN ? AND ? ORDER BY p.paid_on, p.id`).all(f, t).map(p => {
+      const row = { paid_on: p.paid_on, mother: p.mother, room: p.room, method: p.method,
+        deposit: 0, d10: 0, d20: 0, final: 0, other: 0, adjust: 0, subtotal: p.amount };
+      const n = p.note || '';
+      if (n.startsWith('訂金')) row.deposit = p.amount;
+      else if (n.startsWith('房費') || n.includes('入住') || n.includes('10日')) row.d10 = p.amount;
+      else if (n.includes('20日')) row.d20 = p.amount;
+      else if (n.startsWith('尾款')) row.final = p.amount;
+      else if (n.includes('退費') || n.includes('加退')) row.adjust = p.amount;
+      else row.other = p.amount;
+      return row;
+    }) },
+  revenue_month: { label: '產後營收統計分析表', columns: [
+    ['d', '日期'], ['visited', '已參訪人數'], ['scheduled', '預約參訪人數'],
+    ['dep_cnt', '已付訂人數'], ['dep_amt', '已付訂金額'], ['res_unpaid', '已預約未付訂'],
+    ['checkins', '住房人次'], ['stay_amt', '住房金額']],
+    run: (f, t) => ppDays(f, t).map(d => ({
+      d,
+      visited: db.prepare(`SELECT COUNT(*) c FROM tours WHERE substr(tour_at,1,10)=? AND status IN ('visited','signed')`).get(d).c,
+      scheduled: db.prepare(`SELECT COUNT(*) c FROM tours WHERE substr(tour_at,1,10)=? AND status='scheduled'`).get(d).c,
+      dep_cnt: db.prepare(`SELECT COUNT(*) c FROM payments WHERE paid_on=? AND note LIKE '訂金%'`).get(d).c,
+      dep_amt: db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE paid_on=? AND note LIKE '訂金%'`).get(d).s,
+      res_unpaid: db.prepare(`SELECT COUNT(*) c FROM bookings bk WHERE substr(bk.created_at,1,10)=? AND bk.status='reserved'
+        AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.booking_id=bk.id)`).get(d).c,
+      checkins: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out')`).get(d).c,
+      stay_amt: db.prepare(`SELECT COALESCE(SUM(total_amount),0) s FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out')`).get(d).s
+    })) },
+  supply_sales: { label: '客房備品銷售明細表', columns: [
+    ['d', '日期'], ['mother', '媽媽姓名'], ['category', '備品類別'], ['item', '品名'],
+    ['qty', '數量'], ['price', '單價'], ['subtotal', '合計'], ['note', '備註'], ['by', '建檔人']],
+    run: (f, t, q) => db.prepare(`SELECT substr(o.created_at,1,10) d, m.name mother,
+      COALESCE(pr.category,'') category, oi.item_name item, oi.quantity qty, oi.unit_price price,
+      oi.quantity*oi.unit_price subtotal, o.note, u.name by
+      FROM order_items oi JOIN orders o ON o.id = oi.order_id
+      LEFT JOIN products pr ON pr.id = oi.product_id
+      LEFT JOIN mothers m ON m.id = o.mother_id LEFT JOIN users u ON u.id = o.created_by
+      WHERE o.status='confirmed' AND substr(o.created_at,1,10) BETWEEN ? AND ?
+      ORDER BY o.created_at DESC`).all(f, t)
+      .filter(r => !q.cat || r.category === q.cat) },
+  retail_detail: { label: '產品零售明細表', columns: [
+    ['d', '銷售日期'], ['mother', '媽媽姓名'], ['item', '銷售品名'], ['qty', '數量'],
+    ['price', '單價'], ['subtotal', '合計'], ['method', '收款方式'], ['by', '建檔人']],
+    run: (f, t) => db.prepare(`SELECT substr(o.created_at,1,10) d, m.name mother, oi.item_name item,
+      oi.quantity qty, oi.unit_price price, oi.quantity*oi.unit_price subtotal, o.note, u.name by
+      FROM order_items oi JOIN orders o ON o.id = oi.order_id
+      LEFT JOIN mothers m ON m.id = o.mother_id LEFT JOIN users u ON u.id = o.created_by
+      WHERE o.placed_by='staff' AND o.status='confirmed' AND substr(o.created_at,1,10) BETWEEN ? AND ?
+      ORDER BY o.created_at DESC`).all(f, t).map(r => {
+      const mm = /收款 (\S+) \$/.exec(r.note || '');
+      return { ...r, method: mm ? mm[1] : '掛帳', note: undefined };
+    }) },
+  occupancy_detail: { label: '住宿率明細表', columns: [
+    ['d', '查詢日期'], ['occupied', '已入住(間)'], ['not_in', '尚未入住(間)'], ['subtotal', '住房小計(間)'],
+    ['rate', '單日住宿率'], ['cum_rate', '累積住宿率']],
+    run: (f, t) => {
+      const total = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active=1').get().c || 1;
+      let cumSub = 0, cumCap = 0;
+      return ppDays(f, t).map(d => {
+        const occ = ppOccupiedOn(d);
+        const notIn = db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings
+          WHERE status = 'reserved' AND check_in <= ? AND check_out > ?`).get(d, d).c;
+        const sub = occ + notIn;
+        cumSub += sub; cumCap += total;
+        return { d, occupied: occ, not_in: notIn, subtotal: sub,
+          rate: (sub / total * 100).toFixed(2) + ' %', cum_rate: (cumSub / cumCap * 100).toFixed(2) + ' %' };
+      });
+    } },
+  occupancy_month: { label: '住宿率統計表', columns: [
+    ['month', '查詢月份'], ['occupied', '已入住(天)'], ['not_in', '尚未入住(天)'], ['subtotal', '住房小計(天)'], ['rate', '住宿率']],
+    run: (f, t) => {
+      const total = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active=1').get().c || 1;
+      return ppMonths(f, t).map(month => {
+        const last = new Date(new Date(month + '-01').getFullYear(), new Date(month + '-01').getMonth() + 1, 0);
+        const days = ppDays(month + '-01', last.toISOString().slice(0, 10));
+        let occ = 0, notIn = 0;
+        for (const d of days) {
+          occ += ppOccupiedOn(d);
+          notIn += db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings
+            WHERE status = 'reserved' AND check_in <= ? AND check_out > ?`).get(d, d).c;
+        }
+        return { month, occupied: occ, not_in: notIn, subtotal: occ + notIn,
+          rate: ((occ + notIn) / (total * days.length) * 100).toFixed(2) + ' %' };
+      });
+    } },
+  stay_days_month: { label: '入住天數月統計表', columns: [
+    ['month', '年-月'], ['moms', '媽媽住房人數'], ['babies', '寶寶住房人數'],
+    ['mom_days', '媽媽入住總天數'], ['baby_days', '寶寶入住總天數'], ['avg_days', '平均入住天數'],
+    ['rate', '住宿率'], ['checkouts', '退房人數'], ['cancels', '退訂人數'],
+    ['new_moms', '新入住媽媽人數'], ['new_babies', '新入住寶寶人數']],
+    run: (f, t) => {
+      const total = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active=1').get().c || 1;
+      const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+      return ppMonths(f, t).map(month => {
+        const mStart = month + '-01';
+        const mEndD = new Date(new Date(mStart).getFullYear(), new Date(mStart).getMonth() + 1, 0);
+        const mEnd = mEndD.toISOString().slice(0, 10);
+        const mDays = mEndD.getDate();
+        const bks = db.prepare(`SELECT bk.*, m.id mid FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+          WHERE bk.status IN ('checked_in','checked_out') AND bk.check_in <= ? AND bk.check_out > ?`).all(mEnd, mStart);
+        const momSet = new Set(bks.map(b => b.mid));
+        let momDays = 0, babyDays = 0;
+        const clipDays = (a, b) => Math.max(0, dayDiff(a < mStart ? mStart : a,
+          b > mEnd ? new Date(new Date(mEnd).getTime() + 86400000).toISOString().slice(0, 10) : b));
+        for (const b of bks) {
+          momDays += clipDays(b.check_in, b.check_out);
+          if (b.baby_check_in) babyDays += clipDays(b.baby_check_in < b.check_in ? b.check_in : b.baby_check_in, b.check_out);
+        }
+        const babyCnt = momSet.size ? db.prepare(`SELECT COUNT(*) c FROM babies
+          WHERE mother_id IN (${[...momSet].join(',')})`).get().c : 0;
+        return {
+          month, moms: momSet.size, babies: babyCnt, mom_days: momDays, baby_days: babyDays,
+          avg_days: momSet.size ? Math.round(momDays / momSet.size) : 0,
+          rate: (momDays / (total * mDays) * 100).toFixed(2) + ' %',
+          checkouts: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status='checked_out' AND substr(check_out,1,7)=?`).get(month).c,
+          cancels: db.prepare(`SELECT COUNT(*) c FROM customer_contracts WHERE status='cancelled'
+            AND substr(json_extract(data,'$.cancel_date'),1,7)=?`).get(month).c
+            + db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status='cancelled' AND substr(check_in,1,7)=?`).get(month).c,
+          new_moms: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status IN ('checked_in','checked_out') AND substr(check_in,1,7)=?`).get(month).c,
+          new_babies: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE baby_check_in IS NOT NULL AND substr(baby_check_in,1,7)=?`).get(month).c
+        };
+      });
+    } },
+  checkin_info: { label: '媽媽入住資訊查詢', columns: [
+    ['mother', '媽媽姓名'], ['room', '房號'], ['period', '入住期間'], ['days', '入住天數'],
+    ['note', '內容'], ['created', '建檔時間']],
+    run: (f, t, q) => {
+      const byCreated = q.date_field !== 'checkin';
+      const rows = db.prepare(`SELECT m.name mother, r.name room,
+        bk.check_in || ' ~ ' || bk.check_out period,
+        CAST(julianday(bk.check_out)-julianday(bk.check_in) AS INT) || '天' days,
+        bk.notes note, bk.created_at created, bk.check_in ci, substr(bk.created_at,1,10) cd
+        FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.status != 'cancelled' ORDER BY bk.check_in DESC`).all()
+        .filter(r => (byCreated ? r.cd : r.ci) >= f && (byCreated ? r.cd : r.ci) <= t)
+        .filter(r => !q.name || r.mother.includes(q.name));
+      return rows.map(({ ci, cd, ...rest }) => rest);
+    } },
+  cancel_stats: { label: '退訂資料統計表', columns: [
+    ['cancel_date', '退訂日期'], ['due_date', '預產期'], ['mother', '媽媽姓名'],
+    ['kind', '分類'], ['reason', '退訂原因'], ['by', '建檔人']],
+    run: (f, t, q) => {
+      const out = [];
+      if (!q.kind || q.kind === 'contract') {
+        for (const c of db.prepare(`SELECT cc.data, m.name, m.due_date FROM customer_contracts cc
+          JOIN mothers m ON m.id = cc.mother_id WHERE cc.status='cancelled'`).all()) {
+          let d = {};
+          try { d = JSON.parse(c.data); } catch (e) { continue; }
+          if (d.cancel_date && d.cancel_date >= f && d.cancel_date <= t) {
+            out.push({ cancel_date: d.cancel_date, due_date: c.due_date || '', mother: c.name,
+              kind: '合約退訂', reason: d.cancel_reason || '', by: d.cancel_by || '' });
+          }
+        }
+      }
+      if (!q.kind || q.kind === 'booking') {
+        for (const b of db.prepare(`SELECT substr(bk.created_at,1,10) cd, m.name, m.due_date, bk.notes
+          FROM bookings bk JOIN mothers m ON m.id = bk.mother_id WHERE bk.status='cancelled'`).all()) {
+          if (b.cd >= f && b.cd <= t) out.push({ cancel_date: b.cd, due_date: b.due_date || '',
+            mother: b.name, kind: '訂房取消', reason: b.notes || '', by: '' });
+        }
+      }
+      return out.filter(r => !q.name || r.mother.includes(q.name))
+        .sort((a, b) => b.cancel_date < a.cancel_date ? -1 : 1);
+    } },
+  tour_conversion: { label: '參觀成交率分析表', columns: [
+    ['month', '參觀月份'], ['visits', '參觀人次'], ['people', '參觀人數'], ['signed', '成交筆數'], ['rate', '成交率']],
+    run: (f, t) => ppMonths(f, t).map(month => {
+      const rows = db.prepare(`SELECT name, status FROM tours WHERE substr(tour_at,1,7)=?`).all(month);
+      const signed = rows.filter(r => r.status === 'signed').length;
+      return { month, visits: rows.length, people: new Set(rows.map(r => r.name)).size,
+        signed: signed + ' 筆', rate: (rows.length ? Math.round(signed / rows.length * 100) : 0) + ' %' };
+    }) },
+  checkin_stats: { label: '媽媽入住統計表', columns: [
+    ['room', '房號'], ['mother', '媽媽姓名'], ['phone', '聯絡電話'], ['address', '聯絡地址'],
+    ['check_in', '入住日期'], ['check_out', '退房日期'], ['days', '入住天數']],
+    run: (f, t) => db.prepare(`SELECT r.name room, m.name mother, m.phone, m.id mid,
+      bk.check_in, bk.check_out, CAST(julianday(bk.check_out)-julianday(bk.check_in) AS INT) || '天' days
+      FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+      WHERE bk.status IN ('checked_in','checked_out') AND bk.check_in BETWEEN ? AND ?
+      ORDER BY bk.check_in`).all(f, t).map(r => {
+      const prof = db.prepare('SELECT data FROM customer_profiles WHERE mother_id = ?').get(r.mid);
+      let addr = '';
+      if (prof) { try { addr = JSON.parse(prof.data).address || ''; } catch (e) { /* */ } }
+      const { mid, ...rest } = r;
+      return { ...rest, address: addr };
+    }) },
+  order_detail: { label: '媽媽訂單明細查詢', columns: [
+    ['mother', '媽媽姓名'], ['hospital', '生產醫院'], ['due_date', '預產期'], ['delivery', '生產方式'],
+    ['parity', '胎次'], ['room_type', '坪數/房型'], ['days', '天數'], ['total', '合約金額'],
+    ['phone', '媽媽電話'], ['note', '備註']],
+    run: (f, t, q) => {
+      const bySign = q.date_field === 'sign';
+      const out = [];
+      for (const c of db.prepare(`SELECT cc.items, cc.data, m.name, m.phone, m.due_date, m.delivery_type
+        FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id WHERE cc.status='active'`).all()) {
+        let items = [], data = {};
+        try { items = JSON.parse(c.items); data = JSON.parse(c.data); } catch (e) { continue; }
+        const key = bySign ? (data.sign_date || '') : (c.due_date || '');
+        if (!key || key < f || key > t) continue;
+        out.push({ mother: c.name, hospital: data.checkup_hospital || '', due_date: c.due_date || '',
+          delivery: c.delivery_type || '', parity: (data.parity_no || '').replace(/[第胎]/g, '') || '',
+          room_type: items.map(it => it.name).join('、') || '—',
+          days: items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
+          total: items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0),
+          phone: c.phone || '', note: data.note || '' });
+      }
+      return out;
+    } },
+  cleaning10: { label: '10日打掃明細表', columns: [
+    ['d', '應打掃日期'], ['room', '房號'], ['mother', '媽媽姓名'], ['check_in', '入住日期'], ['day_no', '入住第幾天'], ['done', '房務登記']],
+    run: (f, t) => {
+      const out = [];
+      const bks = db.prepare(`SELECT bk.id, bk.check_in, bk.check_out, m.name mother, m.id mid, r.name room, r.id rid
+        FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.status IN ('checked_in','checked_out') AND bk.check_in <= ? AND bk.check_out >= ?`).all(t, f);
+      for (const d of ppDays(f, t)) {
+        for (const b of bks) {
+          if (d <= b.check_in || d > b.check_out) continue;
+          const dayNo = Math.round((new Date(d) - new Date(b.check_in)) / 86400000);
+          if (dayNo % 10 !== 0) continue;
+          const hk = db.prepare(`SELECT status FROM housekeeping_logs
+            WHERE scheduled_for = ? AND (room_id = ? OR mother_id = ?) LIMIT 1`).get(d, b.rid, b.mid);
+          out.push({ d, room: b.room, mother: b.mother, check_in: b.check_in,
+            day_no: '第 ' + dayNo + ' 天', done: hk ? (hk.status === 'done' ? '已完成' : '已排定') : '未排定' });
+        }
+      }
+      return out;
+    } },
+  baby_out: { label: '寶寶不在館內明細查詢', columns: [
+    ['mother', '媽媽姓名'], ['period', '入住期間'], ['baby', '寶寶'], ['baby_period', '住館期間'], ['reasons', '不在館內原因']],
+    run: (f, t, q) => {
+      const out = [];
+      const bks = db.prepare(`SELECT bk.check_in, bk.check_out, bk.baby_check_in, m.id mid, m.name
+        FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+        WHERE bk.status IN ('checked_in','checked_out') AND bk.check_in <= ? AND bk.check_out >= ?
+        ORDER BY bk.check_in`).all(t, f);
+      for (const bk of bks) {
+        const babies = db.prepare('SELECT id, name FROM babies WHERE mother_id = ? ORDER BY id').all(bk.mid);
+        babies.forEach((b, i) => {
+          const logs = db.prepare(`SELECT substr(moved_at,6,5) d, note FROM baby_location_logs
+            WHERE baby_id = ? AND location = 'out' ORDER BY moved_at`).all(b.id);
+          if (q.only_out === '1' && !logs.length) return;
+          out.push({ mother: bk.name, period: bk.check_in.slice(5) + '~' + bk.check_out.slice(5),
+            baby: String.fromCharCode(65 + i),
+            baby_period: (bk.baby_check_in || bk.check_in).slice(5) + '~' + bk.check_out.slice(5),
+            reasons: logs.map(l => `${l.d}:${l.note || '外出'}`).join('\n') || '' });
+        });
+      }
+      return out;
+    } },
+  early_checkout: { label: '提前退房明細表', columns: [
+    ['mother', '媽媽姓名'], ['room', '房號'], ['check_out', '原退房日'], ['days', '原天數'],
+    ['actual', '提前退房日'], ['early_days', '提前天數'], ['reason', '提前退房原因']],
+    run: (f, t, q) => db.prepare(`SELECT m.name mother, r.name room, bk.check_out,
+      CAST(julianday(bk.check_out)-julianday(bk.check_in) AS INT) days,
+      bk.actual_check_out actual,
+      CAST(julianday(bk.check_out)-julianday(bk.actual_check_out) AS INT) early_days,
+      bk.early_reason reason
+      FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+      WHERE bk.status='checked_out' AND bk.actual_check_out != '' AND bk.actual_check_out < bk.check_out
+        AND bk.actual_check_out BETWEEN ? AND ?
+      ORDER BY bk.actual_check_out DESC`).all(f, t)
+      .filter(r => !q.name || r.mother.includes(q.name)) },
+  baby_detail: { label: '寶寶資料明細表', columns: [
+    ['mother', '媽媽姓名'], ['baby', '寶寶姓名'], ['birth_date', '寶寶生日'], ['phone', '聯絡電話'], ['address', '地址']],
+    run: (f, t, q) => {
+      const rows = db.prepare(`SELECT b.mother_id, b.name bname, b.gender, b.birth_date, m.name mother, m.phone
+        FROM babies b JOIN mothers m ON m.id = b.mother_id
+        WHERE b.birth_date != '' AND b.birth_date BETWEEN ? AND ? ORDER BY b.birth_date, b.mother_id, b.id`).all(f, t)
+        .filter(r => !q.name || r.mother.includes(q.name));
+      const seq = {};
+      return rows.map(r => {
+        seq[r.mother_id] = (seq[r.mother_id] || 0) + 1;
+        const prof = db.prepare('SELECT data FROM customer_profiles WHERE mother_id = ?').get(r.mother_id);
+        let addr = '';
+        if (prof) { try { addr = JSON.parse(prof.data).address || ''; } catch (e) { /* */ } }
+        return { mother: r.mother,
+          baby: String.fromCharCode(64 + seq[r.mother_id]) + (r.gender === 'male' ? '(男)' : r.gender === 'female' ? '(女)' : ''),
+          birth_date: r.birth_date, phone: r.phone || '', address: addr };
+      });
+    } },
+  ar_detail: { label: '媽媽應收帳款明細表', columns: [
+    ['contract_no', '合約編號'], ['mother', '媽媽姓名'], ['sign_date', '簽約日'], ['due_date', '預產期'],
+    ['room_type', '坪數/房型'], ['days', '天數'], ['check_in', '入住日'], ['check_out', '退房日'],
+    ['total', '合約金額'], ['spent', '實際消費金額'], ['paid', '已收金額'], ['balance', '應收餘額']],
+    run: (f, t, q) => {
+      const out = [];
+      for (const c of db.prepare(`SELECT cc.contract_no, cc.items, cc.data, m.id mid, m.name, m.due_date
+        FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id WHERE cc.status='active'`).all()) {
+        let items = [], data = {};
+        try { items = JSON.parse(c.items); data = JSON.parse(c.data); } catch (e) { continue; }
+        const bk = db.prepare(`SELECT id, check_in, check_out FROM bookings
+          WHERE mother_id = ? AND status IN ('reserved','checked_in','checked_out')
+          ORDER BY status='checked_in' DESC, check_in DESC LIMIT 1`).get(c.mid);
+        const DF = { due: c.due_date || '', sign: data.sign_date || '',
+          checkin: bk ? bk.check_in : '', checkout: bk ? bk.check_out : '' };
+        const key = DF[q.date_field] ?? DF.due;
+        if (!key || key < f || key > t) continue;
+        const total = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+        const spent = bk ? db.prepare(`SELECT COALESCE(SUM(unit_price*quantity),0) s FROM charge_items WHERE booking_id=?`).get(bk.id).s : 0;
+        const paid = bk ? db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE booking_id=?`).get(bk.id).s : 0;
+        out.push({ contract_no: c.contract_no, mother: c.name, sign_date: data.sign_date || '',
+          due_date: c.due_date || '', room_type: items.map(it => it.name).join('、') || '—',
+          days: items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
+          check_in: bk ? bk.check_in : '', check_out: bk ? bk.check_out : '',
+          total, spent, paid, balance: total + spent - paid });
+      }
+      return out;
+    } },
+  room_card_usage: { label: '住房卡使用明細表', columns: [
+    ['mother', '媽媽'], ['contract_no', '合約編號'], ['kind', '卡別'], ['action', '動作'], ['d', '日期'], ['card_no', '卡號'], ['by', '存檔人']],
+    run: (f, t) => {
+      const out = [];
+      for (const c of db.prepare('SELECT cc.contract_no, cc.data, m.name FROM customer_contracts cc JOIN mothers m ON m.id=cc.mother_id').all()) {
+        let d = {};
+        try { d = JSON.parse(c.data); } catch (e) { continue; }
+        const push = (kind, action, dt, no, by) => {
+          if (dt && dt >= f && dt <= t) out.push({ mother: c.name, contract_no: c.contract_no, kind, action, d: dt, card_no: no || '', by: by || '' });
+        };
+        push('住房卡', '贈送', d.room_card_given_date, d.room_card_no, d.room_card_given_by);
+        push('住房卡', '抵用', d.room_card_used_date, d.room_card_used_no, d.room_card_used_by);
+        push('分享卡', '贈送', d.share_card_given_date, d.share_card_no, d.share_card_given_by);
+        push('分享卡', '抵用', d.share_card_used_date, d.share_card_used_no, d.share_card_used_by);
+      }
+      return out.sort((a, b) => b.d < a.d ? -1 : 1);
+    } },
+  // ---------- 護理紀錄資料 ----------
+  mom_nursing_q: { label: '媽媽護理資料查詢', columns: [
+    ['dt', '護理日期'], ['who', '媽媽房號/姓名'], ['vitals', '生命徵象/傷口狀況'],
+    ['uterus', '宮縮/惡露/其他'], ['breast', '哺乳情形/乳房狀況'], ['nurse', '護理師']],
+    run: (f, t, q) => db.prepare(`SELECT a.assess_date || ' ' || a.assess_time dt, m.name mother,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id=bk.room_id WHERE bk.mother_id=m.id
+        AND bk.status IN ('checked_in','checked_out') ORDER BY bk.status='checked_in' DESC, bk.check_in DESC LIMIT 1) room,
+      a.temperature, a.pulse, a.respiration, a.systolic, a.diastolic, a.data, u.name nurse
+      FROM mother_nursing_assessments a JOIN mothers m ON m.id = a.mother_id
+      LEFT JOIN users u ON u.id = a.nurse_id
+      WHERE a.assess_date BETWEEN ? AND ? ORDER BY a.assess_date DESC, a.assess_time DESC`).all(f, t)
+      .filter(r => q.kw_type === 'room' ? (!q.name || (r.room || '').includes(q.name)) : (!q.name || r.mother.includes(q.name)))
+      .map(r => {
+      let d = {};
+      try { d = JSON.parse(r.data); } catch (e) { d = {}; }
+      return { dt: r.dt, who: `${r.room || '—'} ${r.mother}`,
+        vitals: `${r.temperature}°C 脈${r.pulse} 呼${r.respiration} ${r.systolic}/${r.diastolic}` +
+          (d.wound ? `｜傷口:${d.wound}` : ''),
+        uterus: [d.uterus && `宮縮:${d.uterus}`, (d.lochia_amount || d.lochia_color) && `惡露:${[d.lochia_amount, d.lochia_color].filter(Boolean).join('/')}`,
+          d.pain_nrs != null && `疼痛:${d.pain_nrs}`].filter(Boolean).join('｜'),
+        breast: [d.bf_skill && `親餵:${d.bf_skill}`, `左${d.breast_l || '-'}/右${d.breast_r || '-'}`,
+          (d.breast_l_mastitis === '有' || d.breast_r_mastitis === '有') && '⚠乳腺炎'].filter(Boolean).join('｜'),
+        nurse: r.nurse || '' };
+    }) },
+  baby_care_q: { label: '寶寶護理資料查詢', columns: [
+    ['dt', '護理日期'], ['who', '媽媽房號/寶寶'], ['vitals', '體重/體溫/心跳/黃疸'], ['cord', '臍帶'],
+    ['milk', '母乳/配方奶'], ['skin', '活力/膚色/皮膚/紅臀'], ['elim', '小便/大便'], ['nurse', '護理師']],
+    run: (f, t, q) => db.prepare(`SELECT a.assess_date || ' ' || a.assess_time dt, b.name baby, m.name mother,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id=bk.room_id WHERE bk.mother_id=m.id
+        AND bk.status IN ('checked_in','checked_out') ORDER BY bk.status='checked_in' DESC, bk.check_in DESC LIMIT 1) room,
+      a.weight_g, a.temperature, a.data, u.name nurse,
+      (SELECT r2.value_num FROM baby_records r2 WHERE r2.baby_id=a.baby_id AND r2.record_type='jaundice'
+        AND substr(r2.recorded_at,1,10)=a.assess_date ORDER BY r2.recorded_at DESC LIMIT 1) jaundice
+      FROM baby_nursing_assessments a JOIN babies b ON b.id = a.baby_id JOIN mothers m ON m.id = b.mother_id
+      LEFT JOIN users u ON u.id = a.nurse_id
+      WHERE a.assess_date BETWEEN ? AND ? ORDER BY a.assess_date DESC, a.assess_time DESC`).all(f, t)
+      .filter(r => q.kw_type === 'room' ? (!q.name || (r.room || '').includes(q.name)) : (!q.name || r.mother.includes(q.name) || r.baby.includes(q.name)))
+      .map(r => {
+      let d = {};
+      try { d = JSON.parse(r.data); } catch (e) { d = {}; }
+      return { dt: r.dt, who: `${r.room || '—'} ${r.baby}（${r.mother}）`,
+        vitals: [r.weight_g && `${r.weight_g}g`, r.temperature && `${r.temperature}°C`,
+          d.heart_rate && `心跳${d.heart_rate}`, r.jaundice != null && `黃疸${r.jaundice}`].filter(Boolean).join('｜'),
+        cord: d.cord || '',
+        milk: [(d.milk_types || []).join ? (d.milk_types || []).join('/') : d.milk_types, d.milk_note].filter(Boolean).join(' '),
+        skin: [d.muscle_tone && `活力:${d.muscle_tone}`, d.skin_color, (d.skin_conditions || []).join ? (d.skin_conditions || []).join('/') : '',
+          (d.rash_left || d.rash_right) && `紅臀:左${d.rash_left || '-'}/右${d.rash_right || '-'}`].filter(Boolean).join('｜'),
+        elim: [d.urine && `小便:${d.urine}`, d.stool && `大便:${d.stool}`].filter(Boolean).join('｜'),
+        nurse: r.nurse || '' };
+    }) },
+  bf_rate: { label: '母乳哺育率報表', columns: [
+    ['mother', '媽媽姓名'], ['check_in', '入住日期'], ['bf_count', '親餵次數'], ['breast_ml', '母乳量(cc)'],
+    ['formula_ml', '配方奶量(cc)'], ['total_ml', '喝奶總量(cc)'], ['pure_rate', '純母乳比例(%)'], ['total_rate', '總母乳比例(%)']],
+    run: (f, t) => db.prepare(`SELECT m.id mid, m.name mother, bk.check_in
+      FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+      WHERE bk.status IN ('checked_in','checked_out') AND bk.check_in BETWEEN ? AND ?
+      ORDER BY bk.check_in`).all(f, t).map(r => {
+      const feeds = db.prepare(`SELECT fr.feed_method, fr.amount_ml FROM baby_records fr
+        JOIN babies b ON b.id = fr.baby_id WHERE b.mother_id = ? AND fr.record_type='feeding'`).all(r.mid);
+      const bfCount = feeds.filter(x => /親/.test(x.feed_method || '')).length;
+      const breastMl = feeds.filter(x => /母|親/.test(x.feed_method || '')).reduce((s, x) => s + (x.amount_ml || 0), 0);
+      const formulaMl = feeds.filter(x => /配方/.test(x.feed_method || '')).reduce((s, x) => s + (x.amount_ml || 0), 0);
+      const total = breastMl + formulaMl;
+      return { mother: r.mother, check_in: r.check_in, bf_count: bfCount, breast_ml: breastMl,
+        formula_ml: formulaMl, total_ml: total,
+        pure_rate: (total && formulaMl === 0 ? 100 : total ? Math.round(breastMl / total * 100) : 0) + ' %',
+        total_rate: (total ? Math.round(breastMl / total * 100) : 0) + ' %' };
+    }) },
+  rooming_stats: { label: '親子同室統計分析', columns: [
+    ['d', '查詢日期'], ['moms', '產婦人數'], ['lt12', '<12小時人數'], ['ge12', '>=12小時人數'],
+    ['ge23', '>=23小時人數'], ['p12', '12小時%'], ['p24', '24小時%']],
+    run: (f, t) => ppDays(f, t).map(d => {
+      const moms = db.prepare(`SELECT COUNT(DISTINCT mother_id) c FROM bookings
+        WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).get(d, d).c;
+      // 每寶寶當日同室時數
+      const byBaby = {};
+      for (const l of db.prepare(`SELECT baby_id, out_time, return_time FROM baby_rooming_logs
+        WHERE log_date = ? AND out_time != '' AND return_time != ''`).all(d)) {
+        const [oh, om] = l.out_time.split(':').map(Number), [rh, rm] = l.return_time.split(':').map(Number);
+        let h = (rh * 60 + rm - oh * 60 - om) / 60;
+        if (h < 0) h += 24;
+        byBaby[l.baby_id] = (byBaby[l.baby_id] || 0) + h;
+      }
+      const hrs = Object.values(byBaby);
+      const lt12 = hrs.filter(h => h < 12).length;
+      const ge12 = hrs.filter(h => h >= 12).length;
+      const ge23 = hrs.filter(h => h >= 23).length;
+      return { d, moms, lt12, ge12, ge23,
+        p12: (moms ? Math.round(ge12 / moms * 100) : 0) + ' %',
+        p24: (moms ? Math.round(ge23 / moms * 100) : 0) + ' %' };
+    }) },
+  infection_quality: { label: '護理感控品質查詢', columns: [
+    ['month', '品管月份'], ['moms', '媽媽人數'], ['m_fever', '媽媽發燒'], ['m_mastitis', '乳腺炎'],
+    ['m_uri', '上呼吸道感染'], ['m_uti', '泌尿道感染'], ['m_entero', '腸病毒'],
+    ['babies', '寶寶人數'], ['b_fever', '寶寶發燒'], ['rash_late', '入住一周後紅臀'], ['rash_early', '入院即紅臀'],
+    ['hygiene', '洗手遵從率'], ['clusters', '群聚事件']],
+    run: (f, t) => ppMonths(f, t).map(month => {
+      const mStart = month + '-01';
+      const mEndD = new Date(new Date(mStart).getFullYear(), new Date(mStart).getMonth() + 1, 0);
+      const mEnd = mEndD.toISOString().slice(0, 10);
+      const momIds = db.prepare(`SELECT DISTINCT mother_id id FROM bookings
+        WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).all(mEnd, mStart).map(r => r.id);
+      const probCount = kw => momIds.length ? db.prepare(`SELECT COUNT(DISTINCT mother_id) c FROM mother_health_problems
+        WHERE mother_id IN (${momIds.join(',')}) AND substr(start_date,1,7) = ? AND item LIKE ?`).get(month, `%${kw}%`).c : 0;
+      // 媽媽發燒：護理評估體溫≥37.5 的媽媽數
+      const mFever = momIds.length ? db.prepare(`SELECT COUNT(DISTINCT mother_id) c FROM mother_nursing_assessments
+        WHERE mother_id IN (${momIds.join(',')}) AND substr(assess_date,1,7)=? AND temperature >= 37.5`).get(month).c : 0;
+      const babyRows = momIds.length ? db.prepare(`SELECT id, mother_id FROM babies WHERE mother_id IN (${momIds.join(',')})`).all() : [];
+      const babyIds = babyRows.map(b => b.id);
+      const bFever = babyIds.length ? db.prepare(`SELECT COUNT(DISTINCT baby_id) c FROM baby_records
+        WHERE baby_id IN (${babyIds.join(',')}) AND record_type='temperature' AND value_num >= 37.5
+        AND substr(recorded_at,1,7)=?`).get(month).c : 0;
+      // 紅臀：該月首次 diaper_rash 距媽媽入住 >7 天=入住一周後；<=7 天=入院即
+      let rashLate = 0, rashEarly = 0;
+      for (const b of babyRows) {
+        const first = db.prepare(`SELECT MIN(substr(recorded_at,1,10)) d FROM baby_records
+          WHERE baby_id = ? AND diaper_rash != '' AND substr(recorded_at,1,7)=?`).get(b.id, month).d;
+        if (!first) continue;
+        const ci = db.prepare(`SELECT check_in FROM bookings WHERE mother_id = ? AND status IN ('checked_in','checked_out')
+          ORDER BY check_in DESC LIMIT 1`).get(b.mother_id);
+        if (ci && (new Date(first) - new Date(ci.check_in)) / 86400000 > 7) rashLate++;
+        else rashEarly++;
+      }
+      const h = db.prepare(`SELECT COALESCE(SUM(opportunities),0) o, COALESCE(SUM(compliant),0) cp
+        FROM hand_hygiene_audits WHERE substr(audit_date,1,7)=?`).get(month);
+      return { month, moms: momIds.length, m_fever: mFever, m_mastitis: probCount('乳腺'),
+        m_uri: probCount('呼吸道'), m_uti: probCount('泌尿'), m_entero: probCount('腸病毒'),
+        babies: babyIds.length, b_fever: bFever, rash_late: rashLate, rash_early: rashEarly,
+        hygiene: (h.o ? Math.round(h.cp / h.o * 100) : 0) + ' %',
+        clusters: db.prepare(`SELECT COUNT(*) c FROM cluster_events WHERE substr(onset_date,1,7)=?`).get(month).c };
+    }) },
+  epds_q: { label: '愛丁堡憂鬱量查詢', columns: [
+    ['fill_date', '填表日期'], ['mother', '媽媽'], ['total', '總分'], ['result', '判定'], ['alert', '警示'], ['nurse', '填表人']],
+    run: (f, t, q) => db.prepare(`SELECT s.fill_date, m.name mother, s.total, s.answers, u.name nurse
+      FROM mother_scales s JOIN mothers m ON m.id = s.mother_id LEFT JOIN users u ON u.id = s.nurse_id
+      WHERE s.kind='epds' AND s.fill_date BETWEEN ? AND ? ORDER BY s.fill_date DESC`).all(f, t)
+      .filter(r => !q.name || r.mother.includes(q.name)).map(r => {
+      let a = {};
+      try { a = JSON.parse(r.answers); } catch (e) { a = {}; }
+      const ans = Array.isArray(a) ? a : (a.a || []);
+      const alert = (r.total || 0) >= 10 || (ans[9] || 0) > 0;
+      const { answers, ...rest } = r;
+      return { ...rest, result: (Array.isArray(a) ? '' : a.result) || '', alert: alert ? '⚠ 建議關注' : '' };
+    }) },
+  epds_stats: { label: '愛丁堡憂鬱量統計', columns: [
+    ['month', '品管月份'], ['inhouse', '入住人數'], ['s0_5', '0~5分'], ['s6_9', '6~9分'], ['s10_15', '10~15分'], ['s16_21', '16~21分']],
+    run: (f, t) => ppMonths(f, t).map(month => {
+      const mStart = month + '-01';
+      const mEndD = new Date(new Date(mStart).getFullYear(), new Date(mStart).getMonth() + 1, 0);
+      const mEnd = mEndD.toISOString().slice(0, 10);
+      const rows = db.prepare(`SELECT total FROM mother_scales WHERE kind='epds' AND substr(fill_date,1,7)=?`).all(month);
+      return { month,
+        inhouse: db.prepare(`SELECT COUNT(DISTINCT mother_id) c FROM bookings
+          WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).get(mEnd, mStart).c,
+        s0_5: rows.filter(r => r.total <= 5).length,
+        s6_9: rows.filter(r => r.total >= 6 && r.total <= 9).length,
+        s10_15: rows.filter(r => r.total >= 10 && r.total <= 15).length,
+        s16_21: rows.filter(r => r.total >= 16).length };
+    }) },
+  person_days: { label: '入住人日數統計表', columns: [
+    ['month', '統計月份'], ['mom_days', '媽媽人日數'], ['baby_days', '寶寶人日數']],
+    run: (f, t) => ppMonths(f, t).map(month => {
+      const mStart = month + '-01';
+      const mEndD = new Date(new Date(mStart).getFullYear(), new Date(mStart).getMonth() + 1, 0);
+      const mEnd = mEndD.toISOString().slice(0, 10);
+      const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+      const clip = (a, b) => Math.max(0, dayDiff(a < mStart ? mStart : a,
+        b > mEnd ? new Date(new Date(mEnd).getTime() + 86400000).toISOString().slice(0, 10) : b));
+      let momDays = 0, babyDays = 0;
+      for (const bk of db.prepare(`SELECT check_in, check_out, baby_check_in, mother_id FROM bookings
+        WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).all(mEnd, mStart)) {
+        momDays += clip(bk.check_in, bk.check_out);
+        const babies = db.prepare('SELECT COUNT(*) c FROM babies WHERE mother_id = ?').get(bk.mother_id).c;
+        if (babies) babyDays += clip(bk.baby_check_in && bk.baby_check_in > bk.check_in ? bk.baby_check_in : bk.check_in, bk.check_out) * babies;
+      }
+      return { month, mom_days: momDays, baby_days: babyDays };
+    }) },
+  inout_month: { label: '產後出入住月報表', columns: [
+    ['d', '日期'], ['in_cnt', '入住人數'], ['out_cnt', '出住人數'], ['total', '本日總人數']],
+    run: (f, t) => ppDays(f, t).map(d => ({
+      d,
+      in_cnt: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status IN ('checked_in','checked_out') AND check_in = ?`).get(d).c,
+      out_cnt: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status='checked_out'
+        AND (CASE WHEN actual_check_out != '' THEN actual_check_out ELSE check_out END) = ?`).get(d).c,
+      total: db.prepare(`SELECT COUNT(DISTINCT mother_id) c FROM bookings
+        WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).get(d, d).c
+    })) },
+  mom_rooming: { label: '媽媽親子同室統計', columns: [
+    ['room', '房號'], ['mother', '媽媽姓名'], ['period', '入住期間'], ['days', '入住天數'],
+    ['ge12', '同室>=12小時天數'], ['ge23', '同室>=23小時天數']],
+    run: (f, t, q) => {
+      const out = [];
+      for (const bk of db.prepare(`SELECT bk.mother_id, bk.check_in, bk.check_out, m.name mother, r.name room
+        FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.status IN ('checked_in','checked_out') AND bk.check_in BETWEEN ? AND ?
+        ORDER BY bk.check_in`).all(f, t)) {
+        if (q.name && !bk.mother.includes(q.name)) continue;
+        const babyIds = db.prepare('SELECT id FROM babies WHERE mother_id = ?').all(bk.mother_id).map(b => b.id);
+        // 該住期內逐日合計（同媽媽多寶寶取當日最大時數，代表媽媽當日同室時數）
+        const byDay = {};
+        if (babyIds.length) {
+          for (const l of db.prepare(`SELECT baby_id, log_date, out_time, return_time FROM baby_rooming_logs
+            WHERE baby_id IN (${babyIds.join(',')}) AND log_date >= ? AND log_date < ?
+            AND out_time != '' AND return_time != ''`).all(bk.check_in, bk.check_out)) {
+            const [oh, om] = l.out_time.split(':').map(Number), [rh, rm] = l.return_time.split(':').map(Number);
+            let h = (rh * 60 + rm - oh * 60 - om) / 60;
+            if (h < 0) h += 24;
+            byDay[l.log_date] = byDay[l.log_date] || {};
+            byDay[l.log_date][l.baby_id] = (byDay[l.log_date][l.baby_id] || 0) + h;
+          }
+        }
+        const dayHours = Object.values(byDay).map(m2 => Math.max(...Object.values(m2)));
+        out.push({ room: bk.room, mother: bk.mother, period: `${bk.check_in} ~ ${bk.check_out}`,
+          days: Math.round((new Date(bk.check_out) - new Date(bk.check_in)) / 86400000) + '天',
+          ge12: dayHours.filter(h => h >= 12).length, ge23: dayHours.filter(h => h >= 23).length });
+      }
+      return out;
+    } }
+};
+
+app.get('/api/pp-reports/:key', requireStaff, (req, res) => {
+  const rep = PP_REPORTS[req.params.key];
+  if (!rep) return res.status(404).json({ error: '找不到此報表' });
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : today().slice(0, 8) + '01';
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today();
+  if (to < from) return res.status(400).json({ error: '日期區間錯誤' });
+  let rows;
+  try { rows = rep.run(from, to, req.query); } catch (e) { return res.status(500).json({ error: '報表產生失敗：' + e.message }); }
+  if (req.query.format === 'xlsx') {
+    const buf = buildWorkbook(rep.label, rep.columns.map(([key, label]) => ({ key, label })), rows);
+    const fname = encodeURIComponent(`${rep.label}-${from}-${to}.xlsx`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="pp-${req.params.key}.xlsx"; filename*=UTF-8''${fname}`);
+    return res.send(buf);
+  }
+  res.json({ key: req.params.key, label: rep.label, columns: rep.columns, from, to, rows });
+});
+app.get('/api/pp-reports', requireStaff, (req, res) => {
+  res.json(Object.entries(PP_REPORTS).map(([key, r]) => ({ key, label: r.label })));
+});
+
+// 客戶互動紀錄（追加式）
+app.post('/api/customers/:motherId/logs', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!mother) return res.status(404).json({ error: '找不到客戶' });
+  const body = String((req.body || {}).body || '').trim().slice(0, 1000);
+  if (!body) return res.status(400).json({ error: '請填入互動紀錄' });
+  const info = db.prepare('INSERT INTO customer_logs (mother_id, body, created_by) VALUES (?,?,?)')
+    .run(mother.id, body, req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+app.delete('/api/customer-logs/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM customer_logs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// 新增潛在客戶：建 mothers（status=reserved）＋擴充 profile；預產期必填（比照參考系統）
+app.post('/api/customers', requireStaff, (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  if (!name) return res.status(400).json({ error: '請填寫媽媽姓名' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) return res.status(400).json({ error: '請填寫媽媽預產期' });
+  const info = db.prepare(`INSERT INTO mothers (name, phone, birth_date, due_date, delivery_type, status)
+    VALUES (?,?,?,?,?, 'reserved')`).run(
+    name.slice(0, 50), String(b.phone || '').slice(0, 20),
+    /^\d{4}-\d{2}-\d{2}$/.test(b.birth_date || '') ? b.birth_date : '',
+    b.due_date, String(b.delivery_mode || '').slice(0, 20));
+  const motherId = info.lastInsertRowid;
+  if (typeof b.id_no === 'string' && b.id_no.trim()) {
+    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(b.id_no.trim().slice(0, 10), motherId);
+  }
+  custProfileUpsert(motherId, b, req.session.user.id);
+  logAudit(req, { action: 'create', entity: 'customer_profiles', entity_id: motherId, summary: `新增潛在客戶 ${name}` });
+  res.json({ id: motherId });
+});
+
+// 更新潛客：mothers 同步欄位＋profile 合併
+app.put('/api/customers/:motherId', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!mother) return res.status(404).json({ error: '找不到客戶' });
+  const b = req.body || {};
+  if (b.name !== undefined && !String(b.name).trim()) return res.status(400).json({ error: '媽媽姓名不可空白' });
+  const sets = [], args = [];
+  if (b.name !== undefined) { sets.push('name = ?'); args.push(String(b.name).trim().slice(0, 50)); }
+  if (b.phone !== undefined) { sets.push('phone = ?'); args.push(String(b.phone).slice(0, 20)); }
+  if (b.birth_date !== undefined) { sets.push('birth_date = ?'); args.push(/^\d{4}-\d{2}-\d{2}$/.test(b.birth_date) ? b.birth_date : ''); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) { sets.push('due_date = ?'); args.push(b.due_date); }
+  if (b.delivery_mode !== undefined) { sets.push('delivery_type = ?'); args.push(String(b.delivery_mode).slice(0, 20)); }
+  if (typeof b.id_no === 'string' && b.id_no.trim()) { sets.push('id_no = ?'); args.push(b.id_no.trim().slice(0, 10)); }
+  if (sets.length) db.prepare(`UPDATE mothers SET ${sets.join(', ')} WHERE id = ?`).run(...args, mother.id);
+  custProfileUpsert(mother.id, b, req.session.user.id);
+  logAudit(req, { action: 'update', entity: 'customer_profiles', entity_id: mother.id, summary: '潛在客戶資料修改' });
+  res.json({ ok: true });
+});
+
+// 預約參觀行事曆：某月 tours（依日期分組由前端排版）
+app.get('/api/tour-calendar', requireStaff, (req, res) => {
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month || '') ? req.query.month : today().slice(0, 7);
+  const rows = db.prepare(`SELECT id, name, phone, tour_at, status, note FROM tours
+    WHERE tour_at LIKE ? ORDER BY tour_at`).all(`${month}%`);
+  res.json({ month, rows });
+});
+
 app.delete('/api/tours/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM tours WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
@@ -3762,7 +5481,8 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
            (SELECT COUNT(*) FROM mother_records mr WHERE mr.mother_id = m.id AND date(mr.recorded_at) = ?) AS today_care_count,
            (SELECT MAX(mr.recorded_at) FROM mother_records mr WHERE mr.mother_id = m.id) AS last_care_at,
            (SELECT COUNT(*) FROM housekeeping_logs h WHERE h.status = 'pending'
-             AND (h.mother_id = m.id OR h.room_id = bk.room_id)) AS pending_tasks
+             AND (h.mother_id = m.id OR h.room_id = bk.room_id)) AS pending_tasks,
+           (SELECT COUNT(*) FROM mother_closures c WHERE c.mother_id = m.id) AS closed
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
     WHERE bk.status = 'checked_in'
     ORDER BY bk.check_in DESC`).all(d);

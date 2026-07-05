@@ -374,8 +374,8 @@ async function loadPrograms() {
           <span class="badge ${p.kind === 'course' ? 'teal' : 'gray'}">${KIND[p.kind]}</span>
           <strong> ${esc(p.name)}</strong>
           ${p.category ? `<div><small style="color:var(--muted)">${esc(p.category)}</small></div>` : ''}
-          ${p.scheduled_at ? `<div><small>🕒 ${esc(p.scheduled_at)}</small></div>` : ''}
-          ${p.location ? `<div><small>📍 ${esc(p.location)}</small></div>` : ''}
+          ${p.scheduled_at ? `<div><small>時間：${esc(p.scheduled_at)}</small></div>` : ''}
+          ${p.location ? `<div><small>地點：${esc(p.location)}</small></div>` : ''}
           ${p.description ? `<div style="margin-top:4px;font-size:.85rem">${esc(p.description)}</div>` : ''}
           ${p.seats_left !== null ? `<div><small style="color:${full ? 'var(--danger)' : 'var(--muted)'}">${full ? '名額已滿' : '剩餘名額 ' + p.seats_left}</small></div>` : ''}
         </div>

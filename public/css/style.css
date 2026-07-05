@@ -560,3 +560,57 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 .bfa-grid th.bfa-sec { font-weight: 600; background: #fff; }
 .bfa-opt { display: flex; gap: 6px; align-items: flex-start; font-weight: 400; cursor: pointer; }
 .bfa-opt input[type="radio"] { width: auto; margin-top: 4px; flex: none; }
+
+/* 空白媽媽評估單（列印手寫用） */
+.bf-sheet { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.bf-sec { font-weight: 700; background: var(--primary-light); color: var(--primary-dark); padding: 4px 10px; margin: 10px 0 4px; border-radius: 4px; }
+.bf-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 14px; }
+.bf-item { padding: 4px 0; border-bottom: 1px dotted #d5d5d5; font-size: .86rem; line-height: 1.9; }
+.bf-item.full { grid-column: 1 / -1; }
+.bf-ck { white-space: nowrap; margin-right: 9px; }
+.bf-line { display: inline-block; border-bottom: 1px solid #666; height: 1em; vertical-align: bottom; }
+@media (max-width: 900px) { .bf-grid { grid-template-columns: 1fr; } }
+@media print {
+  .bf-sheet { border: none; padding: 0; }
+  .bf-item { font-size: 10.5px; padding: 2px 0; line-height: 1.7; }
+  .bf-sec { padding: 2px 8px; margin: 6px 0 2px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+
+/* 預約參觀行事曆／參訪紀錄表 */
+.tc-cal td { height: 92px; vertical-align: top; width: 14.28%; padding: 4px 6px; }
+.tc-cal .tc-day { text-align: right; font-weight: 600; color: var(--muted); }
+.tc-cal .tc-today { background: #fdf6dd; }
+.tc-cal .tc-out { background: #f5f5f5; }
+.tc-item { font-size: .8rem; line-height: 1.5; border-left: 3px solid var(--primary); padding-left: 4px; margin: 2px 0; }
+.tvb th, .tvb td { border: 1px solid #444; padding: 6px 8px; }
+.tvb th { background: #fafafa; font-weight: 600; text-align: center; }
+
+/* 手機/平板：列印型表單與行事曆的窄螢幕保護（列印時不受影響） */
+.bf-sheet { overflow-x: auto; }
+.tvb { min-width: 620px; }
+.tc-cal { min-width: 700px; }
+@media (max-width: 640px) {
+  .bf-sheet { padding: 10px; }
+  .bf-item { font-size: .82rem; }
+  /* 房況列印雙欄卡 → 手機改單欄 */
+  .rsp-cards td { display: block; width: 100%; border-top: none; }
+  .rsp-cards tr:first-child td:first-child { border-top: 1px solid var(--border); }
+}
+
+/* 客戶管理分頁列 */
+.ctabs { display: flex; flex-wrap: wrap; background: #e8edf2; border-radius: 8px 8px 0 0; margin-bottom: 0; }
+.ctabs button { flex: 1; min-width: 104px; padding: 11px 8px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: .95rem; border-radius: 8px 8px 0 0; }
+.ctabs button.on { background: #fff; color: var(--text); font-weight: 700; box-shadow: 0 -2px 6px rgba(0,0,0,.06); }
+.ctabs button:disabled { color: #b9c0c7; cursor: default; }
+.ctabs:empty { display: none; }
+
+/* 側欄折疊群組 */
+.nav-group-hd { display: flex; align-items: center; justify-content: space-between; width: 100%;
+  padding: 11px 22px; border: none; background: transparent; color: inherit; font: inherit;
+  cursor: pointer; text-align: left; }
+.nav-group-hd:hover { background: rgba(255,255,255,.06); }
+.nav-group-hd .chev { transition: transform .15s; font-size: .8em; color: var(--muted); }
+.nav-group.open .nav-group-hd .chev { transform: rotate(180deg); }
+.nav-group-body { display: none; }
+.nav-group.open .nav-group-body { display: block; }
+.nav-group-body a[data-nav] { padding-left: 40px; font-size: .93rem; }

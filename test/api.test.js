@@ -289,6 +289,457 @@ test('醫師巡診：診視紀錄新增→修改→讀取；無 physician 權限
   cookie = adminCookie;
 });
 
+// ---- 產科醫師診視紀錄（醫師巡診；媽媽）回歸測試 ----
+test('產科醫師巡診：診視紀錄新增→修改→讀取；無 physician 權限被擋', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mom = (await req('GET', '/api/mothers')).data.find(m => m.status === 'checked_in');
+  // 缺診視時間 → 400
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/doctor-visits`, { visit_date: '2026-07-04' })).status, 400);
+  // 新增
+  const ok = await req('POST', `/api/mothers/${mom.id}/doctor-visits`, {
+    visit_date: '2026-07-04', visit_time: '22:45', postpartum_days: 10,
+    mood: '平穩', complaint: '無', feeding: ['純母乳'], breast: ['脹/充盈'],
+    ep_wound: '平整', fundus_height: '平臍', uterus_state: '硬',
+    lochia_amount: ['少'], lochia_color: ['暗紅'], urine: '正常', stool: '正常',
+    hemorrhoid: '無', edema_none: true, note: '恢復良好'
+  });
+  assert.strictEqual(ok.status, 200);
+  // 修改（記錄 edited_by）
+  assert.strictEqual((await req('PUT', `/api/mother-doctor-visits/${ok.data.id}`, {
+    visit_date: '2026-07-04', visit_time: '23:00', mood: '焦慮', epds_score: 8,
+    breast: ['脹/充盈', '有硬塊'], note: '乳房輕微硬塊，衛教親餵'
+  })).status, 200);
+  const g = await req('GET', `/api/mothers/${mom.id}/doctor-visits`);
+  const row = g.data.rows.find(r => r.id === ok.data.id);
+  assert.strictEqual(row.visit_time, '23:00');
+  assert.deepStrictEqual(row.data.breast, ['脹/充盈', '有硬塊']);
+  assert.strictEqual(row.data.mood, '焦慮');
+  assert.ok(row.edited_at);
+  // RBAC：kit_test（僅 meals）→ 403
+  const adminCookie = cookie;
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  assert.strictEqual((await req('GET', `/api/mothers/${mom.id}/doctor-visits`)).status, 403);
+  cookie = adminCookie;
+});
+
+// ---- 產婦交班單回歸測試 ----
+test('產婦交班單：新增→修改→飲食禁忌/備註/特殊餐存檔與表頭彙整', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 用另一位在住媽媽，避免動到「產婦入住護理評估表」測試的初始 null 斷言（共用同一 profile 表）
+  const moms = (await req('GET', '/api/mothers')).data.filter(m => m.status === 'checked_in');
+  const mom = moms[moms.length - 1];
+  // 缺交班時間 → 400
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/handovers`, { handover_date: '2026-07-05' })).status, 400);
+  // 新增
+  const ok = await req('POST', `/api/mothers/${mom.id}/handovers`, {
+    handover_date: '2026-07-05', handover_time: '09:08',
+    fundus: '臍下二指', lochia: '少／暗紅', note: '恢復良好，注意乳房硬塊'
+  });
+  assert.strictEqual(ok.status, 200);
+  // 修改（記錄 edited_by）
+  assert.strictEqual((await req('PUT', `/api/mother-handovers/${ok.data.id}`, {
+    handover_date: '2026-07-05', handover_time: '09:30', fundus: '臍下三指', lochia: '微量／粉紅', note: '已衛教'
+  })).status, 200);
+  // 飲食禁忌＋重要備註＋特殊餐存檔（diet_notes 進 mothers、其餘進入住評估 profile）
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/handover-profile`, {
+    diet_notes: '不吃牛', handover_note: '對青黴素過敏', sp_shenghua: '7/1~7/5', sp_redbean: '每日'
+  })).status, 200);
+  const g = await req('GET', `/api/mothers/${mom.id}/handovers`);
+  const row = g.data.rows.find(r => r.id === ok.data.id);
+  assert.strictEqual(row.fundus, '臍下三指');
+  assert.ok(row.edited_at);
+  assert.strictEqual(g.data.mother.diet_notes, '不吃牛');
+  assert.strictEqual(g.data.header.handover_note, '對青黴素過敏');
+  assert.strictEqual(g.data.header.sp_shenghua, '7/1~7/5');
+  // 表頭宮底/惡露：交班單較新 → 帶交班單值
+  assert.strictEqual(g.data.header.fundus_now.value, '臍下三指');
+  // RBAC：kit_test（僅 meals）→ 403
+  const adminCookie = cookie;
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  assert.strictEqual((await req('GET', `/api/mothers/${mom.id}/handovers`)).status, 403);
+  cookie = adminCookie;
+});
+
+// ---- 護理指導獨立頁回歸測試 ----
+test('護理指導：獨立 GET（提醒＋紀錄）→ 新增執行紀錄後提醒配對', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const moms = (await req('GET', '/api/mothers')).data.filter(m => m.status === 'checked_in');
+  const mom = moms[moms.length - 1];
+  const g0 = await req('GET', `/api/mothers/${mom.id}/guidance`);
+  assert.strictEqual(g0.status, 200);
+  assert.strictEqual(g0.data.reminders.length, 4);
+  // 類別錯誤 → 400
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/guidance`, { kind: 'xxx' })).status, 400);
+  // 新增執行紀錄 → 提醒第 1 天視為完成
+  const doneDate = g0.data.reminders[0].remind_date;
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/guidance`,
+    { kind: 'care', done_date: doneDate, note: '產後傷口照護指導' })).status, 200);
+  const g1 = await req('GET', `/api/mothers/${mom.id}/guidance`);
+  assert.strictEqual(g1.data.reminders[0].done_date, doneDate);
+  assert.strictEqual(g1.data.reminders[0].kind, 'care');
+  assert.ok(g1.data.guidance.some(x => x.note === '產後傷口照護指導'));
+});
+
+// ---- 產婦結案回歸測試 ----
+test('產婦結案：結案存檔→更新→房況旗標→解除結案', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const moms = (await req('GET', '/api/mothers')).data.filter(m => m.status === 'checked_in');
+  const mom = moms[moms.length - 1];
+  // 初始未結案；缺原因/去向 → 400
+  const g0 = await req('GET', `/api/mothers/${mom.id}/closure`);
+  assert.strictEqual(g0.status, 200);
+  assert.strictEqual(g0.data.closure, null);
+  assert.ok(Array.isArray(g0.data.options.educations));
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/closure`,
+    { close_date: '2026-07-05', close_time: '10:00' })).status, 400);
+  // 條件必填：原因「其他」需補述
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/closure`,
+    { close_date: '2026-07-05', close_time: '10:00', reason: '其他', destination: '返家' })).status, 400);
+  // 合法結案
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/closure`, {
+    close_date: '2026-07-05', close_time: '10:00', reason: '期滿結案', destination: '返家',
+    educations: ['惡露觀察', '乳房護理與哺乳', '不在清單的項目'], follow_up: '兩週後回診', note: '恢復良好'
+  })).status, 200);
+  const g1 = await req('GET', `/api/mothers/${mom.id}/closure`);
+  assert.ok(g1.data.closure);
+  assert.deepStrictEqual(g1.data.closure.data.educations, ['惡露觀察', '乳房護理與哺乳']); // 白名單過濾
+  // 更新（記錄 edited_by）
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/closure`, {
+    close_date: '2026-07-05', close_time: '11:00', reason: '提前退住', destination: '返家'
+  })).status, 200);
+  const g2 = await req('GET', `/api/mothers/${mom.id}/closure`);
+  assert.strictEqual(g2.data.closure.data.reason, '提前退住');
+  assert.ok(g2.data.closure.edited_at);
+  // 房況卡片 closed 旗標
+  const rs = await req('GET', '/api/room-status/mothers');
+  const occ = rs.data.rooms.map(r => r.occupant).find(o => o && o.mother_id === mom.id);
+  assert.ok(occ.closed > 0);
+  // 解除結案（admin）
+  assert.strictEqual((await req('DELETE', `/api/mother-closures/${mom.id}`)).status, 200);
+  assert.strictEqual((await req('GET', `/api/mothers/${mom.id}/closure`)).data.closure, null);
+});
+
+// ---- 醫師查房清單／寶寶報喜／病歷資料回歸測試 ----
+test('查房清單/寶寶報喜/病歷資料：查詢與權限', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 查房清單：在住媽媽逐列，欄位齊全
+  const pr = await req('GET', '/api/physician-rounds');
+  assert.strictEqual(pr.status, 200);
+  assert.ok(pr.data.rows.length >= 2);
+  for (const k of ['room_name', 'name', 'parity', 'delivery_type', 'problems', 'nursing_findings', 'doctor_note']) {
+    assert.ok(k in pr.data.rows[0], `缺欄位 ${k}`);
+  }
+  // Excel 匯出
+  const xls = await req('GET', '/api/physician-rounds?format=xlsx');
+  assert.strictEqual(xls.status, 200);
+  // 寶寶報喜：以 seed 寶寶生產日正向命中；冷門日期查無資料
+  const babies = (await req('GET', '/api/babies')).data;
+  const withBirth = babies.find(b => b.birth_date);
+  if (withBirth) {
+    const hit = await req('GET', `/api/baby-announcements?date=${withBirth.birth_date}`);
+    assert.strictEqual(hit.status, 200);
+    assert.ok(hit.data.rows.some(r => r.baby_name === withBirth.name));
+    assert.ok('mother_check_in' in hit.data.rows[0] && 'baby_check_in' in hit.data.rows[0]);
+  }
+  const g = await req('GET', '/api/baby-announcements?date=2020-01-01');
+  assert.strictEqual(g.status, 200);
+  assert.strictEqual(g.data.rows.length, 0);
+  // 病歷資料：無姓名 400、模糊查詢命中
+  assert.strictEqual((await req('GET', '/api/medical-records')).status, 400);
+  const mr = await req('GET', '/api/medical-records?name=' + encodeURIComponent('李'));
+  assert.strictEqual(mr.status, 200);
+  assert.ok(mr.data.rows.length >= 1);
+  assert.ok('stay_range' in mr.data.rows[0] && 'baby_genders' in mr.data.rows[0]);
+  // RBAC：kit_test（僅 meals）三端點皆 403
+  const adminCookie = cookie;
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  assert.strictEqual((await req('GET', '/api/physician-rounds')).status, 403);
+  assert.strictEqual((await req('GET', '/api/baby-announcements')).status, 403);
+  assert.strictEqual((await req('GET', '/api/medical-records?name=x')).status, 403);
+  cookie = adminCookie;
+});
+
+// ---- 客戶管理回歸測試 ----
+test('客戶管理：新增潛客→查詢→編輯→行事曆；權限被擋', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 無條件查詢 → 400；缺預產期 → 400
+  assert.strictEqual((await req('GET', '/api/customers')).status, 400);
+  assert.strictEqual((await req('POST', '/api/customers', { name: '測試潛客' })).status, 400);
+  // 新增潛客（mothers reserved＋profile）
+  const ok = await req('POST', '/api/customers', {
+    name: '測試潛客甲', phone: '0911222333', due_date: '2026-09-15', id_no: 'A234567890',
+    identity: 'VIP', source: '親友介紹', hospital: '台大醫院', room_pref: '雙人房',
+    contact_name: '王先生', contact_relation: '先生', referrer: '李小姐', referrer_fee: '2000'
+  });
+  assert.strictEqual(ok.status, 200);
+  // 查詢：姓名模糊命中，欄位齊全
+  const q = await req('GET', '/api/customers?name=' + encodeURIComponent('潛客甲'));
+  assert.strictEqual(q.status, 200);
+  const row = q.data.rows.find(r => r.id === ok.data.id);
+  assert.strictEqual(row.status, 'reserved');
+  assert.strictEqual(row.id_no, 'A234567890');
+  // 讀取單筆：profile 帶回
+  const g = await req('GET', `/api/customers/${ok.data.id}`);
+  assert.strictEqual(g.data.profile.identity, 'VIP');
+  assert.strictEqual(g.data.profile.referrer, '李小姐');
+  // 編輯：mothers 同步＋profile 合併（未帶欄位不消失）
+  assert.strictEqual((await req('PUT', `/api/customers/${ok.data.id}`,
+    { phone: '0999888777', room_pref: '單人房' })).status, 200);
+  const g2 = await req('GET', `/api/customers/${ok.data.id}`);
+  assert.strictEqual(g2.data.mother.phone, '0999888777');
+  assert.strictEqual(g2.data.profile.room_pref, '單人房');
+  assert.strictEqual(g2.data.profile.referrer, '李小姐');
+  // 行事曆
+  const cal = await req('GET', '/api/tour-calendar?month=2026-07');
+  assert.strictEqual(cal.status, 200);
+  assert.ok(Array.isArray(cal.data.rows));
+  // 互動紀錄：空白 400 → 新增 → 帶回；單筆 GET 同步帶出關聯資料（logs/tours/contracts/bookings）
+  assert.strictEqual((await req('POST', `/api/customers/${ok.data.id}/logs`, { body: '' })).status, 400);
+  assert.strictEqual((await req('POST', `/api/customers/${ok.data.id}/logs`,
+    { body: '來電詢問月子餐與房價' })).status, 200);
+  const g3 = await req('GET', `/api/customers/${ok.data.id}`);
+  assert.ok(g3.data.logs.some(l => l.body === '來電詢問月子餐與房價'));
+  for (const k of ['logs', 'tours', 'contracts', 'bookings', 'charges', 'payments']) assert.ok(Array.isArray(g3.data[k]), `缺 ${k}`);
+  // 膳食資訊：7 天供餐預覽與設定
+  assert.ok(g3.data.meals && Array.isArray(g3.data.meals.week) && g3.data.meals.week.length === 7);
+  assert.ok(Array.isArray(g3.data.meals.slots) && g3.data.meals.slots.length >= 1);
+  assert.ok(Array.isArray(g3.data.babies));
+  // 預約參觀：由客戶帶入建立 → 依姓名比對帶回 → 狀態切換
+  assert.strictEqual((await req('POST', '/api/tours', {
+    name: '測試潛客甲', phone: '0999888777', tour_at: '2026-07-10 14:00', note: '客戶管理轉入'
+  })).status, 200);
+  let g5 = await req('GET', `/api/customers/${ok.data.id}`);
+  const tr = g5.data.tours.find(t => t.note === '客戶管理轉入');
+  assert.ok(tr);
+  assert.strictEqual((await req('PUT', `/api/tours/${tr.id}`, { status: 'visited' })).status, 200);
+  // 排房：建訂房（衝突擋 409）→ 入住 → 客戶狀態同步
+  const rooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && !r.occupant);
+  const room = rooms[rooms.length - 1];
+  const bk1 = await req('POST', '/api/bookings', {
+    mother_id: ok.data.id, room_id: room.id, check_in: '2026-09-25', check_out: '2026-10-20', total_amount: 99000
+  });
+  assert.strictEqual(bk1.status, 200);
+  assert.strictEqual((await req('POST', '/api/bookings', {
+    mother_id: ok.data.id, room_id: room.id, check_in: '2026-10-01', check_out: '2026-10-05'
+  })).status, 409);
+  assert.strictEqual((await req('PUT', `/api/bookings/${bk1.data.id}/status`, { status: 'checked_in' })).status, 200);
+  g5 = await req('GET', `/api/customers/${ok.data.id}`);
+  assert.strictEqual(g5.data.mother.status, 'checked_in');
+  assert.ok(g5.data.bookings.some(b => b.id === bk1.data.id && b.status === 'checked_in'));
+  // 還原：退房（避免影響後續以「在住媽媽」為前提的測試）
+  assert.strictEqual((await req('PUT', `/api/bookings/${bk1.data.id}/status`, { status: 'checked_out' })).status, 200);
+  // 合約資料：存檔自動編號（YYYYMM+3碼）→ 明細新增（自動帶房價）→ 特殊折扣 → 刪除需說明
+  assert.strictEqual((await req('PUT', `/api/customers/${ok.data.id}/contract`, {
+    handler: '王小姐', sign_date: '2026-07-05', due_date: '2026-09-20',
+    parity_no: '第1胎', baby_count: '單胞胎', diet_ban: '不吃羊肉', note: '合約備註測試'
+  })).status, 200);
+  let gc = await req('GET', `/api/customers/${ok.data.id}`);
+  assert.ok(/^\d{6}\d{3}$/.test(gc.data.contract.contract_no), '合約編號格式 YYYYMM+3碼');
+  assert.strictEqual(gc.data.contract.data.handler, '王小姐');
+  assert.strictEqual(gc.data.mother.due_date, '2026-09-20');       // 同步 mothers
+  assert.strictEqual(gc.data.mother.diet_notes, '不吃羊肉');
+  assert.ok(Array.isArray(gc.data.room_types) && gc.data.room_types.length >= 1);
+  const rt = gc.data.room_types[0];
+  // 明細：缺天數 400、自動帶房價、特殊折扣自訂單價
+  assert.strictEqual((await req('POST', `/api/customers/${ok.data.id}/contract/items`, { name: rt.name })).status, 400);
+  assert.strictEqual((await req('POST', `/api/customers/${ok.data.id}/contract/items`, { name: rt.name, qty: 20 })).status, 200);
+  assert.strictEqual((await req('POST', `/api/customers/${ok.data.id}/contract/items`, { name: rt.name, qty: 5, price: 5000 })).status, 200);
+  gc = await req('GET', `/api/customers/${ok.data.id}`);
+  assert.strictEqual(gc.data.contract.items.length, 2);
+  assert.strictEqual(gc.data.contract.items[0].price, rt.price);
+  assert.strictEqual(gc.data.contract.total, rt.price * 20 + 5000 * 5);
+  // 刪除：無說明 400 → 有說明成功
+  assert.strictEqual((await req('POST', `/api/customers/${ok.data.id}/contract/items/delete`, { index: 1 })).status, 400);
+  assert.strictEqual((await req('POST', `/api/customers/${ok.data.id}/contract/items/delete`, { index: 1, reason: '客戶改期' })).status, 200);
+  gc = await req('GET', `/api/customers/${ok.data.id}`);
+  assert.strictEqual(gc.data.contract.items.length, 1);
+  // 以合約編號後碼查詢命中
+  const byNo = await req('GET', '/api/customers?contract_no=' + gc.data.contract.contract_no.slice(-4));
+  assert.ok(byNo.data.rows.some(r => r.id === ok.data.id && r.contract_no === gc.data.contract.contract_no));
+  // 在住媽媽帶出訂房收款欄位
+  const inMom = (await req('GET', '/api/mothers')).data.find(m => m.status === 'checked_in');
+  const g4 = await req('GET', `/api/customers/${inMom.id}`);
+  assert.ok(g4.data.bookings.length >= 1);
+  assert.ok('paid' in g4.data.bookings[0] && 'addon' in g4.data.bookings[0]);
+  // RBAC：kit_test（僅 meals）→ 403
+  const adminCookie = cookie;
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  assert.strictEqual((await req('GET', '/api/customers?name=x')).status, 403);
+  assert.strictEqual((await req('GET', '/api/tour-calendar')).status, 403);
+  cookie = adminCookie;
+});
+
+// ---- 客戶及簽約資料查詢回歸測試 ----
+test('客戶簽約資料查詢：三模式／日期欄位／退訂與恢復／Excel', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 測試潛客甲已簽約且已排房（前面測試）→ transferred 模式命中
+  const tf = await req('GET', '/api/client-contracts?mode=transferred');
+  assert.strictEqual(tf.status, 200);
+  const row = tf.data.rows.find(r => r.name === '測試潛客甲');
+  assert.ok(row && row.checkin_date && row.days > 0);
+  // signed 模式不含已排房者
+  const sg = await req('GET', '/api/client-contracts?mode=signed');
+  assert.ok(!sg.data.rows.some(r => r.name === '測試潛客甲'));
+  // 日期欄位過濾：以簽約日 2026-07-05 查 7 月命中、6 月不命中
+  const hit = await req('GET', '/api/client-contracts?mode=transferred&date_field=sign&from=2026-07-01&to=2026-07-31');
+  assert.ok(hit.data.rows.some(r => r.name === '測試潛客甲'));
+  const miss = await req('GET', '/api/client-contracts?mode=transferred&date_field=sign&from=2026-06-01&to=2026-06-30');
+  assert.ok(!miss.data.rows.some(r => r.name === '測試潛客甲'));
+  // 關鍵字：合約編號後碼
+  const no = row.contract_no;
+  const kw = await req('GET', `/api/client-contracts?mode=transferred&keyword=${no.slice(-3)}&keyword_type=contract`);
+  assert.ok(kw.data.rows.some(r => r.contract_no === no));
+  // 退訂：原因必填 → 退訂後列入 cancelled 模式、transferred 消失 → admin 恢復
+  assert.strictEqual((await req('POST', `/api/customers/${row.mother_id}/contract/cancel`, {})).status, 400);
+  assert.strictEqual((await req('POST', `/api/customers/${row.mother_id}/contract/cancel`, { reason: '客戶改期生產' })).status, 200);
+  const cx = await req('GET', '/api/client-contracts?mode=cancelled');
+  const crow = cx.data.rows.find(r => r.mother_id === row.mother_id);
+  assert.ok(crow && crow.cancel_reason === '客戶改期生產' && crow.cancel_by);
+  assert.ok(!(await req('GET', '/api/client-contracts?mode=transferred')).data.rows.some(r => r.mother_id === row.mother_id));
+  assert.strictEqual((await req('POST', `/api/customers/${row.mother_id}/contract/restore`, {})).status, 200);
+  assert.ok((await req('GET', '/api/client-contracts?mode=transferred')).data.rows.some(r => r.mother_id === row.mother_id));
+  // Excel 匯出
+  assert.strictEqual((await req('GET', '/api/client-contracts?mode=signed&format=xlsx')).status, 200);
+});
+
+// ---- 產後報表引擎回歸測試 ----
+test('產後報表：清單／各報表可產出／收款統計分類／Excel', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const list = await req('GET', '/api/pp-reports');
+  assert.strictEqual(list.status, 200);
+  assert.strictEqual(list.data.length, 29);
+  // 全部 19 張報表都能無錯產出（寬日期範圍掃 seed 資料）
+  for (const r of list.data) {
+    const g = await req('GET', `/api/pp-reports/${r.key}?from=2020-01-01&to=2030-12-31`);
+    assert.strictEqual(g.status, 200, `${r.key} 失敗`);
+    assert.ok(Array.isArray(g.data.rows) && Array.isArray(g.data.columns), r.key);
+  }
+  // 收款統計：先建一筆「訂金」收款 → 統計表分類到訂金欄且方式歸現金
+  const moms = (await req('GET', '/api/mothers')).data.filter(m => m.status === 'checked_in');
+  const mom = await req('GET', `/api/customers/${moms[0].id}`);
+  const bk = mom.data.bookings.find(b => b.status === 'checked_in');
+  await req('POST', `/api/bookings/${bk.id}/payments`, { amount: 12345, method: '現金', paid_on: '2026-07-05', note: '訂金｜測試' });
+  const sum = await req('GET', '/api/pp-reports/pay_daily_sum?from=2026-07-05&to=2026-07-05');
+  const day = sum.data.rows.find(r => r.d === '2026-07-05');
+  assert.ok(day && day.cash >= 12345 && day.deposit >= 12345 && day.grand >= 12345);
+  // 明細表歸「訂金10%」欄
+  const det = await req('GET', '/api/pp-reports/pay_daily_detail?from=2026-07-05&to=2026-07-05');
+  assert.ok(det.data.rows.some(r => r.deposit === 12345));
+  // 提前退房：退房帶原因 → actual_check_out 記錄 → 報表命中
+  const ecMom = await req('POST', '/api/customers', { name: '提前退房測試', due_date: '2026-10-01' });
+  const ecRooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && !r.occupant);
+  const ecBk = await req('POST', '/api/bookings', {
+    mother_id: ecMom.data.id, room_id: ecRooms[0].id, check_in: '2026-06-20', check_out: '2026-08-20'
+  });
+  await req('PUT', `/api/bookings/${ecBk.data.id}/status`, { status: 'checked_in' });
+  assert.strictEqual((await req('PUT', `/api/bookings/${ecBk.data.id}/status`,
+    { status: 'checked_out', reason: '寶寶轉院' })).status, 200);
+  const ec = await req('GET', '/api/pp-reports/early_checkout?from=2026-07-01&to=2026-07-31');
+  const ecRow = ec.data.rows.find(r => r.mother === '提前退房測試');
+  assert.ok(ecRow && ecRow.reason === '寶寶轉院' && ecRow.early_days > 0);
+  // 應收帳款：以簽約日查詢（測試潛客甲 2026-07-05 簽約、合約有明細）
+  const ar = await req('GET', '/api/pp-reports/ar_detail?from=2026-07-01&to=2026-07-31&date_field=sign');
+  const arRow = ar.data.rows.find(r => r.mother === '測試潛客甲');
+  assert.ok(arRow && arRow.total > 0 && 'balance' in arRow);
+  // 不存在報表 404、日期錯誤 400、Excel 200
+  assert.strictEqual((await req('GET', '/api/pp-reports/nope')).status, 404);
+  assert.strictEqual((await req('GET', '/api/pp-reports/pay_daily_sum?from=2026-07-10&to=2026-07-01')).status, 400);
+  assert.strictEqual((await req('GET', '/api/pp-reports/occupancy_month?from=2026-07-01&to=2026-07-31&format=xlsx')).status, 200);
+});
+
+// ---- 房間資料管理回歸測試 ----
+test('房間資料管理：房型/房間/折扣/嬰兒床 CRUD 與批次', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 房型：回填自既有房間（seed 有標準房/豪華房/總統套房）
+  const types = await req('GET', '/api/room-types');
+  assert.strictEqual(types.status, 200);
+  assert.ok(types.data.length >= 1);
+  // 新增房型
+  assert.strictEqual((await req('POST', '/api/room-types', {})).status, 400);
+  const rt = await req('POST', '/api/room-types', { name: '禾苗房', price: 8800, sort: 1 });
+  assert.strictEqual(rt.status, 200);
+  assert.ok((await req('GET', '/api/room-types')).data.some(t => t.name === '禾苗房'));
+  // 房間：新增（含分機/排序）＋PUT＋批次
+  const rm = await req('POST', '/api/rooms', { name: 'T801', room_type: '禾苗房', price_per_day: 8800, call_ext: '801', service_ext: '801', sort: 5 });
+  assert.strictEqual(rm.status, 200);
+  assert.strictEqual((await req('PUT', `/api/rooms/${rm.data.id}`, { service_ext: '8801' })).status, 200);
+  const batch = await req('POST', '/api/rooms/batch', { rooms: [{ name: 'T802', room_type: '禾苗房' }, { name: 'T803', room_type: '禾苗房' }] });
+  assert.strictEqual(batch.data.added, 2);
+  const gr = (await req('GET', '/api/rooms')).data.find(r => r.id === rm.data.id);
+  assert.strictEqual(gr.service_ext, '8801');
+  assert.strictEqual(gr.call_ext, '801');
+  // 折扣：新增＋房型過濾＋刪除
+  assert.strictEqual((await req('POST', '/api/room-discounts', {})).status, 400);
+  const disc = await req('POST', '/api/room-discounts', { room_type: '禾苗房', customer_class: '一般客戶', plan_name: '牌價', stay_days: 20, discount_type: 'percent', discount_value: 85, bonus_days: 3 });
+  assert.strictEqual(disc.status, 200);
+  const dl = await req('GET', '/api/room-discounts?room_type=禾苗房');
+  assert.ok(dl.data.some(d => d.id === disc.data.id && d.discount_value === 85));
+  assert.strictEqual((await req('DELETE', `/api/room-discounts/${disc.data.id}`)).status, 200);
+  // 嬰兒床：單筆＋批次＋關鍵字查詢
+  assert.strictEqual((await req('POST', '/api/baby-beds', {})).status, 400);
+  assert.strictEqual((await req('POST', '/api/baby-beds', { bed_no: 'Z101', zone: 'Z' })).status, 200);
+  const bb = await req('POST', '/api/baby-beds/batch', { beds: [{ bed_no: 'Z102', zone: 'Z' }, { bed_no: 'Z103', zone: 'Z' }] });
+  assert.strictEqual(bb.data.added, 2);
+  const kw = await req('GET', '/api/baby-beds?keyword=Z10');
+  assert.ok(kw.data.length >= 3);
+});
+
+// ---- 產後系統其他設定回歸測試 ----
+test('產後系統其他設定：選項清單與打掃排程設定', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const s = await req('GET', '/api/settings');
+  assert.strictEqual(s.status, 200);
+  // 預設選項清單存在
+  for (const k of ['tour_source_options', 'formula_brand_options', 'door_light_options',
+    'referral_hospital_options', 'contact_class_options', 'discharge_med_options',
+    'hk_sheet_days', 'hk_supply_days', 'tour_visit_limit']) {
+    assert.ok(k in s.data, `缺設定 ${k}`);
+  }
+  assert.ok(s.data.tour_source_options.includes('親友介紹'));
+  // 選項清單存檔 round-trip
+  assert.strictEqual((await req('PUT', '/api/settings', { formula_brand_options: '亞培,惠氏,測試品牌' })).status, 200);
+  assert.ok((await req('GET', '/api/settings')).data.formula_brand_options.includes('測試品牌'));
+  // 打掃排程設定
+  assert.strictEqual((await req('PUT', '/api/settings', { hk_sheet_days: '10', hk_supply_days: '2' })).status, 200);
+  const s2 = (await req('GET', '/api/settings')).data;
+  assert.strictEqual(s2.hk_sheet_days, '10');
+  assert.strictEqual(s2.hk_supply_days, '2');
+});
+
+// ---- 後台模組回歸測試 ----
+test('後台：公佈欄交辦／文件清單／退訂資料／合約轉住房', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 公佈欄：缺標題 400 → 發公告＋交辦 → 交辦結案
+  assert.strictEqual((await req('POST', '/api/bulletins', { kind: 'notice' })).status, 400);
+  assert.strictEqual((await req('POST', '/api/bulletins',
+    { kind: 'notice', title: '七月消防演練', body: '7/15 下午 2 點', pinned: true })).status, 200);
+  const task = await req('POST', '/api/bulletins',
+    { kind: 'task', title: '補訂尿布', due_date: '2026-07-08' });
+  assert.strictEqual(task.status, 200);
+  assert.strictEqual((await req('PUT', `/api/bulletins/${task.data.id}`, { done: true })).status, 200);
+  const bl = await req('GET', '/api/bulletins');
+  const t = bl.data.find(x => x.id === task.data.id);
+  assert.strictEqual(t.done, 1);
+  assert.ok(t.done_at && t.done_name);
+  assert.ok(bl.data.find(x => x.title === '七月消防演練' && x.pinned === 1));
+  // 文件：無檔案 400；清單可讀
+  assert.strictEqual((await req('POST', '/api/documents', {})).status, 400);
+  assert.strictEqual((await req('GET', '/api/documents')).status, 200);
+  // 退訂資料／合約轉住房
+  const cx = await req('GET', '/api/cancellations');
+  assert.ok(Array.isArray(cx.data.bookings) && Array.isArray(cx.data.tours));
+  const tf = await req('GET', '/api/contract-transfers');
+  assert.strictEqual(tf.status, 200);
+  const row = tf.data.rows.find(r => r.name === '測試潛客甲');
+  assert.ok(row && /^\d{9}$/.test(row.contract_no));
+  assert.ok(row.total > 0);
+  assert.ok(['reserved', 'checked_in', 'checked_out'].includes(row.booking_status)); // 前面測試已排房
+});
+
 // ---- 新生兒交班單回歸測試 ----
 test('新生兒交班單：新增→修改→表頭彙整與每日奶量統計', async () => {
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });

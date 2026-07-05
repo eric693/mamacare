@@ -814,6 +814,148 @@ function init() {
   );
   CREATE INDEX IF NOT EXISTS idx_bdv_baby ON baby_doctor_visits(baby_id, visit_date);
 
+  -- 產科醫師診視紀錄（醫師巡診；媽媽房況卡片進入，逐筆可修改/刪除）
+  CREATE TABLE IF NOT EXISTS mother_doctor_visits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    recorded_by INTEGER REFERENCES users(id),
+    visit_date TEXT NOT NULL,
+    visit_time TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',   -- 各項評估勾選（JSON：精神情緒／哺乳／乳房／EP傷口／宮縮／惡露／二便／痔瘡／水腫…）
+    note TEXT DEFAULT '',              -- 敍述性紀錄（限 600 字）
+    edited_at TEXT DEFAULT '',
+    edited_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mdv_mother ON mother_doctor_visits(mother_id, visit_date);
+
+  -- 產婦交班單（媽媽房況卡片進入；逐筆可修改/刪除。飲食禁忌存 mothers.diet_notes、
+  -- 重要備註/特殊飲品餐存 mother_intake_assessments.data）
+  CREATE TABLE IF NOT EXISTS mother_handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    handover_date TEXT NOT NULL,
+    handover_time TEXT NOT NULL DEFAULT '',
+    fundus TEXT DEFAULT '',            -- 宮底高度
+    lochia TEXT DEFAULT '',            -- 惡露（量/顏色描述）
+    note TEXT DEFAULT '',              -- 交班事項（限 600 字）
+    edited_at TEXT DEFAULT '',
+    edited_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mho_mother ON mother_handovers(mother_id, handover_date);
+
+  -- 客戶管理：潛在客戶擴充資料（掛在 mothers 上，每媽媽一筆；建潛客＝mothers status='reserved'＋本表）
+  CREATE TABLE IF NOT EXISTS customer_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL UNIQUE REFERENCES mothers(id),
+    data TEXT NOT NULL DEFAULT '{}',   -- 身份/來源/生產醫院/喜好房型/聯絡人/介紹人…（JSON 白名單）
+    created_by INTEGER REFERENCES users(id),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 房間資料管理：房型設定（房型主檔，rooms.room_type 對應 name）
+  CREATE TABLE IF NOT EXISTS room_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    price INTEGER NOT NULL DEFAULT 0,
+    sort INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 房間資料管理：房價折扣設定（依房型/客戶分類/住宿天數的折扣專案）
+  CREATE TABLE IF NOT EXISTS room_discounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_type TEXT NOT NULL DEFAULT '',
+    customer_class TEXT DEFAULT '一般客戶',
+    plan_name TEXT DEFAULT '',
+    start_date TEXT DEFAULT '',
+    end_date TEXT DEFAULT '',
+    stay_days INTEGER NOT NULL DEFAULT 0,
+    discount_type TEXT NOT NULL DEFAULT 'percent',
+    discount_value INTEGER NOT NULL DEFAULT 100,
+    bonus_days INTEGER NOT NULL DEFAULT 0,
+    note TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 房間資料管理：嬰兒床位設定（床號＋分區）
+  CREATE TABLE IF NOT EXISTS baby_beds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bed_no TEXT NOT NULL UNIQUE,
+    zone TEXT DEFAULT 'A',
+    note TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 後台：公佈欄及交辦事項（notice=公告、task=交辦；交辦可指派與結案）
+  CREATE TABLE IF NOT EXISTS bulletins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT 'notice' CHECK (kind IN ('notice','task')),
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    assigned_to INTEGER REFERENCES users(id),
+    due_date TEXT DEFAULT '',
+    pinned INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    done_at TEXT DEFAULT '',
+    done_by INTEGER REFERENCES users(id),
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 後台：文件上傳下載區
+  CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    category TEXT DEFAULT '',
+    filename TEXT NOT NULL,
+    orig_name TEXT DEFAULT '',
+    size INTEGER DEFAULT 0,
+    note TEXT DEFAULT '',
+    uploaded_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 客戶合約資料（每媽媽一筆；合約編號 YYYYMM+3碼流水；items=銷售房型明細 JSON 陣列）
+  CREATE TABLE IF NOT EXISTS customer_contracts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL UNIQUE REFERENCES mothers(id),
+    contract_no TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',   -- 簽約日/經手人/胎次/寶寶人數/產檢醫院醫生/小管家/備註/定型化簽回/住房卡/分享卡/產前諮詢（JSON 白名單）
+    items TEXT NOT NULL DEFAULT '[]',  -- [{name,qty,price,by,at}]（合約總額＝Σ qty*price）
+    created_by INTEGER REFERENCES users(id),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 客戶互動紀錄（追加式，不覆蓋歷史；掛 mothers）
+  CREATE TABLE IF NOT EXISTS customer_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    body TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_clog_mother ON customer_logs(mother_id);
+
+  -- 產婦結案（每媽媽一筆；解除結案＝admin DELETE）
+  CREATE TABLE IF NOT EXISTS mother_closures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL UNIQUE REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    close_date TEXT NOT NULL,
+    close_time TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',   -- 原因/去向/衛教清單/追蹤事項（JSON 白名單）
+    note TEXT DEFAULT '',              -- 結案摘要（限 600 字）
+    edited_at TEXT DEFAULT '',
+    edited_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
   -- 新生兒交班單（房況卡片進入；逐筆可修改/刪除）
   CREATE TABLE IF NOT EXISTS baby_handovers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -940,6 +1082,24 @@ function init() {
   `);
 
   // 既有資料庫的欄位遷移
+  const roomCols = db.prepare('PRAGMA table_info(rooms)').all().map(c => c.name);
+  if (!roomCols.includes('call_ext')) {
+    // 呼叫分機／客服分機／排序（房間資料管理）
+    db.exec("ALTER TABLE rooms ADD COLUMN call_ext TEXT DEFAULT ''");
+    db.exec("ALTER TABLE rooms ADD COLUMN service_ext TEXT DEFAULT ''");
+    db.exec("ALTER TABLE rooms ADD COLUMN sort INTEGER NOT NULL DEFAULT 0");
+  }
+  const bkoCols = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
+  if (!bkoCols.includes('actual_check_out')) {
+    // 實際退房日（退房操作時寫入；早於預退日即為提前退房）＋提前退房原因
+    db.exec("ALTER TABLE bookings ADD COLUMN actual_check_out TEXT DEFAULT ''");
+    db.exec("ALTER TABLE bookings ADD COLUMN early_reason TEXT DEFAULT ''");
+  }
+  const ccCols = db.prepare('PRAGMA table_info(customer_contracts)').all().map(c => c.name);
+  if (!ccCols.includes('status')) {
+    // 合約狀態：active=有效、cancelled=退訂（退訂原因/退訂人/日期存 data JSON cancel_*）
+    db.exec("ALTER TABLE customer_contracts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+  }
   const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
   if (!userCols.includes('id_no')) {
     // 照護人員身分證字號（寶寶評估單等中衛欄位自動帶入用）
@@ -1142,6 +1302,14 @@ function init() {
     if (!oCols.includes('points_used')) db.exec('ALTER TABLE orders ADD COLUMN points_used INTEGER NOT NULL DEFAULT 0');
     if (!oCols.includes('points_earned')) db.exec('ALTER TABLE orders ADD COLUMN points_earned INTEGER NOT NULL DEFAULT 0');
     if (!oCols.includes('coupon_code')) db.exec("ALTER TABLE orders ADD COLUMN coupon_code TEXT DEFAULT ''");
+  }
+
+  // 房型主檔回填：既有部署由現有房間去重帶入（首次上線 room_types 為空時）
+  if (db.prepare('SELECT COUNT(*) c FROM room_types').get().c === 0) {
+    const rows = db.prepare(`SELECT room_type, MIN(price_per_day) price FROM rooms
+      WHERE active = 1 GROUP BY room_type ORDER BY price DESC`).all();
+    const ins = db.prepare('INSERT OR IGNORE INTO room_types (name, price, sort) VALUES (?,?,?)');
+    rows.forEach((r, i) => ins.run(r.room_type, r.price || 0, i));
   }
 
   ensureSettings();
@@ -1347,7 +1515,18 @@ const DEFAULT_SETTINGS = {
   // Facebook Messenger 介接（粉專雙向訊息）
   fb_page_access_token: '',
   fb_app_secret: '',
-  fb_verify_token: ''
+  fb_verify_token: '',
+  // 產後系統其他設定（各選項清單逗號分隔）
+  tour_source_options: '親友介紹,員工,產檢得知,網路,路過,官網,FB,友人介紹,其他',
+  tour_visit_limit: '1',                 // 每時段預約參觀人數上限
+  formula_brand_options: '亞培,惠氏,雀巢,美強生,桂格,其他',
+  door_light_options: '一般模式,勿擾模式,夜燈模式,清潔中,維修中',
+  referral_hospital_options: '',         // 護理後送醫院清單
+  contact_class_options: '先生,父母,兄弟姊妹,朋友,其他',
+  discharge_med_options: '',             // 出院帶藥藥品清單
+  // 打掃定期工作設定：媽媽房間每 N 天換床單／每 N 天更新備品
+  hk_sheet_days: '7',
+  hk_supply_days: '1'
 };
 
 function ensureSettings() {

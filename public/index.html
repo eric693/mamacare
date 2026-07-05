@@ -70,32 +70,108 @@
       <a href="#/bed-planning" data-nav data-perm="rooms">排床</a>
       <a href="#/housekeeping" data-nav data-perm="housekeeping">房務清潔</a>
       <a href="#/room-timeline" data-nav data-perm="rooms">房況時間軸</a>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd" data-perm="rooms">房間資料管理<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/room-types" data-nav data-perm="rooms">房型設定</a>
+          <a href="#/room-list" data-nav data-perm="rooms">房間資料</a>
+          <a href="#/room-discounts" data-nav data-perm="rooms">房價折扣設定</a>
+          <a href="#/baby-beds" data-nav data-perm="rooms">嬰兒床位設定</a>
+        </div>
+      </div>
       <a href="#/billing" data-nav data-perm="billing">收費帳務</a>
       <a href="#/aging" data-nav data-perm="billing">應收帳齡</a>
       <a href="#/shop" data-nav data-perm="shop">商城商品</a>
       <a href="#/supplies" data-nav data-perm="supplies">耗材庫存</a>
       <a href="#/programs" data-nav data-perm="programs">課程與服務</a>
-      <a href="#/members" data-nav data-perm="members">會員</a>
-      <a href="#/invoices" data-nav data-perm="invoices">電子發票</a>
+      <!-- <a href="#/members" data-nav data-perm="members">會員</a>
+      <a href="#/invoices" data-nav data-perm="invoices">電子發票</a> -->
       <a href="#/contracts" data-nav data-perm="contracts">合約簽署</a>
       <a href="#/meals" data-nav data-perm="meals">膳食管理</a>
-      <a href="#/meal-plan" data-nav data-perm="meals">月子餐</a>
+      <!-- 隱藏（2026-07-05 依需求）：月子餐／LINE FB 客訊／名人推薦／優惠券，功能仍在、路由可直達
+      <a href="#/meal-plan" data-nav data-perm="meals">月子餐</a> -->
+      <a href="#/customers" data-nav data-perm="tours">客戶管理</a>
       <a href="#/tours" data-nav data-perm="tours">參觀預約</a>
       <a href="#/shifts" data-nav data-perm="shifts">排班與人力</a>
       <a href="#/family" data-nav data-perm="family">家屬帳號</a>
-      <a href="#/crm" data-nav data-perm="crm">LINE／FB 客訊</a>
-      <a href="#/testimonials" data-nav data-perm="testimonials">名人推薦</a>
+      <!-- <a href="#/crm" data-nav data-perm="crm">LINE／FB 客訊</a>
+      <a href="#/testimonials" data-nav data-perm="testimonials">名人推薦</a> -->
+      <div class="nav-section" data-section>後台</div>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd" data-perm="tours">客戶及簽約資料<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/client-contracts" data-nav data-perm="tours">客戶簽約資料</a>
+          <a href="#/cancellations" data-nav data-perm="tours">客戶退訂資料</a>
+          <a href="#/contract-transfers" data-nav data-perm="tours">合約轉住房資料</a>
+        </div>
+      </div>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd" data-perm="reports">產後報表查詢<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/pp-report?r=pay_daily_sum" data-nav data-perm="reports">產後每日收款統計表</a>
+          <a href="#/pp-report?r=pay_daily_detail" data-nav data-perm="reports">產後每日收款明細表</a>
+          <a href="#/pp-report?r=revenue_month" data-nav data-perm="reports">產後營收統計分析表</a>
+          <a href="#/pp-report?r=supply_sales" data-nav data-perm="reports">客房備品銷售明細表</a>
+          <a href="#/pp-report?r=retail_detail" data-nav data-perm="reports">產品零售明細表</a>
+          <a href="#/pp-report?r=occupancy_detail" data-nav data-perm="reports">住宿率明細表</a>
+          <a href="#/pp-report?r=occupancy_month" data-nav data-perm="reports">住宿率統計表</a>
+          <a href="#/pp-report?r=stay_days_month" data-nav data-perm="reports">入住天數月統計表</a>
+          <a href="#/pp-report?r=checkin_info" data-nav data-perm="reports">媽媽入住資訊查詢</a>
+          <a href="#/pp-report?r=cancel_stats" data-nav data-perm="reports">退訂資料統計表</a>
+          <a href="#/pp-report?r=tour_conversion" data-nav data-perm="reports">參觀成交率分析表</a>
+          <a href="#/pp-report?r=checkin_stats" data-nav data-perm="reports">媽媽入住統計表</a>
+          <a href="#/pp-report?r=order_detail" data-nav data-perm="reports">媽媽訂單明細查詢</a>
+          <a href="#/pp-report?r=cleaning10" data-nav data-perm="reports">10日打掃明細表</a>
+          <a href="#/pp-report?r=baby_out" data-nav data-perm="reports">寶寶不在館內明細查詢</a>
+          <a href="#/pp-report?r=early_checkout" data-nav data-perm="reports">提前退房明細表</a>
+          <a href="#/pp-report?r=baby_detail" data-nav data-perm="reports">寶寶資料明細表</a>
+          <a href="#/pp-report?r=ar_detail" data-nav data-perm="reports">媽媽應收帳款明細表</a>
+          <a href="#/pp-report?r=room_card_usage" data-nav data-perm="reports">住房卡使用明細表</a>
+        </div>
+      </div>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd" data-perm="reports">護理紀錄資料<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/pp-report?r=mom_nursing_q" data-nav data-perm="reports">媽媽護理資料查詢</a>
+          <a href="#/pp-report?r=baby_care_q" data-nav data-perm="reports">寶寶護理資料查詢</a>
+          <a href="#/pp-report?r=bf_rate" data-nav data-perm="reports">母乳哺育率報表</a>
+          <a href="#/pp-report?r=rooming_stats" data-nav data-perm="reports">親子同室統計分析</a>
+          <a href="#/pp-report?r=infection_quality" data-nav data-perm="reports">護理感控品質表分析</a>
+          <a href="#/pp-report?r=epds_q" data-nav data-perm="reports">愛丁堡憂鬱量查詢</a>
+          <a href="#/pp-report?r=epds_stats" data-nav data-perm="reports">愛丁堡憂鬱量統計</a>
+          <a href="#/mother-nursing" data-nav data-perm="mother_care">單一媽媽護理資料</a>
+          <a href="#/baby-nursing" data-nav data-perm="baby_care">單一寶寶護理資料</a>
+          <a href="#/pp-report?r=person_days" data-nav data-perm="reports">入住人日數統計表</a>
+          <a href="#/pp-report?r=inout_month" data-nav data-perm="reports">產後出入住月報表</a>
+          <a href="#/pp-report?r=mom_rooming" data-nav data-perm="reports">媽媽親子同室統計</a>
+        </div>
+      </div>
+      <a href="#/bulletins" data-nav>公佈欄及交辦事項</a>
+      <a href="#/documents" data-nav>文件上傳下載區</a>
       <div class="nav-section" data-section>管理</div>
       <a href="#/analytics" data-nav data-perm="reports">經營分析</a>
       <a href="#/quality-report" data-nav data-perm="reports">營運報表</a>
-      <a href="#/coupons" data-nav data-perm="coupons">優惠券</a>
+      <!-- <a href="#/coupons" data-nav data-perm="coupons">優惠券</a> -->
       <a href="#/reports" data-nav data-perm="reports">評鑑月報</a>
       <a href="#/gov" data-nav data-perm="gov">衛福部通報</a>
       <a href="#/certifications" data-nav data-perm="certifications">員工證照</a>
       <a href="#/surveys" data-nav data-perm="surveys">問卷調查</a>
-      <a href="#/audit-logs" data-nav data-perm="audit">稽核軌跡</a>
+      <!-- <a href="#/audit-logs" data-nav data-perm="audit">稽核軌跡</a> -->
       <a href="#/export" data-nav data-perm="export">資料匯出與備份</a>
       <a href="#/settings" data-nav data-perm="settings">系統設定</a>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd" data-perm="settings">產後系統其他設定<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/epds-template" data-nav data-perm="mother_care">媽媽憂鬱量表樣版</a>
+          <a href="#/sys-option?k=tour_source" data-nav data-perm="settings">預約參觀訊息來源</a>
+          <a href="#/cleaning-schedule" data-nav data-perm="settings">打掃定期工作設定</a>
+          <a href="#/sys-option?k=formula_brand" data-nav data-perm="settings">寶寶奶粉廠牌設定</a>
+          <a href="#/sys-option?k=door_light" data-nav data-perm="settings">門燈控制設定</a>
+          <a href="#/sys-option?k=referral_hospital" data-nav data-perm="settings">護理後送醫院</a>
+          <a href="#/sys-option?k=contact_class" data-nav data-perm="settings">產後客戶聯絡人分類</a>
+          <a href="#/sys-option?k=discharge_med" data-nav data-perm="settings">出院帶藥藥品設定</a>
+        </div>
+      </div>
       <a href="#/users" data-nav data-perm="users">帳號管理</a>
     </nav>
 

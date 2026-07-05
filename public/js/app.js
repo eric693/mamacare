@@ -223,7 +223,7 @@ async function viewDashboard() {
         <li><a href="${it.link}" style="text-decoration:none;color:inherit">
           <span class="badge ${REM_LEVEL[it.level]}">${REM_TYPE[it.type] || ''}</span>
           ${esc(it.title)}${it.due ? `　<small style="color:var(--muted)">${esc(it.due)}</small>` : ''}</a></li>`).join('')}</ul>`
-        : '<div class="empty">目前沒有待辦事項，一切就緒 👍</div>'}
+        : '<div class="empty">目前沒有待辦事項，一切就緒</div>'}
     </div>`;
   const shiftRows = d.staffing.shifts.map(s => `
     <tr>
@@ -790,6 +790,9 @@ async function viewMotherCare() {
       <h3>當日紀錄</h3>
       <div id="mc-list"><div class="empty">載入中</div></div>
     </div>`;
+  // 深連結：#/mother-care?m=<id>（媽媽房況卡片「照護紀錄」直接帶入該媽媽）
+  const wantMom = (location.hash.split('?m=')[1] || '').split('&')[0];
+  if (wantMom && list.some(m => m.id == wantMom)) $('#mc-mother').value = wantMom;
 
   const refresh = async () => {
     const id = $('#mc-mother').value;
@@ -1043,7 +1046,7 @@ async function viewHandover() {
         <select id="hn-shift">${Object.entries(SHIFT_LABEL)
           .map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
       </div>
-      <div class="row" style="margin-bottom:6px"><button class="btn small secondary" id="hn-draft" type="button">🪄 自動帶入草稿（依今日紀錄）</button></div>
+      <div class="row" style="margin-bottom:6px"><button class="btn small secondary" id="hn-draft" type="button">自動帶入草稿（依今日紀錄）</button></div>
       <div class="field"><label>S 現況 Situation</label><textarea id="hn-s"></textarea></div>
       <div class="field"><label>B 背景 Background</label><textarea id="hn-b"></textarea></div>
       <div class="field"><label>A 評估 Assessment</label><textarea id="hn-a"></textarea></div>
@@ -1643,9 +1646,9 @@ async function viewHousekeeping() {
         <button class="btn small secondary" data-hk-edit="${r.mother_id}">編輯需求</button>
       </div>
       <div style="font-size:.86rem;margin-top:6px">
-        <div>🔕 勿擾時間：${r.hk_dnd ? esc(r.hk_dnd) : '<span style="color:var(--muted)">未設定</span>'}</div>
-        <div style="margin-top:4px">🧺 需求：${needs.length ? needs.map(n => `<span class="badge teal">${esc(n)}</span>`).join(' ') : '<span style="color:var(--muted)">無</span>'}</div>
-        ${r.hk_notes ? `<div style="margin-top:4px;color:#555">📝 ${esc(r.hk_notes)}</div>` : ''}
+        <div>勿擾時間：${r.hk_dnd ? esc(r.hk_dnd) : '<span style="color:var(--muted)">未設定</span>'}</div>
+        <div style="margin-top:4px">需求：${needs.length ? needs.map(n => `<span class="badge teal">${esc(n)}</span>`).join(' ') : '<span style="color:var(--muted)">無</span>'}</div>
+        ${r.hk_notes ? `<div style="margin-top:4px;color:#555">備註：${esc(r.hk_notes)}</div>` : ''}
       </div>
     </div>`;
   }).join('') : '<div class="empty">目前無入住中住客</div>';
@@ -1912,7 +1915,7 @@ async function openBillingDetail(bookingId) {
       <div class="field"><label>備註</label><input id="py-note" placeholder="例如：第二期款"></div>
       <div class="full row">
         <button class="btn small" id="py-save">新增繳費</button>
-        <button class="btn small secondary" id="py-online" style="display:none">💳 線上收款</button>
+        <button class="btn small secondary" id="py-online" style="display:none">線上收款</button>
         <span class="error-msg" id="py-err"></span>
       </div>
     </div>`, body => {
@@ -2360,7 +2363,7 @@ async function viewTours() {
               <td data-label="狀態"><span class="badge ${TOUR_STATUS_BADGE[t.status]}">${TOUR_STATUS_LABEL[t.status]}</span></td>
               <td data-label="最近跟進">${t.last_log
                 ? `${esc(t.last_log.length > 24 ? t.last_log.slice(0, 24) + '…' : t.last_log)}<br><small>${esc((t.last_log_at || '').slice(0, 16))}</small>`
-                : (t.note ? esc(t.note.length > 24 ? t.note.slice(0, 24) + '…' : t.note) : '<span style="color:var(--muted)">-</span>')}${t.follow_up_date && ['scheduled', 'visited'].includes(t.status) ? `<br><small style="color:${t.follow_up_date < todayStr() ? 'var(--danger)' : 'var(--primary-dark)'}">📌 跟進 ${esc(t.follow_up_date)}</small>` : ''}</td>
+                : (t.note ? esc(t.note.length > 24 ? t.note.slice(0, 24) + '…' : t.note) : '<span style="color:var(--muted)">-</span>')}${t.follow_up_date && ['scheduled', 'visited'].includes(t.status) ? `<br><small style="color:${t.follow_up_date < todayStr() ? 'var(--danger)' : 'var(--primary-dark)'}">跟進 ${esc(t.follow_up_date)}</small>` : ''}</td>
               <td data-label="操作">
                 ${t.status === 'scheduled'
                   ? `<button class="btn small" data-tst="visited" data-id="${t.id}">已參觀</button>` : ''}
@@ -5127,7 +5130,7 @@ async function viewMotherRooms() {
         ? occ.babies.map(b => `${esc(b.name)} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`).join('　')
         : '<span style="color:var(--muted)">尚未登記</span>';
       body = `
-        <div class="rs-name">${esc(occ.mother_name)}<small style="color:var(--muted);font-weight:400">　${esc(occ.phone || '')}</small></div>
+        <div class="rs-name">${esc(occ.mother_name)}${occ.closed ? ' <span class="badge gray">已結案</span>' : ''}<small style="color:var(--muted);font-weight:400">　${esc(occ.phone || '')}</small></div>
         <div class="rs-stay">
           <div class="rs-bar"><i style="width:${Math.min(100, Math.round(occ.stay_day / Math.max(occ.stay_total, 1) * 100))}%"></i></div>
           <small>第 ${occ.stay_day} / ${occ.stay_total} 天（${esc(occ.check_in)} ~ ${esc(occ.check_out)}）</small>
@@ -5135,9 +5138,9 @@ async function viewMotherRooms() {
         <div class="rs-kv">
           ${occ.delivery_type ? `<span>生產：${esc(occ.delivery_type)}${occ.delivery_date ? `（${esc(occ.delivery_date)}）` : ''}</span>` : ''}
           <span>膳食：${esc(occ.meal_diet || '一般')}${occ.diet_notes ? `・${esc(occ.diet_notes)}` : ''}</span>
-          ${occ.hk_dnd ? `<span>🔕 勿擾：${esc(occ.hk_dnd)}</span>` : ''}
+          ${occ.hk_dnd ? `<span>勿擾：${esc(occ.hk_dnd)}</span>` : ''}
           ${occ.hk_needs ? `<span>房務需求：${esc(occ.hk_needs)}</span>` : ''}
-          ${occ.medical_notes ? `<span style="color:var(--danger)">⚕ ${esc(occ.medical_notes)}</span>` : ''}
+          ${occ.medical_notes ? `<span style="color:var(--danger)">醫療注意：${esc(occ.medical_notes)}</span>` : ''}
           <span>寶寶：${babyLine}</span>
           <span>今日照護 ${occ.today_care_count} 次${occ.last_care_at ? `・最後 ${fmtTime(occ.last_care_at)}（${sinceText(occ.last_care_at)}）` : ''}</span>
           ${occ.pending_tasks > 0 ? `<span class="badge yellow">待辦房務 ${occ.pending_tasks} 件</span>` : ''}
@@ -5157,7 +5160,11 @@ async function viewMotherRooms() {
     const actions = [
       occ && canAccess('#/mother-nursing') ? `<a class="btn small" href="#/mother-nursing?m=${occ.mother_id}">媽媽護理</a>` : '',
       occ && canAccess('#/mother-intake') ? `<a class="btn small" href="#/mother-intake?m=${occ.mother_id}">入住評估表</a>` : '',
-      occ && canAccess('#/mother-care') ? `<a class="btn small secondary" href="#/mother-care">媽媽照護</a>` : '',
+      occ && canAccess('#/mother-doctor') ? `<a class="btn small" href="#/mother-doctor?m=${occ.mother_id}">醫師巡診</a>` : '',
+      occ && canAccess('#/mother-handover') ? `<a class="btn small" href="#/mother-handover?m=${occ.mother_id}">產婦交班單</a>` : '',
+      occ && canAccess('#/mother-care') ? `<a class="btn small secondary" href="#/mother-care?m=${occ.mother_id}">照護紀錄</a>` : '',
+      occ && canAccess('#/mother-guidance') ? `<a class="btn small" href="#/mother-guidance?m=${occ.mother_id}">護理指導</a>` : '',
+      occ && canAccess('#/mother-close') ? `<a class="btn small ${occ.closed ? 'secondary' : ''}" href="#/mother-close?m=${occ.mother_id}">產婦結案${occ.closed ? ' ✓' : ''}</a>` : '',
       occ && canAccess('#/housekeeping') ? `<button class="btn small secondary" data-hk-room="${r.id}" data-hk-mom="${occ.mother_id}" data-hk-label="${esc(r.name)}／${esc(occ.mother_name)}">＋房務任務</button>` : '',
       !occ && canAccess('#/rooms') ? `<a class="btn small secondary" href="#/rooms">訂房管理</a>` : ''
     ].filter(Boolean).join('');
@@ -5189,7 +5196,12 @@ async function viewMotherRooms() {
           <button class="btn small secondary" data-board-flt="vacant">空房</button>
           <button class="btn small secondary" data-board-flt="has_tasks">有待辦房務</button>
         </div>
-        <div class="row" style="gap:6px">
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          ${canAccess('#/rounds-list') ? '<a class="btn small secondary" href="#/rounds-list">醫師查房清單</a>' : ''}
+          ${canAccess('#/baby-announcements') ? '<a class="btn small secondary" href="#/baby-announcements">寶寶報喜</a>' : ''}
+          ${canAccess('#/mother-intake-blank') ? '<a class="btn small secondary" href="#/mother-intake-blank">空白媽媽評估單</a>' : ''}
+          ${canAccess('#/medical-records') ? '<a class="btn small secondary" href="#/medical-records">病歷資料</a>' : ''}
+          ${canAccess('#/mother-rooms-print') ? '<a class="btn small secondary" href="#/mother-rooms-print">房況列印</a>' : ''}
           <small style="color:var(--muted)">${esc(data.date)}</small>
           <button class="btn small secondary" id="rs-refresh">重新整理</button>
         </div>
@@ -5482,7 +5494,11 @@ async function viewMotherNursing() {
           <select id="mna-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
         <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
         <a class="btn small secondary" href="#/mother-intake?m=${momId}">入住評估表</a>
-        <a class="btn small secondary" href="#/mother-care">媽媽照護紀錄</a>
+        <a class="btn small secondary" href="#/mother-care?m=${momId}">媽媽照護紀錄</a>
+        <a class="btn small secondary" href="#/mother-handover?m=${momId}">產婦交班單</a>
+        <a class="btn small secondary" href="#/mother-guidance?m=${momId}">護理指導</a>
+        <a class="btn small secondary" href="#/mother-close?m=${momId}">產婦結案</a>
+        ${canAccess('#/mother-doctor') ? `<a class="btn small secondary" href="#/mother-doctor?m=${momId}">醫師巡診</a>` : ''}
         <button class="btn small secondary" id="mna-print">資料列印</button>
       </div>
     </div>
@@ -5989,6 +6005,7 @@ async function viewMotherIntake() {
           <select id="mi-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
         <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
         <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
+        <a class="btn small secondary" href="#/mother-intake-blank">空白單列印</a>
         <button class="btn small secondary" id="mi-print">資料列印</button>
         ${record ? `<small style="color:var(--muted)">最後存檔：${esc(record.updated_at)}（${esc(record.nurse_name || '—')}）</small>` : '<span class="badge yellow">尚未建立</span>'}
       </div>
@@ -6258,6 +6275,10 @@ async function viewBabyNursing() {
           <select id="bna-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
         <a class="btn small secondary" href="#/baby-rooms">回寶寶房況</a>
         <a class="btn small secondary" href="#/baby-eval?b=${babyId}">寶寶評估單</a>
+        <a class="btn small secondary" href="#/breastfeeding?b=${babyId}">母乳哺育評估</a>
+        <a class="btn small secondary" href="#/baby-handover?b=${babyId}">新生兒交班單</a>
+        <a class="btn small secondary" href="#/baby-close?b=${babyId}">嬰兒結案</a>
+        <a class="btn small secondary" href="#/baby-care">嬰兒照護紀錄</a>
         <button class="btn small secondary" id="bna-print">資料列印</button>
       </div>
     </div>
@@ -7082,6 +7103,228 @@ async function viewBabyDoctor() {
   });
 }
 
+/* ---------- 產科醫師診視紀錄（醫師巡診；媽媽） ---------- */
+const MDV_OPTS = {
+  mood: ['平穩', '焦慮', '易怒', '亢奮', '憂鬱'],
+  feeding: ['純母乳', '混哺', '親哺', '配方奶'],
+  breast: ['未脹奶', '脹/充盈', '有硬塊', '退奶', '乳腺炎'],
+  ep_wound: ['平整', '疼痛', '紅腫', '滲液'],
+  fundus_height: ['臍上3指', '臍上2指', '臍上1指', '平臍', '臍下1指', '臍下2指', '臍下3指', '已入骨盆腔'],
+  uterus_state: ['硬', '鬆弛柔軟，按摩後變硬', '鬆弛柔軟', '降回骨盆腔'],
+  lochia_amount: ['無', '微量', '少', '中', '多', '血塊'],
+  lochia_color: ['無', '鮮紅', '暗紅', '粉紅', '黃褐', '透明', '咖啡'],
+  urine: ['正常', '失禁', '需加壓', '頻尿', '小便灼熱', '導尿管'],
+  stool: ['正常', '腹瀉', '便祕'],
+  edema_deg: ['+1', '+2', '+3', '+4']
+};
+function mdvChecks(name, opts, picked = []) {
+  return opts.map(o => `<label class="bna-chk"><input type="checkbox" data-ck="${name}" value="${esc(o)}" ${picked.includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('');
+}
+function mdvRadios(name, opts, val = '') {
+  return opts.map(o => `<label class="bna-chk"><input type="radio" name="${name}" value="${esc(o)}" ${o === val ? 'checked' : ''}> ${esc(o)}</label>`).join('');
+}
+function mdvSel(id, opts) {
+  return `<select id="${id}"><option value="">--請選擇--</option>${opts.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`;
+}
+
+async function viewMotherDoctor() {
+  const all = await api('/mothers');
+  const mothers = all.filter(m => m.status === 'checked_in');
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">醫師巡診</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const { mother, rows } = await api(`/mothers/${momId}/doctor-visits`);
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  // 生產後天數：自生產日至今
+  const ppDays = mother.delivery_date ? Math.max(0, Math.floor((new Date(todayStr()) - new Date(mother.delivery_date)) / 86400000)) : '';
+
+  const joinArr = a => (a || []).join('、') || '—';
+  const listRows = rows.map((r, i) => {
+    const a = r.data || {};
+    const edema = a.edema_none ? '無' : [a.edema_right ? `右 ${a.edema_right}` : '', a.edema_left ? `左 ${a.edema_left}` : ''].filter(Boolean).join('／') || '—';
+    return `
+      <tr data-filter="${esc(r.visit_date)} ${esc(r.recorded_by_name || '')}">
+        <td data-label="筆數">${i + 1}<br>
+          ${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${r.id}" style="margin:2px 0">刪</button>` : ''}
+          <button class="btn small secondary" data-edit="${r.id}" style="margin:2px 0">修</button></td>
+        <td data-label="診視日期">${esc(r.visit_date)}<br><small>${esc(r.visit_time)}</small></td>
+        <td data-label="產後天數/精神"><small>產後 ${esc(a.postpartum_days ?? '—')} 天<br>${esc(a.mood || '—')}${a.epds_score !== undefined && a.epds_score !== '' ? `（EPDS ${esc(a.epds_score)}）` : ''}<br>主訴：${a.complaint === '有' ? esc(a.complaint_text || '有') : '無'}</small></td>
+        <td data-label="哺乳/乳房"><small>${esc(joinArr(a.feeding))}<br>${esc(joinArr(a.breast))}</small></td>
+        <td data-label="EP傷口/宮縮"><small>${esc(a.ep_wound || '—')}${a.ep_med === '有' ? `／用藥：${esc(a.ep_med_text || '有')}` : ''}<br>${esc(a.fundus_height || '—')}／${esc(a.uterus_state || '—')}</small></td>
+        <td data-label="惡露"><small>量：${esc(joinArr(a.lochia_amount))}<br>色：${esc(joinArr(a.lochia_color))}</small></td>
+        <td data-label="二便/痔瘡/水腫"><small>小便：${esc(a.urine || '—')}<br>大便：${esc(a.stool || '—')}${a.laxative ? `／軟便劑${a.laxative_text ? '：' + esc(a.laxative_text) : ''}` : ''}<br>痔瘡：${esc(a.hemorrhoid || '—')}　水腫：${esc(edema)}</small></td>
+        <td data-label="建檔人">${esc(r.recorded_by_name || '—')}${r.edited_at ? `<br><small title="${esc(r.edited_at)}（${esc(r.edited_by_name || '')}）" style="color:var(--muted)">已修改</small>` : ''}</td>
+        <td data-label="敍述"><small>${esc((r.note || '').slice(0, 40))}${(r.note || '').length > 40 ? '…' : ''}</small></td>
+      </tr>`;
+  }).join('');
+
+  main().innerHTML = `
+    <div class="page-title">醫師巡診 <small style="font-weight:400;color:var(--muted);font-size:.9rem">產科醫師診視紀錄</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mdv-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
+        <a class="btn small secondary" href="#/physician-visits">巡診總覽(SOAP)</a>
+        <button class="btn small secondary" id="mdv-print">資料列印</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">產科醫師巡診</div>
+      <div class="row" style="gap:6px 18px;flex-wrap:wrap;font-size:.95rem">
+        <span><b>媽媽姓名：</b>${mother.room_name ? `${esc(mother.room_name)}　` : ''}${esc(mother.name)}</span>
+        ${mother.check_in ? `<span><b>入住：</b>${esc(mother.check_in)}</span>` : ''}
+        ${mother.check_out ? `<span><b>預退：</b>${esc(mother.check_out)}</span>` : ''}
+        ${mother.delivery_date ? `<span><b>生產日：</b>${esc(mother.delivery_date)}</span>` : ''}
+        ${mother.delivery_type ? `<span><b>生產方式：</b>${esc(mother.delivery_type)}</span>` : ''}
+      </div>
+    </div>
+    <div class="card no-print" id="mdv-form">
+      <div class="sec-hd">產科醫師診視紀錄 － <span id="mdv-mode">新增</span></div>
+      <div class="form-grid">
+        <div class="field"><label>診視日期 <b class="req">*</b></label><input type="date" id="mdv-date" value="${todayStr()}"></div>
+        <div class="field"><label>診視時間 <b class="req">*</b></label><input type="time" id="mdv-time" value="${hhmm}"></div>
+        <div class="field full"><label>基本資料</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
+            生產後天數 <input type="number" id="mdv-ppd" min="0" style="width:90px" value="${ppDays}"> 天
+            胎次 <input id="mdv-parity" maxlength="20" style="width:100px">
+            生產方式 <input id="mdv-delmode" maxlength="30" style="width:140px" value="${esc(mother.delivery_type || '')}">
+          </div></div>
+        <div class="field full"><label>精神情緒狀態</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-mood', MDV_OPTS.mood)}
+            愛丁堡憂鬱量表分數 <input type="number" id="mdv-epds" min="0" max="30" style="width:90px"></div></div>
+        <div class="field full"><label>主訴</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-comp', ['無', '有'])}
+            <input id="mdv-comp-text" maxlength="200" placeholder="有，請填入問題" style="width:320px;max-width:100%"></div></div>
+        <div class="field full"><label>哺乳狀態</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-feeding', MDV_OPTS.feeding)}</div></div>
+        <div class="field full"><label>乳房狀況</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-breast', MDV_OPTS.breast)}</div></div>
+        <div class="field full"><label>EP 傷口</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-ep', MDV_OPTS.ep_wound)}
+            　用藥：${mdvRadios('mdvr-epmed', ['無', '有'])}<input id="mdv-epmed-text" maxlength="100" placeholder="用藥名稱" style="width:180px"></div></div>
+        <div class="field full"><label>宮縮情形</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">宮底高度 ${mdvSel('mdv-fundus', MDV_OPTS.fundus_height)}</div>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center;margin-top:6px">宮縮狀態：${mdvRadios('mdvr-uterus', MDV_OPTS.uterus_state)}</div></div>
+        <div class="field full"><label>惡露 － 量</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-lochia-amt', MDV_OPTS.lochia_amount)}</div></div>
+        <div class="field full"><label>惡露 － 顏色</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-lochia-col', MDV_OPTS.lochia_color)}</div></div>
+        <div class="field full"><label>小便</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvRadios('mdvr-urine', MDV_OPTS.urine)}</div></div>
+        <div class="field full"><label>大便</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-stool', MDV_OPTS.stool)}
+            　<label class="bna-chk"><input type="checkbox" id="mdv-laxative"> 軟便劑</label> 用藥：<input id="mdv-laxative-text" maxlength="100" style="width:180px"></div></div>
+        <div class="field"><label>痔瘡</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-hem', ['無', '有'])}
+            <label class="bna-chk"><input type="checkbox" id="mdv-hem-oint"> 藥膏</label><input id="mdv-hem-text" maxlength="100" style="width:140px"></div></div>
+        <div class="field"><label>下肢水腫</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
+            <label class="bna-chk"><input type="checkbox" id="mdv-edema-none"> 無</label>
+            右 ${mdvSel('mdv-edema-r', MDV_OPTS.edema_deg)} 左 ${mdvSel('mdv-edema-l', MDV_OPTS.edema_deg)}</div></div>
+        <div class="field full"><label>敍述性紀錄<small>（限 600 字）</small></label><textarea id="mdv-note" maxlength="600" rows="3"></textarea></div>
+        <div class="full row" style="gap:10px">
+          <button class="btn" id="mdv-save">資料新增</button>
+          <button class="btn secondary" id="mdv-cancel" style="display:none">取消編輯</button>
+          <span class="error-msg" id="mdv-err"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between no-print">
+        <h3>產科醫師診視紀錄（${rows.length} 筆）</h3>
+      </div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th class="no-print">筆數</th><th>診視日期</th><th>產後天數/精神</th><th>哺乳/乳房</th><th>EP傷口/宮縮</th><th>惡露</th><th>二便/痔瘡/水腫</th><th>建檔人</th><th>敍述</th></tr></thead>
+          <tbody>${listRows || '<tr><td colspan="9"><div class="empty">尚無診視紀錄</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  $('#mdv-mom').onchange = () => { location.hash = `#/mother-doctor?m=${$('#mdv-mom').value}`; };
+  $('#mdv-print').onclick = () => window.print();
+
+  const form = $('#mdv-form');
+  const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+  const ck = id => { const el = $(id); return el ? el.checked : false; };
+  const ckVals = name => [...form.querySelectorAll(`[data-ck="${name}"]:checked`)].map(c => c.value);
+  const radioVal = name => { const el = form.querySelector(`input[name="${name}"]:checked`); return el ? el.value : ''; };
+  let editingId = null;
+
+  // 「修」：把該筆資料帶回表單改為修改模式
+  const setForm = r => {
+    const a = r.data || {};
+    editingId = r.id;
+    $('#mdv-mode').textContent = `編輯（第 ${rows.findIndex(x => x.id === r.id) + 1} 筆）`;
+    $('#mdv-save').textContent = '資料修改';
+    $('#mdv-cancel').style.display = '';
+    $('#mdv-date').value = r.visit_date; $('#mdv-time').value = r.visit_time;
+    $('#mdv-ppd').value = a.postpartum_days ?? ''; $('#mdv-parity').value = a.parity || '';
+    $('#mdv-delmode').value = a.delivery_mode || ''; $('#mdv-epds').value = a.epds_score ?? '';
+    $('#mdv-comp-text').value = a.complaint_text || ''; $('#mdv-epmed-text').value = a.ep_med_text || '';
+    $('#mdv-fundus').value = a.fundus_height || '';
+    $('#mdv-laxative').checked = !!a.laxative; $('#mdv-laxative-text').value = a.laxative_text || '';
+    $('#mdv-hem-oint').checked = !!a.hem_ointment; $('#mdv-hem-text').value = a.hem_text || '';
+    $('#mdv-edema-none').checked = !!a.edema_none;
+    $('#mdv-edema-r').value = a.edema_right || ''; $('#mdv-edema-l').value = a.edema_left || '';
+    $('#mdv-note').value = r.note || '';
+    const setCk = (name, vals) => form.querySelectorAll(`[data-ck="${name}"]`).forEach(c => c.checked = (vals || []).includes(c.value));
+    setCk('mdv-feeding', a.feeding); setCk('mdv-breast', a.breast);
+    setCk('mdv-lochia-amt', a.lochia_amount); setCk('mdv-lochia-col', a.lochia_color);
+    const setRadio = (name, val) => form.querySelectorAll(`input[name="${name}"]`).forEach(c => c.checked = c.value === val);
+    setRadio('mdvr-mood', a.mood); setRadio('mdvr-comp', a.complaint);
+    setRadio('mdvr-ep', a.ep_wound); setRadio('mdvr-epmed', a.ep_med);
+    setRadio('mdvr-uterus', a.uterus_state); setRadio('mdvr-urine', a.urine);
+    setRadio('mdvr-stool', a.stool); setRadio('mdvr-hem', a.hemorrhoid);
+    form.scrollIntoView({ behavior: 'smooth' });
+  };
+  $('#mdv-cancel').onclick = () => viewMotherDoctor();
+
+  $('#mdv-save').onclick = async () => {
+    const err = $('#mdv-err');
+    err.textContent = '';
+    if (!v('#mdv-date') || !v('#mdv-time')) { err.textContent = '請填寫診視日期與時間'; return; }
+    if (radioVal('mdvr-comp') === '有' && !v('#mdv-comp-text')) { err.textContent = '主訴勾選「有」時，問題必填'; return; }
+    const body = {
+      visit_date: v('#mdv-date'), visit_time: v('#mdv-time'),
+      postpartum_days: v('#mdv-ppd'), parity: v('#mdv-parity'), delivery_mode: v('#mdv-delmode'),
+      mood: radioVal('mdvr-mood'), epds_score: v('#mdv-epds'),
+      complaint: radioVal('mdvr-comp'), complaint_text: v('#mdv-comp-text'),
+      feeding: ckVals('mdv-feeding'), breast: ckVals('mdv-breast'),
+      ep_wound: radioVal('mdvr-ep'), ep_med: radioVal('mdvr-epmed'), ep_med_text: v('#mdv-epmed-text'),
+      fundus_height: v('#mdv-fundus'), uterus_state: radioVal('mdvr-uterus'),
+      lochia_amount: ckVals('mdv-lochia-amt'), lochia_color: ckVals('mdv-lochia-col'),
+      urine: radioVal('mdvr-urine'), stool: radioVal('mdvr-stool'),
+      laxative: ck('#mdv-laxative'), laxative_text: v('#mdv-laxative-text'),
+      hemorrhoid: radioVal('mdvr-hem'), hem_ointment: ck('#mdv-hem-oint'), hem_text: v('#mdv-hem-text'),
+      edema_none: ck('#mdv-edema-none'), edema_right: v('#mdv-edema-r'), edema_left: v('#mdv-edema-l'),
+      note: v('#mdv-note')
+    };
+    try {
+      if (editingId) await api(`/mother-doctor-visits/${editingId}`, { method: 'PUT', body });
+      else await api(`/mothers/${momId}/doctor-visits`, { method: 'POST', body });
+      viewMotherDoctor();
+    } catch (e) { err.textContent = e.message; }
+  };
+
+  main().querySelectorAll('[data-edit]').forEach(btn => {
+    btn.onclick = () => setForm(rows.find(r => r.id == btn.dataset.edit));
+  });
+  main().querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('確定刪除這筆診視紀錄？（會記入稽核軌跡）')) return;
+      await api(`/mother-doctor-visits/${btn.dataset.del}`, { method: 'DELETE' });
+      viewMotherDoctor();
+    };
+  });
+}
+
 /* ---------- 新生兒交班單 ---------- */
 const BHO_OPTS = {
   feed: ['瓶', '針', '杯'],
@@ -7283,6 +7526,2779 @@ async function viewBabyHandover() {
       viewBabyHandover();
     };
   });
+}
+
+/* ---------- 產婦交班單 ---------- */
+async function viewMotherHandover() {
+  const all = await api('/mothers');
+  const mothers = all.filter(m => m.status === 'checked_in');
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">產婦交班單</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const { mother, rows, header } = await api(`/mothers/${momId}/handovers`);
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  const hv = (label, val) => `<span style="min-width:230px"><b>${label}：</b>${val}</span>`;
+  const listRows = rows.map((r, i) => `
+      <tr data-filter="${esc(r.handover_date)} ${esc(r.nurse_name || '')}">
+        <td data-label="筆數">${i + 1}<br>
+          ${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${r.id}" style="margin:2px 0">刪</button>` : ''}
+          <button class="btn small secondary" data-edit="${r.id}" style="margin:2px 0">修</button></td>
+        <td data-label="交班日期">${esc(r.handover_date)}<br><small>${esc(r.handover_time)}</small></td>
+        <td data-label="宮底高度">${esc(r.fundus || '—')}</td>
+        <td data-label="惡露"><small>${esc(r.lochia || '—')}</small></td>
+        <td data-label="交班事項"><small>${esc(r.note || '—')}</small></td>
+        <td data-label="建檔人">${esc(r.nurse_name || '—')}${r.edited_at ? `<br><small title="${esc(r.edited_at)}（${esc(r.edited_by_name || '')}）" style="color:var(--muted)">已修改</small>` : ''}</td>
+      </tr>`).join('');
+
+  main().innerHTML = `
+    <div class="page-title">產婦交班單</div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mho-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
+        <button class="btn small secondary" id="mho-print">資料列印</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">產婦交班單</div>
+      <div class="row" style="gap:8px 18px;flex-wrap:wrap;font-size:.93rem;line-height:1.9">
+        ${hv('媽媽房號', esc(mother.room_name || '—'))}
+        ${hv('媽媽姓名', esc(mother.name))}
+        ${hv('生產醫院', esc(header.birth_place || '—'))}
+        ${hv('新生兒出生日期', esc(header.baby_birth_date || '—'))}
+        ${hv('產式', esc(mother.delivery_type || '—'))}
+        ${hv('週數', esc(header.gest_weeks || '—'))}
+        ${hv('胎次', esc(header.parity || '—'))}
+        ${hv('奶品', esc(header.milk_brand || '—'))}
+        ${hv('藥物過敏', esc(header.allergy_drug || '—'))}
+        ${hv('生產後天數', header.postpartum_days != null ? `${header.postpartum_days} 天` : '— 天')}
+        ${hv('宮底高度', header.fundus_now ? `${esc(header.fundus_now.value)}<small>（${esc(header.fundus_now.at)}）</small>` : '—')}
+        ${hv('惡露', header.lochia_now ? `${esc(header.lochia_now.value)}<small>（${esc(header.lochia_now.at)}）</small>` : '—')}
+      </div>
+      <div class="form-grid no-print" style="margin-top:10px">
+        <div class="field full"><label>飲食禁忌</label><textarea id="mho-diet" maxlength="500" rows="2">${esc(mother.diet_notes || '')}</textarea></div>
+        <div class="field full"><label>重要備註</label><textarea id="mho-imp-note" maxlength="500" rows="2">${esc(header.handover_note)}</textarea></div>
+        <div class="full row" style="gap:10px;align-items:center">
+          <button class="btn" id="mho-note-save">存檔</button>
+          ${header.intake_filled ? '' : '<span style="color:var(--danger);font-size:.9rem">**尚未填寫入住評估單</span>'}
+          <span class="error-msg" id="mho-note-err"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card no-print">
+      <div class="sec-hd warn">特殊飲品及特殊餐</div>
+      <div class="form-grid">
+        <div class="field"><label>生化湯</label><input id="mho-sp-shenghua" maxlength="100" value="${esc(header.sp_shenghua)}"></div>
+        <div class="field"><label>紅豆水</label><input id="mho-sp-redbean" maxlength="100" value="${esc(header.sp_redbean)}"></div>
+        <div class="field"><label>生麥芽水</label><input id="mho-sp-barley" maxlength="100" value="${esc(header.sp_barley)}"></div>
+        <div class="field"><label>退奶餐</label><input id="mho-sp-weaning" maxlength="100" value="${esc(header.sp_weaning)}"></div>
+        <div class="full row" style="gap:10px">
+          <button class="btn" id="mho-sp-save">修改特殊飲品及特殊餐</button>
+          <span class="error-msg" id="mho-sp-err"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card no-print" id="mho-form">
+      <div class="sec-hd">產婦交班單 － <span id="mho-mode">新增</span></div>
+      <div class="form-grid">
+        <div class="field"><label>填寫交班日期 <b class="req">*</b></label><input type="date" id="mho-date" value="${todayStr()}"></div>
+        <div class="field"><label>交班時間 <b class="req">*</b></label><input type="time" id="mho-time" value="${hhmm}"></div>
+        <div class="field"><label>宮底高度</label><input id="mho-fundus" maxlength="100"></div>
+        <div class="field"><label>惡露</label><input id="mho-lochia" maxlength="200" placeholder="量／顏色"></div>
+        <div class="field full"><label>交班事項<small>（限 600 字）</small></label><textarea id="mho-note" maxlength="600" rows="3"></textarea></div>
+        <div class="full row" style="gap:10px">
+          <button class="btn" id="mho-save">資料新增</button>
+          <button class="btn secondary" id="mho-cancel" style="display:none">取消編輯</button>
+          <span class="error-msg" id="mho-err"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between no-print">
+        <h3>產婦交班單（${rows.length} 筆）</h3>
+      </div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th class="no-print">筆數</th><th>交班日期</th><th>宮底高度</th><th>惡露</th><th>交班事項</th><th>建檔人</th></tr></thead>
+          <tbody>${listRows || '<tr><td colspan="6"><div class="empty">尚無交班紀錄</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  $('#mho-mom').onchange = () => { location.hash = `#/mother-handover?m=${$('#mho-mom').value}`; };
+  $('#mho-print').onclick = () => window.print();
+
+  const form = $('#mho-form');
+  const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+  let editingId = null;
+
+  // 飲食禁忌／重要備註：diet_notes 存住客資料、備註存入住評估 profile
+  $('#mho-note-save').onclick = async () => {
+    const err = $('#mho-note-err');
+    err.textContent = '';
+    try {
+      await api(`/mothers/${momId}/handover-profile`, { method: 'PUT', body: {
+        diet_notes: $('#mho-diet').value.trim(), handover_note: $('#mho-imp-note').value.trim()
+      } });
+      $('#mho-note-save').textContent = '已存檔 ✓';
+      setTimeout(() => { const b = $('#mho-note-save'); if (b) b.textContent = '存檔'; }, 1500);
+    } catch (e) { err.textContent = e.message; }
+  };
+  // 特殊飲品及特殊餐
+  $('#mho-sp-save').onclick = async () => {
+    const err = $('#mho-sp-err');
+    err.textContent = '';
+    try {
+      await api(`/mothers/${momId}/handover-profile`, { method: 'PUT', body: {
+        sp_shenghua: v('#mho-sp-shenghua'), sp_redbean: v('#mho-sp-redbean'),
+        sp_barley: v('#mho-sp-barley'), sp_weaning: v('#mho-sp-weaning')
+      } });
+      $('#mho-sp-save').textContent = '已存檔 ✓';
+      setTimeout(() => { const b = $('#mho-sp-save'); if (b) b.textContent = '修改特殊飲品及特殊餐'; }, 1500);
+    } catch (e) { err.textContent = e.message; }
+  };
+
+  const setForm = r => {
+    editingId = r.id;
+    $('#mho-mode').textContent = `編輯（第 ${rows.findIndex(x => x.id === r.id) + 1} 筆）`;
+    $('#mho-save').textContent = '資料修改';
+    $('#mho-cancel').style.display = '';
+    $('#mho-date').value = r.handover_date; $('#mho-time').value = r.handover_time;
+    $('#mho-fundus').value = r.fundus || ''; $('#mho-lochia').value = r.lochia || '';
+    $('#mho-note').value = r.note || '';
+    form.scrollIntoView({ behavior: 'smooth' });
+  };
+  $('#mho-cancel').onclick = () => viewMotherHandover();
+
+  $('#mho-save').onclick = async () => {
+    const err = $('#mho-err');
+    err.textContent = '';
+    if (!v('#mho-date') || !v('#mho-time')) { err.textContent = '請填寫交班日期與時間'; return; }
+    const body = {
+      handover_date: v('#mho-date'), handover_time: v('#mho-time'),
+      fundus: v('#mho-fundus'), lochia: v('#mho-lochia'), note: v('#mho-note')
+    };
+    try {
+      if (editingId) await api(`/mother-handovers/${editingId}`, { method: 'PUT', body });
+      else await api(`/mothers/${momId}/handovers`, { method: 'POST', body });
+      viewMotherHandover();
+    } catch (e) { err.textContent = e.message; }
+  };
+
+  main().querySelectorAll('[data-edit]').forEach(btn => {
+    btn.onclick = () => setForm(rows.find(r => r.id == btn.dataset.edit));
+  });
+  main().querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('確定刪除這筆交班紀錄？（會記入稽核軌跡）')) return;
+      await api(`/mother-handovers/${btn.dataset.del}`, { method: 'DELETE' });
+      viewMotherHandover();
+    };
+  });
+}
+
+/* ---------- 護理指導（獨立頁；資料與媽媽護理頁共用） ---------- */
+async function viewMotherGuidance() {
+  const all = await api('/mothers');
+  const mothers = all.filter(m => m.status === 'checked_in');
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">護理指導</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const { mother, guidance, reminders } = await api(`/mothers/${momId}/guidance`);
+  const kindLabel = k => k === 'care' ? '產婦護理指導單' : '母乳哺育指導單';
+  const logs = [...guidance].sort((a, b) => b.done_date < a.done_date ? -1 : (b.done_date > a.done_date ? 1 : b.id - a.id));
+
+  main().innerHTML = `
+    <div class="page-title">護理指導 <small style="font-weight:400;color:var(--muted);font-size:.9rem">產婦護理／母乳哺育指導單</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mgl-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
+        <button class="btn small secondary" id="mgl-print">資料列印</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">護理指導單提醒（入住第 1／3／7／10 天）</div>
+      <div class="row" style="gap:6px 18px;flex-wrap:wrap;font-size:.95rem;margin-bottom:8px">
+        <span><b>媽媽姓名：</b>${mother.room_name ? `${esc(mother.room_name)}　` : ''}${esc(mother.name)}</span>
+        ${mother.check_in ? `<span><b>入住：</b>${esc(mother.check_in)}</span>` : ''}
+        ${mother.check_out ? `<span><b>預退：</b>${esc(mother.check_out)}</span>` : ''}
+      </div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>排程</th><th>提醒日期</th><th>執行日期</th><th>執行人</th></tr></thead>
+          <tbody>${reminders.map(r => `
+            <tr>
+              <td data-label="排程">${esc(r.day_label)}</td>
+              <td data-label="提醒日期">${esc(r.remind_date)}</td>
+              <td data-label="執行日期">${r.done_date ? `${esc(r.done_date)}${r.kind ? `<br><small>${kindLabel(r.kind)}</small>` : ''}` : '<span class="badge yellow">未執行</span>'}</td>
+              <td data-label="執行人">${esc(r.done_by || '—')}</td>
+            </tr>`).join('') || '<tr><td colspan="4"><div class="empty">無入住訂房，無法計算提醒</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card no-print" id="mgl-form">
+      <div class="sec-hd">新增指導紀錄</div>
+      <div class="form-grid">
+        <div class="field"><label>指導單類別 <b class="req">*</b></label>
+          <div class="row" style="gap:14px;padding-top:8px">
+            <label class="bna-chk"><input type="radio" name="mglr-kind" value="care" checked> 產婦護理指導單</label>
+            <label class="bna-chk"><input type="radio" name="mglr-kind" value="breastfeeding"> 母乳哺育指導單</label>
+          </div></div>
+        <div class="field"><label>執行日期 <b class="req">*</b></label><input type="date" id="mgl-date" value="${todayStr()}"></div>
+        <div class="field full"><label>指導內容備註<small>（限 300 字）</small></label><textarea id="mgl-note" maxlength="300" rows="2"></textarea></div>
+        <div class="full row" style="gap:10px">
+          <button class="btn" id="mgl-save">資料新增</button>
+          <span class="error-msg" id="mgl-err"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between no-print"><h3>指導紀錄（${logs.length} 筆）</h3></div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>執行日期</th><th>指導單</th><th>備註</th><th>執行人</th><th class="no-print"></th></tr></thead>
+          <tbody>${logs.map(g => `
+            <tr data-filter="${esc(g.done_date)} ${esc(g.nurse_name || '')}">
+              <td data-label="執行日期">${esc(g.done_date)}</td>
+              <td data-label="指導單">${kindLabel(g.kind)}</td>
+              <td data-label="備註"><small>${esc(g.note || '—')}</small></td>
+              <td data-label="執行人">${esc(g.nurse_name || '—')}</td>
+              <td data-label="" class="no-print">${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${g.id}">刪</button>` : ''}</td>
+            </tr>`).join('') || '<tr><td colspan="5"><div class="empty">尚無指導紀錄</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  $('#mgl-mom').onchange = () => { location.hash = `#/mother-guidance?m=${$('#mgl-mom').value}`; };
+  $('#mgl-print').onclick = () => window.print();
+
+  $('#mgl-save').onclick = async () => {
+    const err = $('#mgl-err');
+    err.textContent = '';
+    const kind = main().querySelector('input[name="mglr-kind"]:checked').value;
+    const date = $('#mgl-date').value;
+    if (!date) { err.textContent = '請填寫執行日期'; return; }
+    try {
+      await api(`/mothers/${momId}/guidance`, { method: 'POST', body: {
+        kind, done_date: date, note: $('#mgl-note').value.trim()
+      } });
+      viewMotherGuidance();
+    } catch (e) { err.textContent = e.message; }
+  };
+  main().querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('確定刪除這筆指導紀錄？')) return;
+      await api(`/mother-guidance/${btn.dataset.del}`, { method: 'DELETE' });
+      viewMotherGuidance();
+    };
+  });
+}
+
+/* ---------- 產婦結案 ---------- */
+async function viewMotherClosure() {
+  const all = await api('/mothers');
+  const mothers = all.filter(m => m.status === 'checked_in');
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">產婦結案</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const { mother, closure, summary, options } = await api(`/mothers/${momId}/closure`);
+  const d = (closure && closure.data) || {};
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  // 實際入住天數：入住日 → 結案日（未結案則今日）
+  const endDate = closure ? closure.close_date : todayStr();
+  const stayDays = mother.check_in
+    ? Math.max(1, Math.round((new Date(endDate) - new Date(mother.check_in)) / 86400000) + 1) : null;
+  const epdsAlert = summary.epds && summary.epds.total >= 10;
+
+  const hv = (label, val) => `<span style="min-width:230px"><b>${label}：</b>${val}</span>`;
+  const sel = (id, opts, val, req = true) =>
+    `<select id="${id}" ${req ? 'data-req' : ''}><option value="">請選擇</option>${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+
+  main().innerHTML = `
+    <div class="page-title">產婦結案</div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mcl-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <button class="btn small secondary" id="mcl-print">資料列印</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">住期摘要 ${closure ? '<span class="badge gray" style="float:right">已結案</span>' : '<span class="badge yellow" style="float:right">未結案</span>'}</div>
+      <div class="row" style="gap:8px 18px;flex-wrap:wrap;font-size:.93rem;line-height:1.9">
+        ${hv('媽媽姓名', `${mother.room_name ? esc(mother.room_name) + '　' : ''}${esc(mother.name)}`)}
+        ${hv('入住日', esc(mother.check_in || '—'))}
+        ${hv('預退日', esc(mother.check_out || '—'))}
+        ${hv('實際入住天數', stayDays != null ? `${stayDays} 天` : '—')}
+        ${hv('生產日', esc(mother.delivery_date || '—'))}
+        ${hv('生產方式', esc(mother.delivery_type || '—'))}
+        ${hv('最近生命徵象', summary.vitals ? `${summary.vitals.temperature}°C／脈 ${summary.vitals.pulse}／${summary.vitals.systolic}/${summary.vitals.diastolic} mmHg<small>（${esc(summary.vitals.at)}）</small>` : '—')}
+        ${hv('宮縮宮底（最近護理）', esc(summary.fundus_last || '—'))}
+        ${hv('惡露（最近護理）', esc(summary.lochia_last || '—'))}
+        ${hv('最新 EPDS', summary.epds ? `<b style="color:${epdsAlert ? 'var(--danger)' : 'var(--primary-dark)'}">${summary.epds.total} 分${epdsAlert ? ' ⚠' : ''}</b>（${esc(summary.epds.fill_date)}）` : '—')}
+        ${hv('未結案健康問題', summary.open_problems > 0 ? `<b style="color:var(--danger)">${summary.open_problems} 項</b>` : '0 項')}
+        ${hv('護理指導完成', `${summary.guidance_done}／${summary.guidance_total || 4} 次`)}
+        ${closure ? hv('結案人員', `${esc(closure.nurse_name || '—')}（${esc(closure.created_at.slice(0, 16))}）${closure.edited_at ? `，最後修改 ${esc(closure.edited_at.slice(0, 16))}（${esc(closure.edited_by_name || '')}）` : ''}`) : ''}
+      </div>
+      ${summary.open_problems > 0 && !closure ? `<div style="color:var(--danger);font-size:.9rem;margin-top:6px">⚠ 尚有 ${summary.open_problems} 項健康問題未結案，建議先至「媽媽護理」處理或於追蹤事項註明。</div>` : ''}
+    </div>
+    <div class="card" id="mcl-form">
+      <div class="sec-hd">產婦結案單（<b>*</b> 為必填）</div>
+      <div class="form-grid">
+        <div class="field"><label>結案日期 <b class="req">*</b></label><input type="date" id="mcl-date" value="${esc(closure ? closure.close_date : todayStr())}"></div>
+        <div class="field"><label>結案時間 <b class="req">*</b></label><input type="time" id="mcl-time" value="${esc(closure ? closure.close_time : hhmm)}"></div>
+        <div class="field"><label>結案原因 <b class="req">*</b></label>${sel('mcl-reason', options.reasons, d.reason || '')}</div>
+        <div class="field"><label>結案原因補述<small>（選「其他」時必填）</small></label><input id="mcl-reason-other" maxlength="100" value="${esc(d.reason_other || '')}"></div>
+        <div class="field"><label>去向 <b class="req">*</b></label>${sel('mcl-dest', options.destinations, d.destination || '')}</div>
+        <div class="field"><label>轉至院所名稱<small>（選「轉至醫療院所」時必填）</small></label><input id="mcl-hospital" maxlength="100" value="${esc(d.hospital || '')}"></div>
+        <div class="field"><label>去向補述<small>（選「其他」時必填）</small></label><input id="mcl-dest-other" maxlength="100" value="${esc(d.destination_other || '')}"></div>
+        <div class="field full"><label>出住衛教完成項目（多選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${options.educations.map(o =>
+            `<label class="bna-chk"><input type="checkbox" data-ck="mcl-edu" value="${esc(o)}" ${(d.educations || []).includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>
+        <div class="field full"><label>追蹤與轉介事項</label><textarea id="mcl-follow" maxlength="500" rows="2">${esc(d.follow_up || '')}</textarea></div>
+        <div class="field full"><label>結案摘要<small>（限 600 字）</small></label><textarea id="mcl-note" maxlength="600" rows="3">${esc(closure ? closure.note : '')}</textarea></div>
+        <div class="full row no-print" style="gap:10px">
+          <button class="btn" id="mcl-save">${closure ? '更新結案' : '結案存檔'}</button>
+          ${closure && currentUser.role === 'admin' ? '<button class="btn danger" id="mcl-reopen">解除結案</button>' : ''}
+          <span class="error-msg" id="mcl-err"></span>
+        </div>
+      </div>
+    </div>`;
+
+  $('#mcl-mom').onchange = () => { location.hash = `#/mother-close?m=${$('#mcl-mom').value}`; };
+  $('#mcl-print').onclick = () => window.print();
+
+  const form = $('#mcl-form');
+  const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+
+  $('#mcl-save').onclick = async () => {
+    const err = $('#mcl-err');
+    err.textContent = '';
+    if (!v('#mcl-date') || !v('#mcl-time')) { err.textContent = '請填寫結案日期與時間'; return; }
+    for (const el of form.querySelectorAll('[data-req]')) {
+      if (!el.value) { err.textContent = '尚有必填欄位未選擇'; el.focus(); return; }
+    }
+    if (v('#mcl-reason') === '其他' && !v('#mcl-reason-other')) { err.textContent = '結案原因選「其他」時，補述必填'; return; }
+    if (v('#mcl-dest') === '轉至醫療院所' && !v('#mcl-hospital')) { err.textContent = '去向選「轉至醫療院所」時，院所名稱必填'; return; }
+    if (v('#mcl-dest') === '其他' && !v('#mcl-dest-other')) { err.textContent = '去向選「其他」時，補述必填'; return; }
+    if (!closure && !confirm(`確認為「${mother.name}」建立結案？結案後房況卡片會顯示已結案標記。`)) return;
+    try {
+      await api(`/mothers/${momId}/closure`, { method: 'PUT', body: {
+        close_date: v('#mcl-date'), close_time: v('#mcl-time'),
+        reason: v('#mcl-reason'), reason_other: v('#mcl-reason-other'),
+        destination: v('#mcl-dest'), hospital: v('#mcl-hospital'), destination_other: v('#mcl-dest-other'),
+        educations: [...form.querySelectorAll('[data-ck="mcl-edu"]:checked')].map(c => c.value),
+        follow_up: v('#mcl-follow'), note: v('#mcl-note')
+      } });
+      viewMotherClosure();
+    } catch (e) { err.textContent = e.message; }
+  };
+
+  const reopen = $('#mcl-reopen');
+  if (reopen) reopen.onclick = async () => {
+    if (!confirm('確定解除結案？結案單內容將刪除（會記入稽核軌跡）。')) return;
+    await api(`/mother-closures/${momId}`, { method: 'DELETE' });
+    viewMotherClosure();
+  };
+}
+
+/* ---------- 產科醫師查房清單（列印工作單；醫師評估欄留白可手寫） ---------- */
+async function viewRoundsList() {
+  const { date, center_name, rows } = await api('/physician-rounds');
+  const ts = new Date().toLocaleString('sv').replace('T', ' ');
+  main().innerHTML = `
+    <div class="card no-print">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <button class="btn small" id="prl-print">開始列印</button>
+        <a class="btn small secondary" href="/api/physician-rounds?format=xlsx">匯出 Excel</a>
+      </div>
+    </div>
+    <div style="text-align:center;font-weight:700;font-size:1.05rem">${esc(center_name || '')}</div>
+    <div class="row between" style="margin:4px 0 6px">
+      <span style="font-weight:700">產科醫師查房清單</span>
+      <small>印表：${esc(ts)}</small>
+    </div>
+    <div class="table-wrap">
+      <table class="data" style="min-width:900px">
+        <thead><tr><th style="width:56px">房號</th><th style="width:90px">姓名</th><th style="width:56px">胎次</th><th style="width:100px">生產方式</th><th style="width:70px">生產天數</th><th>媽媽問題</th><th>護理評估發現</th><th style="width:24%">醫師評估記錄</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr style="height:64px">
+            <td data-label="房號">${esc(r.room_name)}</td>
+            <td data-label="姓名">${esc(r.name)}</td>
+            <td data-label="胎次">${esc(r.parity || '')}</td>
+            <td data-label="生產方式">${esc(r.delivery_type || '')}</td>
+            <td data-label="生產天數">${r.postpartum_days != null ? `${r.postpartum_days} 天` : ''}</td>
+            <td data-label="媽媽問題"><small>${esc(r.problems || '')}</small></td>
+            <td data-label="護理評估發現"><small>${esc(r.nursing_findings || '')}</small></td>
+            <td data-label="醫師評估記錄"><small>${esc(r.doctor_note || '')}</small></td>
+          </tr>`).join('') || '<tr><td colspan="8"><div class="empty">目前沒有在住媽媽</div></td></tr>'}</tbody>
+      </table>
+    </div>
+    <small style="color:var(--muted)" class="no-print">＊清單日期 ${esc(date)}；醫師評估記錄欄帶入最近一次巡診摘要，無紀錄則留白供查房手寫。</small>`;
+  $('#prl-print').onclick = () => window.print();
+}
+
+/* ---------- 寶寶報喜（依生產日查詢） ---------- */
+async function viewBabyAnnouncements() {
+  const qd = (location.hash.split('?d=')[1] || '').split('&')[0];
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : todayStr();
+  const { rows } = await api(`/baby-announcements?date=${date}`);
+  const shift = days => {
+    const d = new Date(date);
+    d.setDate(d.getDate() + days);
+    location.hash = `#/baby-announcements?d=${d.toISOString().slice(0, 10)}`;
+  };
+  main().innerHTML = `
+    <div class="page-title">寶寶報喜 <small style="font-weight:400;color:var(--muted);font-size:.9rem">依實際生產日期查詢</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+        <span>查詢報喜日期：</span>
+        <button class="btn small danger" id="ban-prev">prev</button>
+        <input type="date" id="ban-date" value="${date}" style="width:auto">
+        <button class="btn small danger" id="ban-next">next</button>
+        <button class="btn small" id="ban-go">查詢</button>
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <button class="btn small secondary" id="ban-print">資料列印</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">寶寶報喜（查詢結果）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>筆數</th><th>媽媽姓名</th><th>實際生產日期</th><th>媽媽預計入住日期</th><th>生產方式</th><th>寶寶預計入住日期</th><th>性別</th><th>寶寶體重</th><th>黃疸值</th></tr></thead>
+          <tbody>${rows.map((r, i) => `
+            <tr>
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="媽媽姓名">${esc(r.mother_name)}<br><small>${esc(r.baby_name)}</small></td>
+              <td data-label="實際生產日期">${esc(r.birth_date)}</td>
+              <td data-label="媽媽預計入住">${esc(r.mother_check_in || '—')}</td>
+              <td data-label="生產方式">${esc(r.delivery_type || '—')}</td>
+              <td data-label="寶寶預計入住">${esc(r.baby_check_in || '—')}</td>
+              <td data-label="性別">${r.gender === 'male' ? '<span style="color:#3b78c2">男</span>' : r.gender === 'female' ? '<span style="color:var(--accent)">女</span>' : '—'}</td>
+              <td data-label="寶寶體重">${r.birth_weight_g ? `${r.birth_weight_g} g` : '—'}</td>
+              <td data-label="黃疸值">${r.jaundice != null ? `${r.jaundice} mg/dl` : '—'}</td>
+            </tr>`).join('') || '<tr><td colspan="9"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+  $('#ban-prev').onclick = () => shift(-1);
+  $('#ban-next').onclick = () => shift(1);
+  $('#ban-go').onclick = () => { location.hash = `#/baby-announcements?d=${$('#ban-date').value}`; };
+  $('#ban-print').onclick = () => window.print();
+}
+
+/* ---------- 病歷資料（依媽媽姓名查歷史住客＋護理紀錄） ---------- */
+async function viewMedicalRecords() {
+  main().innerHTML = `
+    <div class="page-title">病歷資料</div>
+    <div class="card">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>媽媽姓名 <b class="req">*</b></label>
+          <input id="mrq-name" placeholder="輸入姓名（可部分比對）"></div>
+        <button class="btn" id="mrq-go">送出查詢</button>
+        <button class="btn secondary" id="mrq-clear">清空重查</button>
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <span class="error-msg" id="mrq-err"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">媽媽資料查詢結果</div>
+      <div id="mrq-moms"><div class="empty">請輸入姓名查詢</div></div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">護理資料（查詢結果）</div>
+      <div id="mrq-nursing"><div class="empty">您輸入的條件，查無資料 …</div></div>
+    </div>`;
+
+  const search = async () => {
+    const err = $('#mrq-err');
+    err.textContent = '';
+    const name = $('#mrq-name').value.trim();
+    if (!name) { err.textContent = '請輸入媽媽姓名'; return; }
+    try {
+      const { rows } = await api(`/medical-records?name=${encodeURIComponent(name)}`);
+      $('#mrq-moms').innerHTML = rows.length ? `
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>筆數</th><th>媽媽姓名</th><th>生產方式</th><th>入出住日期</th><th>入住房號</th><th>寶寶性別</th><th>聯絡電話</th><th class="no-print"></th></tr></thead>
+          <tbody>${rows.map((m, i) => `
+            <tr>
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="媽媽姓名">${esc(m.name)}${m.status === 'checked_in' ? ' <span class="badge green">在住</span>' : ''}</td>
+              <td data-label="生產方式">${esc(m.delivery_type || '—')}</td>
+              <td data-label="入出住日期"><small>${esc(m.stay_range || '—')}</small></td>
+              <td data-label="入住房號">${esc(m.room_name || '—')}</td>
+              <td data-label="寶寶性別">${esc(m.baby_genders || '—')}</td>
+              <td data-label="聯絡電話">${esc(m.phone || '—')}</td>
+              <td data-label="" class="no-print"><button class="btn small" data-nursing="${m.id}" data-name="${esc(m.name)}">護理資料</button></td>
+            </tr>`).join('')}</tbody>
+        </table></div>` : '<div class="empty">您輸入的條件，查無資料 …</div>';
+      $('#mrq-moms').querySelectorAll('[data-nursing]').forEach(btn => btn.onclick = () => loadNursing(btn.dataset.nursing, btn.dataset.name));
+    } catch (e) { err.textContent = e.message; }
+  };
+
+  const loadNursing = async (mid, name) => {
+    const { rows } = await api(`/mothers/${mid}/nursing`);
+    $('#mrq-nursing').innerHTML = `
+      <div style="margin-bottom:6px"><b>${esc(name)}</b>　共 ${rows.length} 筆護理評估</div>
+      ${rows.length ? `<div class="table-wrap"><table class="data stack">
+        <thead><tr><th>日期時間</th><th>生命徵象</th><th>宮縮宮底</th><th>惡露</th><th>傷口</th><th>乳房</th><th>精神/活動力</th><th>護理師</th></tr></thead>
+        <tbody>${rows.map(r => {
+          const d = r.data || {};
+          return `<tr>
+            <td data-label="日期時間">${esc(r.assess_date)}<br><small>${esc(r.assess_time)}</small></td>
+            <td data-label="生命徵象"><small>${r.temperature}°C／脈 ${r.pulse}<br>${r.systolic}/${r.diastolic} mmHg</small></td>
+            <td data-label="宮縮宮底"><small>${esc(d.uterus || '—')}${d.fundus_note ? `<br>${esc(d.fundus_note)}` : ''}</small></td>
+            <td data-label="惡露"><small>${esc([d.lochia_amount, d.lochia_color].filter(Boolean).join('／') || '—')}</small></td>
+            <td data-label="傷口"><small>${esc(d.wound || '—')}</small></td>
+            <td data-label="乳房"><small>左 ${esc(d.breast_l || '—')}／右 ${esc(d.breast_r || '—')}</small></td>
+            <td data-label="精神/活動力"><small>${esc(d.mental || '—')}／${esc(d.activity || '—')}</small></td>
+            <td data-label="護理師">${esc(r.nurse_name || '—')}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>` : '<div class="empty">此媽媽尚無護理評估紀錄</div>'}`;
+  };
+
+  $('#mrq-go').onclick = search;
+  $('#mrq-name').onkeydown = e => { if (e.key === 'Enter') search(); };
+  $('#mrq-clear').onclick = () => viewMedicalRecords();
+}
+
+/* ---------- 房況列印（目前入住媽媽房況一覽） ---------- */
+async function viewMotherRoomsPrint() {
+  const data = await api('/room-status/mothers');
+  const occupied = data.rooms.filter(r => r.occupant);
+  main().innerHTML = `
+    <div class="card no-print">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <button class="btn small" id="rsp-print">開始列印</button>
+      </div>
+    </div>
+    <div style="text-align:center;font-weight:700;font-size:1.1rem;margin-bottom:4px">${esc(SETTINGS.center_name || '')}</div>
+    <div style="margin-bottom:6px">日期：${esc(data.date)}　目前入住媽媽房況資料</div>
+    <div class="table-wrap">
+      <table class="data rsp-cards" style="width:100%">
+        <tbody>${(() => {
+          const cells = occupied.map(r => `
+            <td style="text-align:center;vertical-align:top;padding:10px">
+              <div style="font-weight:700">${esc(r.name)}</div>
+              <div>媽媽姓名：${esc(r.occupant.mother_name)}</div>
+              <div>入住日期：${esc(r.occupant.check_in)}</div>
+              <div>預退日期：${esc(r.occupant.check_out)}</div>
+              <div>入住天數：${r.occupant.stay_day} / ${r.occupant.stay_total} 天</div>
+            </td>`);
+          const trs = [];
+          for (let i = 0; i < cells.length; i += 2) trs.push(`<tr>${cells[i]}${cells[i + 1] || '<td></td>'}</tr>`);
+          return trs.join('');
+        })() || '<tr><td><div class="empty">目前沒有在住媽媽</div></td></tr>'}</tbody>
+      </table>
+    </div>`;
+  $('#rsp-print').onclick = () => window.print();
+}
+
+/* ---------- 空白媽媽評估單（列印手寫用；選項攤平成勾選框） ---------- */
+function viewMotherIntakeBlank() {
+  const bl = (w = 130) => `<span class="bf-line" style="min-width:${w}px"></span>`;
+  const cks = opts => opts.map(o => `<span class="bf-ck">□ ${esc(o)}</span>`).join('');
+  const it = (label, content, full = false) => `<div class="bf-item ${full ? 'full' : ''}"><b>${esc(label)}：</b>${content}</div>`;
+  const O = MIA_OPT, M = MIA_MULTI;
+
+  main().innerHTML = `
+    <div class="card no-print">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <a class="btn small secondary" href="#/mother-intake">線上填寫（入住評估表）</a>
+        <button class="btn small" id="mib-print">開始列印</button>
+      </div>
+      <small style="color:var(--muted)">＊本頁為空白紙本評估單（供列印手寫）；線上填寫請使用「入住評估表」。</small>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700;font-size:1.1rem">${esc(SETTINGS.center_name || '')}</div>
+      <div style="text-align:center;font-weight:700;margin-bottom:6px">產婦入住護理評估表</div>
+      <div class="bf-grid">
+        ${it('產婦病歷號', bl())}${it('產婦姓名', bl())}${it('填表日期', bl())}
+        ${it('產婦身分證號', bl())}${it('填表人', bl())}${it('填表人身分證', bl())}
+      </div>
+      <div class="bf-sec">中衛必要欄位</div>
+      <div class="bf-grid">
+        ${it('縣市／區域', bl(90) + '　' + bl(90))}
+        ${it('巷弄門牌', bl(220))}
+        ${it('市話', bl())}
+        ${it('教育程度', cks(O.education) + ' 其他' + bl(70), true)}
+        ${it('語言(多選)', cks(M.languages) + ' 其他' + bl(70))}
+        ${it('婚姻狀態', cks(O.marital))}
+        ${it('孕次(G)／產次(P)／流產(A)', bl(40) + '／' + bl(40) + '／' + bl(40))}
+        ${it('生產方式/輔助(多選)', cks(M.delivery_modes) + ' 其他' + bl(70), true)}
+        ${it('高危妊娠/併發症', cks(O.highRisk) + ' 其他' + bl(70), true)}
+        ${it('工作/職業', bl())}
+        ${it('過敏史主類別', cks(O.allergyCat))}
+        ${it('食物過敏說明', bl(180))}
+        ${it('藥物過敏說明', bl(180))}
+        ${it('飲酒史', cks(O.alcohol) + ' 其他' + bl(60))}
+        ${it('抽菸史', cks(O.smoking) + ' 其他' + bl(60))}
+        ${it('既往病史/手術史', cks(O.pastHx) + ' 其他' + bl(70), true)}
+        ${it('梅毒檢驗 RPR', cks(O.lab3))}
+        ${it('愛滋檢驗 HIV', cks(O.lab3))}
+        ${it('水痘檢驗', cks(O.varicella))}
+        ${it('B型肝炎 HBsAg', cks(O.lab3))}
+        ${it('B型肝炎 HBeAg', cks(O.lab3))}
+        ${it('服藥/帶藥紀錄', cks(O.ynMed))}
+        ${it('服藥明細(藥名/量/時間)', bl(400), true)}
+        ${it('旅遊史', cks(O.ynMed) + ' 說明' + bl(120))}
+        ${it('發燒史', cks(O.ynMed) + ' 說明' + bl(120))}
+        ${it('接觸史', cks(['有', '無']))}
+        ${it('接觸史細項(多選)', cks(M.contact_items) + ' 其他' + bl(90), true)}
+        ${it('感染症狀', cks(['有', '無']) + '　細項：' + cks(M.infection_items), true)}
+        ${it('特殊需求', cks(['有', '無']) + '　細項：' + cks(M.special_items) + ' 其他' + bl(80), true)}
+        ${it('主要陪伴者姓名', bl())}
+        ${it('陪伴者電話', bl())}
+        ${it('陪伴者關係', bl())}
+      </div>
+      <div class="bf-sec">中衛入住評估欄位</div>
+      <div class="bf-grid">
+        ${it('身高', bl(60) + ' cm')}${it('體重', bl(60) + ' kg')}${it('體溫', bl(60) + ' °C')}
+        ${it('呼吸', bl(60) + ' 次/分')}${it('血壓', bl(45) + '／' + bl(45) + ' mmHg')}${it('脈搏', bl(60) + ' 次/分')}
+        ${it('左耳評估', cks(O.ear) + ' 其他' + bl(60), true)}
+        ${it('右耳評估', cks(O.ear) + ' 其他' + bl(60), true)}
+        ${it('鼻子評估', cks(O.nose) + ' 其他' + bl(60))}
+        ${it('口腔評估', cks(O.mouth) + ' 其他' + bl(60))}
+        ${it('頸部評估', cks(O.neck) + ' 其他' + bl(60))}
+        ${it('視力狀態', cks(O.vision) + ' 說明' + bl(60), true)}
+        ${it('意識狀態', cks(O.consciousness))}
+        ${it('皮膚狀態', cks(O.skin) + '　細項：' + cks(M.skin_items) + ' 說明' + bl(80), true)}
+        ${it('情緒表現', cks(O.emotion) + '　細項：' + cks(M.emotion_items), true)}
+        ${it('態度表現', cks(O.attitude))}
+        ${it('呼吸速率(質)', cks(O.respQuality))}
+        ${it('呼吸型態', cks(O.respPattern) + ' 其他' + bl(60))}
+        ${it('心跳速率', cks(O.heartRate) + ' 其他' + bl(60))}
+        ${it('四肢循環-溫度', cks(O.limbTemp))}
+        ${it('四肢循環-顏色', cks(O.limbColor))}
+        ${it('腹部外觀', cks(O.abdomen) + ' 其他' + bl(60))}
+        ${it('上肢評估', cks(O.limb) + ' 其他' + bl(60))}
+        ${it('下肢評估', cks(O.limb) + ' 其他' + bl(60))}
+        ${it('排尿', cks(O.urination) + ' 補述' + bl(60), true)}
+        ${it('排便', cks(O.bowel) + ' 補述' + bl(60))}
+        ${it('子宮復舊(宮縮宮底)', cks(O.uterus) + ' 宮底Fb' + bl(60))}
+        ${it('惡露量', cks(O.lochiaAmount))}
+        ${it('惡露性質(多選)', cks(M.lochia_nature) + '　血塊：' + cks(['有', '無']) + ' 備註' + bl(70), true)}
+        ${it('會陰/腹部傷口', cks(O.wound) + ' 滲液量' + bl(50) + ' 顏色' + bl(50), true)}
+        ${it('活動力', cks(O.activity), true)}
+        ${it('入住主要需求(多選)', cks(M.needs) + ' 其他' + bl(80), true)}
+        ${it('左乳房評估', cks(O.breast) + ' 其他' + bl(50), true)}
+        ${it('右乳房評估', cks(O.breast) + ' 其他' + bl(50), true)}
+        ${it('乳房硬塊', cks(['有', '無']) + ' 說明' + bl(80))}
+        ${it('乳頭長度', cks(O.nippleLen))}
+        ${it('乳頭大小', cks(O.nippleSize))}
+        ${it('餵母奶經驗', cks(['有', '無']) + '　前胎持續：' + cks(O.bfPrevDuration), true)}
+        ${it('前胎停止餵母奶原因(多選)', cks(M.bf_stop_reasons) + ' 其他' + bl(70), true)}
+        ${it('預計餵母奶時間', cks(O.bfPlannedTime) + ' 其他' + bl(50), true)}
+        ${it('此胎餵母奶意願', cks(O.bfIntent) + ' 不餵原因' + bl(70), true)}
+        ${it('家人/機構對母乳支持', cks(O.familySupport))}
+        ${it('疼痛評估', cks(O.pain))}
+        ${it('疼痛分數(0-10)', bl(40))}
+        ${it('疼痛部位／性質', bl(70) + '／' + bl(70))}
+        ${it('疼痛時間／備註', bl(70) + '／' + bl(110))}
+      </div>
+      <div class="bf-grid" style="margin-top:8px">
+        ${it('護理師簽名', bl(140))}${it('主管覆核', bl(140))}${it('日期', bl(120))}
+      </div>
+    </div>`;
+  $('#mib-print').onclick = () => window.print();
+}
+
+/* ---------- 客戶管理（潛在客戶＋整合查詢） ---------- */
+const CUST_OPT = {
+  identity: ['一般客戶', 'VIP', '舊客回住', '員工親友', '其他'],
+  source: ['網路', '雜誌', '親友介紹', '路過看到', '報紙', '其他'],
+  care_exp: ['無', '有（本館）', '有（其他機構）'],
+  parity: ['1', '2', '3', '4以上'],
+  relation: ['先生', '父母', '兄弟姊妹', '朋友', '其他'],
+  baby_gender: ['男', '女', '雙胞胎']
+};
+const CUST_STATUS = { reserved: ['潛客/預約', 'teal'], checked_in: ['在住', 'green'], checked_out: ['已退住', 'gray'] };
+
+async function viewCustomers() {
+  const deepId = Number((location.hash.split('?m=')[1] || '').split('&')[0]) || null;
+  const sel = (id, opts, val) => `<select id="${id}"><option value="">--請選擇--</option>${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  let editId = null;
+
+  main().innerHTML = `
+    <div class="page-title">客戶管理 <small style="font-weight:400;color:var(--muted);font-size:.9rem">潛在客戶與媽媽資料查詢</small></div>
+    <div class="card">
+      <div class="sec-hd">客戶資料查詢</div>
+      <div class="form-grid">
+        <div class="field"><label>媽媽姓名</label><input id="cq-name" placeholder="可部分比對"></div>
+        <div class="field"><label>連絡電話</label><input id="cq-phone"></div>
+        <div class="field"><label>預產期</label><input type="date" id="cq-due"></div>
+        <div class="field"><label>合約編號<small>（輸入後 3~8 碼）</small></label><input id="cq-contract"></div>
+        <div class="full row" style="gap:10px;flex-wrap:wrap">
+          <button class="btn" id="cq-go">送出查詢</button>
+          <button class="btn secondary" id="cq-clear">清空重查</button>
+          <a class="btn small secondary" href="#/tour-calendar">預約參觀行事曆</a>
+          <a class="btn small secondary" href="#/tour-visit-blank">列印空白預約參觀單</a>
+          <a class="btn small secondary" href="#/booking-blank">列印空白訂房確認單</a>
+          <a class="btn small secondary" href="#/tours">參觀預約</a>
+          ${canAccess('#/retail') ? '<a class="btn small secondary" href="#/retail">產品零售</a>' : ''}
+          <span class="error-msg" id="cq-err"></span>
+        </div>
+      </div>
+      <div id="cq-result" style="margin-top:8px"><div class="empty">請輸入條件查詢（姓名／電話／預產期／合約編號擇一）</div></div>
+    </div>
+    <div id="cust-banner"></div>
+    <div class="ctabs no-print" id="cust-tabs"></div>
+    <div id="tab-lead"><div id="cust-form-wrap"></div><div id="cust-logs"></div></div>
+    <div id="cust-extra"></div>`;
+
+  const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+
+  // ----- 潛客表單（新增／修改共用） -----
+  const renderForm = (m = {}, p = {}) => {
+    $('#cust-form-wrap').innerHTML = `
+    <div class="card" id="cust-form">
+      <div class="sec-hd">${editId ? `修改潛在客戶 － ${esc(m.name)}` : '新增潛在客戶'}</div>
+      <div class="form-grid">
+        <div class="field"><label>媽媽姓名 <b class="req">*</b></label><input id="cf-name" maxlength="50" value="${esc(m.name || '')}"></div>
+        <div class="field"><label>媽媽身份</label>${sel('cf-identity', CUST_OPT.identity, p.identity || '一般客戶')}</div>
+        <div class="field"><label>身分證號</label><input id="cf-idno" maxlength="10" value="${esc(m.id_no || '')}"></div>
+        <div class="field"><label>媽媽資料來源</label>${sel('cf-source', CUST_OPT.source, p.source || '')}</div>
+        <div class="field"><label>媽媽出生日期</label><input type="date" id="cf-birth" value="${esc(m.birth_date || '')}"></div>
+        <div class="field"><label>預計生產方式</label>${sel('cf-delmode', deliveryTypes(), m.delivery_type || '')}</div>
+        <div class="field"><label>媽媽預產期 <b class="req">*</b></label><input type="date" id="cf-due" value="${esc(m.due_date || '')}"></div>
+        <div class="field"><label>預定入住天數</label><input type="number" min="0" id="cf-days" value="${esc(p.stay_days || '')}"></div>
+        <div class="field"><label>媽媽手機</label><input id="cf-phone" maxlength="20" value="${esc(m.phone || '')}"></div>
+        <div class="field"><label>入住產後護理經驗</label>${sel('cf-careexp', CUST_OPT.care_exp, p.care_exp || '')}</div>
+        <div class="field"><label>聯絡電話（市話）</label><input id="cf-tel" maxlength="20" value="${esc(p.tel || '')}"></div>
+        <div class="field"><label>預計生產醫院</label><input id="cf-hospital" maxlength="100" value="${esc(p.hospital || '')}"></div>
+        <div class="field"><label>胎次</label>${sel('cf-parity', CUST_OPT.parity, p.parity || '')}</div>
+        <div class="field"><label>地區</label><input id="cf-region" maxlength="50" value="${esc(p.region || '')}"></div>
+        <div class="field"><label>喜好房型</label><input id="cf-roompref" maxlength="50" value="${esc(p.room_pref || '')}"></div>
+        <div class="field"><label>寶寶性別</label>${sel('cf-bgender', CUST_OPT.baby_gender, p.baby_gender || '')}</div>
+        <div class="field full"><label>E-MAIL</label><input id="cf-email" maxlength="100" value="${esc(p.email || '')}"></div>
+        <div class="field full"><label>通訊地址</label><input id="cf-address" maxlength="200" value="${esc(p.address || '')}"></div>
+        <div class="field full"><label>潛客備註</label><textarea id="cf-note" maxlength="500" rows="3" placeholder="請填入潛客備註">${esc(p.note || '')}</textarea></div>
+        <div class="field"><label>聯絡人</label><input id="cf-cname" maxlength="50" value="${esc(p.contact_name || '')}"></div>
+        <div class="field"><label>與媽媽關係</label>${sel('cf-crel', CUST_OPT.relation, p.contact_relation || '')}</div>
+        <div class="field"><label>聯絡人手機</label><input id="cf-cmobile" maxlength="20" value="${esc(p.contact_mobile || '')}"></div>
+        <div class="field"><label>爸爸年齡</label><input type="number" min="0" id="cf-fage" value="${esc(p.father_age || '')}"></div>
+        <div class="field"><label>聯絡人電話（市話）</label><input id="cf-ctel" maxlength="20" value="${esc(p.contact_tel || '')}"></div>
+        <div class="field"><label>聯絡人E-MAIL</label><input id="cf-cemail" maxlength="100" value="${esc(p.contact_email || '')}"></div>
+        <div class="field full"><label>聯絡人通訊地址</label><input id="cf-caddr" maxlength="200" value="${esc(p.contact_address || '')}"></div>
+        <div class="field" style="background:#e8f4fb;border-radius:6px;padding:8px"><label>介紹人</label><input id="cf-ref" maxlength="50" value="${esc(p.referrer || '')}"></div>
+        <div class="field" style="background:#e8f4fb;border-radius:6px;padding:8px"><label>介紹人手續費</label><input type="number" min="0" id="cf-reffee" value="${esc(p.referrer_fee || '')}"></div>
+        <div class="field full" style="background:#e8f4fb;border-radius:6px;padding:8px"><label>介紹人備註</label><textarea id="cf-refnote" maxlength="500" rows="2" placeholder="請填入介紹人備註">${esc(p.referrer_note || '')}</textarea></div>
+        <div class="full row" style="gap:10px">
+          <button class="btn" id="cf-save">${editId ? '資料修改' : '資料新增'}</button>
+          ${editId ? '<button class="btn secondary" id="cf-new">切換新增模式</button>' : ''}
+          <span class="error-msg" id="cf-err"></span>
+        </div>
+      </div>
+    </div>`;
+    $('#cf-save').onclick = saveForm;
+    const bn = $('#cf-new');
+    if (bn) bn.onclick = resetNew;
+  };
+
+  const collectForm = () => ({
+    name: v('#cf-name'), id_no: v('#cf-idno'), birth_date: v('#cf-birth'), due_date: v('#cf-due'),
+    phone: v('#cf-phone'), delivery_mode: v('#cf-delmode'),
+    identity: v('#cf-identity'), source: v('#cf-source'), stay_days: v('#cf-days'),
+    care_exp: v('#cf-careexp'), tel: v('#cf-tel'), hospital: v('#cf-hospital'),
+    parity: v('#cf-parity'), region: v('#cf-region'), room_pref: v('#cf-roompref'),
+    baby_gender: v('#cf-bgender'), email: v('#cf-email'), address: v('#cf-address'), note: v('#cf-note'),
+    contact_name: v('#cf-cname'), contact_relation: v('#cf-crel'), contact_mobile: v('#cf-cmobile'),
+    contact_tel: v('#cf-ctel'), contact_email: v('#cf-cemail'), contact_address: v('#cf-caddr'),
+    father_age: v('#cf-fage'), referrer: v('#cf-ref'), referrer_fee: v('#cf-reffee'), referrer_note: v('#cf-refnote')
+  });
+
+  async function saveForm() {
+    const err = $('#cf-err');
+    err.textContent = '';
+    const body = collectForm();
+    if (!body.name) { err.textContent = '請填寫媽媽姓名'; return; }
+    if (!body.due_date) { err.textContent = '請填寫媽媽預產期'; return; }
+    try {
+      if (editId) {
+        await api(`/customers/${editId}`, { method: 'PUT', body });
+        await selectCustomer(editId);
+      } else {
+        const r = await api('/customers', { method: 'POST', body });
+        await selectCustomer(r.id);
+      }
+    } catch (e) { err.textContent = e.message; }
+  }
+
+  // ----- 選取客戶：紅色橫幅＋表單帶入＋分頁關聯資料 -----
+  async function selectCustomer(id) {
+    let d;
+    try { d = await api(`/customers/${id}`); } catch (e) { alert(e.message); return; }
+    editId = id;
+    const m = d.mother;
+    $('#cust-banner').innerHTML = `
+      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
+        <div class="row between" style="flex-wrap:wrap;gap:8px;align-items:center">
+          <span>潛在客戶資料：<b>${esc(m.name)}</b>　｜　電話：${esc(m.phone || '—')}
+            <span class="badge ${CUST_STATUS[m.status] ? CUST_STATUS[m.status][1] : 'gray'}" style="margin-left:8px">${CUST_STATUS[m.status] ? CUST_STATUS[m.status][0] : m.status}</span></span>
+          <button class="btn small secondary" id="cb-new">切換新增模式</button>
+        </div>
+      </div>`;
+    $('#cb-new').onclick = resetNew;
+    renderForm(m, d.profile || {});
+    renderTabs(d);
+    $('#cust-banner').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function resetNew() {
+    editId = null;
+    $('#cust-banner').innerHTML = '';
+    renderForm();
+    renderTabs(null);
+  }
+
+  // ----- 分頁：潛在客戶／預約參觀／合約資料／排房資料／膳食資訊／入住資訊／消費及收款 -----
+  const CTABS = [['lead', '潛在客戶'], ['tours', '預約參觀'], ['contracts', '合約資料'], ['rooms', '排房資料'],
+    ['meals', '膳食資訊'], ['stay', '入住資訊'], ['pay', '消費及收款']];
+  const BK_ST = { reserved: ['已預約', 'teal'], checked_in: ['入住中', 'green'], checked_out: ['已退住', 'gray'], cancelled: ['取消', 'gray'] };
+  const CT_ST = { pending: ['待簽', 'yellow'], signed: ['已簽', 'green'], void: ['作廢', 'gray'] };
+
+  let curTab = 'lead';
+  function showTab(k) {
+    curTab = k;
+    $('#cust-tabs').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === k));
+    $('#tab-lead').style.display = k === 'lead' ? '' : 'none';
+    $('#cust-extra').querySelectorAll('.cpanel').forEach(p => { p.style.display = p.dataset.tab === k ? '' : 'none'; });
+  }
+
+  function renderTabs(d) {
+    $('#cust-tabs').innerHTML = CTABS.map(([k, l]) =>
+      `<button data-tab="${k}" ${!d && k !== 'lead' ? 'disabled title="請先查詢並選擇客戶"' : ''}>${l}</button>`).join('');
+    $('#cust-tabs').querySelectorAll('button:not([disabled])').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+    renderLogs(d);
+    $('#cust-extra').innerHTML = d ? panelsHTML(d) : '';
+    if (d) { wireContract(); wirePanels(d); }
+    showTab(d ? curTab : 'lead');
+  }
+
+  // ----- 合約資料分頁：存檔／明細增刪／卡片與諮詢 -----
+  function wireContract() {
+    const cput = async body => {
+      await api(`/customers/${editId}/contract`, { method: 'PUT', body });
+      await selectCustomer(editId);
+    };
+    const $q = id => $('#cust-extra').querySelector(id);
+    const gv = id => { const el = $q(id); return el ? el.value.trim() : ''; };
+
+    $q('#ct-save').onclick = async () => {
+      const err = $q('#ct-err');
+      err.textContent = '';
+      if (!gv('#ct-sign') || !gv('#ct-due')) { err.textContent = '請填寫簽約日期與預產期'; return; }
+      const babies = $('#cust-extra').querySelector('input[name="ctr-babies"]:checked');
+      try {
+        await cput({
+          handler: gv('#ct-handler'), sign_date: gv('#ct-sign'), due_date: gv('#ct-due'),
+          parity_no: gv('#ct-parity'), baby_count: babies ? babies.value : '',
+          delivery_mode: gv('#ct-delmode'), checkup_hospital: gv('#ct-ckhosp'), checkup_doctor: gv('#ct-ckdoc'),
+          birth_hospital: gv('#ct-bhosp'), butler: gv('#ct-butler'),
+          diet_ban: gv('#ct-dietban'), note: gv('#ct-note')
+        });
+      } catch (e) { err.textContent = e.message; }
+    };
+    $q('#ct-fcsave').onclick = () => cput({
+      fc_return_date: gv('#ct-fcdate'), fc_no: gv('#ct-fcno'), fc_by: currentUser.name
+    }).catch(e => alert(e.message));
+    const ctCancel = $q('#ct-cancel');
+    if (ctCancel) ctCancel.onclick = async () => {
+      const reason = prompt('合約退訂：請填寫退訂原因（必填，記入稽核；退訂後列入「客戶退訂資料」）');
+      if (reason == null) return;
+      try {
+        await api(`/customers/${editId}/contract/cancel`, { method: 'POST', body: { reason } });
+        await selectCustomer(editId);
+      } catch (e) { alert(e.message); }
+    };
+    const ctRestore = $q('#ct-restore');
+    if (ctRestore) ctRestore.onclick = async () => {
+      if (!confirm('確定取消退訂、恢復合約有效？')) return;
+      try {
+        await api(`/customers/${editId}/contract/restore`, { method: 'POST' });
+        await selectCustomer(editId);
+      } catch (e) { alert(e.message); }
+    };
+
+    const addItem = async price => {
+      const err = $q('#ct-item-err');
+      err.textContent = '';
+      const name = gv('#ct-item-type'), days = gv('#ct-item-days');
+      if (!days) { err.textContent = '請填寫訂房天數'; return; }
+      try {
+        await api(`/customers/${editId}/contract/items`, { method: 'POST',
+          body: price != null ? { name, qty: days, price } : { name, qty: days } });
+        await selectCustomer(editId);
+      } catch (e) { err.textContent = e.message; }
+    };
+    $q('#ct-item-add').onclick = () => addItem(null);
+    $q('#ct-item-special').onclick = () => {
+      const p = prompt('特殊折扣訂房：請輸入折扣後每日單價（元）');
+      if (p == null) return;
+      const n = Number(p);
+      if (!(n >= 0)) { alert('單價需為數字'); return; }
+      addItem(n);
+    };
+    $('#cust-extra').querySelectorAll('[data-ctdel]').forEach(btn => {
+      btn.onclick = async () => {
+        const reason = prompt('刪除訂房明細：請填寫刪除說明（必填，記入稽核）');
+        if (reason == null) return;
+        try {
+          await api(`/customers/${editId}/contract/items/delete`, { method: 'POST',
+            body: { index: Number(btn.dataset.ctdel), reason } });
+          await selectCustomer(editId);
+        } catch (e) { alert(e.message); }
+      };
+    });
+
+    const CARD_MAP = {
+      rcg: ['#ct-rcg-date', '#ct-rcg-no', 'room_card_given_date', 'room_card_no', 'room_card_given_by'],
+      rcu: ['#ct-rcu-date', '#ct-rcu-no', 'room_card_used_date', 'room_card_used_no', 'room_card_used_by'],
+      scg: ['#ct-scg-date', '#ct-scg-no', 'share_card_given_date', 'share_card_no', 'share_card_given_by'],
+      scu: ['#ct-scu-date', '#ct-scu-no', 'share_card_used_date', 'share_card_used_no', 'share_card_used_by']
+    };
+    $('#cust-extra').querySelectorAll('[data-cardsave]').forEach(btn => {
+      btn.onclick = () => {
+        const [dSel, nSel, dKey, nKey, byKey] = CARD_MAP[btn.dataset.cardsave];
+        cput({ [dKey]: gv(dSel), [nKey]: gv(nSel), [byKey]: currentUser.name }).catch(e => alert(e.message));
+      };
+    });
+    $q('#ct-consult-save').onclick = () => cput({
+      consult_date: gv('#ct-consult-date'), consult_note: gv('#ct-consult-note'), consult_by: currentUser.name
+    }).catch(e => alert(e.message));
+  }
+
+  // ----- 膳食資訊／消費及收款分頁 wiring -----
+  async function wirePanels(d) {
+    const $q = sel => $('#cust-extra').querySelector(sel);
+    // 膳食：修改膳食總類（modal 下拉）
+    const mlBtn = $q('#ml-diet');
+    if (mlBtn) mlBtn.onclick = () => openModal('修改膳食總類', `
+      <div class="field"><label>膳食總類</label><select id="ml-sel">${d.meals.diets.map(x =>
+        `<option ${x === d.meals.diet ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
+      <div class="row mt"><button class="btn" id="ml-save">存檔</button><span class="error-msg" id="ml-err"></span></div>`, body => {
+      body.querySelector('#ml-save').onclick = async () => {
+        try {
+          await api(`/mothers/${editId}/meal-diet`, { method: 'PUT', body: { meal_diet: body.querySelector('#ml-sel').value } });
+          closeModal();
+          selectCustomer(editId);
+        } catch (e) { body.querySelector('#ml-err').textContent = e.message; }
+      };
+    });
+    // 消費：載入商品清單（需 shop 權限，無權限則顯示提示）
+    const prodSel = $q('#py-prod');
+    if (prodSel) {
+      try {
+        const products = (await api('/products')).filter(p => p.active);
+        prodSel.innerHTML = '<option value="">--請選擇--</option>' + products.map(p =>
+          `<option value="${p.id}" data-price="${p.price}">${esc(p.name)}（$${p.price}${p.track_stock ? `｜庫存 ${p.stock}` : ''}）</option>`).join('');
+      } catch (e) { prodSel.innerHTML = '<option value="">（需商城權限）</option>'; }
+      const recalc = () => {
+        const o = prodSel.selectedOptions[0];
+        const pr = o ? Number(o.dataset.price || 0) : 0;
+        const q = Math.max(1, Number($q('#py-qty').value) || 1);
+        $q('#py-total').value = pr ? `$${(pr * q).toLocaleString()}` : '';
+      };
+      prodSel.onchange = recalc;
+      $q('#py-qty').oninput = recalc;
+      $q('#py-sale-add').onclick = async () => {
+        const err = $q('#py-sale-err');
+        err.textContent = '';
+        if (!prodSel.value) { err.textContent = '請選擇銷售品名'; return; }
+        try {
+          const o = await api('/orders', { method: 'POST', body: {
+            mother_id: editId,
+            items: [{ product_id: Number(prodSel.value), quantity: Math.max(1, Number($q('#py-qty').value) || 1) }],
+            note: `客戶管理消費 ${$q('#py-date').value}${$q('#py-snote').value.trim() ? `｜${$q('#py-snote').value.trim()}` : ''}`
+          } });
+          await api(`/orders/${o.id}/confirm`, { method: 'POST' });
+          selectCustomer(editId);
+        } catch (e) { err.textContent = e.message; }
+      };
+    }
+    // 收款新增（掛進行中／預約訂房）
+    const payBtn = $q('#py-pay-add');
+    if (payBtn) payBtn.onclick = async () => {
+      const err = $q('#py-pay-err');
+      err.textContent = '';
+      const amount = Number($q('#py-pamount').value);
+      if (!(amount > 0)) { err.textContent = '請填寫收款金額'; return; }
+      const bk = d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved');
+      if (!bk) { err.textContent = '無進行中／預約訂房，無法登錄收款'; return; }
+      const note = [$q('#py-pitem').value, $q('#py-pnote').value.trim(),
+        $q('#py-pref').value.trim() ? `憑證:${$q('#py-pref').value.trim()}` : ''].filter(Boolean).join('｜');
+      try {
+        await api(`/bookings/${bk.id}/payments`, { method: 'POST', body: {
+          amount, method: $q('#py-pmethod').value, paid_on: $q('#py-pdate').value || todayStr(), note
+        } });
+        selectCustomer(editId);
+      } catch (e) { err.textContent = e.message; }
+    };
+
+    // 預約參觀：新增＋狀態切換
+    const trAdd = $q('#tr-add');
+    if (trAdd) trAdd.onclick = async () => {
+      const err = $q('#tr-err');
+      err.textContent = '';
+      const date = $q('#tr-date').value, time = $q('#tr-time').value;
+      if (!date || !time) { err.textContent = '請填寫參觀日期與時段'; return; }
+      try {
+        await api('/tours', { method: 'POST', body: {
+          name: d.mother.name, phone: d.mother.phone || '', due_date: d.mother.due_date || '',
+          tour_at: `${date} ${time}`, source: (d.profile || {}).source || '', note: $q('#tr-note').value.trim()
+        } });
+        selectCustomer(editId);
+      } catch (e) { err.textContent = e.message; }
+    };
+    $('#cust-extra').querySelectorAll('[data-trst]').forEach(btn => {
+      btn.onclick = async () => {
+        const [id, status] = btn.dataset.trst.split('|');
+        try { await api(`/tours/${id}`, { method: 'PUT', body: { status } }); selectCustomer(editId); }
+        catch (e) { alert(e.message); }
+      };
+    });
+    // 排房：房間下拉載入＋自動計價＋新增訂房＋狀態切換
+    const bkRoom = $q('#bk-room');
+    if (bkRoom) {
+      let roomList = [];
+      try { roomList = await api('/rooms'); } catch (e) { roomList = []; }
+      bkRoom.innerHTML = '<option value="">--請選擇--</option>' + roomList.filter(r => r.active).map(r =>
+        `<option value="${r.id}" data-price="${r.price_per_day || 0}">${esc(r.name)}（${esc(r.room_type)}｜$${(r.price_per_day || 0).toLocaleString()}/日）${r.occupant ? `｜在住至 ${esc(r.occupied_until || '')}` : ''}</option>`).join('');
+      const calcTotal = () => {
+        const o = bkRoom.selectedOptions[0];
+        const price = o ? Number(o.dataset.price || 0) : 0;
+        const ci = $q('#bk-in').value, co = $q('#bk-out').value;
+        if (!price || !ci || !co || co <= ci) return;
+        if (d.contract && d.contract.total > 0) { $q('#bk-total').value = d.contract.total; return; }
+        const days = Math.round((new Date(co) - new Date(ci)) / 86400000);
+        $q('#bk-total').value = price * days;
+      };
+      bkRoom.onchange = calcTotal;
+      $q('#bk-in').onchange = calcTotal;
+      $q('#bk-out').onchange = calcTotal;
+      $q('#bk-add').onclick = async () => {
+        const err = $q('#bk-err');
+        err.textContent = '';
+        if (!bkRoom.value || !$q('#bk-in').value || !$q('#bk-out').value) { err.textContent = '請選擇房間與入退房日期'; return; }
+        try {
+          await api('/bookings', { method: 'POST', body: {
+            mother_id: editId, room_id: Number(bkRoom.value),
+            check_in: $q('#bk-in').value, check_out: $q('#bk-out').value,
+            deposit: Number($q('#bk-dep').value) || 0, total_amount: Number($q('#bk-total').value) || 0
+          } });
+          selectCustomer(editId);
+        } catch (e) { err.textContent = e.message; }
+      };
+    }
+    const BKST_TW = { checked_in: '辦理入住', checked_out: '退房', cancelled: '取消訂房' };
+    $('#cust-extra').querySelectorAll('[data-bkst]').forEach(btn => {
+      btn.onclick = async () => {
+        const [id, status] = btn.dataset.bkst.split('|');
+        if (!confirm(`確定${BKST_TW[status] || status}？${status === 'checked_out' ? '（退房會同步住客狀態並推送滿意度問卷）' : ''}`)) return;
+        const body = { status };
+        if (status === 'checked_out') {
+          const bk = d.bookings.find(b => b.id == id);
+          if (bk && bk.check_out > todayStr()) {
+            const reason = prompt('提前退房：請填寫提前退房原因（列入提前退房明細表）', '');
+            if (reason == null) return;
+            body.reason = reason;
+          }
+        }
+        try { await api(`/bookings/${id}/status`, { method: 'PUT', body }); selectCustomer(editId); }
+        catch (e) { alert(e.message); }
+      };
+    });
+  }
+
+  // 客戶互動紀錄（潛在客戶分頁內）
+  function renderLogs(d) {
+    if (!d) { $('#cust-logs').innerHTML = ''; return; }
+    $('#cust-logs').innerHTML = `
+    <div class="card">
+      <div class="sec-hd">客戶互動紀錄（${d.logs.length} 筆）</div>
+      <div class="form-grid no-print">
+        <div class="field full"><label>客戶互動紀錄</label><textarea id="cl-body" maxlength="1000" rows="3" placeholder="請填入客戶互動紀錄"></textarea></div>
+        <div class="full row" style="gap:10px"><button class="btn" id="cl-save">紀錄存檔</button><span class="error-msg" id="cl-err"></span></div>
+      </div>
+      ${d.logs.length ? `<div class="table-wrap" style="margin-top:8px"><table class="data stack">
+        <thead><tr><th>時間</th><th>內容</th><th>經手人</th><th class="no-print"></th></tr></thead>
+        <tbody>${d.logs.map(l => `
+          <tr><td data-label="時間"><small>${esc(l.created_at.slice(0, 16))}</small></td>
+            <td data-label="內容">${esc(l.body)}</td>
+            <td data-label="經手人">${esc(l.staff_name || '—')}</td>
+            <td data-label="" class="no-print">${currentUser.role === 'admin' ? `<button class="btn small danger" data-ldel="${l.id}">刪</button>` : ''}</td></tr>`).join('')}
+        </tbody></table></div>` : ''}
+    </div>`;
+    $('#cl-save').onclick = async () => {
+      const err = $('#cl-err');
+      err.textContent = '';
+      try {
+        await api(`/customers/${editId}/logs`, { method: 'POST', body: { body: $('#cl-body').value } });
+        selectCustomer(editId);
+      } catch (e) { err.textContent = e.message; }
+    };
+    $('#cust-logs').querySelectorAll('[data-ldel]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('確定刪除這筆互動紀錄？')) return;
+        await api(`/customer-logs/${btn.dataset.ldel}`, { method: 'DELETE' });
+        selectCustomer(editId);
+      };
+    });
+  }
+
+  function panelsHTML(d) {
+    const m = d.mother;
+    const cur = d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved') || null;
+    const totals = d.bookings.reduce((s, b) => ({
+      room: s.room + (b.total_amount || 0), addon: s.addon + (b.addon || 0), paid: s.paid + (b.paid || 0)
+    }), { room: 0, addon: 0, paid: 0 });
+    const due = totals.room + totals.addon - totals.paid;
+    const stayDay = cur && cur.status === 'checked_in'
+      ? Math.max(1, Math.round((new Date(todayStr()) - new Date(cur.check_in)) / 86400000) + 1) : null;
+    const stayTotal = cur ? Math.round((new Date(cur.check_out) - new Date(cur.check_in)) / 86400000) : null;
+
+    return `
+    <div class="cpanel" data-tab="tours">
+      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
+        <span>預約參觀資料：<b>${esc(m.name)}</b>　｜　電話：${esc(m.phone || '—')}</span>
+      </div>
+      <div class="card no-print">
+        <div class="sec-hd">新增預約參觀</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>參觀日期 <b class="req">*</b></label><input type="date" id="tr-date" value="${todayStr()}"></div>
+          <div class="field" style="margin:0"><label>參觀時段 <b class="req">*</b></label><input type="time" id="tr-time" value="14:00"></div>
+          <div class="field" style="margin:0;min-width:220px"><label>備註</label><input id="tr-note" maxlength="200"></div>
+          <button class="btn danger" id="tr-add">轉入預約參觀</button>
+          <a class="btn small secondary" href="#/tour-calendar">預約參觀行事曆</a>
+          <span class="error-msg" id="tr-err"></span>
+        </div>
+        <small style="color:var(--muted)">姓名／電話／預產期自動帶入本客戶；來源帶入「媽媽資料來源」。</small>
+      </div>
+      <div class="card">
+        <div class="sec-hd">參觀紀錄（${d.tours.length} 筆）</div>
+        ${d.tours.length ? `<div class="table-wrap"><table class="data stack">
+          <thead><tr><th>參觀時間</th><th>狀態</th><th>備註</th><th class="no-print">操作</th></tr></thead>
+          <tbody>${d.tours.map(t => {
+            const st = TOUR_STATUS_TW[t.status] || [t.status, 'gray'];
+            return `<tr><td data-label="參觀時間">${esc(t.tour_at)}</td>
+              <td data-label="狀態"><span class="badge ${st[1]}">${st[0]}</span></td>
+              <td data-label="備註"><small>${esc(t.note || '—')}</small></td>
+              <td data-label="操作" class="no-print">
+                ${t.status === 'scheduled' ? `<button class="btn small" data-trst="${t.id}|visited">已參觀</button>
+                  <button class="btn small secondary" data-trst="${t.id}|lost">未成交</button>` : ''}
+                ${t.status === 'visited' ? `<button class="btn small secondary" data-trst="${t.id}|lost">未成交</button>` : ''}
+              </td></tr>`;
+          }).join('')}</tbody></table></div>` : '<div class="empty">尚無參觀紀錄（依姓名／電話比對）</div>'}
+      </div>
+    </div>
+    <div class="cpanel" data-tab="rooms">
+      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
+        <span>排房資料：<b>${esc(m.name)}</b>${d.contract ? `　｜　合約編號：${esc(d.contract.contract_no)}` : ''}</span>
+      </div>
+      ${canAccess('#/rooms') ? `
+      <div class="card no-print">
+        <div class="sec-hd">新增訂房（排房）</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0;min-width:220px"><label>房間 <b class="req">*</b></label>
+            <select id="bk-room"><option value="">載入中…</option></select></div>
+          <div class="field" style="margin:0"><label>入住日 <b class="req">*</b></label><input type="date" id="bk-in"></div>
+          <div class="field" style="margin:0"><label>退房日 <b class="req">*</b></label><input type="date" id="bk-out"></div>
+          <div class="field" style="margin:0;max-width:110px"><label>訂金</label><input type="number" min="0" id="bk-dep" value="0"></div>
+          <div class="field" style="margin:0;max-width:130px"><label>總額<small>（自動算可改）</small></label><input type="number" min="0" id="bk-total"></div>
+          <button class="btn danger" id="bk-add">確定排房</button>
+          <span class="error-msg" id="bk-err"></span>
+        </div>
+        <small style="color:var(--muted)">合約有銷售房型明細時，總額預設帶合約總額；否則依房價×天數自動計算。期間衝突會被擋下。</small>
+      </div>` : ''}
+      <div class="card">
+        <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
+          <div class="sec-hd" style="flex:1;min-width:200px">排房紀錄（${d.bookings.length} 筆）</div>
+          <div class="row" style="gap:6px">
+            ${canAccess('#/rooms') ? '<a class="btn small secondary" href="#/rooms">訂房管理</a><a class="btn small secondary" href="#/room-timeline">房況時間軸</a>' : ''}
+            ${canAccess('#/bed-planning') ? '<a class="btn small secondary" href="#/bed-planning">排床</a>' : ''}
+          </div>
+        </div>
+        ${d.bookings.length ? `<div class="table-wrap"><table class="data stack">
+          <thead><tr><th>房號</th><th>房型</th><th>入住</th><th>預退</th><th>天數</th><th>狀態</th><th class="no-print">操作</th></tr></thead>
+          <tbody>${d.bookings.map(b => {
+            const st = BK_ST[b.status] || [b.status, 'gray'];
+            const days = Math.round((new Date(b.check_out) - new Date(b.check_in)) / 86400000);
+            return `<tr>
+              <td data-label="房號">${esc(b.room_name)}</td>
+              <td data-label="房型">${esc(b.room_type)}</td>
+              <td data-label="入住">${esc(b.check_in)}</td>
+              <td data-label="預退">${esc(b.check_out)}</td>
+              <td data-label="天數">${days} 天</td>
+              <td data-label="狀態"><span class="badge ${st[1]}">${st[0]}</span></td>
+              <td data-label="操作" class="no-print">${canAccess('#/rooms') ? `
+                ${b.status === 'reserved' ? `<button class="btn small" data-bkst="${b.id}|checked_in">辦理入住</button>
+                  <button class="btn small secondary" data-bkst="${b.id}|cancelled">取消</button>` : ''}
+                ${b.status === 'checked_in' ? `<button class="btn small danger" data-bkst="${b.id}|checked_out">退房</button>` : ''}` : ''}
+              </td></tr>`;
+          }).join('')}</tbody></table></div>` : '<div class="empty">尚無排房資料</div>'}
+      </div>
+    </div>
+    <div class="cpanel" data-tab="stay">
+      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
+        <span>入住資訊：<b>${esc(m.name)}</b>　｜　電話：${esc(m.phone || '—')}</span>
+      </div>
+      <div class="card">
+        <div class="sec-hd">入住摘要</div>
+        <div class="row" style="gap:8px 18px;flex-wrap:wrap;font-size:.95rem;line-height:1.9">
+          <span><b>目前狀態：</b><span class="badge ${CUST_STATUS[m.status] ? CUST_STATUS[m.status][1] : 'gray'}">${CUST_STATUS[m.status] ? CUST_STATUS[m.status][0] : m.status}</span></span>
+          ${cur ? `
+          <span><b>房號：</b>${esc(cur.room_name)}（${esc(cur.room_type)}）</span>
+          <span><b>期間：</b>${esc(cur.check_in)} ~ ${esc(cur.check_out)}</span>
+          ${stayDay != null ? `<span><b>住到第：</b>${stayDay} / ${stayTotal} 天</span>` : `<span><b>合約天數：</b>${stayTotal} 天</span>`}` : '<span style="color:var(--muted)">無進行中／預約訂房</span>'}
+          ${m.due_date ? `<span><b>預產期：</b>${esc(m.due_date)}</span>` : ''}
+          ${m.delivery_date ? `<span><b>生產日：</b><span style="color:var(--danger)">${esc(m.delivery_date)}</span></span>` : ''}
+          ${m.delivery_type ? `<span><b>生產方式：</b>${esc(m.delivery_type)}</span>` : ''}
+          <span><b>膳食：</b>${esc(m.meal_diet || '一般')}${m.diet_notes ? `・${esc(m.diet_notes)}` : ''}</span>
+          ${m.hk_dnd ? `<span><b>勿擾：</b>${esc(m.hk_dnd)}</span>` : ''}
+          ${m.hk_needs ? `<span><b>房務需求：</b>${esc(m.hk_needs)}</span>` : ''}
+          ${m.medical_notes ? `<span style="color:var(--danger)"><b>醫療注意：</b>${esc(m.medical_notes)}</span>` : ''}
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">寶寶資料（${d.babies.length} 位）</div>
+        ${d.babies.length ? `<div class="table-wrap"><table class="data stack">
+          <thead><tr><th>寶寶</th><th>性別</th><th>出生日期</th><th>出生體重</th><th>位置</th></tr></thead>
+          <tbody>${d.babies.map(b => `
+            <tr><td data-label="寶寶">${esc(b.name)}</td>
+              <td data-label="性別">${b.gender === 'male' ? '<span style="color:#3b78c2">男</span>' : b.gender === 'female' ? '<span style="color:var(--accent)">女</span>' : '—'}</td>
+              <td data-label="出生日期">${esc(b.birth_date || '—')}</td>
+              <td data-label="出生體重">${b.birth_weight_g ? `${b.birth_weight_g} g` : '—'}</td>
+              <td data-label="位置"><span class="badge ${LOCATION_BADGE[b.location] || 'gray'}">${LOCATION_LABEL[b.location] || '—'}</span></td></tr>`).join('')}</tbody>
+        </table></div>` : '<div class="empty">尚未登記寶寶（住客管理可新增）</div>'}
+      </div>
+      <div class="card no-print">
+        <div class="sec-hd">入住作業快速連結</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          ${canAccess('#/mother-rooms') ? `<a class="btn small" href="#/mother-rooms">媽媽房況</a>` : ''}
+          ${canAccess('#/mother-intake') ? `<a class="btn small" href="#/mother-intake?m=${m.id}">入住評估表</a>` : ''}
+          ${canAccess('#/mother-nursing') ? `<a class="btn small" href="#/mother-nursing?m=${m.id}">媽媽護理</a>` : ''}
+          ${canAccess('#/mother-handover') ? `<a class="btn small" href="#/mother-handover?m=${m.id}">產婦交班單</a>` : ''}
+          ${canAccess('#/residents') ? `<a class="btn small secondary" href="#/residents">住客管理（寶寶建檔）</a>` : ''}
+        </div>
+      </div>
+    </div>
+    <div class="cpanel" data-tab="contracts">
+      ${(() => {
+        const ct = d.contract, cd = (ct && ct.data) || {};
+        const p = d.profile || {};
+        const lastTour = d.tours.length ? d.tours[0].tour_at.slice(0, 10) : '';
+        const total = ct ? ct.total : 0;
+        const parityOpts = ['第1胎', '第2胎', '第3胎', '第4胎以上'];
+        const stamp = (dt, by) => dt ? `${esc(dt)}${by ? `（${esc(by)}）` : ''}` : '';
+        return `
+      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
+        <div class="row" style="flex-wrap:wrap;gap:8px 24px;align-items:center">
+          <span>媽媽合約資料：<b>${esc(m.name)}</b></span>
+          <span>電話：${esc(m.phone || '—')}</span>
+          <span>合約編號：<b>${ct ? esc(ct.contract_no) : '（存檔後自動編號）'}</b>${ct && ct.status === 'cancelled' ? `　<span class="badge gray">已退訂 ${esc(cd.cancel_date || '')}（${esc(cd.cancel_reason || '')}）</span>` : ''}</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">${ct ? '修改' : '新增'}合約資料</div>
+        <div class="form-grid">
+          <div class="field"><label>媽媽姓名</label><input value="${esc(m.name)}" readonly></div>
+          <div class="field"><label>合約編號</label><input value="${ct ? esc(ct.contract_no) : ''}" readonly placeholder="存檔後自動編號"></div>
+          <div class="field"><label>經手人</label><input id="ct-handler" maxlength="50" value="${esc(cd.handler || '')}"></div>
+          <div class="field"><label>合約總額</label><input value="$${total.toLocaleString()}" readonly></div>
+          <div class="field"><label>簽約日期 <b class="req">*</b></label><input type="date" id="ct-sign" value="${esc(cd.sign_date || todayStr())}"></div>
+          <div class="field"><label>預產期 <b class="req">*</b></label><input type="date" id="ct-due" value="${esc(m.due_date || '')}"></div>
+          <div class="field"><label>生產胎次</label><select id="ct-parity"><option value="">--請選擇--</option>${parityOpts.map(o => `<option ${cd.parity_no === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>寶寶人數</label>
+            <div class="row" style="gap:14px;padding-top:8px">${['單胞胎', '雙胞胎', '三胞胎'].map(o =>
+              `<label class="bna-chk"><input type="radio" name="ctr-babies" value="${o}" ${(cd.baby_count || '單胞胎') === o ? 'checked' : ''}> ${o}</label>`).join('')}</div></div>
+          <div class="field"><label>預計生產方式</label><select id="ct-delmode"><option value="">--請選擇--</option>${deliveryTypes().map(o => `<option ${m.delivery_type === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
+          <div class="field"><label>產檢醫院</label><input id="ct-ckhosp" maxlength="100" value="${esc(cd.checkup_hospital || p.hospital || '')}"></div>
+          <div class="field"><label>產檢醫生</label><input id="ct-ckdoc" maxlength="50" value="${esc(cd.checkup_doctor || '')}"></div>
+          <div class="field"><label>實際生產醫院</label><input id="ct-bhosp" maxlength="100" value="${esc(cd.birth_hospital || '')}"></div>
+          <div class="field"><label>媽媽手機</label><input value="${esc(m.phone || '')}" readonly></div>
+          <div class="field"><label>聯絡電話（市話）</label><input value="${esc(p.tel || '')}" readonly></div>
+          <div class="field"><label>E-MAIL</label><input value="${esc(p.email || '')}" readonly></div>
+          <div class="field"><label>小管家</label><input id="ct-butler" maxlength="50" value="${esc(cd.butler || '')}"></div>
+          <div class="field full"><label style="color:var(--danger)">媽媽飲食禁忌</label><textarea id="ct-dietban" maxlength="500" rows="3" placeholder="請填入媽媽飲食禁忌">${esc(cd.diet_ban !== undefined ? cd.diet_ban : (m.diet_notes || ''))}</textarea></div>
+          <div class="field full"><label>合約備註</label><textarea id="ct-note" maxlength="600" rows="3" placeholder="請填入合約備註">${esc(cd.note || '')}</textarea></div>
+          <div class="field full"><label>潛在客戶備註</label><div style="padding:6px 0;color:#555">${esc(p.note || '—')}</div></div>
+          <div class="field full"><label>預約參觀備註</label><div style="padding:6px 0;color:#555">${lastTour ? `最後參觀日期：${esc(lastTour)}` : '—'}</div></div>
+          <div class="field"><label>住房狀態</label><input value="${CUST_STATUS[m.status] ? CUST_STATUS[m.status][0] : m.status}" readonly></div>
+          <div class="field"><label>入住日期</label><input value="${esc((d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved') || {}).check_in || '')}" readonly></div>
+          <div class="full row" style="gap:10px;flex-wrap:wrap">
+            <button class="btn danger" id="ct-save">${ct ? '資料修改' : '資料存檔（產生合約編號）'}</button>
+            ${ct && ct.status !== 'cancelled' ? '<button class="btn secondary" id="ct-cancel">合約退訂</button>' : ''}
+            ${ct && ct.status === 'cancelled' && currentUser.role === 'admin' ? '<button class="btn secondary" id="ct-restore">取消退訂（恢復有效）</button>' : ''}
+            <span class="error-msg" id="ct-err"></span>
+          </div>
+          <div class="full row no-print" style="gap:8px;flex-wrap:wrap;align-items:center">
+            <b>其它資料：</b>
+            <a class="btn small" href="#/booking-blank">列印訂房確認單</a>
+            ${canAccess('#/contracts') ? '<a class="btn small" href="#/contracts">電子合約簽署</a>' : ''}
+            ${canAccess('#/billing') ? '<a class="btn small" href="#/billing">繳費／帳務</a>' : ''}
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">定型化契約簽回</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>定型化契約簽回日</label><input type="date" id="ct-fcdate" value="${esc(cd.fc_return_date || '')}"></div>
+          <div class="field" style="margin:0"><label>契約編號</label><input id="ct-fcno" maxlength="30" value="${esc(cd.fc_no || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.fc_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" id="ct-fcsave">定型化契約簽回日存檔</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">合約資料明細（銷售房型）</div>
+        <div class="row no-print" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>銷售房型</label>
+            <select id="ct-item-type">${d.room_types.map(r => `<option value="${esc(r.name)}" data-price="${r.price || 0}">${esc(r.name)}（$${(r.price || 0).toLocaleString()}/日）</option>`).join('')}</select></div>
+          <div class="field" style="margin:0;max-width:120px"><label>訂房天數</label><input type="number" min="1" id="ct-item-days"></div>
+          <button class="btn danger" id="ct-item-add">確定新增</button>
+          <button class="btn" id="ct-item-special" style="background:#2fb6e8">特殊折扣訂房</button>
+          <span class="error-msg" id="ct-item-err"></span>
+        </div>
+        <div class="table-wrap" style="margin-top:8px">
+          <table class="data stack">
+            <thead><tr><th>項次</th><th>銷售品名</th><th>數量</th><th>單價</th><th>小計</th><th>建檔人</th><th class="no-print"></th></tr></thead>
+            <tbody>${ct && ct.items.length ? ct.items.map((it, i) => `
+              <tr><td data-label="項次">${i + 1}</td>
+                <td data-label="銷售品名">${esc(it.name)}</td>
+                <td data-label="數量">${it.qty}</td>
+                <td data-label="單價">$${(it.price || 0).toLocaleString()}</td>
+                <td data-label="小計">$${((it.qty || 0) * (it.price || 0)).toLocaleString()}</td>
+                <td data-label="建檔人">${esc(it.by || '—')}<br><small>${esc(it.at || '')}</small></td>
+                <td data-label="" class="no-print"><button class="btn small danger" data-ctdel="${i}">刪</button></td></tr>`).join('')
+              : '<tr><td colspan="7"><div class="empty">尚無明細</div></td></tr>'}
+              <tr><td colspan="7" style="text-align:right"><b>合計金額：$${total.toLocaleString()}</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <small style="color:var(--muted)">刪除明細需填寫刪除說明（記入稽核軌跡）。</small>
+      </div>
+      <div class="card">
+        <div class="sec-hd">住房卡贈送</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>贈送日期</label><input type="date" id="ct-rcg-date" value="${esc(cd.room_card_given_date || '')}"></div>
+          <div class="field" style="margin:0"><label>住房卡號</label><input id="ct-rcg-no" maxlength="30" value="${esc(cd.room_card_no || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.room_card_given_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" data-cardsave="rcg">贈送存檔</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">住房卡抵用</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>使用日期</label><input type="date" id="ct-rcu-date" value="${esc(cd.room_card_used_date || '')}"></div>
+          <div class="field" style="margin:0"><label>住房卡號</label><input id="ct-rcu-no" maxlength="30" value="${esc(cd.room_card_used_no || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.room_card_used_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" data-cardsave="rcu">抵用存檔</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">分享卡贈送</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>贈送日期</label><input type="date" id="ct-scg-date" value="${esc(cd.share_card_given_date || '')}"></div>
+          <div class="field" style="margin:0"><label>分享卡號</label><input id="ct-scg-no" maxlength="30" value="${esc(cd.share_card_no || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.share_card_given_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" data-cardsave="scg">贈送存檔</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">分享卡抵用</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>使用日期</label><input type="date" id="ct-scu-date" value="${esc(cd.share_card_used_date || '')}"></div>
+          <div class="field" style="margin:0"><label>分享卡號</label><input id="ct-scu-no" maxlength="30" value="${esc(cd.share_card_used_no || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.share_card_used_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" data-cardsave="scu">抵用存檔</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">產前諮詢</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0"><label>諮詢日期</label><input type="date" id="ct-consult-date" value="${esc(cd.consult_date || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.consult_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" id="ct-consult-save">諮詢存檔</button>
+        </div>
+        <div class="field full" style="margin-top:8px"><label>諮詢備註</label><textarea id="ct-consult-note" maxlength="600" rows="3" placeholder="請填入諮詢備註">${esc(cd.consult_note || '')}</textarea></div>
+      </div>
+      <div class="card">
+        <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
+          <div class="sec-hd" style="flex:1;min-width:200px">電子簽署合約（${d.contracts.length} 筆）</div>
+          <a class="btn small" href="#/contracts">轉入簽約資料</a>
+        </div>
+        ${d.contracts.length ? `<div class="table-wrap"><table class="data stack">
+          <thead><tr><th>筆數</th><th>簽約日期</th><th>編號</th><th>合約名稱</th><th>狀態</th><th>住房期間</th><th>房型及金額</th></tr></thead>
+          <tbody>${d.contracts.map((c, i) => {
+            const st = CT_ST[c.status] || [c.status, 'gray'];
+            return `<tr>
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="簽約日期">${esc((c.signed_at || c.created_at || '').slice(0, 10))}</td>
+              <td data-label="編號">#${c.id}</td>
+              <td data-label="合約名稱"><small>${esc(c.title)}</small></td>
+              <td data-label="狀態"><span class="badge ${st[1]}">${st[0]}</span></td>
+              <td data-label="住房期間"><small>${esc(c.check_in)} ~ ${esc(c.check_out)}</small></td>
+              <td data-label="房型及金額">${esc(c.room_name || '—')}　合計：$${(c.total_amount || 0).toLocaleString()}</td></tr>`;
+          }).join('')}</tbody></table></div>` : '<div class="empty">尚無電子簽署紀錄</div>'}
+      </div>`;
+      })()}
+    </div>
+    <div class="cpanel" data-tab="meals">
+      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
+        <span>排餐及膳食資料：<b>${esc(m.name)}</b></span>
+      </div>
+      <div class="card">
+        <div class="sec-hd">排餐與膳食資料</div>
+        <div class="table-wrap">
+          <table class="data stack">
+            <thead><tr><th>合約編號</th><th>預產期</th><th>膳食總類</th><th>飲食備註／禁忌</th><th class="no-print">排餐</th></tr></thead>
+            <tbody><tr>
+              <td data-label="合約編號">${d.contract ? esc(d.contract.contract_no) : '—'}</td>
+              <td data-label="預產期">${m.due_date ? `（預產）${esc(m.due_date)}` : '—'}${m.delivery_date ? `<br><span style="color:var(--danger)">（生產）${esc(m.delivery_date)}</span>` : ''}</td>
+              <td data-label="膳食總類"><b>${esc(d.meals.diet || '（未設定）')}</b></td>
+              <td data-label="飲食備註／禁忌"><small>${esc(d.meals.diet_notes || '—')}</small></td>
+              <td data-label="排餐" class="no-print">
+                ${canAccess('#/meal-plan') ? '<button class="btn small danger" id="ml-diet">修改膳食總類</button>' : '<small style="color:var(--muted)">需膳食權限</small>'}
+              </td>
+            </tr></tbody>
+          </table>
+        </div>
+        <div class="sec-hd" style="margin-top:10px">未來 7 天供餐預覽（依產後階段與膳食總類自動挑菜單）</div>
+        <div class="table-wrap">
+          <table class="data stack">
+            <thead><tr><th>日期</th>${d.meals.slots.map(s => `<th>${esc(s)}</th>`).join('')}</tr></thead>
+            <tbody>${d.meals.week.map(w => `
+              <tr><td data-label="日期">${esc(w.date.slice(5))}${w.day ? `<br><small>第${w.day}天${w.stage ? `・${esc(w.stage)}` : ''}</small>` : ''}</td>
+                ${d.meals.slots.map(s => `<td data-label="${esc(s)}"><small>${esc(w.slots[s] || '—')}</small></td>`).join('')}</tr>`).join('')}</tbody>
+          </table>
+        </div>
+        <div class="row no-print" style="gap:6px;margin-top:8px">
+          ${canAccess('#/meal-plan') ? '<a class="btn small" href="#/meal-plan">月子餐（菜單管理）</a>' : ''}
+          <a class="btn small secondary" href="#/mother-handover?m=${m.id}">修改飲食禁忌（產婦交班單）</a>
+        </div>
+      </div>
+    </div>
+    <div class="cpanel" data-tab="pay">
+      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
+        <div class="row" style="flex-wrap:wrap;gap:8px 24px">
+          <span>消費及收款資料：<b>${esc(m.name)}</b></span>
+          <span>電話：${esc(m.phone || '—')}</span>
+          <span>合約編號：${d.contract ? esc(d.contract.contract_no) : '—'}</span>
+        </div>
+      </div>
+      ${(() => {
+        const curBk = d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved') || null;
+        const contractTotal = d.contract ? d.contract.total : 0;
+        const chargeSum = d.charges.reduce((s, c) => s + (c.unit_price || 0) * c.quantity, 0);
+        const paidSum = d.payments.reduce((s, p) => s + (p.amount || 0), 0);
+        const receivable = contractTotal + chargeSum;
+        const balance = receivable - paidSum;
+        return `
+      <div class="card">
+        <div class="sec-hd">入住後消費紀錄（新增）</div>
+        <div class="form-grid">
+          <div class="field"><label>銷售日期</label><input type="date" id="py-date" value="${todayStr()}"></div>
+          <div class="field"><label>銷售品名 <b class="req">*</b></label><select id="py-prod"><option value="">--請選擇--</option></select></div>
+          <div class="field"><label>銷售數量</label><input type="number" min="1" id="py-qty" value="1"></div>
+          <div class="field"><label>售價（合計）</label><input id="py-total" readonly></div>
+          <div class="field full"><label>銷售備註</label><input id="py-snote" maxlength="200"></div>
+          <div class="full row" style="gap:10px">
+            <button class="btn danger" id="py-sale-add">資料新增</button>
+            <span class="error-msg" id="py-sale-err"></span>
+          </div>
+        </div>
+        <small style="color:var(--muted)">新增後自動確認入帳（扣庫存＋寫入進行中訂房加購明細）。</small>
+      </div>
+      <div class="card">
+        <div class="sec-hd">收款紀錄（新增）</div>
+        <div class="form-grid">
+          <div class="field"><label>收款日期</label><input type="date" id="py-pdate" value="${todayStr()}"></div>
+          <div class="field"><label>收款項目</label><select id="py-pitem">${['訂金', '房費', '尾款', '加購消費', '其他'].map(o => `<option>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>收款方式</label><select id="py-pmethod">${paymentMethods().map(o => `<option>${esc(o)}</option>`).join('')}</select></div>
+          <div class="field"><label>收款金額 <b class="req">*</b></label><input type="number" min="1" id="py-pamount"></div>
+          <div class="field"><label>收款備註</label><input id="py-pnote" maxlength="200"></div>
+          <div class="field"><label>憑證號碼</label><input id="py-pref" maxlength="50"></div>
+          <div class="full row" style="gap:10px">
+            <button class="btn danger" id="py-pay-add">資料新增</button>
+            <span class="error-msg" id="py-pay-err"></span>
+            ${!curBk ? '<small style="color:var(--danger)">此客戶無進行中／預約訂房，收款將無法登錄（請先於訂房管理建立）。</small>' : ''}
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">合約金額及消費明細</div>
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>日期</th><th>摘要</th><th>金額</th><th>建檔人</th></tr></thead>
+          <tbody>
+            <tr><td data-label="日期">${d.contract && d.contract.data.sign_date ? esc(d.contract.data.sign_date) : '—'}</td>
+              <td data-label="摘要">合約金額</td>
+              <td data-label="金額">$${contractTotal.toLocaleString()}</td>
+              <td data-label="建檔人">${d.contract && d.contract.data.handler ? esc(d.contract.data.handler) : '—'}</td></tr>
+            ${d.charges.map(c => `
+            <tr><td data-label="日期">${esc(c.charged_on)}</td>
+              <td data-label="摘要">${esc(c.item_name)}×${c.quantity}${c.note ? `<br><small>${esc(c.note)}</small>` : ''}</td>
+              <td data-label="金額">$${((c.unit_price || 0) * c.quantity).toLocaleString()}</td>
+              <td data-label="建檔人">—</td></tr>`).join('')}
+            <tr><td colspan="4" style="text-align:right">應收合計：<b>$${receivable.toLocaleString()}</b></td></tr>
+            <tr><td colspan="4" style="text-align:right">已收合計：$${paidSum.toLocaleString()}　應收餘額：<b style="color:${balance > 0 ? 'var(--danger)' : 'var(--primary-dark)'}">$${balance.toLocaleString()}</b></td></tr>
+          </tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">收款明細（${d.payments.length} 筆）</div>
+        ${d.payments.length ? `<div class="table-wrap"><table class="data stack">
+          <thead><tr><th>收款日期</th><th>摘要</th><th>方式</th><th>金額</th><th>經手人</th></tr></thead>
+          <tbody>${d.payments.map(p => `
+            <tr><td data-label="收款日期">${esc(p.paid_on)}</td>
+              <td data-label="摘要"><small>${esc(p.note || '—')}</small></td>
+              <td data-label="方式">${esc(p.method || '—')}</td>
+              <td data-label="金額">$${(p.amount || 0).toLocaleString()}</td>
+              <td data-label="經手人">${esc(p.received_name || '—')}</td></tr>`).join('')}
+            <tr><td colspan="5" style="text-align:right"><b>已收合計：$${paidSum.toLocaleString()}</b></td></tr>
+          </tbody></table></div>` : '<div class="empty">尚無收款紀錄</div>'}
+        ${canAccess('#/billing') ? '<div class="row no-print" style="gap:6px;margin-top:8px"><a class="btn small" href="#/billing">收費帳務（退房結帳）</a></div>' : ''}
+      </div>`;
+      })()}
+    </div>`;
+  }
+
+  // ----- 查詢 -----
+  const doSearch = async () => {
+    const err = $('#cq-err');
+    err.textContent = '';
+    const qs = new URLSearchParams();
+    if (v('#cq-name')) qs.set('name', v('#cq-name'));
+    if (v('#cq-phone')) qs.set('phone', v('#cq-phone'));
+    if (v('#cq-due')) qs.set('due_date', v('#cq-due'));
+    if (v('#cq-contract')) qs.set('contract_no', v('#cq-contract'));
+    if (![...qs.keys()].length) { err.textContent = '請至少輸入一個查詢條件'; return; }
+    try {
+      const { rows } = await api(`/customers?${qs}`);
+      $('#cq-result').innerHTML = rows.length ? `
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>筆數</th><th>姓名</th><th>聯絡電話</th><th>身分證號</th><th>預產期</th><th>合約編號</th><th>狀態</th></tr></thead>
+          <tbody>${rows.map((r, i) => {
+            const st = CUST_STATUS[r.status] || [r.status, 'gray'];
+            return `<tr>
+              <td data-label="筆數"><button class="btn small" data-sel="${r.id}">${i + 1}</button></td>
+              <td data-label="姓名"><a href="javascript:void 0" data-sel="${r.id}">${esc(r.name)}</a></td>
+              <td data-label="聯絡電話">${esc(r.phone || '—')}</td>
+              <td data-label="身分證號">${esc(r.id_no || '—')}</td>
+              <td data-label="預產期">${esc(r.due_date || '—')}</td>
+              <td data-label="合約編號">${r.contract_no ? esc(r.contract_no) : (r.contract_id ? `#${r.contract_id}` : '—')}</td>
+              <td data-label="狀態"><span class="badge ${st[1]}">${st[0]}</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>` : '<div class="empty">您輸入的條件，查無資料 …</div>';
+      $('#cq-result').querySelectorAll('[data-sel]').forEach(el => el.onclick = () => selectCustomer(Number(el.dataset.sel)));
+    } catch (e) { err.textContent = e.message; }
+  };
+  $('#cq-go').onclick = doSearch;
+  ['#cq-name', '#cq-phone', '#cq-contract'].forEach(id => { $(id).onkeydown = e => { if (e.key === 'Enter') doSearch(); }; });
+  $('#cq-clear').onclick = () => { location.hash = '#/customers'; viewCustomers(); };
+
+  // 初始：深連結 ?m= 直接選取，否則新增模式
+  if (deepId) await selectCustomer(deepId);
+  else resetNew();
+}
+
+/* ---------- 預約參觀行事曆 ---------- */
+const TOUR_STATUS_TW = { scheduled: ['已預約', 'teal'], visited: ['已參觀', 'green'], signed: ['已簽約', 'pink'], lost: ['流失', 'gray'] };
+async function viewTourCalendar() {
+  const qm = (location.hash.split('?m=')[1] || '').split('&')[0];
+  const month = /^\d{4}-\d{2}$/.test(qm) ? qm : todayStr().slice(0, 7);
+  const { rows } = await api(`/tour-calendar?month=${month}`);
+  const byDay = {};
+  for (const t of rows) (byDay[t.tour_at.slice(0, 10)] = byDay[t.tour_at.slice(0, 10)] || []).push(t);
+  const [y, mo] = month.split('-').map(Number);
+  const first = new Date(y, mo - 1, 1), startDow = first.getDay(), daysIn = new Date(y, mo, 0).getDate();
+  const shiftMonth = d => {
+    const nd = new Date(y, mo - 1 + d, 1);
+    location.hash = `#/tour-calendar?m=${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, '0')}`;
+  };
+  let cells = '';
+  for (let i = 0; i < startDow; i++) cells += '<td class="tc-out"></td>';
+  for (let d = 1; d <= daysIn; d++) {
+    const ds = `${month}-${String(d).padStart(2, '0')}`;
+    const items = (byDay[ds] || []).map(t => {
+      const st = TOUR_STATUS_TW[t.status] || [t.status, 'gray'];
+      return `<div class="tc-item"><small>${esc(t.tour_at.slice(11, 16))}</small> ${esc(t.name)} <span class="badge ${st[1]}" style="font-weight:400">${st[0]}</span></div>`;
+    }).join('');
+    cells += `<td class="${ds === todayStr() ? 'tc-today' : ''}"><div class="tc-day">${d}日</div>${items}</td>`;
+    if ((startDow + d) % 7 === 0 && d !== daysIn) cells += '</tr><tr>';
+  }
+  const rest = (startDow + daysIn) % 7;
+  if (rest) for (let i = rest; i < 7; i++) cells += '<td class="tc-out"></td>';
+  main().innerHTML = `
+    <div class="page-title">預約參觀－行事曆</div>
+    <div class="card no-print">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <h3>${y}年${mo}月</h3>
+        <div class="row" style="gap:6px">
+          <a class="btn small secondary" href="#/customers">回客戶管理</a>
+          <a class="btn small secondary" href="#/tours">參觀預約列表</a>
+          <button class="btn small secondary" id="tc-cur">本月</button>
+          <button class="btn small" id="tc-prev">上個月</button>
+          <button class="btn small" id="tc-next">下個月</button>
+          <button class="btn small secondary" id="tc-print">列印</button>
+        </div>
+      </div>
+      <small style="color:var(--muted)">本月參觀 ${rows.length} 筆；點「參觀預約列表」可新增／修改。</small>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data tc-cal">
+          <thead><tr><th>週日</th><th>週一</th><th>週二</th><th>週三</th><th>週四</th><th>週五</th><th>週六</th></tr></thead>
+          <tbody><tr>${cells}</tr></tbody>
+        </table>
+      </div>
+    </div>`;
+  $('#tc-prev').onclick = () => shiftMonth(-1);
+  $('#tc-next').onclick = () => shiftMonth(1);
+  $('#tc-cur').onclick = () => { location.hash = '#/tour-calendar'; route(); };
+  $('#tc-print').onclick = () => window.print();
+}
+
+/* ---------- 空白預約參觀單（參訪紀錄表；列印手寫用） ---------- */
+function viewTourVisitBlank() {
+  const bl = w => `<span class="bf-line" style="min-width:${w}px"></span>`;
+  main().innerHTML = `
+    <div class="card no-print">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <a class="btn small secondary" href="#/customers">回客戶管理</a>
+        <button class="btn small" id="tvb-print">開始列印</button>
+      </div>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700;font-size:1.05rem">${esc(SETTINGS.center_name || '')}</div>
+      <div class="row between" style="margin:4px 0 6px">
+        <b style="font-size:1.02rem">參訪紀錄表</b><span>合約編號：${bl(120)}</span>
+      </div>
+      <table class="data tvb">
+        <tr><td colspan="4" style="text-align:right">參訪日期：${bl(110)}　參訪時段：${bl(90)}</td></tr>
+        <tr><th style="width:110px">媽媽姓名</th><td style="width:170px"></td><th style="width:60px">電話</th>
+          <td>(家裡)${bl(90)}　(手機)${bl(100)}<br>(公司)${bl(90)}　ext.${bl(50)}</td></tr>
+        <tr><th>爸爸姓名</th><td></td><th>電話</th>
+          <td>(家裡)${bl(90)}　(手機)${bl(100)}<br>(公司)${bl(90)}　ext.${bl(50)}</td></tr>
+        <tr><th>產檢醫院/醫師</th><td>${bl(70)}／${bl(70)}</td><th>預產期</th><td>${bl(100)}　胎次：${bl(50)}</td></tr>
+        <tr><th>媽媽出生年月日</th><td></td><th>寶寶性別</th><td>□女　□男　□雙</td></tr>
+        <tr><th>地址</th><td></td><th>生產方式</th><td>□自然產　□剖腹產</td></tr>
+        <tr><th>學歷</th><td>媽媽：${bl(80)}<br>爸爸：${bl(80)}</td><th>職業</th>
+          <td>媽媽：工　公　商　教　醫療　服務　資訊　金融　其他${bl(50)}<br>爸爸：工　公　商　教　醫療　服務　資訊　金融　其他${bl(50)}</td></tr>
+        <tr><th>由何處得知<br>本護理之家</th><td colspan="3">□網路　□雜誌　□親友介紹　□路過看到　□報紙　□其他${bl(80)}</td></tr>
+        <tr><th colspan="4" style="text-align:center">備　註</th></tr>
+        <tr><td colspan="4" style="height:340px;vertical-align:top">
+          付訂房型 ${bl(130)}　預約時段：${bl(50)}年${bl(35)}月${bl(35)}日 至 ${bl(50)}年${bl(35)}月${bl(35)}日止，共計 ${bl(45)} 天。<br><br>
+          特別叮嚀<br><br><br>
+          □飲食:<br><br><br>
+          □生活:
+        </td></tr>
+        <tr><td colspan="4">接待人員：${bl(100)}　主管覆核：${bl(100)}</td></tr>
+      </table>
+    </div>`;
+  $('#tvb-print').onclick = () => window.print();
+}
+
+/* ---------- 產品零售作業（快速代客下單＋確認入帳＋收款） ---------- */
+async function viewRetail() {
+  const [mothers, products, orders] = await Promise.all([
+    api('/mothers'), api('/products'), api('/orders')
+  ]);
+  const actives = products.filter(p => p.active);
+  const wantMom = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const cutoff = new Date(Date.now() - 10 * 86400000).toISOString().slice(0, 10);
+  const recent = orders.filter(o => o.placed_by === 'staff' && (o.created_at || '').slice(0, 10) >= cutoff);
+  const listRows = recent.flatMap((o, i) => (o.items || []).map(it => `
+      <tr>
+        <td data-label="筆數">${i + 1}</td>
+        <td data-label="銷售日期">${esc((o.created_at || '').slice(0, 10))}</td>
+        <td data-label="購買人">${esc(o.mother_name || '—')}</td>
+        <td data-label="銷售品名">${esc(it.item_name)}</td>
+        <td data-label="數量">${it.quantity}</td>
+        <td data-label="單價">$${it.unit_price}</td>
+        <td data-label="合計">$${it.unit_price * it.quantity}</td>
+        <td data-label="狀態"><span class="badge ${o.status === 'confirmed' ? 'green' : o.status === 'pending' ? 'yellow' : 'gray'}">${o.status === 'confirmed' ? '已入帳' : o.status === 'pending' ? '待處理' : '已取消'}</span>${o.note ? `<br><small>${esc(o.note)}</small>` : ''}</td>
+        <td data-label="建檔人">${esc(o.staff_name || '—')}</td>
+      </tr>`)).join('');
+
+  main().innerHTML = `
+    <div class="page-title">產品零售作業</div>
+    <div class="card">
+      <div class="form-grid">
+        <div class="field"><label>購買人（媽媽） <b class="req">*</b></label>
+          <select id="rt-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === wantMom ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}${m.status === 'checked_in' ? '' : m.status === 'reserved' ? '（潛客/預約）' : '（已退住）'}</option>`).join('')}</select></div>
+        <div class="field"><label>銷售日期</label><input type="date" id="rt-date" value="${todayStr()}"></div>
+        <div class="field"><label>銷售品名 <b class="req">*</b></label>
+          <select id="rt-prod"><option value="">--請選擇--</option>${actives.map(p => `<option value="${p.id}" data-price="${p.price}">${esc(p.name)}（$${p.price}${p.track_stock ? `｜庫存 ${p.stock}` : ''}）</option>`).join('')}</select></div>
+        <div class="field"><label>銷售數量</label><input type="number" min="1" id="rt-qty" value="1"></div>
+        <div class="field"><label>售價（合計）</label><input id="rt-total" readonly></div>
+        <div class="field"><label>收款方式</label>
+          <select id="rt-method">${paymentMethods().map(o => `<option>${esc(o)}</option>`).join('')}</select></div>
+        <div class="field"><label>收款金額<small>（0＝暫不收款，掛入住帳）</small></label><input type="number" min="0" id="rt-amount"></div>
+        <div class="full row" style="gap:10px;flex-wrap:wrap">
+          <button class="btn" id="rt-save">資料新增</button>
+          <button class="btn secondary" id="rt-clear">清空重填</button>
+          <a class="btn small secondary" href="#/customers">回客戶管理</a>
+          <a class="btn small secondary" href="#/shop">商城商品管理</a>
+          <span class="error-msg" id="rt-err"></span>
+        </div>
+      </div>
+      <small style="color:var(--muted)">新增後自動確認入帳：扣庫存、寫入該媽媽進行中訂房的加購明細；有填收款金額且有進行中訂房時同步登錄收款。</small>
+    </div>
+    <div class="card">
+      <div class="sec-hd">10 日內零售資料如下</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>筆數</th><th>銷售日期</th><th>購買人</th><th>銷售品名</th><th>數量</th><th>單價</th><th>合計</th><th>狀態</th><th>建檔人</th></tr></thead>
+          <tbody>${listRows || '<tr><td colspan="9"><div class="empty">無資料 …</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+  const recalc = () => {
+    const opt = $('#rt-prod').selectedOptions[0];
+    const price = opt ? Number(opt.dataset.price || 0) : 0;
+    const qty = Math.max(1, Number(v('#rt-qty')) || 1);
+    const total = price * qty;
+    $('#rt-total').value = total ? `$${total}` : '';
+    $('#rt-amount').value = total || '';
+  };
+  $('#rt-prod').onchange = recalc;
+  $('#rt-qty').oninput = recalc;
+  $('#rt-clear').onclick = () => viewRetail();
+
+  $('#rt-save').onclick = async () => {
+    const err = $('#rt-err');
+    err.textContent = '';
+    const momId = Number(v('#rt-mom')), prodId = Number(v('#rt-prod'));
+    const qty = Math.max(1, Number(v('#rt-qty')) || 1);
+    if (!momId || !prodId) { err.textContent = '請選擇購買人與銷售品名'; return; }
+    const method = v('#rt-method'), amount = Number(v('#rt-amount')) || 0;
+    try {
+      const o = await api('/orders', { method: 'POST', body: {
+        mother_id: momId, items: [{ product_id: prodId, quantity: qty }],
+        note: `產品零售 ${v('#rt-date')}${amount > 0 ? `｜收款 ${method} $${amount}` : ''}`
+      } });
+      await api(`/orders/${o.id}/confirm`, { method: 'POST' });
+      // 收款：有進行中訂房才登錄 payments（無則提示改走收費帳務）
+      if (amount > 0) {
+        const mom = await api(`/mothers/${momId}`);
+        const bk = (mom.bookings || []).find(b => b.status === 'checked_in');
+        if (bk) {
+          await api(`/bookings/${bk.id}/payments`, { method: 'POST', body: {
+            amount, method, paid_on: v('#rt-date') || todayStr(), note: `產品零售 訂單#${o.id}`
+          } });
+        } else {
+          alert('已建立零售訂單，但該客戶無進行中訂房，收款請至「收費帳務」另行登錄。');
+        }
+      }
+      viewRetail();
+    } catch (e) { err.textContent = e.message; }
+  };
+}
+
+/* ---------- 空白訂房確認單（列印手寫用） ---------- */
+async function viewBookingBlank() {
+  let rooms = [];
+  try { rooms = await api('/rooms'); } catch (e) { rooms = []; }
+  // 房型彙整：同房型取每日房價（去重）
+  const typeMap = new Map();
+  for (const r of rooms) if (r.room_type && !typeMap.has(r.room_type)) typeMap.set(r.room_type, r.price_per_day);
+  const bl = w => `<span class="bf-line" style="min-width:${w}px"></span>`;
+  const cn = SETTINGS.center_name || '本機構';
+  const roomLine = typeMap.size
+    ? [...typeMap.entries()].map(([t, p]) => `□（${esc(t)}）${p ? `${Number(p).toLocaleString()} 元/日` : ''}`).join('　')
+    : `□${bl(90)}元/日　□${bl(90)}元/日　□${bl(90)}元/日`;
+
+  main().innerHTML = `
+    <div class="card no-print">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <a class="btn small secondary" href="#/customers">回客戶管理</a>
+        <button class="btn small" id="bb-print">開始列印</button>
+      </div>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700;font-size:1.05rem">${esc(cn)}</div>
+      <div style="text-align:center;font-weight:700;letter-spacing:6px;margin:4px 0 6px">訂房確認單</div>
+      <table class="data tvb">
+        <tr><th style="width:120px">訂房者姓名</th><th style="width:130px">預產期</th><th style="width:90px">訂房天數</th><th>生產醫院及方式</th><th style="width:200px">訂金</th><th style="width:60px">胎次</th></tr>
+        <tr style="height:88px">
+          <td></td><td style="text-align:center">　年　月　日</td><td style="text-align:center">　天</td>
+          <td style="text-align:center">${bl(120)}醫院<br>□ 自然產<br>□ 剖腹產，日期${bl(80)}</td>
+          <td style="text-align:center">新台幣${bl(60)}元整<br>□ 現金<br>□ 匯款銀行/後五碼${bl(70)}</td><td></td>
+        </tr>
+        <tr><th colspan="6" style="text-align:center">預訂房型</th></tr>
+        <tr><td colspan="6" style="text-align:center">${roomLine}<br><b>（**恕難指定房號）</b></td></tr>
+        <tr><td colspan="6">飲食禁忌：□無　□牛肉　□羊肉　□帶殼海鮮　□魚，其他：${bl(120)}</td></tr>
+        <tr><td colspan="6">特殊疾病：□無　□妊娠高血壓　□妊娠糖尿病　□甲狀腺　□紅斑性狼瘡　□地中海型貧血　其他：${bl(100)}</td></tr>
+      </table>
+      <div style="font-size:.85rem;line-height:1.8;margin-top:8px">
+        <b>※ 雙方約定事項</b>（訂房者以下簡稱甲方，${esc(cn)} 以下簡稱乙方）：
+        <ol style="padding-left:22px;margin:4px 0">
+          <li>甲方須於確定剖腹日期、待產、生產當日、出院日期，提前通知乙方並確定相關入住事宜。</li>
+          <li>本機構入住時間為上午12時以後，退房時間為當日上午10時之前。</li>
+          <li>甲方入住當日請務必攜帶：媽媽手冊、寶寶手冊、爸爸陪宿用品（及媽媽貼身衣物、衛生用品、保暖衣帽、寶寶配方奶、奶瓶、吸乳器配件…等）。</li>
+          <li>乙方應於甲方生產時提供預定之房型，唯生產皆可能提前或延後，若因而遇滿床，甲方願意同意乙方所安排之其他床型、轉床及退補其差額；並依實際可安排天數入住收費；入住後，乙方保留轉床之權利；屆時甲方若不願意接受乙方轉換床位等安排，則乙方須無條件退還訂金，甲方不得要求其他賠償。</li>
+          <li>本機構提供入住媽媽房內：盥洗用具、沐浴用品、毛巾浴巾、室內拖鞋、捲筒衛生紙、吹風機、哺乳睡衣、哺乳枕、保溫壺、茶杯、奶瓶消毒鍋、電動吸乳器。嬰兒房內：嬰兒服、包巾、沐浴用品、尿布、濕紙巾、消毒用品。</li>
+          <li>入住後甲方請於包含假日三日內，以現金或匯款方式繳清房費餘款。</li>
+          <li>依衛生主管機關規定本機構為非醫療單位，不得執行醫療行為。本機構將善盡照顧之責；如產婦或嬰兒有任何需醫師診斷之情形，將協助至就近的轉診醫院，所發生之醫療費用則由訂房者自行負擔。</li>
+          <li>訂房確認後，產婦或嬰兒於進住日前，因健康情形不佳、疾病、死亡，或其他不可歸責於甲方之事由，致無法接受乙方之服務者，甲方得解除契約；乙方應將甲方所繳交之訂金，全數無息退還。除前項事由外，甲方得於產婦或嬰兒進住日之前解除契約；但甲方應依下列規定，賠償乙方損害：一、於預定進住日之前三十一日以前解除契約者，賠償訂金百分之十。二、於預定進住日之前二十一日至三十日解除契約者，賠償訂金百分之二十。三、於預定進住日之前二日至二十日解除契約者，賠償訂金百分之三十。四、於預定進住日之前一日解除契約者，賠償訂金百分之五十。五、於預定進住日當日解除契約者，賠償訂金百分之百。<br>※如需退訂，需5個工作天，請事先來電通知，<b>攜帶本訂房確認單正本前來辦理退費</b>。</li>
+        </ol>
+      </div>
+      <table class="data tvb">
+        <tr><td style="width:50%;height:70px;vertical-align:top">媽媽姓名：<br><br>身分證字號：</td>
+          <td style="vertical-align:top">${esc(cn)}<br>經辦人：</td></tr>
+      </table>
+      <div style="font-size:.85rem;margin-top:6px">9. 匯款明細如下：</div>
+      <table class="data tvb">
+        <tr><th rowspan="3" style="width:60px">匯款</th><th style="width:70px">銀行</th><td>${bl(180)}</td><th style="width:70px">分行</th><td>${bl(140)}</td></tr>
+        <tr><th>戶名</th><td>${bl(180)}</td><th>帳號</th><td>${bl(140)}</td></tr>
+        <tr><td colspan="4" style="text-align:center">請於完成付款後，將匯款明細註名媽媽姓名回傳客服，以便確認。　連絡電話：${bl(120)}</td></tr>
+      </table>
+      <div style="font-size:.85rem;line-height:1.8;margin-top:6px">
+        <b>感控條款：</b>為確保住房安全，訪客進入需遵守本機構感控原則：換穿拖鞋、量體溫、戴口罩、消毒；若有上呼吸道感染、咳嗽、流鼻水等症狀請主動告知，勿入內探訪。訪客額溫 37.5 以上不得進入本機構。訪客不進房，僅限公共區域會客。12 歲以下訪客兒童禁止進入感控區域。可進房人員為新生兒寶寶爺爺奶奶及外公外婆；一次限兩位進房、並不得接觸新生兒。媽媽住房期間先生可陪宿，陪宿人員中途不可更換。<b>訪客時段：${bl(160)}</b>
+      </div>
+    </div>`;
+  $('#bb-print').onclick = () => window.print();
+}
+
+/* ---------- 後台：公佈欄及交辦事項 ---------- */
+async function viewBulletins() {
+  const rows = await api('/bulletins');
+  let staff = [];
+  try { staff = await api('/users'); } catch (e) { staff = []; }
+  const notices = rows.filter(r => r.kind === 'notice');
+  const tasks = rows.filter(r => r.kind === 'task');
+  main().innerHTML = `
+    <div class="page-title">公佈欄及交辦事項</div>
+    <div class="card no-print">
+      <div class="sec-hd">發佈公告／交辦</div>
+      <div class="form-grid">
+        <div class="field"><label>類別</label>
+          <div class="row" style="gap:14px;padding-top:8px">
+            <label class="bna-chk"><input type="radio" name="bl-kind" value="notice" checked> 公告</label>
+            <label class="bna-chk"><input type="radio" name="bl-kind" value="task"> 交辦事項</label>
+          </div></div>
+        <div class="field"><label>標題 <b class="req">*</b></label><input id="bl-title" maxlength="100"></div>
+        <div class="field"><label>指派給<small>（交辦用）</small></label>
+          <select id="bl-assign"><option value="">（全體）</option>${staff.filter(u => u.active !== 0).map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>期限<small>（交辦用）</small></label><input type="date" id="bl-due"></div>
+        <div class="field full"><label>內容</label><textarea id="bl-body" maxlength="2000" rows="3"></textarea></div>
+        <div class="full row" style="gap:10px;align-items:center">
+          <label class="bna-chk"><input type="checkbox" id="bl-pin"> 置頂</label>
+          <button class="btn" id="bl-add">發佈</button>
+          <span class="error-msg" id="bl-err"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">交辦事項（未完成 ${tasks.filter(t => !t.done).length}／共 ${tasks.length}）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>標題/內容</th><th>指派</th><th>期限</th><th>狀態</th><th>發佈</th><th class="no-print">操作</th></tr></thead>
+          <tbody>${tasks.map(t => {
+            const overdue = !t.done && t.due_date && t.due_date < todayStr();
+            return `
+            <tr data-filter="${esc(t.title)} ${esc(t.assigned_name || '')}">
+              <td data-label="標題/內容">${t.pinned ? '<span class="badge pink">置頂</span> ' : ''}<b>${esc(t.title)}</b>${t.body ? `<br><small>${esc(t.body)}</small>` : ''}</td>
+              <td data-label="指派">${esc(t.assigned_name || '全體')}</td>
+              <td data-label="期限"><span style="color:${overdue ? 'var(--danger)' : 'inherit'}">${esc(t.due_date || '—')}${overdue ? ' ⚠' : ''}</span></td>
+              <td data-label="狀態">${t.done ? `<span class="badge green">已完成</span><br><small>${esc((t.done_at || '').slice(0, 10))} ${esc(t.done_name || '')}</small>` : '<span class="badge yellow">進行中</span>'}</td>
+              <td data-label="發佈"><small>${esc((t.created_at || '').slice(0, 10))}<br>${esc(t.created_name || '')}</small></td>
+              <td data-label="操作" class="no-print">
+                <button class="btn small ${t.done ? 'secondary' : ''}" data-done="${t.id}|${t.done ? 0 : 1}">${t.done ? '重開' : '標記完成'}</button>
+                ${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${t.id}">刪</button>` : ''}
+              </td>
+            </tr>`;
+          }).join('') || '<tr><td colspan="6"><div class="empty">尚無交辦事項</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">公佈欄（${notices.length} 則）</div>
+      ${notices.map(n => `
+        <div style="border-bottom:1px dotted var(--border);padding:8px 0">
+          <div class="row between" style="flex-wrap:wrap;gap:6px">
+            <b>${n.pinned ? '<span class="badge pink">置頂</span> ' : ''}${esc(n.title)}</b>
+            <small style="color:var(--muted)">${esc((n.created_at || '').slice(0, 16))}　${esc(n.created_name || '')}
+              ${currentUser.role === 'admin' ? `<button class="btn small danger no-print" data-del="${n.id}" style="margin-left:8px">刪</button>` : ''}</small>
+          </div>
+          ${n.body ? `<div style="font-size:.92rem;margin-top:4px;white-space:pre-wrap">${esc(n.body)}</div>` : ''}
+        </div>`).join('') || '<div class="empty">尚無公告</div>'}
+    </div>`;
+
+  $('#bl-add').onclick = async () => {
+    const err = $('#bl-err');
+    err.textContent = '';
+    const kind = main().querySelector('input[name="bl-kind"]:checked').value;
+    try {
+      await api('/bulletins', { method: 'POST', body: {
+        kind, title: $('#bl-title').value, body: $('#bl-body').value,
+        assigned_to: Number($('#bl-assign').value) || null, due_date: $('#bl-due').value,
+        pinned: $('#bl-pin').checked
+      } });
+      viewBulletins();
+    } catch (e) { err.textContent = e.message; }
+  };
+  main().querySelectorAll('[data-done]').forEach(b => b.onclick = async () => {
+    const [id, done] = b.dataset.done.split('|');
+    await api(`/bulletins/${id}`, { method: 'PUT', body: { done: done === '1' } });
+    viewBulletins();
+  });
+  main().querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定刪除？')) return;
+    await api(`/bulletins/${b.dataset.del}`, { method: 'DELETE' });
+    viewBulletins();
+  });
+}
+
+/* ---------- 後台：文件上傳下載區 ---------- */
+async function viewDocuments() {
+  const rows = await api('/documents');
+  const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+  main().innerHTML = `
+    <div class="page-title">文件上傳下載區</div>
+    <div class="card no-print">
+      <div class="sec-hd">上傳文件<small>（PDF／Office／圖片／文字／ZIP，單檔 20MB 內）</small></div>
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field" style="margin:0"><label>檔案 <b class="req">*</b></label><input type="file" id="doc-file"></div>
+        <div class="field" style="margin:0"><label>文件名稱<small>（空白＝檔名）</small></label><input id="doc-title" maxlength="100"></div>
+        <div class="field" style="margin:0"><label>分類</label><input id="doc-cat" maxlength="50" placeholder="例如：SOP／表單／教育訓練"></div>
+        <div class="field" style="margin:0"><label>備註</label><input id="doc-note" maxlength="200"></div>
+        <button class="btn" id="doc-up">上傳</button>
+        <span class="error-msg" id="doc-err"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" style="flex:1;min-width:200px">文件清單（${rows.length} 份）</div>
+      </div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>文件名稱</th><th>分類</th><th>大小</th><th>備註</th><th>上傳</th><th class="no-print">操作</th></tr></thead>
+          <tbody>${rows.map(dcu => `
+            <tr data-filter="${esc(dcu.title)} ${esc(dcu.category || '')}">
+              <td data-label="文件名稱"><b>${esc(dcu.title)}</b>${dcu.orig_name && dcu.orig_name !== dcu.title ? `<br><small style="color:var(--muted)">${esc(dcu.orig_name)}</small>` : ''}</td>
+              <td data-label="分類">${dcu.category ? `<span class="badge teal">${esc(dcu.category)}</span>` : '—'}</td>
+              <td data-label="大小">${fmtSize(dcu.size || 0)}</td>
+              <td data-label="備註"><small>${esc(dcu.note || '—')}</small></td>
+              <td data-label="上傳"><small>${esc((dcu.created_at || '').slice(0, 16))}<br>${esc(dcu.uploaded_name || '—')}</small></td>
+              <td data-label="操作" class="no-print">
+                <a class="btn small" href="/uploads/${esc(dcu.filename)}" download="${esc(dcu.orig_name || dcu.title)}">下載</a>
+                ${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${dcu.id}">刪</button>` : ''}
+              </td>
+            </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚無文件</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+  $('#doc-up').onclick = async () => {
+    const err = $('#doc-err');
+    err.textContent = '';
+    const f = $('#doc-file').files[0];
+    if (!f) { err.textContent = '請選擇檔案'; return; }
+    const fd = new FormData();
+    fd.append('file', f);
+    fd.append('title', $('#doc-title').value.trim());
+    fd.append('category', $('#doc-cat').value.trim());
+    fd.append('note', $('#doc-note').value.trim());
+    try { await api('/documents', { method: 'POST', body: fd }); viewDocuments(); }
+    catch (e) { err.textContent = e.message; }
+  };
+  main().querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定刪除此文件？檔案將一併移除。')) return;
+    await api(`/documents/${b.dataset.del}`, { method: 'DELETE' });
+    viewDocuments();
+  });
+}
+
+/* ---------- 後台：客戶退訂資料 ---------- */
+async function viewCancellations() {
+  const { bookings, tours } = await api('/cancellations');
+  main().innerHTML = `
+    <div class="page-title">客戶退訂資料</div>
+    <div class="card">
+      <div class="sec-hd">退訂訂房（${bookings.length} 筆）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>媽媽</th><th>房號/房型</th><th>原訂期間</th><th>訂金</th><th>總額</th><th>已收</th><th>備註</th></tr></thead>
+          <tbody>${bookings.map(b => `
+            <tr data-filter="${esc(b.mother_name)} ${esc(b.room_name)}">
+              <td data-label="媽媽">${esc(b.mother_name)}<br><small>${esc(b.phone || '')}</small></td>
+              <td data-label="房號/房型">${esc(b.room_name)}<small>（${esc(b.room_type)}）</small></td>
+              <td data-label="原訂期間"><small>${esc(b.check_in)} ~ ${esc(b.check_out)}</small></td>
+              <td data-label="訂金">$${(b.deposit || 0).toLocaleString()}</td>
+              <td data-label="總額">$${(b.total_amount || 0).toLocaleString()}</td>
+              <td data-label="已收">${b.paid > 0 ? `<b style="color:var(--danger)">$${b.paid.toLocaleString()}</b>` : '$0'}</td>
+              <td data-label="備註"><small>${esc(b.notes || '—')}</small></td>
+            </tr>`).join('') || '<tr><td colspan="7"><div class="empty">無退訂訂房</div></td></tr>'}</tbody>
+        </table>
+      </div>
+      <small style="color:var(--muted)">＊已收金額大於 0 者請至「收費帳務」處理退費。</small>
+    </div>
+    <div class="card">
+      <div class="sec-hd">未成交參觀（${tours.length} 筆）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>姓名</th><th>電話</th><th>參觀時間</th><th>備註</th></tr></thead>
+          <tbody>${tours.map(t => `
+            <tr data-filter="${esc(t.name)}">
+              <td data-label="姓名">${esc(t.name)}</td>
+              <td data-label="電話">${esc(t.phone || '—')}</td>
+              <td data-label="參觀時間">${esc(t.tour_at)}</td>
+              <td data-label="備註"><small>${esc(t.note || '—')}</small></td>
+            </tr>`).join('') || '<tr><td colspan="4"><div class="empty">無未成交紀錄</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/* ---------- 後台：合約轉住房資料 ---------- */
+async function viewContractTransfers() {
+  const { rows } = await api('/contract-transfers');
+  const BK_TW = { reserved: ['已排房', 'teal'], checked_in: ['已入住', 'green'], checked_out: ['已退住', 'gray'] };
+  main().innerHTML = `
+    <div class="page-title">合約轉住房資料 <small style="font-weight:400;color:var(--muted);font-size:.9rem">簽約 → 排房 → 入住轉換狀態</small></div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>合約編號</th><th>媽媽</th><th>簽約日期</th><th>合約總額</th><th>預產期</th><th>排房</th><th>轉換狀態</th><th class="no-print"></th></tr></thead>
+          <tbody>${rows.map(r => {
+            const st = r.booking_status ? (BK_TW[r.booking_status] || [r.booking_status, 'gray']) : ['未排房', 'yellow'];
+            return `
+            <tr data-filter="${esc(r.name)} ${esc(r.contract_no)}">
+              <td data-label="合約編號">${esc(r.contract_no)}</td>
+              <td data-label="媽媽">${esc(r.name)}<br><small>${esc(r.phone || '')}</small></td>
+              <td data-label="簽約日期">${esc(r.sign_date || '—')}</td>
+              <td data-label="合約總額">$${(r.total || 0).toLocaleString()}</td>
+              <td data-label="預產期">${esc(r.due_date || '—')}</td>
+              <td data-label="排房"><small>${r.room_name ? `${esc(r.room_name)}<br>${esc(r.stay_range || '')}` : '—'}</small></td>
+              <td data-label="轉換狀態"><span class="badge ${st[1]}">${st[0]}</span></td>
+              <td data-label="" class="no-print"><a class="btn small" href="#/customers?m=${r.mother_id}">客戶管理</a></td>
+            </tr>`;
+          }).join('') || '<tr><td colspan="8"><div class="empty">尚無合約資料</div></td></tr>'}</tbody>
+        </table>
+      </div>
+      <small style="color:var(--muted)">＊「未排房」表示已簽約但尚未建立訂房——請至客戶管理「排房資料」分頁完成排房。</small>
+    </div>`;
+}
+
+/* ---------- 後台：客戶及簽約資料（簽約中/退訂/轉住房 三查詢頁共用） ---------- */
+const CCQ_CONF = {
+  signed: { title: '客戶簽約資料', note: '** 此頁面查詢不含客戶退訂及已轉入住房之合約資料 **',
+    dates: [['due', '以預產期查詢'], ['sign', '以簽約日期查詢']] },
+  cancelled: { title: '客戶退訂資料', note: '',
+    dates: [['due', '以預產期查詢'], ['sign', '以簽約日期查詢'], ['cancel', '以退訂日期查詢']] },
+  transferred: { title: '合約轉住房資料', note: '',
+    dates: [['checkin', '以入住日期查詢'], ['sign', '以簽約日期查詢'], ['due', '以預產期查詢']] }
+};
+async function viewClientContractQuery(mode) {
+  const cfg = CCQ_CONF[mode];
+  const monthStart = todayStr().slice(0, 8) + '01';
+  const d = new Date(todayStr().slice(0, 7) + '-01');
+  d.setMonth(d.getMonth() + 1); d.setDate(0);
+  const monthEnd = d.toISOString().slice(0, 10);
+  main().innerHTML = `
+    <div class="page-title">${cfg.title}</div>
+    <div class="card no-print">
+      <div class="sec-hd">${cfg.title}（資料查詢）</div>
+      ${cfg.note ? `<div style="color:var(--danger);text-align:center;font-size:.9rem;margin:4px 0">${cfg.note}</div>` : ''}
+      <div class="form-grid">
+        <div class="field"><label>查詢日期區間</label>
+          <div class="row" style="gap:6px;align-items:center">
+            <input type="date" id="ccq-from" value="${monthStart}"> <span>to</span> <input type="date" id="ccq-to" value="${monthEnd}">
+          </div></div>
+        <div class="field"><label>日期欄位條件</label>
+          <div class="row" style="gap:12px;padding-top:8px;flex-wrap:wrap">${cfg.dates.map(([k, l], i) =>
+            `<label class="bna-chk"><input type="radio" name="ccq-df" value="${k}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}</div></div>
+        <div class="field"><label>媽媽姓名</label><input id="ccq-name"></div>
+        <div class="field"><label>其他關鍵字查詢</label>
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+            <input id="ccq-kw" style="max-width:180px">
+            ${[['contract', '合約編號'], ['idno', '身分證號'], ['phone', '連絡電話']].map(([k, l], i) =>
+              `<label class="bna-chk"><input type="radio" name="ccq-kt" value="${k}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}
+          </div></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="ccq-go">送出查詢</button>
+          <span class="error-msg" id="ccq-err"></span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" style="flex:1;min-width:200px">${cfg.title}（查詢結果）</div>
+        <a class="btn small" id="ccq-xlsx" href="javascript:void 0" style="background:#2fb6e8">匯出Excel</a>
+      </div>
+      <div id="ccq-result"><div class="empty">請設定條件後送出查詢</div></div>
+    </div>`;
+
+  const qs = () => {
+    const p = new URLSearchParams({ mode });
+    const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+    if (v('#ccq-from')) p.set('from', v('#ccq-from'));
+    if (v('#ccq-to')) p.set('to', v('#ccq-to'));
+    p.set('date_field', main().querySelector('input[name="ccq-df"]:checked').value);
+    if (v('#ccq-name')) p.set('name', v('#ccq-name'));
+    if (v('#ccq-kw')) { p.set('keyword', v('#ccq-kw')); p.set('keyword_type', main().querySelector('input[name="ccq-kt"]:checked').value); }
+    return p;
+  };
+
+  const run = async () => {
+    const err = $('#ccq-err');
+    err.textContent = '';
+    try {
+      const { rows } = await api(`/client-contracts?${qs()}`);
+      const sumDays = rows.reduce((s, r) => s + (r.days || 0), 0);
+      const sumTotal = rows.reduce((s, r) => s + (r.total || 0), 0);
+      const dateCell = r => {
+        const parts = [`<span style="color:#3b78c2">(產期)${esc(r.due_date || '—')}</span>`];
+        parts.push(`<span style="color:var(--danger)">(簽約)${esc(r.sign_date || '—')}</span>`);
+        if (mode === 'cancelled') parts.push(`<span style="color:var(--danger)">(退訂)${esc(r.cancel_date || '—')}</span>`);
+        if (mode === 'transferred') parts.push(`<span style="color:var(--primary-dark)">(入住)${esc(r.checkin_date || '—')}</span>`);
+        if (mode === 'signed') parts.push(`<span style="color:var(--primary-dark)">(預住)${esc(r.checkin_date || '')}</span>`);
+        return parts.join('<br>');
+      };
+      $('#ccq-result').innerHTML = rows.length ? `
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>筆數</th><th>媽媽姓名<br>身分證號</th><th>日期</th><th>聯絡電話</th><th>合約住宿摘要</th>
+            ${mode === 'cancelled' ? '<th>原合約金額</th><th>退訂原因<br>退訂人</th>' : '<th>天數</th><th>合約總額</th>'}
+            <th>合約號碼<br>經手人</th></tr></thead>
+          <tbody>${rows.map((r, i) => `
+            <tr data-filter="${esc(r.name)} ${esc(r.contract_no)}">
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="媽媽姓名">${esc(r.name)}<br><small>${esc(r.id_no || '—')}</small></td>
+              <td data-label="日期"><small>${dateCell(r)}</small></td>
+              <td data-label="聯絡電話">${esc(r.phone || '—')}</td>
+              <td data-label="合約住宿摘要"><small>${esc(r.summary || '—')}${mode === 'transferred' && r.room_name ? `<br>房號：${esc(r.room_name)}` : ''}</small></td>
+              ${mode === 'cancelled'
+                ? `<td data-label="原合約金額">$${(r.total || 0).toLocaleString()}</td>
+                   <td data-label="退訂原因/退訂人"><small>${esc(r.cancel_reason || '—')}<br>${esc(r.cancel_by || '—')}</small></td>`
+                : `<td data-label="天數">${r.days || 0}</td>
+                   <td data-label="合約總額">$${(r.total || 0).toLocaleString()}</td>`}
+              <td data-label="合約號碼/經手人"><a href="#/customers?m=${r.mother_id}">${esc(r.contract_no)}</a><br><small>${esc(r.handler || '—')}</small></td>
+            </tr>`).join('')}
+            <tr style="background:#fbeaea"><td colspan="5" style="text-align:right">合計：</td>
+              ${mode === 'cancelled' ? `<td>$${sumTotal.toLocaleString()}</td><td></td>` : `<td>${sumDays}</td><td>$${sumTotal.toLocaleString()}</td>`}<td></td></tr>
+          </tbody>
+        </table></div>` : '<div class="empty">搜尋結果無資料…</div>';
+    } catch (e) { err.textContent = e.message; }
+  };
+  $('#ccq-go').onclick = run;
+  $('#ccq-xlsx').onclick = () => { location.href = `/api/client-contracts?${qs()}&format=xlsx`; };
+  run();
+}
+function viewClientContracts() { return viewClientContractQuery('signed'); }
+function viewCancellationsQuery() { return viewClientContractQuery('cancelled'); }
+function viewContractTransfersQuery() { return viewClientContractQuery('transferred'); }
+
+/* ---------- 產後報表查詢（通用報表頁；?r=key） ---------- */
+const PP_LABELS = {
+  pay_daily_sum: '產後每日收款統計表', pay_daily_detail: '產後每日收款明細表', revenue_month: '產後營收統計分析表',
+  supply_sales: '客房備品銷售明細表', retail_detail: '產品零售明細表', occupancy_detail: '住宿率明細表',
+  occupancy_month: '住宿率統計表', stay_days_month: '入住天數月統計表', checkin_info: '媽媽入住資訊查詢',
+  cancel_stats: '退訂資料統計表', tour_conversion: '參觀成交率分析表', checkin_stats: '媽媽入住統計表',
+  order_detail: '媽媽訂單明細查詢', cleaning10: '10日打掃明細表', baby_out: '寶寶不在館內明細查詢',
+  early_checkout: '提前退房明細表', baby_detail: '寶寶資料明細表', ar_detail: '媽媽應收帳款明細表',
+  room_card_usage: '住房卡使用明細表',
+  mom_nursing_q: '媽媽護理資料查詢', baby_care_q: '寶寶護理資料查詢', bf_rate: '母乳哺育率報表',
+  rooming_stats: '親子同室統計分析', infection_quality: '護理感控品質查詢',
+  epds_q: '愛丁堡憂鬱量查詢', epds_stats: '愛丁堡憂鬱量統計', person_days: '入住人日數統計表',
+  inout_month: '產後出入住月報表', mom_rooming: '媽媽親子同室統計'
+};
+async function viewPpReport() {
+  const key = (location.hash.split('?r=')[1] || '').split('&')[0];
+  const label = PP_LABELS[key];
+  if (!label) {
+    main().innerHTML = `<div class="page-title">產後報表查詢</div><div class="card"><div class="row" style="gap:8px;flex-wrap:wrap">${Object.entries(PP_LABELS).map(([k, l]) => `<a class="btn small secondary" href="#/pp-report?r=${k}">${l}</a>`).join('')}</div></div>`;
+    return;
+  }
+  // 客房備品銷售：備品類別下拉（吃商品分類，無權限則僅全部）
+  let cats = [];
+  if (key === 'supply_sales') {
+    try { cats = [...new Set((await api('/products')).map(p => p.category).filter(Boolean))]; } catch (e) { cats = []; }
+  }
+  main().innerHTML = `
+    <div class="page-title">${label}</div>
+    <div class="card no-print">
+      <div class="sec-hd">${label}（資料查詢）</div>
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;justify-content:center">
+        ${(() => {
+          const MONTHLY = ['epds_q', 'epds_stats', 'infection_quality', 'person_days', 'occupancy_month', 'stay_days_month'];
+          return MONTHLY.includes(key) ? `<div class="field" style="margin:0"><label>查詢${['epds_q', 'epds_stats', 'infection_quality'].includes(key) ? '品管' : ''}月份</label>
+            <div class="row" style="gap:6px;align-items:center">
+              <input type="month" id="pp-from-m" value="${todayStr().slice(0, 7)}"> <span>to</span> <input type="month" id="pp-to-m" value="${todayStr().slice(0, 7)}">
+            </div></div>` : `<div class="field" style="margin:0"><label>查詢日期區間</label>
+            <div class="row" style="gap:6px;align-items:center">
+              <input type="date" id="pp-from" value="${todayStr().slice(0, 8)}01"> <span>to</span> <input type="date" id="pp-to" value="${todayStr()}">
+            </div></div>`;
+        })()}
+        ${key === 'supply_sales' ? `<div class="field" style="margin:0"><label>查詢備品類別</label>
+          <select id="pp-cat"><option value="">全部備品</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>` : ''}
+        ${(() => {
+          const DF_OPTS = {
+            checkin_info: [['created', '入住資料建檔日'], ['checkin', '入住日期']],
+            order_detail: [['due', '預產期'], ['sign', '簽約日']],
+            ar_detail: [['due', '預產期'], ['sign', '簽約日'], ['checkin', '入住日'], ['checkout', '退房日']]
+          };
+          return DF_OPTS[key] ? `<div class="field" style="margin:0"><label>日期欄位條件</label>
+            <div class="row" style="gap:12px;padding-top:8px;flex-wrap:wrap">${DF_OPTS[key].map(([v, l], i) =>
+              `<label class="bna-chk"><input type="radio" name="pp-df" value="${v}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}</div></div>` : '';
+        })()}
+        ${key === 'cancel_stats' ? `<div class="field" style="margin:0"><label>查詢分類</label>
+          <select id="pp-kind"><option value="">全部查詢</option><option value="contract">合約退訂</option><option value="booking">訂房取消</option></select></div>` : ''}
+        ${key === 'baby_out' ? `<div class="field" style="margin:0"><label style="color:var(--danger)">選項</label>
+          <label class="bna-chk" style="padding-top:8px"><input type="checkbox" id="pp-onlyout"> 僅查詢不在館內明細</label></div>` : ''}
+        ${['mom_nursing_q', 'baby_care_q'].includes(key) ? `<div class="field" style="margin:0"><label>關鍵字查詢</label>
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+            <input id="pp-name" style="max-width:160px">
+            <label class="bna-chk"><input type="radio" name="pp-kwt" value="room"> 媽媽房號</label>
+            <label class="bna-chk"><input type="radio" name="pp-kwt" value="name" checked> 媽媽姓名</label>
+          </div></div>` : ''}
+        ${['checkin_info', 'cancel_stats', 'early_checkout', 'baby_detail', 'epds_q', 'mom_rooming'].includes(key) ? `<div class="field" style="margin:0"><label>媽媽姓名</label><input id="pp-name"></div>` : ''}
+        <button class="btn" id="pp-go">送出查詢</button>
+        <span class="error-msg" id="pp-err"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" style="flex:1;min-width:200px">${label}（查詢結果）</div>
+        <div class="row" style="gap:6px">
+          <button class="btn small secondary" id="pp-print">資料列印</button>
+          <a class="btn small" id="pp-xlsx" href="javascript:void 0" style="background:#2fb6e8">匯出Excel</a>
+        </div>
+      </div>
+      <div id="pp-result"><div class="empty">載入中…</div></div>
+    </div>`;
+
+  const qs = () => {
+    const p = new URLSearchParams();
+    const fm = $('#pp-from-m'), tm = $('#pp-to-m');
+    if (fm && fm.value) p.set('from', fm.value + '-01');
+    if (tm && tm.value) {
+      const d = new Date(new Date(tm.value + '-01').getFullYear(), new Date(tm.value + '-01').getMonth() + 1, 0);
+      p.set('to', d.toISOString().slice(0, 10));
+    }
+    if ($('#pp-from') && $('#pp-from').value) p.set('from', $('#pp-from').value);
+    if ($('#pp-to') && $('#pp-to').value) p.set('to', $('#pp-to').value);
+    const cat = $('#pp-cat');
+    if (cat && cat.value) p.set('cat', cat.value);
+    const nameEl = $('#pp-name');
+    if (nameEl && nameEl.value.trim()) p.set('name', nameEl.value.trim());
+    const kindEl = $('#pp-kind');
+    if (kindEl && kindEl.value) p.set('kind', kindEl.value);
+    const dfEl = main().querySelector('input[name="pp-df"]:checked');
+    if (dfEl) p.set('date_field', dfEl.value);
+    const ooEl = $('#pp-onlyout');
+    if (ooEl && ooEl.checked) p.set('only_out', '1');
+    const kwtEl = main().querySelector('input[name="pp-kwt"]:checked');
+    if (kwtEl) p.set('kw_type', kwtEl.value);
+    return p;
+  };
+  const run = async () => {
+    const err = $('#pp-err');
+    err.textContent = '';
+    try {
+      const d = await api(`/pp-reports/${key}?${qs()}`);
+      const numeric = d.columns.map(([k]) => d.rows.some(r => typeof r[k] === 'number'));
+      const sums = d.columns.map(([k], i) => numeric[i] ? d.rows.reduce((s, r) => s + (Number(r[k]) || 0), 0) : null);
+      $('#pp-result').innerHTML = d.rows.length ? `
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>筆數</th>${d.columns.map(([, l]) => `<th>${esc(l)}</th>`).join('')}</tr></thead>
+          <tbody>${d.rows.map((r, i) => `
+            <tr><td data-label="筆數">${i + 1}</td>${d.columns.map(([k, l], ci) => `<td data-label="${esc(l)}">${
+              typeof r[k] === 'number' ? r[k].toLocaleString() : esc(r[k] ?? '—')}</td>`).join('')}</tr>`).join('')}
+            <tr style="background:#fbeaea"><td>合計</td>${d.columns.map(([k], ci) =>
+              `<td>${ci === 0 && !numeric[0] ? '' : (sums[ci] != null ? sums[ci].toLocaleString() : '')}</td>`).join('')}</tr>
+          </tbody>
+        </table></div>` : '<div class="empty">您輸入的條件，查無資料 …</div>';
+    } catch (e) { err.textContent = e.message; $('#pp-result').innerHTML = '<div class="empty">查詢失敗</div>'; }
+  };
+  $('#pp-go').onclick = run;
+  $('#pp-print').onclick = () => window.print();
+  $('#pp-xlsx').onclick = () => { location.href = `/api/pp-reports/${key}?${qs()}&format=xlsx`; };
+  run();
+}
+
+/* ---------- 房間資料管理：房型設定 ---------- */
+async function viewRoomTypes() {
+  const rows = await api('/room-types');
+  const canWrite = currentUser.role === 'admin';
+  main().innerHTML = `
+    <div class="page-title">房型設定</div>
+    <div class="card no-print">
+      <div class="sec-hd">房型設定（資料查詢）</div>
+      <div class="row" style="justify-content:center;padding:6px 0">
+        ${canWrite ? '<button class="btn" id="rt-add">資料新增</button>' : '<small style="color:var(--muted)">僅管理員可維護</small>'}
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">房型設定（查詢結果）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>筆數</th><th>房型名稱</th><th>定價</th><th>排序</th><th>狀態</th><th class="no-print"></th></tr></thead>
+          <tbody>${rows.map((r, i) => `
+            <tr>
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="房型名稱">${esc(r.name)}</td>
+              <td data-label="定價">${r.price.toLocaleString()}</td>
+              <td data-label="排序">${r.sort}</td>
+              <td data-label="狀態"><span class="badge ${r.active ? 'green' : 'gray'}">${r.active ? '啟用' : '停用'}</span></td>
+              <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>
+                <button class="btn small danger" data-del="${r.id}">刪</button>` : ''}</td>
+            </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚未設定房型</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+  if (!canWrite) return;
+  const form = (r) => openModal(r ? '編輯房型' : '新增房型', `
+    <div class="field"><label>房型名稱 <b class="req">*</b></label><input id="rt-name" maxlength="50" value="${esc((r || {}).name || '')}"></div>
+    <div class="field"><label>定價</label><input type="number" min="0" id="rt-price" value="${(r || {}).price ?? ''}"></div>
+    <div class="field"><label>排序</label><input type="number" id="rt-sort" value="${(r || {}).sort ?? 0}"></div>
+    <div class="row mt"><button class="btn" id="rt-save">存檔</button><span class="error-msg" id="rt-err"></span></div>`, body => {
+    body.querySelector('#rt-save').onclick = async () => {
+      const b = { name: body.querySelector('#rt-name').value.trim(), price: body.querySelector('#rt-price').value, sort: body.querySelector('#rt-sort').value };
+      try {
+        if (r) await api(`/room-types/${r.id}`, { method: 'PUT', body: b });
+        else await api('/room-types', { method: 'POST', body: b });
+        closeModal(); viewRoomTypes();
+      } catch (e) { body.querySelector('#rt-err').textContent = e.message; }
+    };
+  });
+  $('#rt-add').onclick = () => form(null);
+  main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => form(rows.find(x => x.id == b.dataset.edit)));
+  main().querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定刪除此房型？（不影響既有房間）')) return;
+    await api(`/room-types/${b.dataset.del}`, { method: 'DELETE' }); viewRoomTypes();
+  });
+}
+
+/* ---------- 房間資料管理：房間資料 ---------- */
+async function viewRoomList() {
+  const [rooms, types] = await Promise.all([api('/rooms'), api('/room-types')]);
+  const canWrite = currentUser.role === 'admin';
+  const typeOpts = types.filter(t => t.active).map(t => t.name);
+  main().innerHTML = `
+    <div class="page-title">房間資料</div>
+    <div class="card no-print">
+      <div class="sec-hd">房間資料（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢關鍵字</label><input id="rl-kw"></div>
+        <div class="field"><label>關鍵字欄位</label>
+          <div class="row" style="gap:12px;padding-top:8px">
+            <label class="bna-chk"><input type="radio" name="rl-kf" value="name" checked> 房間號碼</label>
+            <label class="bna-chk"><input type="radio" name="rl-kf" value="ext"> 分機號碼</label>
+          </div></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="rl-go">送出查詢</button>
+          ${canWrite ? '<button class="btn secondary" id="rl-add">資料新增</button><button class="btn secondary" id="rl-batch">多筆新增</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">房間資料（查詢結果）</div>
+      <div class="table-wrap" id="rl-result"></div>
+    </div>`;
+  const render = (list) => {
+    $('#rl-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>房間號碼</th><th>房型名稱</th><th>呼叫分機</th><th>客服分機</th><th>排序</th><th>狀態</th><th class="no-print"></th></tr></thead>
+      <tbody>${list.map((r, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="房間號碼">${esc(r.name)}</td>
+          <td data-label="房型名稱">${esc(r.room_type)}</td>
+          <td data-label="呼叫分機">${esc(r.call_ext || '—')}</td>
+          <td data-label="客服分機">${esc(r.service_ext || '—')}</td>
+          <td data-label="排序">${r.sort || 0}</td>
+          <td data-label="狀態"><span class="badge ${r.active ? 'green' : 'gray'}">${r.active ? '可用' : '停用'}</span></td>
+          <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
+    $('#rl-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editRoom(rooms.find(x => x.id == b.dataset.edit), typeOpts));
+  };
+  const doSearch = () => {
+    const kw = $('#rl-kw').value.trim();
+    const kf = main().querySelector('input[name="rl-kf"]:checked').value;
+    render(!kw ? rooms : rooms.filter(r => kf === 'ext'
+      ? ((r.call_ext || '').includes(kw) || (r.service_ext || '').includes(kw))
+      : r.name.includes(kw)));
+  };
+  $('#rl-go').onclick = doSearch;
+  $('#rl-kw').onkeydown = e => { if (e.key === 'Enter') doSearch(); };
+  render(rooms);
+  if (!canWrite) return;
+  $('#rl-add').onclick = () => editRoom(null, typeOpts);
+  $('#rl-batch').onclick = () => batchRooms(typeOpts);
+}
+function editRoom(r, typeOpts) {
+  openModal(r ? `編輯房間 ${r.name}` : '新增房間', `
+    <div class="field"><label>房間號碼 <b class="req">*</b></label><input id="rm-name" value="${esc((r || {}).name || '')}"></div>
+    <div class="field"><label>房型</label><select id="rm-type">${typeOpts.map(t => `<option ${r && r.room_type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+    <div class="field"><label>每日房價</label><input type="number" min="0" id="rm-price" value="${(r || {}).price_per_day ?? ''}"></div>
+    <div class="field"><label>呼叫分機</label><input id="rm-call" value="${esc((r || {}).call_ext || '')}"></div>
+    <div class="field"><label>客服分機</label><input id="rm-svc" value="${esc((r || {}).service_ext || '')}"></div>
+    <div class="field"><label>排序</label><input type="number" id="rm-sort" value="${(r || {}).sort ?? 0}"></div>
+    ${r ? `<div class="field"><label>狀態</label><select id="rm-active"><option value="1" ${r.active ? 'selected' : ''}>可用</option><option value="0" ${!r.active ? 'selected' : ''}>停用</option></select></div>` : ''}
+    <div class="row mt"><button class="btn" id="rm-save">存檔</button><span class="error-msg" id="rm-err"></span></div>`, body => {
+    body.querySelector('#rm-save').onclick = async () => {
+      const b = { name: body.querySelector('#rm-name').value.trim(), room_type: body.querySelector('#rm-type').value,
+        price_per_day: body.querySelector('#rm-price').value, call_ext: body.querySelector('#rm-call').value.trim(),
+        service_ext: body.querySelector('#rm-svc').value.trim(), sort: body.querySelector('#rm-sort').value };
+      if (r) b.active = body.querySelector('#rm-active').value === '1';
+      try {
+        if (r) await api(`/rooms/${r.id}`, { method: 'PUT', body: b });
+        else await api('/rooms', { method: 'POST', body: b });
+        closeModal(); viewRoomList();
+      } catch (e) { body.querySelector('#rm-err').textContent = e.message; }
+    };
+  });
+}
+function batchRooms(typeOpts) {
+  openModal('多筆新增房間', `
+    <div class="field"><label>房型</label><select id="rb-type">${typeOpts.map(t => `<option>${esc(t)}</option>`).join('')}</select></div>
+    <div class="field"><label>每日房價</label><input type="number" min="0" id="rb-price" value="0"></div>
+    <div class="field"><label>房號清單<small>（每行一個，或用「101-110」表示連號）</small></label>
+      <textarea id="rb-list" rows="5" placeholder="101\n102\n或 201-210"></textarea></div>
+    <div class="row mt"><button class="btn" id="rb-save">批次建立</button><span class="error-msg" id="rb-err"></span></div>`, body => {
+    body.querySelector('#rb-save').onclick = async () => {
+      const type = body.querySelector('#rb-type').value, price = body.querySelector('#rb-price').value;
+      const names = [];
+      for (const line of body.querySelector('#rb-list').value.split('\n').map(s => s.trim()).filter(Boolean)) {
+        const m = line.match(/^([A-Za-z]*)(\d+)\s*-\s*([A-Za-z]*)(\d+)$/);
+        if (m && m[1] === m[3] && Number(m[4]) >= Number(m[2])) {
+          const pad = m[2].length;
+          for (let n = Number(m[2]); n <= Number(m[4]); n++) names.push(m[1] + String(n).padStart(pad, '0'));
+        } else names.push(line);
+      }
+      if (!names.length) { body.querySelector('#rb-err').textContent = '請輸入房號'; return; }
+      try {
+        const r = await api('/rooms/batch', { method: 'POST', body: { rooms: names.map(name => ({ name, room_type: type, price_per_day: price })) } });
+        alert(`成功新增 ${r.added} 間房（重複房號已略過）`);
+        closeModal(); viewRoomList();
+      } catch (e) { body.querySelector('#rb-err').textContent = e.message; }
+    };
+  });
+}
+
+/* ---------- 房間資料管理：房價折扣設定 ---------- */
+const DISC_TYPE = { percent: '折扣百分比', amount: '折抵金額', gift: '專案贈送' };
+async function viewRoomDiscounts() {
+  const [types, discounts] = await Promise.all([api('/room-types'), api('/room-discounts')]);
+  const canWrite = currentUser.role === 'admin';
+  const typeOpts = types.map(t => t.name);
+  main().innerHTML = `
+    <div class="page-title">房價折扣設定</div>
+    <div class="card no-print">
+      <div class="sec-hd">房價折扣設定（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>房型名稱</label><select id="rd-filter"><option value="">全部</option>${typeOpts.map(t => `<option>${esc(t)}</option>`).join('')}</select></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="rd-go">送出查詢</button>
+          ${canWrite ? '<button class="btn secondary" id="rd-add">資料新增</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">房價折扣設定（查詢結果）</div>
+      <div class="table-wrap" id="rd-result"></div>
+    </div>`;
+  const render = (list) => {
+    $('#rd-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>折扣專案期間</th><th>客戶分類</th><th>房型名稱</th><th>折扣方案名稱</th><th>住宿天數</th><th>折扣方式</th><th>折扣值</th><th>優惠天數</th><th class="no-print"></th></tr></thead>
+      <tbody>${list.map((r, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="期間"><small>${esc(r.start_date || '—')} ~ ${esc(r.end_date || '—')}</small></td>
+          <td data-label="客戶分類">${esc(r.customer_class || '—')}</td>
+          <td data-label="房型名稱">${esc(r.room_type)}</td>
+          <td data-label="折扣方案名稱">${esc(r.plan_name || '—')}</td>
+          <td data-label="住宿天數">${r.stay_days}</td>
+          <td data-label="折扣方式">${DISC_TYPE[r.discount_type] || r.discount_type}</td>
+          <td data-label="折扣值">${r.discount_value}${r.discount_type === 'percent' ? '%' : r.discount_type === 'amount' ? ' 元' : ''}</td>
+          <td data-label="優惠天數">${r.bonus_days}</td>
+          <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>
+            <button class="btn small danger" data-del="${r.id}">刪</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="10"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
+    $('#rd-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => discForm(discounts.find(x => x.id == b.dataset.edit), typeOpts));
+    $('#rd-result').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('確定刪除此折扣設定？')) return;
+      await api(`/room-discounts/${b.dataset.del}`, { method: 'DELETE' }); viewRoomDiscounts();
+    });
+  };
+  const doFilter = () => { const t = $('#rd-filter').value; render(t ? discounts.filter(d => d.room_type === t) : discounts); };
+  $('#rd-go').onclick = doFilter;
+  render(discounts);
+  if (!canWrite) return;
+  $('#rd-add').onclick = () => discForm(null, typeOpts);
+}
+function discForm(r, typeOpts) {
+  const CLASSES = ['一般客戶', 'VIP', '舊客回住', '員工親友', '其他'];
+  openModal(r ? '編輯折扣設定' : '新增折扣設定', `
+    <div class="field"><label>房型 <b class="req">*</b></label><select id="d-type">${typeOpts.map(t => `<option ${r && r.room_type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+    <div class="field"><label>客戶分類</label><select id="d-class">${CLASSES.map(c => `<option ${r && r.customer_class === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+    <div class="field"><label>折扣方案名稱</label><input id="d-plan" maxlength="50" value="${esc((r || {}).plan_name || '')}" placeholder="例如：牌價／早鳥／續住"></div>
+    <div class="field"><label>專案期間（起）</label><input type="date" id="d-start" value="${esc((r || {}).start_date || '')}"></div>
+    <div class="field"><label>專案期間（迄）</label><input type="date" id="d-end" value="${esc((r || {}).end_date || '')}"></div>
+    <div class="field"><label>住宿天數</label><input type="number" min="0" id="d-days" value="${(r || {}).stay_days ?? 0}"></div>
+    <div class="field"><label>折扣方式</label><select id="d-dtype">${Object.entries(DISC_TYPE).map(([k, v]) => `<option value="${k}" ${r && r.discount_type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+    <div class="field"><label>折扣值<small>（百分比填 85＝85折）</small></label><input type="number" min="0" id="d-val" value="${(r || {}).discount_value ?? 100}"></div>
+    <div class="field"><label>優惠贈送天數</label><input type="number" min="0" id="d-bonus" value="${(r || {}).bonus_days ?? 0}"></div>
+    <div class="row mt"><button class="btn" id="d-save">存檔</button><span class="error-msg" id="d-err"></span></div>`, body => {
+    body.querySelector('#d-save').onclick = async () => {
+      const b = { room_type: body.querySelector('#d-type').value, customer_class: body.querySelector('#d-class').value,
+        plan_name: body.querySelector('#d-plan').value.trim(), start_date: body.querySelector('#d-start').value,
+        end_date: body.querySelector('#d-end').value, stay_days: body.querySelector('#d-days').value,
+        discount_type: body.querySelector('#d-dtype').value, discount_value: body.querySelector('#d-val').value,
+        bonus_days: body.querySelector('#d-bonus').value };
+      try {
+        if (r) await api(`/room-discounts/${r.id}`, { method: 'PUT', body: b });
+        else await api('/room-discounts', { method: 'POST', body: b });
+        closeModal(); viewRoomDiscounts();
+      } catch (e) { body.querySelector('#d-err').textContent = e.message; }
+    };
+  });
+}
+
+/* ---------- 房間資料管理：嬰兒床位設定 ---------- */
+async function viewBabyBeds() {
+  const beds = await api('/baby-beds');
+  const canWrite = currentUser.role === 'admin';
+  main().innerHTML = `
+    <div class="page-title">嬰兒床位設定</div>
+    <div class="card no-print">
+      <div class="sec-hd">嬰兒床位設定（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢關鍵字</label><input id="bb-kw"></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="bb-go">送出查詢</button>
+          ${canWrite ? '<button class="btn secondary" id="bb-add">單筆床號新增</button><button class="btn secondary" id="bb-batch">多筆床號新增</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">嬰兒床位設定（查詢結果）</div>
+      <div class="table-wrap" id="bb-result"></div>
+    </div>`;
+  const render = (list) => {
+    $('#bb-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>嬰兒床號碼</th><th>嬰兒床分區</th><th>狀態</th><th class="no-print"></th></tr></thead>
+      <tbody>${list.map((r, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="嬰兒床號碼">${esc(r.bed_no)}</td>
+          <td data-label="嬰兒床分區">${esc(r.zone)}</td>
+          <td data-label="狀態"><span class="badge ${r.active ? 'green' : 'gray'}">${r.active ? '可用' : '停用'}</span></td>
+          <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>
+            <button class="btn small danger" data-del="${r.id}">刪</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="5"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
+    $('#bb-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => bedForm(beds.find(x => x.id == b.dataset.edit)));
+    $('#bb-result').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('確定刪除此床位？')) return;
+      await api(`/baby-beds/${b.dataset.del}`, { method: 'DELETE' }); viewBabyBeds();
+    });
+  };
+  const doSearch = () => { const kw = $('#bb-kw').value.trim(); render(kw ? beds.filter(b => b.bed_no.includes(kw)) : beds); };
+  $('#bb-go').onclick = doSearch;
+  $('#bb-kw').onkeydown = e => { if (e.key === 'Enter') doSearch(); };
+  render(beds);
+  if (!canWrite) return;
+  $('#bb-add').onclick = () => bedForm(null);
+  $('#bb-batch').onclick = () => batchBeds();
+}
+function bedForm(r) {
+  openModal(r ? '編輯床位' : '單筆床號新增', `
+    <div class="field"><label>嬰兒床號碼 <b class="req">*</b></label><input id="bd-no" value="${esc((r || {}).bed_no || '')}"></div>
+    <div class="field"><label>分區</label><input id="bd-zone" value="${esc((r || {}).zone || 'A')}"></div>
+    ${r ? `<div class="field"><label>狀態</label><select id="bd-active"><option value="1" ${r.active ? 'selected' : ''}>可用</option><option value="0" ${!r.active ? 'selected' : ''}>停用</option></select></div>` : ''}
+    <div class="row mt"><button class="btn" id="bd-save">存檔</button><span class="error-msg" id="bd-err"></span></div>`, body => {
+    body.querySelector('#bd-save').onclick = async () => {
+      const b = { bed_no: body.querySelector('#bd-no').value.trim(), zone: body.querySelector('#bd-zone').value.trim() || 'A' };
+      if (r) b.active = body.querySelector('#bd-active').value === '1';
+      try {
+        if (r) await api(`/baby-beds/${r.id}`, { method: 'PUT', body: b });
+        else await api('/baby-beds', { method: 'POST', body: b });
+        closeModal(); viewBabyBeds();
+      } catch (e) { body.querySelector('#bd-err').textContent = e.message; }
+    };
+  });
+}
+function batchBeds() {
+  openModal('多筆床號新增', `
+    <div class="field"><label>分區</label><input id="bz-zone" value="A"></div>
+    <div class="field"><label>床號清單<small>（每行一個，或用「A301-A310」連號）</small></label>
+      <textarea id="bz-list" rows="5" placeholder="A301\nA302\n或 A301-A310"></textarea></div>
+    <div class="row mt"><button class="btn" id="bz-save">批次建立</button><span class="error-msg" id="bz-err"></span></div>`, body => {
+    body.querySelector('#bz-save').onclick = async () => {
+      const zone = body.querySelector('#bz-zone').value.trim() || 'A';
+      const nos = [];
+      for (const line of body.querySelector('#bz-list').value.split('\n').map(s => s.trim()).filter(Boolean)) {
+        const m = line.match(/^([A-Za-z]*)(\d+)\s*-\s*([A-Za-z]*)(\d+)$/);
+        if (m && m[1] === m[3] && Number(m[4]) >= Number(m[2])) {
+          const pad = m[2].length;
+          for (let n = Number(m[2]); n <= Number(m[4]); n++) nos.push(m[1] + String(n).padStart(pad, '0'));
+        } else nos.push(line);
+      }
+      if (!nos.length) { body.querySelector('#bz-err').textContent = '請輸入床號'; return; }
+      try {
+        const r = await api('/baby-beds/batch', { method: 'POST', body: { beds: nos.map(bed_no => ({ bed_no, zone })) } });
+        alert(`成功新增 ${r.added} 個床位（重複已略過）`);
+        closeModal(); viewBabyBeds();
+      } catch (e) { body.querySelector('#bz-err').textContent = e.message; }
+    };
+  });
+}
+
+/* ---------- 產後系統其他設定：通用選項清單頁 ---------- */
+const SYS_OPT_PAGES = {
+  tour_source: { key: 'tour_source_options', title: '預約參觀訊息來源', label: '訊息來源',
+    extra: { key: 'tour_visit_limit', label: '設定預約參觀人數限制' } },
+  formula_brand: { key: 'formula_brand_options', title: '寶寶奶粉廠牌設定', label: '奶粉廠牌' },
+  door_light: { key: 'door_light_options', title: '門燈控制設定', label: '門燈模式' },
+  referral_hospital: { key: 'referral_hospital_options', title: '護理後送醫院', label: '醫院名稱' },
+  contact_class: { key: 'contact_class_options', title: '產後客戶聯絡人分類', label: '聯絡人分類' },
+  discharge_med: { key: 'discharge_med_options', title: '出院帶藥藥品設定', label: '藥品名稱' }
+};
+async function viewSysOption() {
+  const which = (location.hash.split('?k=')[1] || '').split('&')[0];
+  const cfg = SYS_OPT_PAGES[which];
+  if (!cfg) { main().innerHTML = '<div class="page-title">產後系統其他設定</div><div class="card"><div class="empty">未指定設定項目</div></div>'; return; }
+  const canWrite = currentUser.role === 'admin';
+  const s = await api('/settings');
+  const items = (s[cfg.key] || '').split(',').map(x => x.trim()).filter(Boolean);
+  const save = async (list) => {
+    await api('/settings', { method: 'PUT', body: { [cfg.key]: list.join(',') } });
+    viewSysOption();
+  };
+  main().innerHTML = `
+    <div class="page-title">${cfg.title}</div>
+    <div class="card no-print">
+      <div class="row" style="gap:16px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+        ${canWrite ? '<button class="btn" id="so-add">新增資料</button>' : '<small style="color:var(--muted)">僅管理員可維護</small>'}
+        ${cfg.extra ? `<div class="row" style="gap:8px;align-items:center">
+          <span>${cfg.extra.label}：</span>
+          <input type="number" min="0" id="so-extra" value="${esc(s[cfg.extra.key] || '')}" style="width:90px" ${canWrite ? '' : 'disabled'}>
+          ${canWrite ? '<button class="btn small" id="so-extra-save">設定</button>' : ''}
+        </div>` : ''}
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">${cfg.title}（資料明細）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th style="width:80px">筆數</th><th>${esc(cfg.label)}</th><th class="no-print" style="width:140px"></th></tr></thead>
+          <tbody>${items.map((v, i) => `
+            <tr>
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="${esc(cfg.label)}">${esc(v)}</td>
+              <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${i}">編輯</button>
+                <button class="btn small danger" data-del="${i}">刪</button>` : ''}</td>
+            </tr>`).join('') || `<tr><td colspan="3"><div class="empty">尚未設定${esc(cfg.label)}</div></td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+  if (!canWrite) return;
+  if (cfg.extra) $('#so-extra-save').onclick = async () => {
+    await api('/settings', { method: 'PUT', body: { [cfg.extra.key]: $('#so-extra').value } });
+    alert('已設定');
+  };
+  $('#so-add').onclick = () => {
+    const v = prompt(`新增${cfg.label}：`, '');
+    if (v == null || !v.trim()) return;
+    if (items.includes(v.trim())) { alert('已存在'); return; }
+    save([...items, v.trim()]);
+  };
+  main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+    const i = Number(b.dataset.edit);
+    const v = prompt(`編輯${cfg.label}：`, items[i]);
+    if (v == null || !v.trim()) return;
+    const next = [...items]; next[i] = v.trim();
+    save(next);
+  });
+  main().querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    if (!confirm('確定刪除此項？')) return;
+    save(items.filter((_, i) => i !== Number(b.dataset.del)));
+  });
+}
+
+/* ---------- 產後系統其他設定：打掃定期工作設定 ---------- */
+async function viewCleaningSchedule() {
+  const canWrite = currentUser.role === 'admin';
+  const s = await api('/settings');
+  main().innerHTML = `
+    <div class="page-title">打掃定期工作設定</div>
+    <div class="card">
+      <div class="form-grid">
+        <div class="field"><label>定期換媽媽床單</label>
+          <div class="row" style="gap:8px;align-items:center">媽媽房間每 <input type="number" min="1" id="cs-sheet" value="${esc(s.hk_sheet_days || '7')}" style="width:90px" ${canWrite ? '' : 'disabled'}> 天換一次床單</div></div>
+        <div class="field"><label>定期更新房內備品</label>
+          <div class="row" style="gap:8px;align-items:center">媽媽房間每 <input type="number" min="1" id="cs-supply" value="${esc(s.hk_supply_days || '1')}" style="width:90px" ${canWrite ? '' : 'disabled'}> 天更新一次備品</div></div>
+        ${canWrite ? '<div class="full row" style="justify-content:center;margin-top:6px"><button class="btn" id="cs-save">資料存檔</button><span class="error-msg" id="cs-err"></span></div>' : '<div class="full"><small style="color:var(--muted)">僅管理員可維護</small></div>'}
+      </div>
+      <small style="color:var(--muted)">＊此設定供房務清潔排程提醒使用（媽媽房況「有待辦房務」與房務任務排定）。</small>
+    </div>`;
+  if (!canWrite) return;
+  $('#cs-save').onclick = async () => {
+    try {
+      await api('/settings', { method: 'PUT', body: { hk_sheet_days: $('#cs-sheet').value, hk_supply_days: $('#cs-supply').value } });
+      $('#cs-save').textContent = '已存檔 ✓';
+      setTimeout(() => { const b = $('#cs-save'); if (b) b.textContent = '資料存檔'; }, 1500);
+    } catch (e) { $('#cs-err').textContent = e.message; }
+  };
+}
+
+/* ---------- 產後系統其他設定：媽媽憂鬱量表樣版（愛丁堡 EPDS 標準樣版） ---------- */
+function viewEpdsTemplate() {
+  const rows = [];
+  EPDS_ITEMS.forEach(([q, opts], qi) => {
+    opts.forEach(([opt, score]) => rows.push({ order: qi + 1, q, opt, score }));
+  });
+  main().innerHTML = `
+    <div class="page-title">媽媽憂鬱量表樣版 <small style="font-weight:400;color:var(--muted);font-size:.9rem">愛丁堡產後憂鬱量表 EPDS 標準樣版</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <a class="btn small secondary" href="#/mother-nursing">回媽媽護理</a>
+        <button class="btn small secondary" id="ep-print">資料列印</button>
+      </div>
+      <small style="color:var(--muted)">＊本樣版為標準愛丁堡憂鬱量表（10 題，每題 4 選項，計分 0～3），供「媽媽護理→愛丁堡憂鬱量表」填寫；為維持評分一致性採固定樣版。</small>
+    </div>
+    <div class="card">
+      <div class="sec-hd">量表樣版（${rows.length} 筆＝10 題 × 4 選項）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>筆數</th><th>問題順序</th><th>問題種類說明文字</th><th>答案選項</th><th>問題型態</th><th>答案選項分數</th></tr></thead>
+          <tbody>${rows.map((r, i) => `
+            <tr>
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="問題順序">${r.order}</td>
+              <td data-label="問題種類說明文字">${esc(r.q)}</td>
+              <td data-label="答案選項">${esc(r.opt)}</td>
+              <td data-label="問題型態">單選</td>
+              <td data-label="答案選項分數">${r.score}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
+  $('#ep-print').onclick = () => window.print();
 }
 
 /* ---------- 產後嬰兒結案 ---------- */
@@ -8054,6 +11070,13 @@ const routes = {
   '#/infection': viewInfection,
   '#/residents': viewResidents,
   '#/rooms': viewRooms,
+  '#/sys-option': viewSysOption,
+  '#/cleaning-schedule': viewCleaningSchedule,
+  '#/epds-template': viewEpdsTemplate,
+  '#/room-types': viewRoomTypes,
+  '#/room-list': viewRoomList,
+  '#/room-discounts': viewRoomDiscounts,
+  '#/baby-beds': viewBabyBeds,
   '#/mother-rooms': viewMotherRooms,
   '#/baby-rooms': viewBabyRooms,
   '#/baby-nursing': viewBabyNursing,
@@ -8062,7 +11085,27 @@ const routes = {
   '#/baby-handover': viewBabyHandover,
   '#/baby-close': viewBabyClosure,
   '#/mother-nursing': viewMotherNursing,
+  '#/mother-doctor': viewMotherDoctor,
+  '#/mother-handover': viewMotherHandover,
+  '#/mother-guidance': viewMotherGuidance,
+  '#/mother-close': viewMotherClosure,
   '#/mother-intake': viewMotherIntake,
+  '#/rounds-list': viewRoundsList,
+  '#/baby-announcements': viewBabyAnnouncements,
+  '#/mother-intake-blank': viewMotherIntakeBlank,
+  '#/customers': viewCustomers,
+  '#/client-contracts': viewClientContracts,
+  '#/pp-report': viewPpReport,
+  '#/bulletins': viewBulletins,
+  '#/documents': viewDocuments,
+  '#/cancellations': viewCancellationsQuery,
+  '#/contract-transfers': viewContractTransfersQuery,
+  '#/tour-calendar': viewTourCalendar,
+  '#/tour-visit-blank': viewTourVisitBlank,
+  '#/booking-blank': viewBookingBlank,
+  '#/retail': viewRetail,
+  '#/medical-records': viewMedicalRecords,
+  '#/mother-rooms-print': viewMotherRoomsPrint,
   '#/breastfeeding': viewBreastfeeding,
   '#/bed-planning': viewBedPlanning,
   '#/housekeeping': viewHousekeeping,
@@ -8098,7 +11141,10 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-intake': 'mother_care', '#/breastfeeding': 'baby_care', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
+  '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
+  '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
+  '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': 'baby_care', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/programs': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
   '#/tours': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
@@ -8117,8 +11163,17 @@ async function route() {
   const base = location.hash.split('?')[0];
   let hash = routes[base] ? base : '#/dashboard';
   if (!canAccess(hash)) hash = '#/dashboard';
-  document.querySelectorAll('[data-nav]').forEach(a =>
-    a.classList.toggle('active', a.getAttribute('href') === hash));
+  const fullHash = location.hash || hash;
+  document.querySelectorAll('[data-nav]').forEach(a => {
+    const href = a.getAttribute('href');
+    a.classList.toggle('active', href === fullHash || (href === hash && !href.includes('?')));
+  });
+  document.querySelectorAll('[data-nav-group]').forEach(g => {
+    if ([...g.querySelectorAll('[data-nav]')].some(a => {
+      const href = a.getAttribute('href');
+      return href === fullHash || href.split('?')[0] === hash;
+    })) g.classList.add('open');
+  });
   $('#sidenav').classList.remove('open');
   $('#overlay').classList.remove('show');
   main().innerHTML = '<div class="empty">載入中</div>';
@@ -8160,6 +11215,7 @@ async function showApp() {
     let vis = false;
     for (let el = sec.nextElementSibling; el && !el.hasAttribute('data-section'); el = el.nextElementSibling) {
       if (el.matches('[data-nav]') && el.style.display !== 'none') { vis = true; break; }
+      if (el.matches('[data-nav-group]') && el.querySelector('.nav-group-hd').style.display !== 'none') { vis = true; break; }
     }
     sec.style.display = vis ? '' : 'none';
   });
@@ -8168,6 +11224,10 @@ async function showApp() {
 
 /* ---------- 初始化 ---------- */
 window.addEventListener('hashchange', route);
+// 側欄折疊群組：點標題展開/收合
+document.querySelectorAll('[data-nav-group] .nav-group-hd').forEach(hd => {
+  hd.onclick = () => hd.parentElement.classList.toggle('open');
+});
 
 $('#menu-btn').onclick = () => {
   $('#sidenav').classList.toggle('open');
