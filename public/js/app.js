@@ -5255,6 +5255,10 @@ async function viewPrograms() {
     </tr>`).join('') : '<tr><td colspan="6"><div class="empty">尚未建立課程／服務</div></td></tr>';
   main().innerHTML = `
     <div class="page-title">課程與服務</div>
+    <div class="tabbar no-print" style="margin-bottom:12px">
+      <button class="active">清單</button>
+      <button onclick="location.hash='#/program-calendar'">行事曆</button>
+    </div>
     <div class="card">
       <h3 style="color:var(--primary-dark);font-size:1rem;margin:0 0 8px">待確認報名 <span class="badge ${signups.length ? 'red' : 'green'}">${signups.length}</span></h3>
       <div class="table-wrap"><table class="data stack">
@@ -5265,7 +5269,6 @@ async function viewPrograms() {
       <div class="row" style="justify-content:space-between;align-items:center">
         <h3 style="color:var(--primary-dark);font-size:1rem;margin:0">課程／服務項目</h3>
         <div class="row">
-          <a class="btn small secondary" href="#/program-calendar">課程行事曆</a>
           <button class="btn small secondary" id="pg-neworder">代客報名</button>
           ${isAdmin ? '<button class="btn small" id="pg-new">新增項目</button>' : ''}
         </div>
@@ -5334,7 +5337,11 @@ async function viewProgramCalendar() {
   }
   const wk = ['一', '二', '三', '四', '五', '六', '日'];
   main().innerHTML = `
-    <div class="page-title">課程行事曆</div>
+    <div class="page-title">課程與服務</div>
+    <div class="tabbar no-print" style="margin-bottom:12px">
+      <button onclick="location.hash='#/programs'">清單</button>
+      <button class="active">行事曆</button>
+    </div>
     <div class="card no-print">
       <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div class="row" style="gap:6px">
@@ -5346,10 +5353,9 @@ async function viewProgramCalendar() {
         <div class="row" style="gap:6px">
           <button class="btn small ${st.mode === 'month' ? '' : 'secondary'}" id="pc-month">月</button>
           <button class="btn small ${st.mode === 'week' ? '' : 'secondary'}" id="pc-week">週</button>
-          <a class="btn small secondary" href="#/programs">回課程與服務</a>
         </div>
       </div>
-      <small style="color:var(--muted)"><span class="dot teal"></span> 課程　<span class="dot gray"></span> 服務　（僅顯示有排定時段的項目）</small>
+      <small style="color:var(--muted)"><span class="dot teal"></span> 課程　<span class="dot gray"></span> 服務　（僅顯示有排定時段的項目）${canAccess('#/programs') ? '　點課程可代客報名' : ''}</small>
     </div>
     <div class="card">
       <div class="table-wrap">
@@ -5374,6 +5380,7 @@ async function viewProgramCalendar() {
   $('#pc-today').onclick = () => { st.anchor = todayStr(); viewProgramCalendar(); };
   $('#pc-month').onclick = () => { st.mode = 'month'; viewProgramCalendar(); };
   $('#pc-week').onclick = () => { st.mode = 'week'; viewProgramCalendar(); };
+  const canSignup = canAccess('#/programs');
   main().querySelectorAll('[data-pc]').forEach(el => el.onclick = () => {
     const p = progs.find(x => x.id == el.dataset.pc); if (!p) return;
     openModal(p.name, `
@@ -5381,7 +5388,11 @@ async function viewProgramCalendar() {
       <div class="field"><label>時間</label><div>${esc(p.scheduled_at)}</div></div>
       ${p.location ? `<div class="field"><label>地點</label><div>${esc(p.location)}</div></div>` : ''}
       <div class="field"><label>費用／名額</label><div>${fmtMoney(p.price)}　名額 ${p.capacity > 0 ? p.capacity : '不限'}</div></div>
-      ${p.description ? `<div class="field"><label>說明</label><div>${esc(p.description)}</div></div>` : ''}`, () => {});
+      ${p.description ? `<div class="field"><label>說明</label><div>${esc(p.description)}</div></div>` : ''}
+      ${canSignup ? `<div class="row mt"><button class="btn" id="pc-signup">代客報名</button></div>` : ''}`, body => {
+      const btn = body.querySelector('#pc-signup');
+      if (btn) btn.onclick = () => { closeModal(); openSignupForm(progs.filter(x => x.active !== 0), p.id); };
+    });
   });
 }
 function openProgramForm(p, cats) {
@@ -5421,12 +5432,12 @@ function openProgramForm(p, cats) {
     };
   });
 }
-async function openSignupForm(progs) {
+async function openSignupForm(progs, preselectId) {
   const members = await api('/members');
   openModal('代客報名', `
     <div class="form-grid">
       <div class="field"><label>媽媽 *</label><select id="sg-mother"><option value="">請選擇</option>${members.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
-      <div class="field"><label>項目 *</label><select id="sg-prog"><option value="">請選擇</option>${progs.map(p => `<option value="${p.id}">${esc(p.name)}（${fmtMoney(p.price)}）</option>`).join('')}</select></div>
+      <div class="field"><label>項目 *</label><select id="sg-prog"><option value="">請選擇</option>${progs.map(p => `<option value="${p.id}" ${preselectId != null && p.id == preselectId ? 'selected' : ''}>${esc(p.name)}（${fmtMoney(p.price)}）</option>`).join('')}</select></div>
       <div class="field"><label>數量</label><input type="number" id="sg-qty" min="1" value="1"></div>
       <div class="field"><label>偏好時段（服務）</label><input id="sg-pref"></div>
       <div class="field full"><label>備註</label><input id="sg-note"></div>
