@@ -1193,6 +1193,25 @@ function init() {
   if (!supCols.includes('price')) db.exec('ALTER TABLE supplies ADD COLUMN price INTEGER NOT NULL DEFAULT 0');
   if (!supCols.includes('has_expiry')) db.exec('ALTER TABLE supplies ADD COLUMN has_expiry INTEGER NOT NULL DEFAULT 0');
   if (!supCols.includes('front_sellable')) db.exec('ALTER TABLE supplies ADD COLUMN front_sellable INTEGER NOT NULL DEFAULT 0');
+  // 膳食訂餐狀態：備餐中／已出餐／取消（未訂＝無此筆）
+  const moCols = db.prepare('PRAGMA table_info(meal_orders)').all().map(c => c.name);
+  if (!moCols.includes('status')) db.exec("ALTER TABLE meal_orders ADD COLUMN status TEXT NOT NULL DEFAULT 'preparing'");
+  // 月子餐「我要換餐」：家屬線上申請、員工端審核
+  db.exec(`CREATE TABLE IF NOT EXISTS meal_swap_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    family_id INTEGER REFERENCES family_members(id),
+    meal_date TEXT NOT NULL,
+    slot TEXT NOT NULL DEFAULT '',
+    from_choice TEXT DEFAULT '',
+    to_choice TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+    handled_by INTEGER REFERENCES users(id),
+    handled_at TEXT DEFAULT '',
+    staff_note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  )`);
   // 備品進出：進貨廠商／領貨使用區域／有效日期
   const stxCols = db.prepare('PRAGMA table_info(supply_txns)').all().map(c => c.name);
   if (!stxCols.includes('vendor')) db.exec("ALTER TABLE supply_txns ADD COLUMN vendor TEXT DEFAULT ''");
@@ -1234,6 +1253,10 @@ function init() {
     tx();
     db.pragma('foreign_keys = ON');
   }
+  // 餵奶：親餵左／右分鐘數（須在上方 baby_records 重建之後，避免被重建捨棄）
+  const brFeedCols = db.prepare('PRAGMA table_info(baby_records)').all().map(c => c.name);
+  if (!brFeedCols.includes('feed_left_min')) db.exec('ALTER TABLE baby_records ADD COLUMN feed_left_min INTEGER');
+  if (!brFeedCols.includes('feed_right_min')) db.exec('ALTER TABLE baby_records ADD COLUMN feed_right_min INTEGER');
 
   // 擴充媽媽照護紀錄：血壓、脈搏、排泄、泌乳指導、用藥
   const mrSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='mother_records'").get() || {}).sql || '';

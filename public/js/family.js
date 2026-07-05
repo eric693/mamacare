@@ -238,6 +238,9 @@ async function loadConfinementMeal() {
     $('#panel').innerHTML = '<div class="card"><h3>月子餐</h3><div class="empty">這一天沒有在住資料</div></div>';
     return;
   }
+  let swaps = [];
+  try { swaps = await api('/family/meal-swap'); } catch (e) { swaps = []; }
+  const SWST = { pending: ['待審核', 'yellow'], approved: ['已同意', 'green'], rejected: ['未同意', 'red'] };
   const dish = (label, v) => v ? `<div><small style="color:var(--muted)">${label}</small> ${esc(v)}</div>` : '';
   const cards = plan.slots.map(s => `
     <div class="card" style="margin:0">
@@ -252,7 +255,34 @@ async function loadConfinementMeal() {
       <h3>${esc(plan.mother_name)} 的月子餐</h3>
       <p style="font-size:.85rem;color:var(--muted)">${esc(date)}　產後第 ${plan.postpartum_day ?? '-'} 天　餐期：${esc(plan.stage || '不分期')}　飲食：${esc(plan.diet)}</p>
     </div>
-    <div style="display:grid;gap:10px;margin-top:4px">${cards}</div>`;
+    <div style="display:grid;gap:10px;margin-top:4px">${cards}</div>
+    <div class="card" style="margin-top:10px">
+      <h3>我要換餐</h3>
+      <p style="font-size:.85rem;color:var(--muted)">若當日餐點需要調整，可線上提出申請，由護理站／膳食部審核。</p>
+      <div class="field"><label>餐別</label><select id="sw-slot">${plan.slots.map(s => `<option>${esc(s.slot)}</option>`).join('')}</select></div>
+      <div class="field"><label>希望更換為</label><input id="sw-to" placeholder="例如：素食／不要麻油"></div>
+      <div class="field"><label>原因／備註</label><textarea id="sw-reason" rows="2" placeholder="例如：對某食材過敏"></textarea></div>
+      <div class="row"><button class="btn" id="sw-send">送出換餐申請</button><span class="error-msg" id="sw-err"></span><span id="sw-ok" style="color:var(--ok)"></span></div>
+      <h4 style="margin:12px 0 4px">我的換餐申請</h4>
+      ${swaps.length ? `<div class="table-wrap"><table class="data stack">
+        <thead><tr><th>日期</th><th>餐別</th><th>希望更換／原因</th><th>狀態</th></tr></thead>
+        <tbody>${swaps.map(s => `<tr>
+          <td data-label="日期"><small>${esc(s.meal_date)}</small></td>
+          <td data-label="餐別">${esc(s.slot || '-')}</td>
+          <td data-label="內容">${esc(s.to_choice || '')}${s.reason ? `<br><small style="color:var(--muted)">${esc(s.reason)}</small>` : ''}${s.staff_note ? `<br><small>護理站：${esc(s.staff_note)}</small>` : ''}</td>
+          <td data-label="狀態"><span class="badge ${SWST[s.status] ? SWST[s.status][1] : 'gray'}">${SWST[s.status] ? SWST[s.status][0] : s.status}</span></td>
+        </tr>`).join('')}</tbody></table></div>` : '<div class="empty">尚無換餐申請</div>'}
+    </div>`;
+  $('#sw-send').onclick = async () => {
+    $('#sw-err').textContent = ''; $('#sw-ok').textContent = '';
+    const to = $('#sw-to').value.trim(), reason = $('#sw-reason').value.trim();
+    if (!to && !reason) { $('#sw-err').textContent = '請填寫希望更換內容或原因'; return; }
+    try {
+      await api('/family/meal-swap', { method: 'POST', body: { meal_date: date, slot: $('#sw-slot').value, to_choice: to, reason } });
+      $('#sw-ok').textContent = '已送出，請待審核';
+      loadConfinementMeal();
+    } catch (e) { $('#sw-err').textContent = e.message; }
+  };
 }
 
 const shopCart = {};
@@ -386,6 +416,22 @@ async function loadPrograms() {
       </div>
     </div>`;
   }).join('') : '<div class="empty">目前沒有開放的課程／服務</div>';
+  // 課表：有排定時段的課程／服務，依日期分組（僅列今日起）
+  const nowD = new Date();
+  const todayS = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
+  const WD = ['日', '一', '二', '三', '四', '五', '六'];
+  const sched = progs.filter(p => p.scheduled_at && /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at) && p.scheduled_at.slice(0, 10) >= todayS)
+    .sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at));
+  const schedByDate = {};
+  sched.forEach(p => { const d = p.scheduled_at.slice(0, 10); (schedByDate[d] = schedByDate[d] || []).push(p); });
+  const schedHtml = sched.length ? Object.keys(schedByDate).sort().map(d => {
+    const wd = WD[new Date(d.replace(/-/g, '/')).getDay()];
+    return `<div style="margin-top:8px"><div style="font-weight:600;font-size:.85rem;color:var(--primary-dark)">${esc(d)}（${wd}）</div>
+      ${schedByDate[d].map(p => `<div style="display:flex;gap:8px;font-size:.85rem;padding:3px 0;border-bottom:1px dashed var(--border)">
+        <span style="min-width:44px;color:var(--muted)">${esc(p.scheduled_at.slice(11, 16) || '—')}</span>
+        <span><span class="badge ${p.kind === 'course' ? 'teal' : 'gray'}">${KIND[p.kind]}</span> ${esc(p.name)}${p.location ? `　<small style="color:var(--muted)">${esc(p.location)}</small>` : ''}</span>
+      </div>`).join('')}</div>`;
+  }).join('') : '<div class="empty">近期尚無排定課表</div>';
   const suRows = signups.length ? signups.map(s => `
     <tr>
       <td data-label="日期"><small>${esc((s.created_at || '').slice(0, 16))}</small></td>
@@ -394,6 +440,11 @@ async function loadPrograms() {
       <td data-label="狀態"><span class="badge ${s.status === 'confirmed' ? 'green' : s.status === 'cancelled' ? 'red' : 'yellow'}">${ST[s.status] || s.status}</span></td>
     </tr>`).join('') : '<tr><td colspan="4"><div class="empty">尚無報名紀錄</div></td></tr>';
   $('#panel').innerHTML = `
+    <div class="card">
+      <h3>課表</h3>
+      <p style="font-size:.85rem;color:var(--muted)">近期已排定時段的課程／服務。</p>
+      <div>${schedHtml}</div>
+    </div>
     <div class="card">
       <h3>課程／服務</h3>
       <p style="font-size:.85rem;color:var(--muted)">報名後由護理站確認，費用將列入您的帳單於現場結算。</p>

@@ -162,7 +162,7 @@ const MODULE_RULES = [
   [/^\/api\/(programs|signups)/, 'programs'],
   [/^\/api\/members/, 'members'],
   [/^\/api\/coupons/, 'coupons'],
-  [/^\/api\/(meals|meal-menu|meal-plan|meal-config)/, 'meals'],
+  [/^\/api\/(meals|meal-menu|meal-plan|meal-config|meal-swaps)/, 'meals'],
   [/^\/api\/tours/, 'tours'],
   [/^\/api\/tour-slots/, 'tours'],
   [/^\/api\/customers/, 'tours'],
@@ -553,11 +553,13 @@ app.post('/api/babies/:id/records', requireStaff, (req, res) => {
   // 紅臀程度僅在換尿布紀錄有意義，且須為合法選項，否則存空字串（未評估）
   const rash = (r.record_type === 'diaper' && DIAPER_RASH_LEVELS.includes(r.diaper_rash))
     ? r.diaper_rash : '';
+  const lmin = r.record_type === 'feeding' && r.feed_left_min !== '' && r.feed_left_min != null ? Math.max(0, Math.round(Number(r.feed_left_min))) : null;
+  const rmin = r.record_type === 'feeding' && r.feed_right_min !== '' && r.feed_right_min != null ? Math.max(0, Math.round(Number(r.feed_right_min))) : null;
   const info = db.prepare(`INSERT INTO baby_records
-    (baby_id, nurse_id, record_type, feed_method, amount_ml, diaper_kind, diaper_rash, value_num, value_text, note, location, recorded_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (baby_id, nurse_id, record_type, feed_method, amount_ml, feed_left_min, feed_right_min, diaper_kind, diaper_rash, value_num, value_text, note, location, recorded_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     req.params.id, req.session.user.id, r.record_type, r.feed_method || '',
-    r.amount_ml || null, r.diaper_kind || '', rash, r.value_num ?? null, (r.value_text || '').slice(0, 200), r.note || '', location, recordedAt);
+    r.amount_ml || null, lmin, rmin, r.diaper_kind || '', rash, r.value_num ?? null, (r.value_text || '').slice(0, 200), r.note || '', location, recordedAt);
   maybeAlertAbnormal(req.params.id, r.record_type, r.value_num, recordedAt); // 異常即時通知值班
   res.json({ id: info.lastInsertRowid });
 });
@@ -2735,6 +2737,34 @@ app.post('/api/products', requireAdmin, (req, res) => {
   res.json({ id: info.lastInsertRowid });
 });
 
+// 商城商品批次匯入（CSV 前端解析後送陣列）；以品名為鍵，存在則更新、否則新增
+app.post('/api/products/import', requireAdmin, (req, res) => {
+  const list = Array.isArray((req.body || {}).items) ? req.body.items : [];
+  if (!list.length) return res.status(400).json({ error: '沒有可匯入的商品' });
+  const findByName = db.prepare('SELECT id FROM products WHERE name = ?');
+  const ins = db.prepare(`INSERT INTO products (name, category, price, cost, description, track_stock, stock, active, sort, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  const upd = db.prepare('UPDATE products SET category=?, price=?, cost=?, description=?, track_stock=?, stock=?, active=? WHERE id=?');
+  let added = 0, updated = 0, skipped = 0;
+  const tx = db.transaction(() => {
+    for (const r of list) {
+      const name = String(r.name || '').trim();
+      if (!name) { skipped++; continue; }
+      const category = String(r.category || '').slice(0, 40);
+      const price = Math.round(Number(r.price) || 0), cost = Math.round(Number(r.cost) || 0);
+      const desc = String(r.description || '').slice(0, 500);
+      const track = /^(1|y|yes|是|v)$/i.test(String(r.track_stock || '')) ? 1 : 0;
+      const stock = Math.round(Number(r.stock) || 0);
+      const active = String(r.active || '') === '' ? 1 : (/^(1|y|yes|是|上架|v)$/i.test(String(r.active)) ? 1 : 0);
+      const exist = findByName.get(name);
+      if (exist) { upd.run(category, price, cost, desc, track, stock, active, exist.id); updated++; }
+      else { ins.run(name, category, price, cost, desc, track, stock, active, 0, req.session.user.id); added++; }
+    }
+  });
+  tx();
+  res.json({ added, updated, skipped });
+});
+
 app.put('/api/products/:id', requireAdmin, (req, res) => {
   const cur = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到商品' });
@@ -3373,10 +3403,26 @@ app.post('/api/meals', requireStaff, (req, res) => {
       .run(o.mother_id, o.meal_date, o.meal_type);
     return res.json({ ok: true });
   }
-  db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note)
-    VALUES (?,?,?,?,?)
-    ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note`)
-    .run(o.mother_id, o.meal_date, o.meal_type, o.choice, o.note || '');
+  const status = ['preparing', 'served', 'cancelled'].includes(o.status) ? o.status : 'preparing';
+  db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note, status)
+    VALUES (?,?,?,?,?,?)
+    ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note, status = excluded.status`)
+    .run(o.mother_id, o.meal_date, o.meal_type, o.choice, o.note || '', status);
+  res.json({ ok: true });
+});
+
+// 僅更新訂餐狀態／備註（不改餐點選擇）
+app.post('/api/meals/status', requireStaff, (req, res) => {
+  const o = req.body || {};
+  if (!o.mother_id || !o.meal_date || !['breakfast', 'lunch', 'dinner'].includes(o.meal_type)) {
+    return res.status(400).json({ error: '媽媽、日期與餐別必填' });
+  }
+  const cur = db.prepare('SELECT * FROM meal_orders WHERE mother_id=? AND meal_date=? AND meal_type=?')
+    .get(o.mother_id, o.meal_date, o.meal_type);
+  if (!cur) return res.status(404).json({ error: '此餐尚未訂餐' });
+  const status = ['preparing', 'served', 'cancelled'].includes(o.status) ? o.status : cur.status;
+  db.prepare('UPDATE meal_orders SET status=?, note=? WHERE id=?')
+    .run(status, o.note !== undefined ? o.note : cur.note, cur.id);
   res.json({ ok: true });
 });
 
@@ -3500,6 +3546,44 @@ app.get('/api/family/meal-plan', requireFamily, (req, res) => {
   const menus = db.prepare('SELECT * FROM meal_menu WHERE menu_date = ?').all(date);
   const slots = cfg.slots.map(slot => ({ slot, menu: pickMenu(menus.filter(x => x.slot === slot), stage.name, diet) }));
   res.json({ date, available: true, mother_name: m.name, postpartum_day: stage.day, stage: stage.name, diet, slots });
+});
+
+// 月子餐「我要換餐」：家屬線上申請 / 查詢
+app.post('/api/family/meal-swap', requireFamily, (req, res) => {
+  const mid = familyMotherId(req.session.family);
+  if (!mid) return res.status(400).json({ error: '找不到寶寶／媽媽資料' });
+  const b = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.meal_date || '')) return res.status(400).json({ error: '請選擇日期' });
+  if (!String(b.to_choice || '').trim() && !String(b.reason || '').trim()) return res.status(400).json({ error: '請填寫希望更換內容或原因' });
+  const info = db.prepare(`INSERT INTO meal_swap_requests (mother_id, family_id, meal_date, slot, from_choice, to_choice, reason)
+    VALUES (?,?,?,?,?,?,?)`).run(mid, req.session.family.id, b.meal_date, String(b.slot || '').slice(0, 20),
+    String(b.from_choice || '').slice(0, 60), String(b.to_choice || '').slice(0, 60), String(b.reason || '').slice(0, 200));
+  res.json({ id: info.lastInsertRowid });
+});
+app.get('/api/family/meal-swap', requireFamily, (req, res) => {
+  res.json(db.prepare('SELECT * FROM meal_swap_requests WHERE family_id = ? ORDER BY id DESC LIMIT 50').all(req.session.family.id));
+});
+
+// 月子餐換餐申請：員工端審核
+app.get('/api/meal-swaps', requireStaff, (req, res) => {
+  const status = req.query.status;
+  const where = ['pending', 'approved', 'rejected'].includes(status) ? 'WHERE msr.status = ?' : '';
+  const args = where ? [status] : [];
+  res.json(db.prepare(`SELECT msr.*, m.name AS mother_name, f.name AS family_name, u.name AS handled_by_name
+    FROM meal_swap_requests msr
+    JOIN mothers m ON m.id = msr.mother_id
+    LEFT JOIN family_members f ON f.id = msr.family_id
+    LEFT JOIN users u ON u.id = msr.handled_by
+    ${where} ORDER BY (msr.status = 'pending') DESC, msr.id DESC LIMIT 200`).all(...args));
+});
+app.post('/api/meal-swaps/:id/handle', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM meal_swap_requests WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到換餐申請' });
+  const action = (req.body || {}).action;
+  if (!['approved', 'rejected'].includes(action)) return res.status(400).json({ error: '動作不正確' });
+  db.prepare('UPDATE meal_swap_requests SET status = ?, handled_by = ?, handled_at = ?, staff_note = ? WHERE id = ?')
+    .run(action, req.session.user.id, new Date().toLocaleString('sv-SE').slice(0, 19), String((req.body || {}).staff_note || '').slice(0, 200), cur.id);
+  res.json({ ok: true });
 });
 
 // ---------- 參觀預約（潛在客戶追蹤） ----------

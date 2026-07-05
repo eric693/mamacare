@@ -48,6 +48,7 @@ const STATUS_BADGE = {
   reserved: 'yellow', checked_in: 'green', checked_out: 'gray', cancelled: 'gray'
 };
 const MEAL_LABEL = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' };
+const MEAL_STATUS = { preparing: '備餐中', served: '已出餐', cancelled: '取消' };
 const LOCATION_LABEL = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內' };
 const LOCATION_BADGE = { nursery: 'teal', rooming: 'purple', isolation: 'yellow', out: 'green' };
 // 寶寶房況卡片圖例顏色（標題＝性別、卡身＝狀態）
@@ -141,7 +142,9 @@ function babyRecordDetail(r) {
   switch (r.record_type) {
     case 'feeding': {
       const amt = r.amount_ml ? ` ${r.amount_ml} ml` : '';
-      return `${r.feed_method || ''}${amt}`;
+      const lr = (r.feed_left_min != null || r.feed_right_min != null)
+        ? ` 親餵 左${r.feed_left_min ?? 0}/右${r.feed_right_min ?? 0} 分` : '';
+      return `${r.feed_method || ''}${amt}${lr}`;
     }
     case 'diaper': {
       const base = r.diaper_kind === '便' ? '大便' : '小便(濕)';
@@ -481,6 +484,7 @@ async function viewBabyCare() {
         <button class="btn small secondary" data-quick="wet">濕尿布</button>
         <button class="btn small secondary" data-quick="stool">大便</button>
         <button class="btn small secondary" data-quick="bath">沐浴完成</button>
+        <button class="btn small" id="bc-quickfeed">餵奶</button>
       </div>
       <div class="row mt" id="bc-loc"></div>
       <div class="ok-msg" id="bc-msg"></div>
@@ -586,6 +590,34 @@ async function viewBabyCare() {
 
   $('#bc-round').onclick = () => openBatchRound(list.filter(b => b.mother_status === 'checked_in'), refresh);
 
+  // 餵奶一鍵快速記錄：精簡輸入（方式＋奶量／親餵左右分鐘）
+  $('#bc-quickfeed').onclick = () => {
+    const babyId = $('#bc-baby').value;
+    if (!babyId) return;
+    const feeds = feedMethods();
+    openModal('快速餵奶紀錄', `
+      <div class="field"><label>餵食方式</label><select id="qf-method">${feeds.map(m => `<option>${esc(m)}</option>`).join('')}</select></div>
+      <div class="field"><label>奶量 (ml)<small>（瓶餵）</small></label><input type="number" min="0" id="qf-ml" inputmode="numeric"></div>
+      <div class="field"><label>親餵分鐘（左／右）</label>
+        <div class="row" style="gap:6px;align-items:center">左 <input type="number" min="0" id="qf-lmin" inputmode="numeric" style="width:70px"> 分　右 <input type="number" min="0" id="qf-rmin" inputmode="numeric" style="width:70px"> 分</div></div>
+      <div class="field"><label>備註</label><input id="qf-note"></div>
+      <div class="row mt"><button class="btn" id="qf-save">記錄</button><span class="error-msg" id="qf-err"></span></div>`, body => {
+      body.querySelector('#qf-save').onclick = async () => {
+        try {
+          await api(`/babies/${babyId}/records`, { method: 'POST', body: {
+            record_type: 'feeding', feed_method: body.querySelector('#qf-method').value,
+            amount_ml: Number(body.querySelector('#qf-ml').value) || null,
+            feed_left_min: body.querySelector('#qf-lmin').value, feed_right_min: body.querySelector('#qf-rmin').value,
+            note: body.querySelector('#qf-note').value.trim()
+          } });
+          closeModal(); $('#bc-msg').textContent = '已記錄餵奶';
+          setTimeout(() => { const el = $('#bc-msg'); if (el) el.textContent = ''; }, 1500);
+          refresh();
+        } catch (e) { body.querySelector('#qf-err').textContent = e.message; }
+      };
+    });
+  };
+
   $('#bc-add').onclick = () => {
     const babyId = $('#bc-baby').value;
     if (!babyId) return;
@@ -617,6 +649,13 @@ async function viewBabyCare() {
         <div class="field" id="nr-amount-wrap">
           <label>奶量 (ml)</label>
           <input type="number" id="nr-amount" min="0" inputmode="numeric">
+        </div>
+        <div class="field" id="nr-lrmin-wrap">
+          <label>親餵分鐘（左／右）</label>
+          <div class="row" style="gap:6px;align-items:center">
+            左 <input type="number" id="nr-lmin" min="0" inputmode="numeric" style="width:70px"> 分
+            右 <input type="number" id="nr-rmin" min="0" inputmode="numeric" style="width:70px"> 分
+          </div>
         </div>
         <div class="field" id="nr-diaper-wrap" hidden>
           <label>尿布內容</label>
@@ -653,6 +692,7 @@ async function viewBabyCare() {
         const t = body.querySelector('#nr-type').value;
         body.querySelector('#nr-feed-wrap').hidden = t !== 'feeding';
         body.querySelector('#nr-amount-wrap').hidden = t !== 'feeding';
+        body.querySelector('#nr-lrmin-wrap').hidden = t !== 'feeding';
         body.querySelector('#nr-diaper-wrap').hidden = t !== 'diaper';
         body.querySelector('#nr-rash-wrap').hidden = t !== 'diaper';
         const needValue = !!BABY_NUM_UNIT[t];
@@ -677,6 +717,8 @@ async function viewBabyCare() {
               record_type: t,
               feed_method: t === 'feeding' ? body.querySelector('#nr-feed').value : '',
               amount_ml: t === 'feeding' ? Number(body.querySelector('#nr-amount').value) || null : null,
+              feed_left_min: t === 'feeding' ? body.querySelector('#nr-lmin').value : '',
+              feed_right_min: t === 'feeding' ? body.querySelector('#nr-rmin').value : '',
               diaper_kind: t === 'diaper' ? body.querySelector('#nr-diaper').value : '',
               diaper_rash: t === 'diaper' ? body.querySelector('#nr-rash').value : '',
               value_num: BABY_NUM_UNIT[t] ? Number(body.querySelector('#nr-value').value) || null : null,
@@ -2069,7 +2111,12 @@ async function viewMeals() {
                   <option value="">未訂</option>
                   ${mealChoices().map(c =>
                     `<option ${o && o.choice === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
-                </select></td>`;
+                </select>
+                ${o ? `<select data-mstatus="${m.id}:${mt}" style="margin-top:3px;font-size:.8rem">
+                  ${Object.entries(MEAL_STATUS).map(([k, v]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+                <input data-mnote="${m.id}:${mt}" value="${esc(o.note || '')}" placeholder="備註" style="width:100%;margin-top:2px;font-size:.8rem">` : ''}
+              </td>`;
             }).join('')}
           </tr>`).join('')}</tbody>
       </table></div>` : '<div class="empty">該日無在住媽媽</div>');
@@ -2108,12 +2155,24 @@ async function viewMeals() {
     $('#ml-grid').querySelectorAll('[data-meal]').forEach(sel => {
       sel.onchange = async () => {
         const [mid, mt] = sel.dataset.meal.split(':');
+        const o = orderOf(Number(mid), mt);
         await api('/meals', {
           method: 'POST',
-          body: { mother_id: Number(mid), meal_date: $('#ml-date').value, meal_type: mt, choice: sel.value }
+          body: { mother_id: Number(mid), meal_date: $('#ml-date').value, meal_type: mt, choice: sel.value, note: o ? o.note : '', status: o ? o.status : 'preparing' }
         });
         refresh();
       };
+    });
+    // 訂餐狀態 / 備註（不改餐點選擇）
+    const patchStatus = async (mid, mt, body) => {
+      try { await api('/meals/status', { method: 'POST', body: { mother_id: Number(mid), meal_date: $('#ml-date').value, meal_type: mt, ...body } }); }
+      catch (e) { alert(e.message); }
+    };
+    $('#ml-grid').querySelectorAll('[data-mstatus]').forEach(sel => {
+      sel.onchange = () => { const [mid, mt] = sel.dataset.mstatus.split(':'); patchStatus(mid, mt, { status: sel.value }).then(refresh); };
+    });
+    $('#ml-grid').querySelectorAll('[data-mnote]').forEach(inp => {
+      inp.onchange = () => { const [mid, mt] = inp.dataset.mnote.split(':'); patchStatus(mid, mt, { note: inp.value }); };
     });
   };
 
@@ -2158,12 +2217,46 @@ async function viewMealPlan() {
       </div>
       ${mealCfg.stages.length ? `<p style="font-size:.82rem;color:var(--muted);margin:8px 0 0">餐期階段：${mealCfg.stages.map(s => `${esc(s.name)}（第${s.from}–${s.to}天）`).join('、')}。可於系統設定調整。</p>` : ''}
     </div>
-    <div id="mp-body"><div class="empty">載入中</div></div>`;
+    <div id="mp-body"><div class="empty">載入中</div></div>
+    <div id="mp-swaps"></div>`;
   const draw = () => mealPlanTab === 'serving' ? drawServing() : drawMenu();
   $('#mp-date').onchange = draw;
   $('#mp-tab-serving').onclick = () => { mealPlanTab = 'serving'; $('#mp-tab-serving').classList.add('active'); $('#mp-tab-menu').classList.remove('active'); draw(); };
   $('#mp-tab-menu').onclick = () => { mealPlanTab = 'menu'; $('#mp-tab-menu').classList.add('active'); $('#mp-tab-serving').classList.remove('active'); draw(); };
   draw();
+  loadMealSwaps();
+}
+
+// 家屬換餐申請審核（併入月子餐管理）
+async function loadMealSwaps() {
+  const box = $('#mp-swaps'); if (!box) return;
+  const swaps = await api('/meal-swaps').catch(() => []);
+  const SWST = { pending: ['待審核', 'yellow'], approved: ['已同意', 'green'], rejected: ['未同意', 'red'] };
+  const pending = swaps.filter(s => s.status === 'pending').length;
+  box.innerHTML = `
+    <div class="card">
+      <h3 style="color:var(--primary-dark);font-size:1rem;margin:0 0 8px">家屬換餐申請 <span class="badge ${pending ? 'red' : 'green'}">${pending}</span></h3>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>申請時間</th><th>媽媽／家屬</th><th>日期・餐別</th><th>希望更換／原因</th><th>狀態</th><th class="no-print"></th></tr></thead>
+        <tbody>${swaps.length ? swaps.map(s => `
+          <tr>
+            <td data-label="申請時間"><small>${esc((s.created_at || '').slice(0, 16))}</small></td>
+            <td data-label="媽媽／家屬">${esc(s.mother_name || '-')}${s.family_name ? `<br><small>${esc(s.family_name)}</small>` : ''}</td>
+            <td data-label="日期・餐別">${esc(s.meal_date)}<br><small>${esc(s.slot || '-')}</small></td>
+            <td data-label="希望更換／原因">${esc(s.to_choice || '')}${s.reason ? `<br><small style="color:var(--muted)">${esc(s.reason)}</small>` : ''}${s.staff_note ? `<br><small>備註：${esc(s.staff_note)}</small>` : ''}</td>
+            <td data-label="狀態"><span class="badge ${SWST[s.status] ? SWST[s.status][1] : 'gray'}">${SWST[s.status] ? SWST[s.status][0] : s.status}</span>${s.handled_by_name ? `<br><small>${esc(s.handled_by_name)}</small>` : ''}</td>
+            <td data-label="" class="no-print">${s.status === 'pending' ? `<button class="btn small" data-swap-ok="${s.id}">同意</button> <button class="btn small danger" data-swap-no="${s.id}">婉拒</button>` : ''}</td>
+          </tr>`).join('') : '<tr><td colspan="6"><div class="empty">目前沒有換餐申請</div></td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+  const handle = async (id, action) => {
+    let note = '';
+    if (action === 'rejected') { note = prompt('婉拒原因（可留空，會回饋給家屬）：', '') || ''; }
+    try { await api(`/meal-swaps/${id}/handle`, { method: 'POST', body: { action, staff_note: note } }); loadMealSwaps(); }
+    catch (e) { alert(e.message); }
+  };
+  box.querySelectorAll('[data-swap-ok]').forEach(b => b.onclick = () => handle(b.dataset.swapOk, 'approved'));
+  box.querySelectorAll('[data-swap-no]').forEach(b => b.onclick = () => handle(b.dataset.swapNo, 'rejected'));
 }
 
 function menuCell(mu) {
@@ -4352,7 +4445,7 @@ async function viewShop() {
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center">
         <h3 style="color:var(--primary-dark);font-size:1rem;margin:0">商品管理</h3>
-        ${isAdmin ? '<button class="btn small" id="shop-newprod">新增商品</button>' : ''}
+        ${isAdmin ? '<div class="row" style="gap:8px"><button class="btn small" id="shop-newprod">新增商品</button><button class="btn small secondary" id="shop-import">匯入 CSV</button></div>' : ''}
       </div>
       <input class="prod-search" placeholder="搜尋商品名稱 / 分類…" style="width:100%;margin-top:10px;padding:8px 12px;border:1px solid var(--border);border-radius:8px">
       <div class="prod-grid" style="margin-top:10px">${prodCards}</div>
@@ -4386,6 +4479,7 @@ async function viewShop() {
     main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () =>
       openProductForm(products.find(p => p.id == b.dataset.edit), distinctCats(products)));
     main().querySelector('#shop-newprod').onclick = () => openProductForm(null, distinctCats(products));
+    main().querySelector('#shop-import').onclick = () => productImportModal();
     main().querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
       const p = products.find(x => x.id == b.dataset.toggle);
       try { await api(`/products/${p.id}`, { method: 'PUT', body: { active: p.active ? 0 : 1 } }); viewShop(); }
@@ -4395,6 +4489,35 @@ async function viewShop() {
   main().querySelector('#shop-neworder').onclick = () => openStaffOrderForm(products.filter(p => p.active));
 }
 
+function productImportModal() {
+  const MAP = { name: ['商品名稱', '品名', '名稱', 'name'], category: ['分類', '商品分類', 'category'],
+    price: ['售價', '價格', 'price'], cost: ['成本', 'cost'], stock: ['庫存', 'stock'],
+    track_stock: ['管控庫存', 'track_stock'], active: ['上架', '啟用', 'active'], description: ['描述', '說明', 'description'] };
+  openModal('匯入商城商品 CSV', `
+    <div class="field"><label>選擇 CSV 檔</label><input type="file" id="pi-file" accept=".csv,text/csv"></div>
+    <div class="field"><label>或直接貼上 CSV 內容</label><textarea id="pi-text" rows="6" placeholder="商品名稱,分類,售價,成本,庫存,管控庫存,上架,描述"></textarea></div>
+    <small style="color:var(--muted)">＊第一列為標題，以商品名稱為鍵：已存在則更新、否則新增。管控庫存／上架填 yes／是／1 代表開啟。</small>
+    <div class="row mt"><button class="btn" id="pi-go">匯入</button><span class="error-msg" id="pi-err"></span></div>`, body => {
+    body.querySelector('#pi-file').onchange = e => {
+      const f = e.target.files[0]; if (!f) return;
+      const r = new FileReader(); r.onload = () => { body.querySelector('#pi-text').value = r.result; }; r.readAsText(f, 'utf-8');
+    };
+    body.querySelector('#pi-go').onclick = async () => {
+      const rows = parseCsv(body.querySelector('#pi-text').value);
+      if (rows.length < 2) { body.querySelector('#pi-err').textContent = '請提供含標題列的 CSV'; return; }
+      const header = rows[0].map(h => h.trim());
+      const idx = {}; for (const k in MAP) idx[k] = header.findIndex(h => MAP[k].includes(h));
+      if (idx.name < 0) { body.querySelector('#pi-err').textContent = '找不到「商品名稱」欄'; return; }
+      const items = rows.slice(1).map(r => { const o = {}; for (const k in idx) if (idx[k] >= 0) o[k] = (r[idx[k]] || '').trim(); return o; }).filter(o => o.name);
+      if (!items.length) { body.querySelector('#pi-err').textContent = '沒有可匯入的商品'; return; }
+      try {
+        const res = await api('/products/import', { method: 'POST', body: { items } });
+        alert(`匯入完成：新增 ${res.added}、更新 ${res.updated}、略過 ${res.skipped}`);
+        closeModal(); viewShop();
+      } catch (e) { body.querySelector('#pi-err').textContent = e.message; }
+    };
+  });
+}
 function openProductForm(p, cats) {
   const ed = p || {};
   openModal(ed.id ? '編輯商品' : '新增商品', `
@@ -5134,6 +5257,7 @@ async function viewPrograms() {
       <div class="row" style="justify-content:space-between;align-items:center">
         <h3 style="color:var(--primary-dark);font-size:1rem;margin:0">課程／服務項目</h3>
         <div class="row">
+          <a class="btn small secondary" href="#/program-calendar">課程行事曆</a>
           <button class="btn small secondary" id="pg-neworder">代客報名</button>
           ${isAdmin ? '<button class="btn small" id="pg-new">新增項目</button>' : ''}
         </div>
@@ -5158,6 +5282,99 @@ async function viewPrograms() {
     main().querySelector('#pg-new').onclick = () => openProgramForm(null, distinctCats(progs));
     main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openProgramForm(progs.find(p => p.id == b.dataset.edit), distinctCats(progs)));
   }
+}
+
+/* ---------- 課程行事曆（月／週檢視） ---------- */
+let _pcState = null;
+async function viewProgramCalendar() {
+  const progs = (await api('/programs')).filter(p => p.active && p.scheduled_at && /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at));
+  const KIND = { course: '課程', service: '服務' };
+  // 以日期分組
+  const byDate = {};
+  for (const p of progs) { const d = p.scheduled_at.slice(0, 10); (byDate[d] = byDate[d] || []).push(p); }
+  for (const d in byDate) byDate[d].sort((a, b) => (a.scheduled_at || '').localeCompare(b.scheduled_at || ''));
+  if (!_pcState) _pcState = { mode: 'month', anchor: todayStr() };
+  const st = _pcState;
+  const fmtD = dt => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const anchor = parse(st.anchor);
+  const dayCell = (d) => {
+    const key = fmtD(d);
+    const items = (byDate[key] || []).map(p => `<div class="pc-item" title="${esc(p.name)}" data-pc="${p.id}"><span class="dot ${p.kind === 'course' ? 'teal' : 'gray'}"></span>${esc((p.scheduled_at.slice(11, 16) || ''))} ${esc(p.name.length > 8 ? p.name.slice(0, 8) + '…' : p.name)}</div>`).join('');
+    const isToday = key === todayStr();
+    return `<td class="pc-day${isToday ? ' pc-today' : ''}" style="vertical-align:top;height:88px;min-width:90px"><div style="font-size:.8rem;color:var(--muted)">${d.getDate()}</div>${items}</td>`;
+  };
+  let grid = '', title = '';
+  if (st.mode === 'month') {
+    const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7)); // 週一起
+    title = `${anchor.getFullYear()} 年 ${anchor.getMonth() + 1} 月`;
+    let rows = '';
+    for (let w = 0; w < 6; w++) {
+      let tds = '';
+      for (let i = 0; i < 7; i++) { const d = new Date(start); d.setDate(start.getDate() + w * 7 + i); tds += dayCell(d); }
+      rows += `<tr>${tds}</tr>`;
+    }
+    grid = rows;
+  } else {
+    const start = new Date(anchor); start.setDate(anchor.getDate() - ((anchor.getDay() + 6) % 7));
+    const end = new Date(start); end.setDate(start.getDate() + 6);
+    title = `${fmtD(start)} ~ ${fmtD(end)}`;
+    let tds = '';
+    for (let i = 0; i < 7; i++) { const d = new Date(start); d.setDate(start.getDate() + i); tds += dayCell(d); }
+    grid = `<tr>${tds}</tr>`;
+  }
+  const wk = ['一', '二', '三', '四', '五', '六', '日'];
+  main().innerHTML = `
+    <div class="page-title">課程行事曆</div>
+    <div class="card no-print">
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div class="row" style="gap:6px">
+          <button class="btn small secondary" id="pc-prev">‹ 上一${st.mode === 'month' ? '月' : '週'}</button>
+          <button class="btn small secondary" id="pc-today">今天</button>
+          <button class="btn small secondary" id="pc-next">下一${st.mode === 'month' ? '月' : '週'} ›</button>
+          <strong style="align-self:center;margin-left:8px">${title}</strong>
+        </div>
+        <div class="row" style="gap:6px">
+          <button class="btn small ${st.mode === 'month' ? '' : 'secondary'}" id="pc-month">月</button>
+          <button class="btn small ${st.mode === 'week' ? '' : 'secondary'}" id="pc-week">週</button>
+          <a class="btn small secondary" href="#/programs">回課程與服務</a>
+        </div>
+      </div>
+      <small style="color:var(--muted)"><span class="dot teal"></span> 課程　<span class="dot gray"></span> 服務　（僅顯示有排定時段的項目）</small>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data pc-cal"><thead><tr>${wk.map(w => `<th style="text-align:center">週${w}</th>`).join('')}</tr></thead>
+          <tbody>${grid}</tbody></table>
+      </div>
+    </div>
+    <style>
+      .pc-cal td.pc-day{border:1px solid var(--border);padding:3px}
+      .pc-cal td.pc-today{background:#eef6f0}
+      .pc-item{font-size:.72rem;background:#f0f4f8;border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+      .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
+      .dot.teal{background:#2a9d8f}.dot.gray{background:#9aa}
+    </style>`;
+  const shift = (n) => {
+    const a = parse(st.anchor);
+    if (st.mode === 'month') a.setMonth(a.getMonth() + n); else a.setDate(a.getDate() + n * 7);
+    st.anchor = fmtD(a); viewProgramCalendar();
+  };
+  $('#pc-prev').onclick = () => shift(-1);
+  $('#pc-next').onclick = () => shift(1);
+  $('#pc-today').onclick = () => { st.anchor = todayStr(); viewProgramCalendar(); };
+  $('#pc-month').onclick = () => { st.mode = 'month'; viewProgramCalendar(); };
+  $('#pc-week').onclick = () => { st.mode = 'week'; viewProgramCalendar(); };
+  main().querySelectorAll('[data-pc]').forEach(el => el.onclick = () => {
+    const p = progs.find(x => x.id == el.dataset.pc); if (!p) return;
+    openModal(p.name, `
+      <div class="field"><label>類型</label><div>${KIND[p.kind]}${p.category ? '｜' + esc(p.category) : ''}</div></div>
+      <div class="field"><label>時間</label><div>${esc(p.scheduled_at)}</div></div>
+      ${p.location ? `<div class="field"><label>地點</label><div>${esc(p.location)}</div></div>` : ''}
+      <div class="field"><label>費用／名額</label><div>${fmtMoney(p.price)}　名額 ${p.capacity > 0 ? p.capacity : '不限'}</div></div>
+      ${p.description ? `<div class="field"><label>說明</label><div>${esc(p.description)}</div></div>` : ''}`, () => {});
+  });
 }
 function openProgramForm(p, cats) {
   const ed = p || {};
@@ -12204,6 +12421,7 @@ const routes = {
   '#/supply-stocktake': viewSupplyStocktake,
   '#/stocktake-detail': viewStocktakeDetail,
   '#/programs': viewPrograms,
+  '#/program-calendar': viewProgramCalendar,
   '#/members': viewMembers,
   '#/coupons': viewCoupons,
   '#/invoices': viewInvoices,
@@ -12239,7 +12457,7 @@ const ROUTE_PERM = {
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': 'baby_care', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
-  '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/members': 'members', '#/coupons': 'coupons',
+  '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/program-calendar': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
   '#/tours': 'tours', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
   '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys',
