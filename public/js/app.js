@@ -5369,6 +5369,7 @@ async function viewProgramCalendar() {
     <style>
       .pc-cal td.pc-day{border:1px solid var(--border);padding:3px}
       .pc-cal td.pc-today{background:#eef6f0}
+      .pc-cal td.pc-drop{background:#dcefe4;outline:2px dashed var(--primary)}
       .pc-item{font-size:.72rem;background:#f0f4f8;border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
       .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
       .dot.teal{background:#2a9d8f}.dot.gray{background:#9aa}
@@ -5384,8 +5385,26 @@ async function viewProgramCalendar() {
   $('#pc-month').onclick = () => { st.mode = 'month'; viewProgramCalendar(); };
   $('#pc-week').onclick = () => { st.mode = 'week'; viewProgramCalendar(); };
   const canSignup = canAccess('#/programs');
-  if (isAdmin) main().querySelectorAll('[data-add]').forEach(td => td.onclick = () => {
-    openProgramForm({ scheduled_at: td.dataset.add + ' 10:00' }, cats, viewProgramCalendar);
+  if (isAdmin) main().querySelectorAll('[data-add]').forEach(td => {
+    td.onclick = () => openProgramForm({ scheduled_at: td.dataset.add + ' 10:00' }, cats, viewProgramCalendar);
+    // 拖曳改期：課程/服務項目拖到別的日期即改期（保留原時間）
+    td.ondragover = (e) => { e.preventDefault(); td.classList.add('pc-drop'); };
+    td.ondragleave = () => td.classList.remove('pc-drop');
+    td.ondrop = async (e) => {
+      e.preventDefault(); td.classList.remove('pc-drop');
+      const id = e.dataTransfer.getData('text/plain'); if (!id) return;
+      const p = progs.find(x => x.id == id); if (!p) return;
+      const newDate = td.dataset.add;
+      if ((p.scheduled_at || '').slice(0, 10) === newDate) return; // 同一天不動
+      const time = (p.scheduled_at || '').slice(11, 16) || '10:00';
+      try { await api(`/programs/${id}`, { method: 'PUT', body: { scheduled_at: `${newDate} ${time}` } }); viewProgramCalendar(); }
+      catch (err) { alert(err.message); }
+    };
+  });
+  if (isAdmin) main().querySelectorAll('[data-pc]').forEach(el => {
+    el.setAttribute('draggable', 'true');
+    el.style.cursor = 'grab';
+    el.ondragstart = (e) => { e.dataTransfer.setData('text/plain', el.dataset.pc); e.dataTransfer.effectAllowed = 'move'; };
   });
   main().querySelectorAll('[data-pc]').forEach(el => el.onclick = (e) => {
     e.stopPropagation(); // 避免觸發整格的「新增課程」
