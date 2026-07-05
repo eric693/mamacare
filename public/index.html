@@ -59,7 +59,8 @@
       <a href="#/baby-care" data-nav data-perm="baby_care">寶寶照護</a>
       <a href="#/newborn-medical" data-nav data-perm="newborn_medical">新生兒醫療</a>
       <a href="#/physician-visits" data-nav data-perm="physician">醫師巡診</a>
-      <a href="#/mother-care" data-nav data-perm="mother_care">媽媽照護</a>
+      <!-- 隱藏（依需求）：媽媽照護模組，功能仍在、路由可直達 #/mother-care
+      <a href="#/mother-care" data-nav data-perm="mother_care">媽媽照護</a> -->
       <a href="#/handover" data-nav data-perm="handover">護理交班</a>
       <div class="nav-section" data-section>品質與安全</div>
       <a href="#/incidents" data-nav data-perm="incidents">異常事件</a>
@@ -83,6 +84,17 @@
       <a href="#/aging" data-nav data-perm="billing">應收帳齡</a>
       <a href="#/shop" data-nav data-perm="shop">商城商品</a>
       <a href="#/supplies" data-nav data-perm="supplies">耗材庫存</a>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd" data-perm="supplies">備品庫存管理<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/supply-items" data-nav data-perm="supplies">備品名稱設定</a>
+          <a href="#/supply-in" data-nav data-perm="supplies">備品進貨入庫</a>
+          <a href="#/supply-out" data-nav data-perm="supplies">備品領取出庫</a>
+          <a href="#/supply-movements" data-nav data-perm="supplies">備品進出明細表</a>
+          <a href="#/supply-stocktake" data-nav data-perm="supplies">庫存盤點</a>
+          <a href="#/stocktake-detail" data-nav data-perm="supplies">庫存盤點明細表</a>
+        </div>
+      </div>
       <a href="#/programs" data-nav data-perm="programs">課程與服務</a>
       <!-- <a href="#/members" data-nav data-perm="members">會員</a>
       <a href="#/invoices" data-nav data-perm="invoices">電子發票</a> -->
@@ -182,6 +194,7 @@
         </div>
       </div>
       <a href="#/users" data-nav data-perm="users">帳號管理</a>
+      <a href="#/employees" data-nav data-perm="users">員工基本資料</a>
     </nav>
 
     <div class="layout">

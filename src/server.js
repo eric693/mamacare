@@ -158,6 +158,7 @@ const MODULE_RULES = [
   [/^\/api\/products/, 'shop'],
   [/^\/api\/orders/, 'shop'],
   [/^\/api\/supplies/, 'supplies'],
+  [/^\/api\/supply-txns/, 'supplies'],
   [/^\/api\/(programs|signups)/, 'programs'],
   [/^\/api\/members/, 'members'],
   [/^\/api\/coupons/, 'coupons'],
@@ -180,6 +181,7 @@ const MODULE_RULES = [
   [/^\/api\/audit-logs/, 'audit'],
   [/^\/api\/(export|backups)/, 'export'],
   [/^\/api\/users/, 'users'],
+  [/^\/api\/employees/, 'users'],
   [/^\/api\/housekeeping/, 'housekeeping'],
   [/^\/api\/mothers\/\d+\/housekeeping/, 'housekeeping'],
   // 住客／房務的「異動」才受限，讀取（GET）開放給所有員工以供跨模組顯示
@@ -3035,12 +3037,63 @@ app.get('/api/supplies', requireStaff, (req, res) => {
 app.post('/api/supplies', requireAdmin, (req, res) => {
   const s = req.body || {};
   if (!s.name) return res.status(400).json({ error: '品名必填' });
-  const info = db.prepare(`INSERT INTO supplies (name, category, unit, stock, safety_stock, restock_level, note, active)
-    VALUES (?,?,?,?,?,?,?,1)`).run(
+  const info = db.prepare(`INSERT INTO supplies (name, category, unit, stock, safety_stock, restock_level, note, active, code, price, has_expiry, front_sellable)
+    VALUES (?,?,?,?,?,?,?,1,?,?,?,?)`).run(
     s.name, s.category || '', s.unit || '', Math.round(Number(s.stock) || 0),
-    Math.round(Number(s.safety_stock) || 0), Math.round(Number(s.restock_level) || 0), s.note || '');
+    Math.round(Number(s.safety_stock) || 0), Math.round(Number(s.restock_level) || 0), s.note || '',
+    String(s.code || '').slice(0, 40), Math.round(Number(s.price) || 0), s.has_expiry ? 1 : 0, s.front_sellable ? 1 : 0);
   logAudit(req, { action: 'create', entity: 'supply', entity_id: info.lastInsertRowid, summary: s.name });
   res.json({ id: info.lastInsertRowid });
+});
+
+// 備品品項批次匯入（CSV 前端解析後送陣列）；以產品編號為鍵，存在則更新、否則新增
+app.post('/api/supplies/import', requireAdmin, (req, res) => {
+  const list = Array.isArray((req.body || {}).items) ? req.body.items : [];
+  if (!list.length) return res.status(400).json({ error: '沒有可匯入的品項' });
+  const findByCode = db.prepare('SELECT id FROM supplies WHERE code = ? AND code != \'\'');
+  const ins = db.prepare(`INSERT INTO supplies (name, category, unit, safety_stock, note, active, code, price, has_expiry, front_sellable)
+    VALUES (?,?,?,?,?,1,?,?,?,?)`);
+  const upd = db.prepare('UPDATE supplies SET name=?, category=?, unit=?, safety_stock=?, price=?, has_expiry=?, front_sellable=? WHERE id=?');
+  let added = 0, updated = 0, skipped = 0;
+  const tx = db.transaction(() => {
+    for (const r of list) {
+      const name = String(r.name || '').trim();
+      if (!name) { skipped++; continue; }
+      const code = String(r.code || '').trim().slice(0, 40);
+      const category = String(r.category || '').slice(0, 40), unit = String(r.unit || '').slice(0, 20);
+      const price = Math.round(Number(r.price) || 0), safety = Math.round(Number(r.safety_stock) || 0);
+      const hasExp = /^(1|y|yes|是|v)$/i.test(String(r.has_expiry || '')) ? 1 : 0;
+      const front = /^(1|y|yes|是|v)$/i.test(String(r.front_sellable || '')) ? 1 : 0;
+      const exist = code ? findByCode.get(code) : null;
+      if (exist) { upd.run(name, category, unit, safety, price, hasExp, front, exist.id); updated++; }
+      else { ins.run(name, category, unit, safety, '', code, price, hasExp, front); added++; }
+    }
+  });
+  tx();
+  res.json({ added, updated, skipped });
+});
+
+// 備品庫存盤點彙總：每品項的入庫總數／出庫總數／目前庫存（期初＝目前－入庫＋出庫）
+app.get('/api/supplies/stock-summary', requireStaff, (req, res) => {
+  res.json(db.prepare(`SELECT s.id, s.code, s.name, s.category, s.unit, s.stock, s.active,
+      COALESCE((SELECT SUM(quantity) FROM supply_txns WHERE supply_id = s.id AND txn_type = 'in'), 0) AS total_in,
+      COALESCE((SELECT SUM(quantity) FROM supply_txns WHERE supply_id = s.id AND txn_type = 'out'), 0) AS total_out
+    FROM supplies s WHERE s.active = 1 ORDER BY s.category, s.name`).all());
+});
+
+// 備品進出／盤點明細：全域異動清單（type 可篩 in/out/adjust；日期區間）
+app.get('/api/supply-txns', requireStaff, (req, res) => {
+  const type = String(req.query.type || '');
+  const from = String(req.query.from || ''), to = String(req.query.to || '');
+  const cond = [], args = [];
+  if (['in', 'out', 'adjust'].includes(type)) { cond.push('st.txn_type = ?'); args.push(type); }
+  else if (type === 'inout') { cond.push("st.txn_type IN ('in','out')"); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(from)) { cond.push('date(st.created_at) >= ?'); args.push(from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(to)) { cond.push('date(st.created_at) <= ?'); args.push(to); }
+  const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+  res.json(db.prepare(`SELECT st.*, s.name AS supply_name, s.code AS supply_code, s.category AS supply_category, s.unit AS supply_unit, u.name AS staff_name
+    FROM supply_txns st JOIN supplies s ON s.id = st.supply_id LEFT JOIN users u ON u.id = st.created_by
+    ${where} ORDER BY st.id DESC LIMIT 1000`).all(...args));
 });
 
 // 低水位採購（叫貨）單：庫存 ≤ 安全庫存者，建議補到目標補貨量（未設則安全庫存兩倍）
@@ -3057,11 +3110,16 @@ app.put('/api/supplies/:id', requireAdmin, (req, res) => {
   const cur = db.prepare('SELECT * FROM supplies WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到耗材' });
   const s = req.body || {};
-  db.prepare(`UPDATE supplies SET name=?, category=?, unit=?, safety_stock=?, restock_level=?, note=?, active=? WHERE id=?`).run(
+  db.prepare(`UPDATE supplies SET name=?, category=?, unit=?, safety_stock=?, restock_level=?, note=?, active=?,
+    code=?, price=?, has_expiry=?, front_sellable=? WHERE id=?`).run(
     s.name ?? cur.name, s.category ?? cur.category, s.unit ?? cur.unit,
     Math.round(s.safety_stock === undefined ? cur.safety_stock : Number(s.safety_stock) || 0),
     Math.round(s.restock_level === undefined ? cur.restock_level : Number(s.restock_level) || 0),
-    s.note ?? cur.note, (s.active === undefined ? cur.active : (s.active ? 1 : 0)), cur.id);
+    s.note ?? cur.note, (s.active === undefined ? cur.active : (s.active ? 1 : 0)),
+    s.code === undefined ? cur.code : String(s.code).slice(0, 40),
+    Math.round(s.price === undefined ? cur.price : Number(s.price) || 0),
+    s.has_expiry === undefined ? cur.has_expiry : (s.has_expiry ? 1 : 0),
+    s.front_sellable === undefined ? cur.front_sellable : (s.front_sellable ? 1 : 0), cur.id);
   res.json({ ok: true });
 });
 app.delete('/api/supplies/:id', requireAdmin, (req, res) => {
@@ -3087,8 +3145,10 @@ app.post('/api/supplies/:id/txns', requireStaff, (req, res) => {
   } else { if (qty < 0) return res.status(400).json({ error: '盤點數量不可為負' }); balance = qty; delta = qty; }
   const tx = db.transaction(() => {
     db.prepare('UPDATE supplies SET stock = ? WHERE id = ?').run(balance, cur.id);
-    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by)
-      VALUES (?,?,?,?,?,?,?)`).run(cur.id, t.txn_type, delta, balance, t.reason || '', t.note || '', req.session.user.id);
+    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, area, expiry_date)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(cur.id, t.txn_type, delta, balance, t.reason || '', t.note || '', req.session.user.id,
+      String(t.vendor || '').slice(0, 60), String(t.area || '').slice(0, 60),
+      /^\d{4}-\d{2}-\d{2}$/.test(t.expiry_date || '') ? t.expiry_date : '');
   });
   tx();
   res.json({ ok: true, stock: balance });
@@ -6571,6 +6631,70 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
     String(u.id_no ?? cur.id_no ?? '').slice(0, 10),
     (u.active === undefined ? cur.active : (u.active ? 1 : 0)), perms, cur.id);
   if (u.password) db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(u.password), cur.id);
+  logAudit(req, { action: 'update', entity: 'users', entity_id: cur.id, summary: cur.username });
+  res.json({ ok: true });
+});
+
+// ---------- 員工基本資料（沿用 users 表，登入權限0-5 對映 role/active，旗標對映模組權限） ----------
+const EMP_DEFAULT_PERMS = ['baby_care', 'newborn_medical', 'mother_care', 'handover', 'incidents', 'infection',
+  'residents', 'rooms', 'billing', 'shop', 'supplies', 'programs', 'members', 'meals', 'invoices', 'contracts', 'tours', 'shifts', 'family'];
+const EMP_STR = (v, n = 60) => String(v || '').slice(0, n);
+const EMP_B = v => (v === true || v === 1 || v === '1' || v === '是') ? 1 : 0;
+const EMP_DATE = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '';
+const EMP_LVL = v => Math.max(0, Math.min(5, Math.round(Number(v) || 0)));
+// 旗標 → 模組權限（union，只加不減）
+function empPermsWith(baseArr, u) {
+  const s = new Set(Array.isArray(baseArr) ? baseArr : []);
+  if (EMP_B(u.flag_physician)) s.add('physician');
+  if (EMP_B(u.flag_nursing)) { s.add('mother_care'); s.add('baby_care'); }
+  return [...s];
+}
+const EMP_FIELDS = ['clock_no', 'department', 'emp_group', 'category', 'emp_level', 'home_phone', 'email', 'ext'];
+const EMP_FLAGS = ['flag_tour', 'flag_checkpoint', 'flag_nutrition', 'flag_nursing', 'flag_physician', 'flag_intern'];
+
+app.get('/api/employees', requireStaff, (req, res) => {
+  const rows = db.prepare('SELECT * FROM users ORDER BY id').all();
+  res.json(rows.map(u => { const { password_hash, ...rest } = u; return { ...rest, permissions: parsePermissions(u.permissions) }; }));
+});
+
+app.post('/api/employees', requireAdmin, (req, res) => {
+  const u = req.body || {};
+  if (!u.username || !u.name) return res.status(400).json({ error: '員工編碼與員工姓名必填' });
+  const lvl = EMP_LVL(u.login_level);
+  const role = lvl >= 5 ? 'admin' : 'nurse';
+  const active = lvl > 0 ? 1 : 0;
+  const perms = role === 'admin' ? '' : sanitizePerms(empPermsWith(EMP_DEFAULT_PERMS, u));
+  const pwd = (u.password && String(u.password).trim()) ? String(u.password) : String(u.username); // 預設密碼同登入帳號
+  const cols = ['username', 'password_hash', 'name', 'role', 'phone', 'id_no', 'active', 'permissions', 'resign_date', 'login_level', ...EMP_FIELDS, ...EMP_FLAGS];
+  const vals = [u.username, hashPassword(pwd), u.name, role, EMP_STR(u.phone, 30), EMP_STR(u.id_no, 20), active, perms,
+    EMP_DATE(u.resign_date), lvl, ...EMP_FIELDS.map(f => EMP_STR(u[f])), ...EMP_FLAGS.map(f => EMP_B(u[f]))];
+  try {
+    const info = db.prepare(`INSERT INTO users (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
+    logAudit(req, { action: 'create', entity: 'users', entity_id: info.lastInsertRowid, summary: u.username });
+    res.json({ id: info.lastInsertRowid });
+  } catch (e) { res.status(400).json({ error: '員工編碼（登入帳號）重複' }); }
+});
+
+app.put('/api/employees/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到員工' });
+  const u = req.body || {};
+  const lvl = u.login_level === undefined ? cur.login_level : EMP_LVL(u.login_level);
+  const role = lvl >= 5 ? 'admin' : 'nurse';
+  const active = lvl > 0 ? 1 : 0;
+  if (cur.role === 'admin' && (role !== 'admin' || active === 0)) {
+    const admins = db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND active=1").get().c;
+    if (admins <= 1) return res.status(400).json({ error: '至少需保留一位啟用中的管理員' });
+  }
+  const perms = role === 'admin' ? '' : sanitizePerms(empPermsWith(parsePermissions(cur.permissions), u));
+  const set = ['name=?', 'role=?', 'phone=?', 'id_no=?', 'active=?', 'permissions=?', 'resign_date=?', 'login_level=?',
+    ...EMP_FIELDS.map(f => `${f}=?`), ...EMP_FLAGS.map(f => `${f}=?`)];
+  const vals = [u.name ?? cur.name, role, EMP_STR(u.phone ?? cur.phone, 30), EMP_STR(u.id_no ?? cur.id_no, 20), active, perms,
+    u.resign_date === undefined ? cur.resign_date : EMP_DATE(u.resign_date), lvl,
+    ...EMP_FIELDS.map(f => u[f] === undefined ? cur[f] : EMP_STR(u[f])),
+    ...EMP_FLAGS.map(f => u[f] === undefined ? cur[f] : EMP_B(u[f])), cur.id];
+  db.prepare(`UPDATE users SET ${set.join(', ')} WHERE id=?`).run(...vals);
+  if (u.password && String(u.password).trim()) db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(String(u.password)), cur.id);
   logAudit(req, { action: 'update', entity: 'users', entity_id: cur.id, summary: cur.username });
   res.json({ ok: true });
 });

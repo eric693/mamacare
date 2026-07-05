@@ -4650,6 +4650,456 @@ async function openSupplyTxns(s) {
     </table></div>`);
 }
 
+/* ========== 備品庫存管理模組 ========== */
+const SUPPLY_CATS_DEFAULT = ['備品-媽媽專用', '備品-寶寶專用', '其他備品'];
+function supplyCats(list) { return [...new Set([...SUPPLY_CATS_DEFAULT, ...list.map(s => s.category).filter(Boolean)])]; }
+const YN = v => v ? 'yes' : 'no';
+// 簡易 CSV 解析（支援雙引號欄位）
+function parseCsv(text) {
+  const rows = []; let row = [], field = '', inQ = false;
+  text = text.replace(/^﻿/, '');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; } else field += c; }
+    else if (c === '"') inQ = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (c !== '\r') field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim() !== ''));
+}
+
+// 1. 備品名稱設定
+async function viewSupplyItems() {
+  const list = await api('/supplies');
+  const isAdmin = currentUser.role === 'admin';
+  const cats = supplyCats(list);
+  main().innerHTML = `
+    <div class="page-title">備品名稱設定</div>
+    <div class="card no-print">
+      <div class="sec-hd">備品名稱設定（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢關鍵字</label><input id="si-kw"></div>
+        <div class="field"><label>關鍵字欄位</label>
+          <div class="row" style="gap:12px;padding-top:6px">
+            <label class="bna-chk"><input type="radio" name="si-kf" value="name" checked> 產品名稱</label>
+            <label class="bna-chk"><input type="radio" name="si-kf" value="code"> 產品編號</label>
+          </div></div>
+        <div class="field"><label>&nbsp;</label><label class="bna-chk"><input type="checkbox" id="si-front"> 只查詢前台可銷售項目</label></div>
+        <div class="field"><label>產品分類</label><select id="si-cat"><option value="">全部</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="si-go">送出查詢</button>
+          ${isAdmin ? '<button class="btn secondary" id="si-add">資料新增</button><button class="btn secondary" id="si-import">匯入 CSV</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">備品名稱設定（查詢結果）</div>
+      <div class="table-wrap" id="si-result"></div>
+    </div>`;
+  const render = (rows) => {
+    $('#si-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>產品編號</th><th>產品分類</th><th>產品名稱</th><th>單位</th><th>建議售價</th><th>註明有效期</th><th>開放前台銷售</th><th>安全庫存量</th><th class="no-print"></th></tr></thead>
+      <tbody>${rows.map((s, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="產品編號">${esc(s.code || '—')}</td>
+          <td data-label="產品分類">${esc(s.category || '—')}</td>
+          <td data-label="產品名稱">${esc(s.name)}${s.active ? '' : ' <span class="badge gray">停用</span>'}</td>
+          <td data-label="單位">${esc(s.unit || '—')}</td>
+          <td data-label="建議售價">${(s.price || 0).toLocaleString()}</td>
+          <td data-label="註明有效期">${YN(s.has_expiry)}</td>
+          <td data-label="開放前台銷售">${s.front_sellable ? 'yes' : ''}</td>
+          <td data-label="安全庫存量">${s.safety_stock || 0}</td>
+          <td data-label="" class="no-print">${isAdmin ? `<button class="btn small secondary" data-edit="${s.id}">編輯</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="10"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#si-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => supplyItemForm(list.find(x => x.id == b.dataset.edit), cats));
+  };
+  const go = () => {
+    const kw = $('#si-kw').value.trim();
+    const kf = main().querySelector('input[name="si-kf"]:checked').value;
+    const front = $('#si-front').checked, cat = $('#si-cat').value;
+    render(list.filter(s =>
+      (!kw || (kf === 'code' ? (s.code || '') : s.name).includes(kw)) &&
+      (!front || s.front_sellable) && (!cat || s.category === cat)));
+  };
+  $('#si-go').onclick = go;
+  $('#si-kw').onkeydown = e => { if (e.key === 'Enter') go(); };
+  go();
+  if (!isAdmin) return;
+  $('#si-add').onclick = () => supplyItemForm(null, cats);
+  $('#si-import').onclick = () => supplyImportModal();
+}
+function supplyItemForm(s, cats) {
+  s = s || {};
+  openModal(s.id ? '編輯備品' : '新增備品', `
+    <div class="field"><label>產品編號</label><input id="si-code" maxlength="40" value="${esc(s.code || '')}"></div>
+    <div class="field"><label>產品分類</label><input id="si-fcat" list="si-catlist" value="${esc(s.category || '')}"><datalist id="si-catlist">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+    <div class="field"><label>產品名稱 <b class="req">*</b></label><input id="si-name" maxlength="60" value="${esc(s.name || '')}"></div>
+    <div class="field"><label>單位</label><input id="si-unit" maxlength="20" value="${esc(s.unit || '')}"></div>
+    <div class="field"><label>建議售價</label><input type="number" min="0" id="si-price" value="${s.price ?? 0}"></div>
+    <div class="field"><label>安全庫存量</label><input type="number" min="0" id="si-safety" value="${s.safety_stock ?? 0}"></div>
+    <div class="field"><label class="bna-chk"><input type="checkbox" id="si-exp" ${s.has_expiry ? 'checked' : ''}> 註明有效期</label></div>
+    <div class="field"><label class="bna-chk"><input type="checkbox" id="si-fsell" ${s.front_sellable ? 'checked' : ''}> 開放前台銷售</label></div>
+    ${s.id ? `<div class="field"><label>狀態</label><select id="si-active"><option value="1" ${s.active ? 'selected' : ''}>啟用</option><option value="0" ${!s.active ? 'selected' : ''}>停用</option></select></div>` : ''}
+    <div class="row mt"><button class="btn" id="si-save">存檔</button><span class="error-msg" id="si-err"></span></div>`, body => {
+    body.querySelector('#si-save').onclick = async () => {
+      const b = { code: body.querySelector('#si-code').value.trim(), category: body.querySelector('#si-fcat').value.trim(),
+        name: body.querySelector('#si-name').value.trim(), unit: body.querySelector('#si-unit').value.trim(),
+        price: body.querySelector('#si-price').value, safety_stock: body.querySelector('#si-safety').value,
+        has_expiry: body.querySelector('#si-exp').checked, front_sellable: body.querySelector('#si-fsell').checked };
+      if (s.id) b.active = body.querySelector('#si-active').value === '1';
+      if (!b.name) { body.querySelector('#si-err').textContent = '產品名稱必填'; return; }
+      try {
+        if (s.id) await api(`/supplies/${s.id}`, { method: 'PUT', body: b });
+        else await api('/supplies', { method: 'POST', body: b });
+        closeModal(); viewSupplyItems();
+      } catch (e) { body.querySelector('#si-err').textContent = e.message; }
+    };
+  });
+}
+function supplyImportModal() {
+  // CSV 欄位對應（可接受多種標題）
+  const MAP = { code: ['產品編號', '編號', 'code'], category: ['產品分類', '分類', 'category'], name: ['產品名稱', '名稱', 'name'],
+    unit: ['單位', 'unit'], price: ['建議售價', '售價', 'price'], has_expiry: ['註明有效期', '有效期', 'has_expiry'],
+    front_sellable: ['開放前台銷售', '前台銷售', 'front_sellable'], safety_stock: ['安全庫存量', '安全庫存', 'safety_stock'] };
+  openModal('匯入備品 CSV', `
+    <div class="field"><label>選擇 CSV 檔</label><input type="file" id="ci-file" accept=".csv,text/csv"></div>
+    <div class="field"><label>或直接貼上 CSV 內容</label><textarea id="ci-text" rows="6" placeholder="產品編號,產品分類,產品名稱,單位,建議售價,註明有效期,開放前台銷售,安全庫存量"></textarea></div>
+    <small style="color:var(--muted)">＊第一列為標題，以產品編號為鍵：已存在則更新、否則新增。有效期／前台銷售填 yes／是／1 代表開啟。</small>
+    <div class="row mt"><button class="btn" id="ci-go">匯入</button><span class="error-msg" id="ci-err"></span></div>`, body => {
+    body.querySelector('#ci-file').onchange = e => {
+      const f = e.target.files[0]; if (!f) return;
+      const r = new FileReader(); r.onload = () => { body.querySelector('#ci-text').value = r.result; }; r.readAsText(f, 'utf-8');
+    };
+    body.querySelector('#ci-go').onclick = async () => {
+      const rows = parseCsv(body.querySelector('#ci-text').value);
+      if (rows.length < 2) { body.querySelector('#ci-err').textContent = '請提供含標題列的 CSV'; return; }
+      const header = rows[0].map(h => h.trim());
+      const idx = {};
+      for (const key in MAP) { idx[key] = header.findIndex(h => MAP[key].includes(h)); }
+      if (idx.name < 0) { body.querySelector('#ci-err').textContent = '找不到「產品名稱」欄'; return; }
+      const items = rows.slice(1).map(r => {
+        const o = {}; for (const key in idx) if (idx[key] >= 0) o[key] = (r[idx[key]] || '').trim(); return o;
+      }).filter(o => o.name);
+      if (!items.length) { body.querySelector('#ci-err').textContent = '沒有可匯入的品項'; return; }
+      try {
+        const res = await api('/supplies/import', { method: 'POST', body: { items } });
+        alert(`匯入完成：新增 ${res.added}、更新 ${res.updated}、略過 ${res.skipped}`);
+        closeModal(); viewSupplyItems();
+      } catch (e) { body.querySelector('#ci-err').textContent = e.message; }
+    };
+  });
+}
+
+// 2 & 3. 備品進貨入庫 / 領取出庫（查詢頁 ＋ 資料新增）
+function viewSupplyIn() {
+  return supplyFlowPage({ type: 'in', pfx: 'sin', title: '備品進貨入庫', dateLabel: '進貨入庫日期', colDate: '入庫日期',
+    extraKey: 'vendor', extraLabel: '進貨廠商', qtyLabel: '入庫數量', stockLabel: '目前存量' });
+}
+function viewSupplyOut() {
+  return supplyFlowPage({ type: 'out', pfx: 'sout', title: '備品領取出庫', dateLabel: '領貨日期', colDate: '領貨日期',
+    extraKey: 'area', extraLabel: '使用區域', extraKwLabel: '領貨使用區域', qtyLabel: '領取數量', stockLabel: '目前庫存量' });
+}
+async function supplyFlowPage(cfg) {
+  const { type, pfx, title, dateLabel, extraKey, extraLabel, qtyLabel, stockLabel } = cfg;
+  const extraKwLabel = cfg.extraKwLabel || extraLabel;
+  const [supplies, txns] = await Promise.all([api('/supplies'), api(`/supply-txns?type=${type}`)]);
+  const canWrite = canAccess('#/supplies');
+  const active = supplies.filter(s => s.active);
+  const smap = Object.fromEntries(supplies.map(s => [s.id, s]));
+  const [mf, mt] = monthBounds();
+  main().innerHTML = `
+    <div class="page-title">${title}</div>
+    <div class="card no-print">
+      <div class="sec-hd">${title}（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>${dateLabel}</label>
+          <div class="row" style="gap:6px;align-items:center"><input type="date" id="${pfx}-from" value="${mf}"><span>to</span><input type="date" id="${pfx}-to" value="${mt}"></div></div>
+        <div class="field"><label>查詢關鍵字</label><input id="${pfx}-kw"></div>
+        <div class="field full"><label>關鍵字欄位</label>
+          <div class="row" style="gap:16px;padding-top:6px;flex-wrap:wrap">
+            <label class="bna-chk"><input type="radio" name="${pfx}-kf" value="name" checked> 產品名稱</label>
+            <label class="bna-chk"><input type="radio" name="${pfx}-kf" value="code"> 產品編號</label>
+            <label class="bna-chk"><input type="radio" name="${pfx}-kf" value="${extraKey}"> ${extraKwLabel}</label>
+          </div></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="${pfx}-go">送出查詢</button>
+          ${canWrite ? `<button class="btn secondary" id="${pfx}-add">資料新增</button>` : ''}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">${title}（查詢結果）</div>
+      <div class="table-wrap" id="${pfx}-result"></div>
+    </div>`;
+  const render = (rows) => {
+    $(`#${pfx}-result`).innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>${cfg.colDate}</th><th>${extraLabel}</th><th>產品編號</th><th>產品名稱</th><th>${qtyLabel}</th><th>單位</th><th>有效日期</th><th>${stockLabel}</th><th>備註</th></tr></thead>
+      <tbody>${rows.map((t, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="日期">${esc((t.created_at || '').slice(0, 10))}</td>
+          <td data-label="${extraLabel}">${esc(t[extraKey] || '—')}</td>
+          <td data-label="產品編號">${esc(t.supply_code || '—')}</td>
+          <td data-label="產品名稱">${esc(t.supply_name)}</td>
+          <td data-label="${qtyLabel}">${t.quantity}</td>
+          <td data-label="單位">${esc(t.supply_unit || '')}</td>
+          <td data-label="有效日期">${esc(t.expiry_date || '—')}</td>
+          <td data-label="${stockLabel}">${(smap[t.supply_id] || {}).stock ?? '—'}</td>
+          <td data-label="備註">${esc(t.note || '—')}</td>
+        </tr>`).join('') || '<tr><td colspan="10"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+  };
+  const filtered = () => {
+    const from = $(`#${pfx}-from`).value, to = $(`#${pfx}-to`).value;
+    const kw = $(`#${pfx}-kw`).value.trim();
+    const kf = main().querySelector(`input[name="${pfx}-kf"]:checked`).value;
+    return txns.filter(t => {
+      const d = (t.created_at || '').slice(0, 10);
+      if (from && d < from) return false;
+      if (to && d > to) return false;
+      if (kw) { const v = kf === 'code' ? (t.supply_code || '') : kf === 'name' ? (t.supply_name || '') : (t[kf] || ''); if (!v.includes(kw)) return false; }
+      return true;
+    });
+  };
+  const go = () => render(filtered());
+  $(`#${pfx}-go`).onclick = go;
+  go();
+  if (!canWrite) return;
+  $(`#${pfx}-add`).onclick = () => openModal(`${title} 資料新增`, `
+    <div class="field"><label>備品品項 <b class="req">*</b></label>
+      <select id="${pfx}-item"><option value="">請選擇</option>${active.map(s => `<option value="${s.id}">${esc((s.code ? s.code + '｜' : '') + s.name)}（庫存 ${s.stock}${esc(s.unit || '')}）</option>`).join('')}</select></div>
+    <div class="field"><label>${extraLabel}</label><input id="${pfx}-extra"></div>
+    <div class="field"><label>${qtyLabel} <b class="req">*</b></label><input type="number" min="1" id="${pfx}-qty"></div>
+    <div class="field"><label>有效日期</label><input type="date" id="${pfx}-exp"></div>
+    <div class="field"><label>備註</label><input id="${pfx}-note"></div>
+    <div class="row mt"><button class="btn" id="${pfx}-save">存檔</button><span class="error-msg" id="${pfx}-err"></span></div>`, body => {
+    body.querySelector(`#${pfx}-save`).onclick = async () => {
+      const id = body.querySelector(`#${pfx}-item`).value, qty = body.querySelector(`#${pfx}-qty`).value;
+      if (!id) { body.querySelector(`#${pfx}-err`).textContent = '請選擇備品品項'; return; }
+      if (!(Number(qty) > 0)) { body.querySelector(`#${pfx}-err`).textContent = '請輸入正確數量'; return; }
+      const payload = { txn_type: type, quantity: qty, expiry_date: body.querySelector(`#${pfx}-exp`).value,
+        note: body.querySelector(`#${pfx}-note`).value.trim(), [extraKey]: body.querySelector(`#${pfx}-extra`).value.trim() };
+      try {
+        await api(`/supplies/${id}/txns`, { method: 'POST', body: payload });
+        closeModal(); supplyFlowPage(cfg);
+      } catch (e) { body.querySelector(`#${pfx}-err`).textContent = e.message; }
+    };
+  });
+}
+
+// 4. 備品進出明細表
+async function viewSupplyMovements() {
+  const [supplies, txns] = await Promise.all([api('/supplies'), api('/supply-txns?type=inout')]);
+  const smap = Object.fromEntries(supplies.map(s => [s.id, s]));
+  const cats = supplyCats(supplies);
+  const [mf, mt] = monthBounds();
+  main().innerHTML = `
+    <div class="page-title">備品進出明細表</div>
+    <div class="card no-print">
+      <div class="sec-hd">備品進出明細表（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢日期</label>
+          <div class="row" style="gap:6px;align-items:center"><input type="date" id="sm-from" value="${mf}"><span>to</span><input type="date" id="sm-to" value="${mt}"></div></div>
+        <div class="field"><label>產品分類</label><select id="sm-cat"><option value="">全部</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
+        <div class="field"><label>查詢關鍵字</label><input id="sm-kw"></div>
+        <div class="field"><label>關鍵字欄位</label>
+          <div class="row" style="gap:12px;padding-top:6px">
+            <label class="bna-chk"><input type="radio" name="sm-kf" value="name" checked> 產品名稱</label>
+            <label class="bna-chk"><input type="radio" name="sm-kf" value="code"> 產品編號</label>
+          </div></div>
+        <div class="full row" style="justify-content:center"><button class="btn" id="sm-go">送出查詢</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">備品進出明細表（查詢結果）</div>
+      <div class="row no-print" style="justify-content:flex-end;gap:8px;margin-bottom:6px"><button class="btn small" id="sm-csv">匯出 Excel（CSV）</button><button class="btn small secondary" id="sm-print">資料列印</button></div>
+      <div class="table-wrap" id="sm-result"></div>
+    </div>`;
+  let current = [];
+  const render = (rows) => {
+    current = rows;
+    $('#sm-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>日期</th><th>產品編號</th><th>產品分類</th><th>產品名稱</th><th>單位</th><th>進貨數量</th><th>領貨數量</th><th>目前庫存量</th></tr></thead>
+      <tbody>${rows.map((t, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="日期">${esc((t.created_at || '').slice(0, 10))}</td>
+          <td data-label="產品編號">${esc(t.supply_code || '—')}</td>
+          <td data-label="產品分類">${esc(t.supply_category || '—')}</td>
+          <td data-label="產品名稱">${esc(t.supply_name)}</td>
+          <td data-label="單位">${esc(t.supply_unit || '')}</td>
+          <td data-label="進貨數量">${t.txn_type === 'in' ? t.quantity : ''}</td>
+          <td data-label="領貨數量">${t.txn_type === 'out' ? t.quantity : ''}</td>
+          <td data-label="目前庫存量">${(smap[t.supply_id] || {}).stock ?? '—'}</td>
+        </tr>`).join('') || '<tr><td colspan="9"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+  };
+  const filtered = () => {
+    const from = $('#sm-from').value, to = $('#sm-to').value, cat = $('#sm-cat').value;
+    const kw = $('#sm-kw').value.trim(), kf = main().querySelector('input[name="sm-kf"]:checked').value;
+    return txns.filter(t => {
+      const d = (t.created_at || '').slice(0, 10);
+      if (from && d < from) return false;
+      if (to && d > to) return false;
+      if (cat && t.supply_category !== cat) return false;
+      if (kw) { const v = kf === 'code' ? (t.supply_code || '') : (t.supply_name || ''); if (!v.includes(kw)) return false; }
+      return true;
+    });
+  };
+  const go = () => render(filtered());
+  $('#sm-go').onclick = go;
+  $('#sm-print').onclick = () => window.print();
+  $('#sm-csv').onclick = () => {
+    if (!current.length) { alert('查無資料可匯出'); return; }
+    downloadCsv(`備品進出明細_${todayStr()}.csv`,
+      ['日期', '產品編號', '產品分類', '產品名稱', '單位', '進貨數量', '領貨數量', '目前庫存量'],
+      current.map(t => [(t.created_at || '').slice(0, 10), t.supply_code || '', t.supply_category || '', t.supply_name, t.supply_unit || '', t.txn_type === 'in' ? t.quantity : '', t.txn_type === 'out' ? t.quantity : '', (smap[t.supply_id] || {}).stock ?? '']));
+  };
+  go();
+}
+
+// 5. 庫存盤點
+async function viewSupplyStocktake() {
+  const rows0 = await api('/supplies/stock-summary');
+  const canWrite = canAccess('#/supplies');
+  const cats = supplyCats(rows0);
+  main().innerHTML = `
+    <div class="page-title">庫存盤點</div>
+    <div class="card no-print">
+      <div class="sec-hd">庫存盤點（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢關鍵字</label><input id="stk-kw"></div>
+        <div class="field"><label>關鍵字欄位</label>
+          <div class="row" style="gap:12px;padding-top:6px">
+            <label class="bna-chk"><input type="radio" name="stk-kf" value="name" checked> 產品名稱</label>
+            <label class="bna-chk"><input type="radio" name="stk-kf" value="code"> 產品編號</label>
+          </div></div>
+        <div class="field"><label>產品分類</label><select id="stk-cat"><option value="">全部</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
+        <div class="full row" style="justify-content:center"><button class="btn" id="stk-go">送出查詢</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">庫存盤點</div>
+      <div class="table-wrap" id="stk-result"></div>
+    </div>`;
+  const render = (rows) => {
+    $('#stk-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>產品編號</th><th>產品名稱</th><th>期初數量</th><th>入庫總數</th><th>出庫總數</th><th>目前庫存數量</th><th class="no-print"></th></tr></thead>
+      <tbody>${rows.map((s, i) => {
+        const opening = s.stock - s.total_in + s.total_out;
+        return `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="產品編號">${esc(s.code || '—')}</td>
+          <td data-label="產品名稱">${esc(s.name)}</td>
+          <td data-label="期初數量">${opening}</td>
+          <td data-label="入庫總數">${s.total_in}</td>
+          <td data-label="出庫總數">${s.total_out}</td>
+          <td data-label="目前庫存數量">${s.stock}</td>
+          <td data-label="" class="no-print">${canWrite ? `<button class="btn small" data-adj="${s.id}" data-name="${esc(s.name)}" data-stock="${s.stock}" data-unit="${esc(s.unit || '')}">調整</button>` : ''}</td>
+        </tr>`; }).join('') || '<tr><td colspan="8"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    if (canWrite) $('#stk-result').querySelectorAll('[data-adj]').forEach(b => b.onclick = () => adjustStock(b.dataset.adj, b.dataset.name, Number(b.dataset.stock), b.dataset.unit));
+  };
+  const go = () => {
+    const kw = $('#stk-kw').value.trim(), kf = main().querySelector('input[name="stk-kf"]:checked').value, cat = $('#stk-cat').value;
+    render(rows0.filter(s => (!kw || (kf === 'code' ? (s.code || '') : s.name).includes(kw)) && (!cat || s.category === cat)));
+  };
+  $('#stk-go').onclick = go;
+  go();
+}
+function adjustStock(id, name, stock, unit) {
+  openModal(`盤點調整：${name}`, `
+    <div class="field"><label>系統目前庫存</label><input value="${stock} ${esc(unit || '')}" disabled></div>
+    <div class="field"><label>實際盤點數量 <b class="req">*</b></label><input type="number" min="0" id="adj-qty" value="${stock}"></div>
+    <div class="field"><label>備註</label><input id="adj-note" placeholder="庫存盤點"></div>
+    <div class="row mt"><button class="btn" id="adj-save">存檔</button><span class="error-msg" id="adj-err"></span></div>`, body => {
+    body.querySelector('#adj-save').onclick = async () => {
+      const qty = body.querySelector('#adj-qty').value;
+      if (qty === '' || Number(qty) < 0) { body.querySelector('#adj-err').textContent = '請輸入正確盤點數量'; return; }
+      try {
+        await api(`/supplies/${id}/txns`, { method: 'POST', body: { txn_type: 'adjust', quantity: qty, reason: '庫存盤點', note: body.querySelector('#adj-note').value.trim() } });
+        closeModal(); viewSupplyStocktake();
+      } catch (e) { body.querySelector('#adj-err').textContent = e.message; }
+    };
+  });
+}
+
+// 6. 庫存盤點明細表
+async function viewStocktakeDetail() {
+  const [supplies, txns] = await Promise.all([api('/supplies'), api('/supply-txns?type=adjust')]);
+  const cats = supplyCats(supplies);
+  const [mf, mt] = monthBounds();
+  main().innerHTML = `
+    <div class="page-title">庫存盤點明細表</div>
+    <div class="card no-print">
+      <div class="sec-hd">庫存盤點明細表（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢日期</label>
+          <div class="row" style="gap:6px;align-items:center"><input type="date" id="sd-from" value="${mf}"><span>to</span><input type="date" id="sd-to" value="${mt}"></div></div>
+        <div class="field"><label>查詢關鍵字</label><input id="sd-kw"></div>
+        <div class="field"><label>關鍵字欄位</label>
+          <div class="row" style="gap:12px;padding-top:6px">
+            <label class="bna-chk"><input type="radio" name="sd-kf" value="name" checked> 產品名稱</label>
+            <label class="bna-chk"><input type="radio" name="sd-kf" value="code"> 產品編號</label>
+          </div></div>
+        <div class="field"><label>產品分類</label><select id="sd-cat"><option value="">全部</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="sd-go">送出查詢</button>
+          <button class="btn secondary" id="sd-stock">匯出最新庫存量</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">庫存盤點明細表（查詢結果）</div>
+      <div class="row no-print" style="justify-content:flex-end;gap:8px;margin-bottom:6px"><button class="btn small" id="sd-csv">匯出 Excel（CSV）</button><button class="btn small secondary" id="sd-print">資料列印</button></div>
+      <div class="table-wrap" id="sd-result"></div>
+    </div>`;
+  let current = [];
+  const render = (rows) => {
+    current = rows;
+    $('#sd-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>盤點日期</th><th>產品編號</th><th>產品分類</th><th>產品名稱</th><th>目前庫存量</th><th>建檔人</th></tr></thead>
+      <tbody>${rows.map((t, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="盤點日期">${esc((t.created_at || '').slice(0, 16))}</td>
+          <td data-label="產品編號">${esc(t.supply_code || '—')}</td>
+          <td data-label="產品分類">${esc(t.supply_category || '—')}</td>
+          <td data-label="產品名稱">${esc(t.supply_name)}</td>
+          <td data-label="目前庫存量">${t.balance_after}${esc(t.supply_unit || '')}</td>
+          <td data-label="建檔人">${esc(t.staff_name || '—')}</td>
+        </tr>`).join('') || '<tr><td colspan="7"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+  };
+  const filtered = () => {
+    const from = $('#sd-from').value, to = $('#sd-to').value, cat = $('#sd-cat').value;
+    const kw = $('#sd-kw').value.trim(), kf = main().querySelector('input[name="sd-kf"]:checked').value;
+    return txns.filter(t => {
+      const d = (t.created_at || '').slice(0, 10);
+      if (from && d < from) return false;
+      if (to && d > to) return false;
+      if (cat && t.supply_category !== cat) return false;
+      if (kw) { const v = kf === 'code' ? (t.supply_code || '') : (t.supply_name || ''); if (!v.includes(kw)) return false; }
+      return true;
+    });
+  };
+  const go = () => render(filtered());
+  $('#sd-go').onclick = go;
+  $('#sd-print').onclick = () => window.print();
+  $('#sd-csv').onclick = () => {
+    if (!current.length) { alert('查無資料可匯出'); return; }
+    downloadCsv(`庫存盤點明細_${todayStr()}.csv`,
+      ['盤點日期', '產品編號', '產品分類', '產品名稱', '目前庫存量', '建檔人'],
+      current.map(t => [(t.created_at || '').slice(0, 16), t.supply_code || '', t.supply_category || '', t.supply_name, t.balance_after, t.staff_name || '']));
+  };
+  $('#sd-stock').onclick = () => {
+    downloadCsv(`最新庫存量_${todayStr()}.csv`,
+      ['產品編號', '產品分類', '產品名稱', '單位', '目前庫存量', '安全庫存量'],
+      supplies.filter(s => s.active).map(s => [s.code || '', s.category || '', s.name, s.unit || '', s.stock, s.safety_stock]));
+  };
+  go();
+}
+
 /* ---------- 課程與服務 ---------- */
 async function viewPrograms() {
   const isAdmin = currentUser.role === 'admin';
@@ -4957,6 +5407,133 @@ function openUserForm(u) {
         }
         closeModal(); viewUsers();
       } catch (e) { body.querySelector('#u-err').textContent = e.message; }
+    };
+  });
+}
+
+/* ---------- 員工基本資料（員工資料管理） ---------- */
+const EMP_DEPTS = ['客服部', '護理部', '管理部', '膳食部', '房務部'];
+const EMP_CATS = ['行政人員', '護理人員', '客服人員', '膳食人員', '嬰兒照顧員', '房務人員', '醫師', '營養師'];
+const EMP_LEVELS = ['A', 'B', 'C', 'D', 'E'];
+async function viewEmployees() {
+  const list = await api('/employees');
+  const canWrite = canAccess('#/employees');
+  main().innerHTML = `
+    <div class="page-title">員工基本資料 <small style="font-weight:400;color:var(--muted);font-size:.9rem">員工資料管理</small></div>
+    <div class="card no-print">
+      <div class="form-grid">
+        <div class="field"><label>查詢關鍵字</label><input id="emp-kw"></div>
+        <div class="field"><label>員工分類</label><select id="emp-cat"><option value="">全部查詢</option>${EMP_CATS.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
+        <div class="field"><label>員工部門</label><select id="emp-dept"><option value="">全部查詢</option>${EMP_DEPTS.map(d => `<option>${esc(d)}</option>`).join('')}</select></div>
+        <div class="field full"><label>關鍵字欄位</label>
+          <div class="row" style="gap:16px;padding-top:4px;flex-wrap:wrap">
+            <label class="bna-chk"><input type="radio" name="emp-kf" value="name" checked> 員工姓名</label>
+            <label class="bna-chk"><input type="radio" name="emp-kf" value="emp_level"> 員工等級</label>
+            <label class="bna-chk"><input type="radio" name="emp-kf" value="login_level"> 員工權限</label>
+            <label class="bna-chk"><input type="radio" name="emp-kf" value="id_no"> 身分證號</label>
+          </div></div>
+        <div class="field"><label class="bna-chk"><input type="checkbox" id="emp-resigned"> 查詢包含已離職員工</label></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="emp-go">送出查詢</button>
+          ${canWrite ? '<button class="btn secondary" id="emp-add">新增資料</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="table-wrap" id="emp-result"></div>
+    </div>`;
+  const render = (rows) => {
+    $('#emp-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>員工姓名</th><th>員工編碼</th><th>分類/部門</th><th>等級</th><th>聯絡電話</th><th>權限</th><th>分機</th><th>員工群組</th><th>離職日期</th><th class="no-print"></th></tr></thead>
+      <tbody>${rows.map((u, i) => `
+        <tr>
+          <td data-label="筆數">${i + 1}</td>
+          <td data-label="員工姓名">${esc(u.name)}</td>
+          <td data-label="員工編碼">${esc(u.username)}</td>
+          <td data-label="分類/部門"><small>${esc(u.category || '—')}<br>${esc(u.department || '—')}</small></td>
+          <td data-label="等級">${esc(u.emp_level || '—')}</td>
+          <td data-label="聯絡電話">${esc(u.phone || '')}</td>
+          <td data-label="權限">${u.login_level}</td>
+          <td data-label="分機">${esc(u.ext || '')}</td>
+          <td data-label="員工群組">${esc(u.emp_group || '')}</td>
+          <td data-label="離職日期">${esc(u.resign_date || '')}</td>
+          <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${u.id}">編輯</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="11"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#emp-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => empForm(list.find(x => x.id == b.dataset.edit)));
+  };
+  const go = () => {
+    const kw = $('#emp-kw').value.trim(), kf = main().querySelector('input[name="emp-kf"]:checked').value;
+    const cat = $('#emp-cat').value, dept = $('#emp-dept').value, incResigned = $('#emp-resigned').checked;
+    render(list.filter(u => {
+      if (!incResigned && u.resign_date) return false;
+      if (cat && u.category !== cat) return false;
+      if (dept && u.department !== dept) return false;
+      if (kw) { const v = String(kf === 'login_level' ? u.login_level : (u[kf] || '')); if (!v.includes(kw)) return false; }
+      return true;
+    }));
+  };
+  $('#emp-go').onclick = go;
+  $('#emp-kw').onkeydown = e => { if (e.key === 'Enter') go(); };
+  go();
+  if (!canWrite) return;
+  $('#emp-add').onclick = () => empForm(null);
+}
+function empForm(u) {
+  const isNew = !u; u = u || {};
+  const yn = (id, val) => `<label class="bna-chk"><input type="radio" name="${id}" value="1" ${val ? 'checked' : ''}> 是</label>
+    <label class="bna-chk"><input type="radio" name="${id}" value="0" ${val ? '' : 'checked'}> 否</label>`;
+  const sel = (id, opts, val) => `<select id="${id}"><option value="">--請選擇--</option>${opts.map(o => `<option ${String(val) === String(o) ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  openModal(`員工基本資料-${isNew ? '新增' : '編輯'}`, `
+    <div class="form-grid">
+      <div class="field"><label>員工姓名 <b class="req">*</b></label><input id="e-name" value="${esc(u.name || '')}"></div>
+      <div class="field"><label>員工編碼 <b class="req">*</b><small>（即系統登入帳號）</small></label><input id="e-code" value="${esc(u.username || '')}" ${isNew ? '' : 'disabled'}></div>
+      <div class="field"><label>身分證號</label><input id="e-idno" value="${esc(u.id_no || '')}"></div>
+      <div class="field"><label>考勤卡號</label><input id="e-clock" value="${esc(u.clock_no || '')}"></div>
+      <div class="field"><label>員工部門</label>${sel('e-dept', EMP_DEPTS, u.department)}</div>
+      <div class="field"><label>員工群組</label><input id="e-group" value="${esc(u.emp_group || '')}"></div>
+      <div class="field"><label>員工分類</label>${sel('e-cat', EMP_CATS, u.category)}</div>
+      <div class="field"><label>員工等級</label>${sel('e-level', EMP_LEVELS, u.emp_level)}</div>
+      <div class="field"><label>員工手機</label><input id="e-phone" value="${esc(u.phone || '')}"></div>
+      <div class="field"><label>住家電話</label><input id="e-home" value="${esc(u.home_phone || '')}"></div>
+      <div class="field full"><label>E-MAIL</label><input id="e-email" value="${esc(u.email || '')}"></div>
+      <div class="field"><label>登入權限<small>（0 表示不可登入系統）</small></label>
+        <select id="e-login">${[0, 1, 2, 3, 4, 5].map(n => `<option ${Number(u.login_level || 0) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <div class="field"><label>登入密碼<small>（${isNew ? '預設同登入帳號' : '留空不變更'}）</small></label><input type="password" id="e-pw" autocomplete="new-password"></div>
+      <div class="field"><label>員工分機</label><input id="e-ext" value="${esc(u.ext || '')}"></div>
+      ${isNew ? '' : `<div class="field"><label>離職日期<small>（留空＝在職）</small></label><input type="date" id="e-resign" value="${esc(u.resign_date || '')}"></div>`}
+      <div class="field"><label>參觀介紹/合約經手</label><div class="row" style="gap:14px;padding-top:4px">${yn('e-tour', u.flag_tour)}</div></div>
+      <div class="field"><label>媽媽出入住對點</label><div class="row" style="gap:14px;padding-top:4px">${yn('e-checkpoint', u.flag_checkpoint)}</div></div>
+      <div class="field"><label>是否有營養師權限</label><div class="row" style="gap:14px;padding-top:4px">${yn('e-nutrition', u.flag_nutrition)}</div></div>
+      <div class="field"><label>是否可建立護理資料</label><div class="row" style="gap:14px;padding-top:4px">${yn('e-nursing', u.flag_nursing)}</div></div>
+      <div class="field"><label>是否有醫師權限</label><div class="row" style="gap:14px;padding-top:4px">${yn('e-physician', u.flag_physician)}</div></div>
+      <div class="field"><label>是否為實習人員</label><div class="row" style="gap:14px;padding-top:4px">${yn('e-intern', u.flag_intern)}</div></div>
+    </div>
+    <small style="color:var(--muted)">＊登入權限 5＝管理員（全權）、1~4＝一般員工、0＝停用；「醫師權限／可建立護理資料」會對映到對應模組權限。</small>
+    <div class="row mt"><button class="btn" id="e-save">${isNew ? '新增資料' : '存檔'}</button><span class="error-msg" id="e-err"></span></div>`, body => {
+    const rv = id => (body.querySelector(`input[name="${id}"]:checked`) || {}).value === '1';
+    body.querySelector('#e-save').onclick = async () => {
+      const b = {
+        name: body.querySelector('#e-name').value.trim(), id_no: body.querySelector('#e-idno').value.trim(),
+        clock_no: body.querySelector('#e-clock').value.trim(), department: body.querySelector('#e-dept').value,
+        emp_group: body.querySelector('#e-group').value.trim(), category: body.querySelector('#e-cat').value,
+        emp_level: body.querySelector('#e-level').value, phone: body.querySelector('#e-phone').value.trim(),
+        home_phone: body.querySelector('#e-home').value.trim(), email: body.querySelector('#e-email').value.trim(),
+        login_level: body.querySelector('#e-login').value, ext: body.querySelector('#e-ext').value.trim(),
+        flag_tour: rv('e-tour'), flag_checkpoint: rv('e-checkpoint'), flag_nutrition: rv('e-nutrition'),
+        flag_nursing: rv('e-nursing'), flag_physician: rv('e-physician'), flag_intern: rv('e-intern')
+      };
+      const pw = body.querySelector('#e-pw').value;
+      if (pw) b.password = pw;
+      if (!isNew) b.resign_date = body.querySelector('#e-resign').value;
+      if (!b.name) { body.querySelector('#e-err').textContent = '員工姓名必填'; return; }
+      try {
+        if (isNew) {
+          b.username = body.querySelector('#e-code').value.trim();
+          if (!b.username) { body.querySelector('#e-err').textContent = '員工編碼必填'; return; }
+          await api('/employees', { method: 'POST', body: b });
+        } else await api(`/employees/${u.id}`, { method: 'PUT', body: b });
+        closeModal(); viewEmployees();
+      } catch (e) { body.querySelector('#e-err').textContent = e.message; }
     };
   });
 }
@@ -11620,6 +12197,12 @@ const routes = {
   '#/aging': viewAging,
   '#/shop': viewShop,
   '#/supplies': viewSupplies,
+  '#/supply-items': viewSupplyItems,
+  '#/supply-in': viewSupplyIn,
+  '#/supply-out': viewSupplyOut,
+  '#/supply-movements': viewSupplyMovements,
+  '#/supply-stocktake': viewSupplyStocktake,
+  '#/stocktake-detail': viewStocktakeDetail,
   '#/programs': viewPrograms,
   '#/members': viewMembers,
   '#/coupons': viewCoupons,
@@ -11644,6 +12227,7 @@ const routes = {
   '#/export': viewExport,
   '#/settings': viewSettings,
   '#/users': viewUsers,
+  '#/employees': viewEmployees,
   '#/analytics': viewAnalytics,
   '#/testimonials': viewTestimonials
 };
@@ -11655,11 +12239,11 @@ const ROUTE_PERM = {
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': 'baby_care', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
-  '#/supplies': 'supplies', '#/programs': 'programs', '#/members': 'members', '#/coupons': 'coupons',
+  '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
   '#/tours': 'tours', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
   '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys',
-  '#/audit-logs': 'audit', '#/export': 'export', '#/settings': 'settings', '#/users': 'users'
+  '#/audit-logs': 'audit', '#/export': 'export', '#/settings': 'settings', '#/users': 'users', '#/employees': 'users'
 };
 function canAccess(hash) {
   const mod = ROUTE_PERM[hash];

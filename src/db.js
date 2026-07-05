@@ -1188,6 +1188,16 @@ function init() {
   // 耗材：目標補貨量（叫貨單用，0=用安全庫存兩倍估算）
   const supCols = db.prepare('PRAGMA table_info(supplies)').all().map(c => c.name);
   if (!supCols.includes('restock_level')) db.exec('ALTER TABLE supplies ADD COLUMN restock_level INTEGER NOT NULL DEFAULT 0');
+  // 備品庫存管理：產品編號／建議售價／註明有效期／開放前台銷售
+  if (!supCols.includes('code')) db.exec("ALTER TABLE supplies ADD COLUMN code TEXT DEFAULT ''");
+  if (!supCols.includes('price')) db.exec('ALTER TABLE supplies ADD COLUMN price INTEGER NOT NULL DEFAULT 0');
+  if (!supCols.includes('has_expiry')) db.exec('ALTER TABLE supplies ADD COLUMN has_expiry INTEGER NOT NULL DEFAULT 0');
+  if (!supCols.includes('front_sellable')) db.exec('ALTER TABLE supplies ADD COLUMN front_sellable INTEGER NOT NULL DEFAULT 0');
+  // 備品進出：進貨廠商／領貨使用區域／有效日期
+  const stxCols = db.prepare('PRAGMA table_info(supply_txns)').all().map(c => c.name);
+  if (!stxCols.includes('vendor')) db.exec("ALTER TABLE supply_txns ADD COLUMN vendor TEXT DEFAULT ''");
+  if (!stxCols.includes('area')) db.exec("ALTER TABLE supply_txns ADD COLUMN area TEXT DEFAULT ''");
+  if (!stxCols.includes('expiry_date')) db.exec("ALTER TABLE supply_txns ADD COLUMN expiry_date TEXT DEFAULT ''");
 
   // 擴充寶寶照護紀錄：新增生命徵象（呼吸/心跳/血氧）、生長（身長/頭圍）、
   // 觀察（膚色/臍帶/溢吐奶/活動力/大便性狀）等型別，並加 value_text 存類別型觀察值
@@ -1313,6 +1323,21 @@ function init() {
       'members', 'meals', 'invoices', 'contracts', 'tours', 'shifts', 'family']);
     db.prepare("UPDATE users SET permissions = ? WHERE role = 'nurse' AND permissions = ''").run(defaultStaff);
   }
+  // 員工基本資料：部門／群組／分類／等級／考勤卡號／住家電話／email／分機／離職日／登入權限／各旗標
+  const empCols = [
+    ["clock_no", "TEXT DEFAULT ''"], ["department", "TEXT DEFAULT ''"], ["emp_group", "TEXT DEFAULT ''"],
+    ["category", "TEXT DEFAULT ''"], ["emp_level", "TEXT DEFAULT ''"], ["home_phone", "TEXT DEFAULT ''"],
+    ["email", "TEXT DEFAULT ''"], ["ext", "TEXT DEFAULT ''"], ["resign_date", "TEXT DEFAULT ''"],
+    ["login_level", "INTEGER NOT NULL DEFAULT 0"],
+    ["flag_tour", "INTEGER NOT NULL DEFAULT 0"], ["flag_checkpoint", "INTEGER NOT NULL DEFAULT 0"],
+    ["flag_nutrition", "INTEGER NOT NULL DEFAULT 0"], ["flag_nursing", "INTEGER NOT NULL DEFAULT 0"],
+    ["flag_physician", "INTEGER NOT NULL DEFAULT 0"], ["flag_intern", "INTEGER NOT NULL DEFAULT 0"]
+  ];
+  const uCols2 = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  for (const [col, def] of empCols) if (!uCols2.includes(col)) db.exec(`ALTER TABLE users ADD COLUMN ${col} ${def}`);
+  // 既有帳號補上 login_level（admin→5、其餘啟用→1、停用→0）
+  db.prepare("UPDATE users SET login_level = 5 WHERE role = 'admin' AND login_level = 0").run();
+  db.prepare("UPDATE users SET login_level = 1 WHERE role = 'nurse' AND active = 1 AND login_level = 0").run();
 
   // 訂單：折扣與點數欄位（商城結帳）
   const oCols = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
