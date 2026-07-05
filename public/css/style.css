@@ -500,3 +500,63 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 .tl-grid td.tl-book small { font-weight: 400; opacity: 0.8; }
 .tl-grid .tl-today { background: #fff7e6; }
 .tl-grid th.tl-today { color: var(--accent); font-weight: 700; }
+
+/* ---------- 媽媽房況／寶寶房況看板 ---------- */
+.board-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 720px) { .board-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1180px) { .board-grid { grid-template-columns: repeat(3, 1fr); } }
+.room-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 5px solid #c5cfcd;
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  box-shadow: var(--shadow);
+}
+.room-card.occupied { border-left-color: var(--ok); }
+.room-card.due_out { border-left-color: var(--warn); }
+.room-card.due_in { border-left-color: var(--primary); }
+.room-card.reserved { border-left-color: var(--accent); }
+.rs-room { font-size: 1.15rem; font-weight: 700; color: var(--primary-dark); }
+.rs-name { font-size: 1rem; font-weight: 600; margin-top: 6px; }
+.rs-stay { margin-top: 6px; }
+.rs-stay small { color: var(--muted); }
+.rs-bar { height: 6px; background: var(--primary-light); border-radius: 3px; overflow: hidden; }
+.rs-bar i { display: block; height: 100%; background: var(--primary); border-radius: 3px; }
+.rs-kv { display: flex; flex-direction: column; gap: 2px; font-size: 0.88rem; margin-top: 8px; }
+.rs-kv .badge { font-weight: 500; }
+.rs-next { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 0.85rem; color: var(--muted); }
+.rs-alert { color: var(--danger); font-weight: 600; }
+
+/* ---------- 寶寶護理評估表單 ---------- */
+.req { color: var(--danger); font-weight: 700; }
+.bna-chk { display: inline-flex; align-items: center; gap: 5px; font-size: 0.9rem; font-weight: 400; white-space: nowrap; }
+.bna-chk input { width: auto; }
+/* 寶寶評估單：中衛欄位分區標題（藍色橫幅） */
+.sec-hd { background: #2f80c3; color: #fff; font-weight: 600; font-size: 0.95rem; padding: 8px 14px; border-radius: 8px; margin: 4px 0 12px; }
+.sec-hd.warn { background: #f6df7a; color: #6b5600; }
+
+/* ---------- 寶寶房況卡片：標題依性別、卡身依狀態上色 ---------- */
+.badge.purple { background: #f3e5f5; color: #8e24aa; }
+.bbc { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06); }
+.bbc.alert { outline: 2px solid var(--danger); }
+.bbc-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; color: #fff; font-weight: 700; font-size: 1.05rem; }
+.bbc-head.male { background: #5ec8f2; }
+.bbc-head.female { background: #f291b2; }
+.bbc-head.none { background: #9aa5a4; }
+.bbc-head small { font-weight: 500; font-size: 0.82rem; opacity: 0.95; }
+.bbc-body { padding: 10px 14px; }
+.bbc-body.loc-nursery { background: #fff; }
+.bbc-body.loc-rooming { background: #f5e6fb; }
+.bbc-body.loc-isolation { background: #fdf3c9; }
+.bbc-body.loc-out { background: #e4f3e5; }
+.bbc-foot { padding: 8px 14px; border-top: 1px solid var(--border); background: #fafcfc; }
+.legend-sq { display: inline-block; width: 13px; height: 13px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, 0.15); vertical-align: -2px; margin-right: 4px; }
+
+/* ---------- 母乳哺育評估表 ---------- */
+.bfa-grid { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+.bfa-grid th, .bfa-grid td { border: 1px solid var(--border); padding: 6px 10px; vertical-align: top; text-align: left; }
+.bfa-grid thead th { background: var(--primary-light); color: var(--primary-dark); }
+.bfa-grid th.bfa-sec { font-weight: 600; background: #fff; }
+.bfa-opt { display: flex; gap: 6px; align-items: flex-start; font-weight: 400; cursor: pointer; }
+.bfa-opt input[type="radio"] { width: auto; margin-top: 4px; flex: none; }

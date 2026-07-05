@@ -64,7 +64,7 @@ function init() {
     birth_date TEXT DEFAULT '',
     birth_weight_g INTEGER,
     notes TEXT DEFAULT '',
-    location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming')),
+    location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out')),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
 
@@ -94,7 +94,7 @@ function init() {
     value_num REAL,
     photo_file TEXT DEFAULT '',
     note TEXT DEFAULT '',
-    location TEXT DEFAULT '' CHECK (location IN ('','nursery','rooming')),
+    location TEXT DEFAULT '' CHECK (location IN ('','nursery','rooming','isolation','out')),
     recorded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_baby_records_baby ON baby_records(baby_id, recorded_at);
@@ -104,7 +104,7 @@ function init() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     baby_id INTEGER NOT NULL REFERENCES babies(id),
     nurse_id INTEGER REFERENCES users(id),
-    location TEXT NOT NULL CHECK (location IN ('nursery','rooming')),
+    location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out')),
     note TEXT DEFAULT '',
     moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
@@ -725,6 +725,204 @@ function init() {
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
 
+  -- 寶寶護理每日評估（中衛必要欄位－嬰兒日常評估）
+  CREATE TABLE IF NOT EXISTS baby_nursing_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    assess_date TEXT NOT NULL,
+    assess_time TEXT NOT NULL DEFAULT '',
+    weight_g REAL,
+    temperature REAL,
+    data TEXT NOT NULL DEFAULT '{}',   -- 其餘評估欄位（JSON：洗澡／心跳／呼吸／臍帶／奶量／皮膚／紅臀／大小便／親子同室…）
+    special_note TEXT DEFAULT '',      -- 特殊情況及處理
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_bna_baby ON baby_nursing_assessments(baby_id, assess_date);
+
+  -- 寶寶親子同室護理紀錄（推出／返室、奶量、大小便、敍述性紀錄）
+  CREATE TABLE IF NOT EXISTS baby_rooming_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    log_date TEXT NOT NULL,
+    log_time TEXT NOT NULL DEFAULT '',
+    breastfeed_min INTEGER,            -- 親餵分鐘（未親餵為 NULL）
+    breast_milk_ml INTEGER,            -- 母乳 ml
+    formula_ml INTEGER,                -- 配方奶 ml
+    stool TEXT DEFAULT '',
+    urine TEXT DEFAULT '',
+    out_time TEXT DEFAULT '',          -- 推出時間
+    return_time TEXT DEFAULT '',       -- 返室時間
+    note TEXT DEFAULT '',              -- 敍述性護理紀錄（限 300 字）
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_brl_baby ON baby_rooming_logs(baby_id, log_date);
+
+  -- 母乳哺育評估表（BREAST 觀察評估；各列勾選存 JSON）
+  CREATE TABLE IF NOT EXISTS breastfeeding_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    assess_date TEXT NOT NULL,
+    current_weight_g REAL,             -- 目前體重
+    parity TEXT DEFAULT '',            -- 胎次
+    feed_type TEXT DEFAULT '',         -- 純母乳／混合哺餵／配方奶
+    avg_pump_ml TEXT DEFAULT '',       -- 平均每次擠奶量
+    milk_brand TEXT DEFAULT '',        -- 奶品
+    milk_amount TEXT DEFAULT '',       -- 奶量
+    items TEXT NOT NULL DEFAULT '{}',  -- 各評估列勾選與附加欄（JSON）
+    other_note TEXT DEFAULT '',        -- 12.其它
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_bfa_baby ON breastfeeding_assessments(baby_id, assess_date);
+
+  -- 寶寶評估單（中衛必要欄位－嬰兒個案基本資料；每寶寶一筆，覆寫更新）
+  CREATE TABLE IF NOT EXISTS baby_case_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL UNIQUE REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    data TEXT NOT NULL DEFAULT '{}',   -- 個案基本資料欄位（JSON：入住／出生／APGAR／生產方式／體重身長／篩檢注射／症狀…）
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 寶寶評估單（中衛必要欄位－嬰兒入住評估；保留歷次紀錄）
+  CREATE TABLE IF NOT EXISTS baby_intake_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    assess_date TEXT NOT NULL,
+    assess_time TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',   -- 入住評估欄位（JSON：生命徵象／頭眼耳鼻口頸／皮膚紅臀／胸腹呼吸心跳…）
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_bia_baby ON baby_intake_assessments(baby_id, assess_date);
+
+  -- 兒科醫師診視紀錄（醫師巡診；房況卡片進入，逐筆可修改/刪除）
+  CREATE TABLE IF NOT EXISTS baby_doctor_visits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    recorded_by INTEGER REFERENCES users(id),
+    visit_date TEXT NOT NULL,
+    visit_time TEXT NOT NULL DEFAULT '',
+    weight_g REAL,                     -- 診視當日體重（gm）
+    data TEXT NOT NULL DEFAULT '{}',   -- 各部位檢查勾選（JSON：皮膚／頭囟眼口頸鎖骨／心肺臍生殖器臀…）
+    note TEXT DEFAULT '',              -- 敍述性紀錄（限 600 字）
+    edited_at TEXT DEFAULT '',
+    edited_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_bdv_baby ON baby_doctor_visits(baby_id, visit_date);
+
+  -- 新生兒交班單（房況卡片進入；逐筆可修改/刪除）
+  CREATE TABLE IF NOT EXISTS baby_handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    handover_date TEXT NOT NULL,
+    handover_time TEXT NOT NULL DEFAULT '',
+    feed_method TEXT DEFAULT '',          -- 餵奶方式：瓶／針／杯
+    pacifier TEXT DEFAULT '',             -- 安撫奶嘴：可吃／禁嘴／必要時可吃
+    isolation TEXT NOT NULL DEFAULT '[]', -- 隔離（JSON 陣列：寶寶隔離／奶瓶隔離）
+    weight_g REAL,                        -- 體重（gm）
+    jaundice REAL,                        -- 黃疸值（mg/dl）
+    cord TEXT DEFAULT '',                 -- 臍帶
+    sleep TEXT DEFAULT '',                -- 睡眠狀況：安穩／安撫可睡著／哭鬧
+    note TEXT DEFAULT '',                 -- 交班事項
+    edited_at TEXT DEFAULT '',
+    edited_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_bho_baby ON baby_handovers(baby_id, handover_date);
+
+  -- 產後嬰兒結案（每寶寶一筆，可更新；解除結案＝管理員刪除）
+  CREATE TABLE IF NOT EXISTS baby_closures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL UNIQUE REFERENCES babies(id),
+    nurse_id INTEGER REFERENCES users(id),
+    close_date TEXT NOT NULL,
+    close_time TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',   -- 結案欄位（JSON：原因／去向／結案體重黃疸臍帶餵食／衛教清單／追蹤轉介）
+    note TEXT DEFAULT '',              -- 結案摘要（限 600 字）
+    edited_at TEXT DEFAULT '',
+    edited_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 媽媽護理（中衛日常評估欄位；房況卡片進入）
+  CREATE TABLE IF NOT EXISTS mother_nursing_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    assess_date TEXT NOT NULL,
+    assess_time TEXT NOT NULL DEFAULT '',
+    temperature REAL,                  -- 體溫（>=37.5 視為發燒）
+    pulse REAL, respiration REAL,      -- 脈搏／呼吸（bpm）
+    systolic REAL, diastolic REAL,     -- 收縮壓／舒張壓（mmHg）
+    data TEXT NOT NULL DEFAULT '{}',   -- 其餘評估欄位（JSON：疼痛／排便／子宮復舊／惡露／傷口／乳房／精神活動力…）
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mna_mother ON mother_nursing_assessments(mother_id, assess_date);
+
+  -- 媽媽健康問題列表（開始／結案）
+  CREATE TABLE IF NOT EXISTS mother_health_problems (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    item TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT DEFAULT '',          -- 空字串＝未結案
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mhp_mother ON mother_health_problems(mother_id);
+
+  -- 媽媽量表評估（apgar=家庭功能／epds=愛丁堡憂鬱／bf_awareness=母乳認知與支持）
+  CREATE TABLE IF NOT EXISTS mother_scales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    kind TEXT NOT NULL CHECK (kind IN ('apgar','epds','bf_awareness')),
+    fill_date TEXT NOT NULL,
+    answers TEXT NOT NULL DEFAULT '[]',  -- 各題答案（JSON 陣列）
+    total INTEGER,                       -- 總分（bf_awareness 無總分可為 NULL）
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_msc_mother ON mother_scales(mother_id, kind, fill_date);
+
+  -- 護理指導單執行紀錄（care=產婦護理指導單／breastfeeding=母乳哺育指導單）
+  CREATE TABLE IF NOT EXISTS mother_guidance_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    kind TEXT NOT NULL CHECK (kind IN ('care','breastfeeding')),
+    done_date TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mgl_mother ON mother_guidance_logs(mother_id, done_date);
+
+  -- 產婦入住護理評估表（中衛必要欄位＋入住評估；每媽媽一筆，覆寫更新）
+  CREATE TABLE IF NOT EXISTS mother_intake_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL UNIQUE REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    data TEXT NOT NULL DEFAULT '{}',   -- 全部評估欄位（JSON 白名單）
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 乳房圖示（每日照片）
+  CREATE TABLE IF NOT EXISTS mother_breast_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    nurse_id INTEGER REFERENCES users(id),
+    taken_date TEXT NOT NULL,
+    photo_file TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mbp_mother ON mother_breast_photos(mother_id, taken_date);
+
   -- 名人／顧客推薦牆（對外行銷內容）
   CREATE TABLE IF NOT EXISTS testimonials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -742,6 +940,11 @@ function init() {
   `);
 
   // 既有資料庫的欄位遷移
+  const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (!userCols.includes('id_no')) {
+    // 照護人員身分證字號（寶寶評估單等中衛欄位自動帶入用）
+    db.exec("ALTER TABLE users ADD COLUMN id_no TEXT DEFAULT ''");
+  }
   const famCols = db.prepare('PRAGMA table_info(family_members)').all().map(c => c.name);
   if (!famCols.includes('line_user_id')) {
     db.exec("ALTER TABLE family_members ADD COLUMN line_user_id TEXT NOT NULL DEFAULT ''");
@@ -761,6 +964,8 @@ function init() {
   // 會員：媽媽自動為會員，掛點數與會員編號
   const mCols = db.prepare('PRAGMA table_info(mothers)').all().map(c => c.name);
   if (!mCols.includes('points')) db.exec('ALTER TABLE mothers ADD COLUMN points INTEGER NOT NULL DEFAULT 0');
+  // 媽媽身分證號（媽媽護理中衛欄位帶入用）
+  if (!mCols.includes('id_no')) db.exec("ALTER TABLE mothers ADD COLUMN id_no TEXT DEFAULT ''");
   if (!mCols.includes('member_no')) {
     db.exec("ALTER TABLE mothers ADD COLUMN member_no TEXT DEFAULT ''");
     // 既有媽媽補編會員編號 M + 5 碼
@@ -859,6 +1064,52 @@ function init() {
         SELECT id, mother_id, nurse_id, record_type, value_text, note, recorded_at FROM mother_records`);
       db.exec('DROP TABLE mother_records');
       db.exec('ALTER TABLE mother_records_new RENAME TO mother_records');
+    });
+    db.pragma('foreign_keys = OFF');
+    tx();
+    db.pragma('foreign_keys = ON');
+  }
+
+  // 寶寶位置狀態擴充：新增 隔離室(isolation)／不在館內(out)（放寬既有 CHECK 需重建表）
+  const babySql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='babies'").get() || {}).sql || '';
+  if (!babySql.includes("'isolation'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE babies_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        name TEXT NOT NULL,
+        gender TEXT DEFAULT '' CHECK (gender IN ('','male','female')),
+        birth_date TEXT DEFAULT '',
+        birth_weight_g INTEGER,
+        notes TEXT DEFAULT '',
+        location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )`);
+      db.exec(`INSERT INTO babies_new (id, mother_id, name, gender, birth_date, birth_weight_g, notes, location, created_at)
+        SELECT id, mother_id, name, gender, birth_date, birth_weight_g, notes, location, created_at FROM babies`);
+      db.exec('DROP TABLE babies');
+      db.exec('ALTER TABLE babies_new RENAME TO babies');
+    });
+    db.pragma('foreign_keys = OFF');
+    tx();
+    db.pragma('foreign_keys = ON');
+  }
+  const bllSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='baby_location_logs'").get() || {}).sql || '';
+  if (!bllSql.includes("'isolation'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE baby_location_logs_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        baby_id INTEGER NOT NULL REFERENCES babies(id),
+        nurse_id INTEGER REFERENCES users(id),
+        location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out')),
+        note TEXT DEFAULT '',
+        moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )`);
+      db.exec(`INSERT INTO baby_location_logs_new (id, baby_id, nurse_id, location, note, moved_at)
+        SELECT id, baby_id, nurse_id, location, note, moved_at FROM baby_location_logs`);
+      db.exec('DROP TABLE baby_location_logs');
+      db.exec('ALTER TABLE baby_location_logs_new RENAME TO baby_location_logs');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_baby_location_logs_baby ON baby_location_logs(baby_id, moved_at)');
     });
     db.pragma('foreign_keys = OFF');
     tx();

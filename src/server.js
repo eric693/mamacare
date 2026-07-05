@@ -127,16 +127,21 @@ const MODULES = [
   { key: 'users', label: '帳號管理' }
 ];
 const MODULE_KEYS = MODULES.map(m => m.key);
+// 寶寶位置狀態（房況卡片顏色）：嬰兒室／親子同室／隔離室／不在館內
+const BABY_LOCATIONS = ['nursery', 'rooming', 'isolation', 'out'];
+const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內' };
 // 路由 → 模組對照（依序比對，先精準後一般）；未命中者視為基礎共用端點，任何登入員工皆可存取
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
-  [/^\/api\/mothers\/\d+\/records/, 'mother_care'],
-  [/^\/api\/mother-records/, 'mother_care'],
+  [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake)/, 'mother_care'],
+  [/^\/api\/(mother-records|mother-nursing|mother-scales|mother-guidance|mother-health-problems|mother-breast-photos)/, 'mother_care'],
   [/^\/api\/babies\/\d+\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/physician-visits/, 'physician'],
-  [/^\/api\/babies\/\d+\/(records|report|location|photos|trends)/, 'baby_care'],
-  [/^\/api\/baby-records/, 'baby_care'],
+  [/^\/api\/babies\/\d+\/doctor-visits/, 'physician'],
+  [/^\/api\/baby-doctor-visits/, 'physician'],
+  [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|breastfeeding|eval|eval-profile|intake-assessments|handovers|closure)/, 'baby_care'],
+  [/^\/api\/(baby-records|baby-nursing|baby-rooming|breastfeeding|baby-intake|baby-handovers|baby-closures)/, 'baby_care'],
   [/^\/api\/handovers/, 'handover'],
   [/^\/api\/incidents/, 'incidents'],
   [/^\/api\/infection/, 'infection'],
@@ -222,6 +227,7 @@ function sweepOrphanUploads() {
     for (const r of db.prepare("SELECT photo_file FROM baby_records WHERE photo_file != ''").all()) referenced.add(path.basename(r.photo_file));
     for (const r of db.prepare("SELECT image FROM products WHERE image != ''").all()) referenced.add(path.basename(r.image));
     for (const r of db.prepare("SELECT photo FROM testimonials WHERE photo != ''").all()) referenced.add(path.basename(r.photo));
+    for (const r of db.prepare("SELECT photo_file FROM mother_breast_photos WHERE photo_file != ''").all()) referenced.add(path.basename(r.photo_file));
     const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 僅刪 1 天前，避開上傳途中
     let removed = 0;
     for (const f of fs.readdirSync(UPLOAD_DIR)) {
@@ -294,7 +300,7 @@ app.post('/api/login', (req, res) => {
     return res.status(401).json({ error: '帳號或密碼錯誤' });
   }
   req.session.user = {
-    id: user.id, name: user.name, role: user.role,
+    id: user.id, name: user.name, role: user.role, id_no: user.id_no || '',
     permissions: parsePermissions(user.permissions),
     modules: user.role === 'admin' ? MODULE_KEYS : parsePermissions(user.permissions)
   };
@@ -438,10 +444,11 @@ app.post('/api/mothers', requireStaff, (req, res) => {
   const m = req.body || {};
   if (!m.name) return res.status(400).json({ error: '姓名必填' });
   const info = db.prepare(`INSERT INTO mothers
-    (name, phone, due_date, delivery_date, delivery_type, diet_notes, medical_notes, status)
-    VALUES (?,?,?,?,?,?,?,?)`).run(
+    (name, phone, due_date, delivery_date, delivery_type, diet_notes, medical_notes, status, id_no)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
     m.name, m.phone || '', m.due_date || '', m.delivery_date || '',
-    m.delivery_type || '', m.diet_notes || '', m.medical_notes || '', m.status || 'reserved');
+    m.delivery_type || '', m.diet_notes || '', m.medical_notes || '', m.status || 'reserved',
+    String(m.id_no || '').slice(0, 10));
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -449,10 +456,10 @@ app.put('/api/mothers/:id', requireStaff, (req, res) => {
   const m = req.body || {};
   const info = db.prepare(`UPDATE mothers SET
     name = ?, phone = ?, due_date = ?, delivery_date = ?, delivery_type = ?,
-    diet_notes = ?, medical_notes = ?, status = ? WHERE id = ?`).run(
+    diet_notes = ?, medical_notes = ?, status = ?, id_no = ? WHERE id = ?`).run(
     m.name, m.phone || '', m.due_date || '', m.delivery_date || '',
     m.delivery_type || '', m.diet_notes || '', m.medical_notes || '',
-    m.status || 'reserved', req.params.id);
+    m.status || 'reserved', String(m.id_no || '').slice(0, 10), req.params.id);
   if (!info.changes) return res.status(404).json({ error: '找不到資料' });
   res.json({ ok: true });
 });
@@ -503,8 +510,8 @@ app.post('/api/babies/:id/records', requireStaff, (req, res) => {
   }
   const recordedAt = r.recorded_at || new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
     .toISOString().slice(0, 19).replace('T', ' ');
-  // 地點未指定時，沿用寶寶目前所在位置（嬰兒室／母嬰同室）
-  let location = ['nursery', 'rooming'].includes(r.location) ? r.location : '';
+  // 地點未指定時，沿用寶寶目前所在位置（嬰兒室／親子同室／隔離室／不在館內）
+  let location = BABY_LOCATIONS.includes(r.location) ? r.location : '';
   if (!location) {
     const baby = db.prepare('SELECT location FROM babies WHERE id = ?').get(req.params.id);
     location = baby ? baby.location : '';
@@ -577,11 +584,11 @@ app.put('/api/baby-records/:id', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- 寶寶位置（嬰兒室／母嬰同室）----------
+// ---------- 寶寶位置（嬰兒室／親子同室／隔離室／不在館內）----------
 app.put('/api/babies/:id/location', requireStaff, (req, res) => {
   const loc = req.body && req.body.location;
-  if (!['nursery', 'rooming'].includes(loc)) {
-    return res.status(400).json({ error: '位置須為 nursery 或 rooming' });
+  if (!BABY_LOCATIONS.includes(loc)) {
+    return res.status(400).json({ error: '位置須為 nursery／rooming／isolation／out' });
   }
   const baby = db.prepare('SELECT location FROM babies WHERE id = ?').get(req.params.id);
   if (!baby) return res.status(404).json({ error: '找不到寶寶' });
@@ -598,6 +605,935 @@ app.get('/api/babies/:id/location-logs', requireStaff, (req, res) => {
     LEFT JOIN users u ON u.id = ll.nurse_id
     WHERE ll.baby_id = ? ORDER BY ll.moved_at DESC LIMIT 50`).all(req.params.id);
   res.json(rows);
+});
+
+// ---------- 寶寶護理每日評估（中衛必要欄位－嬰兒日常評估） ----------
+// data 僅收白名單欄位；多選以陣列、紅臀左右以物件保存
+const BNA_FIELDS = [
+  'medical_no', 'bath', 'heart_rate', 'respiration', 'lip_color', 'muscle_tone',
+  'appearance', 'appearance_note', 'cord', 'milk_types', 'milk_note', 'feeding_status',
+  'skin_color', 'skin_conditions', 'skin_notes', 'rash_left', 'rash_right',
+  'stool', 'stool_count_note', 'stool_amount', 'stool_color', 'stool_color_note', 'stool_texture',
+  'urine', 'urine_count_note', 'urine_amount', 'urine_note',
+  'rooming', 'rooming_shifts', 'nurse_id_no'
+];
+
+app.get('/api/babies/:id/nursing', requireStaff, (req, res) => {
+  const baby = db.prepare(`
+    SELECT b.*, m.name AS mother_name, m.status AS mother_status,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS mother_check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS mother_check_out
+    FROM babies b JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const rows = db.prepare(`
+    SELECT a.*, u.name AS nurse_name FROM baby_nursing_assessments a
+    LEFT JOIN users u ON u.id = a.nurse_id
+    WHERE a.baby_id = ? ORDER BY a.assess_date DESC, a.assess_time DESC, a.id DESC LIMIT 200`).all(baby.id);
+  for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
+  const rooming = db.prepare(`
+    SELECT l.*, u.name AS nurse_name FROM baby_rooming_logs l
+    LEFT JOIN users u ON u.id = l.nurse_id
+    WHERE l.baby_id = ? ORDER BY l.log_date DESC, l.log_time DESC, l.id DESC LIMIT 200`).all(baby.id);
+  res.json({ baby, rows, rooming, bf_reminder: bfReminder(baby) });
+});
+
+app.post('/api/babies/:id/nursing', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.assess_date || '') ? b.assess_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.assess_time || '') ? b.assess_time.slice(0, 5) : '';
+  if (!time) return res.status(400).json({ error: '請填寫評估時間' });
+  const weight = Number(b.weight_g), temp = Number(b.temperature);
+  if (!(weight > 0 && weight <= 99999.9)) return res.status(400).json({ error: '體重需為 0～99999.9（g）' });
+  if (!(temp > 0 && temp <= 99.9)) return res.status(400).json({ error: '體溫需為 0～99.9（度C）' });
+  const data = {};
+  for (const k of BNA_FIELDS) if (b[k] !== undefined) data[k] = b[k];
+  const info = db.prepare(`INSERT INTO baby_nursing_assessments
+    (baby_id, nurse_id, assess_date, assess_time, weight_g, temperature, data, special_note)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
+    baby.id, req.session.user.id, date, time, weight, temp,
+    JSON.stringify(data).slice(0, 8000), String(b.special_note || '').slice(0, 500));
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/baby-nursing/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM baby_nursing_assessments WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 寶寶親子同室護理紀錄 ----------
+app.post('/api/babies/:id/rooming-logs', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.log_date || '') ? b.log_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.log_time || '') ? b.log_time.slice(0, 5) : '';
+  if (!time) return res.status(400).json({ error: '請填寫紀錄時間' });
+  const num = v => (v === '' || v == null || isNaN(Number(v))) ? null : Number(v);
+  const hhmm = v => /^\d{2}:\d{2}/.test(v || '') ? String(v).slice(0, 5) : '';
+  const info = db.prepare(`INSERT INTO baby_rooming_logs
+    (baby_id, nurse_id, log_date, log_time, breastfeed_min, breast_milk_ml, formula_ml,
+     stool, urine, out_time, return_time, note)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    baby.id, req.session.user.id, date, time,
+    num(b.breastfeed_min), num(b.breast_milk_ml), num(b.formula_ml),
+    String(b.stool || '').slice(0, 50), String(b.urine || '').slice(0, 50),
+    hhmm(b.out_time), hhmm(b.return_time), String(b.note || '').slice(0, 300));
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/baby-rooming/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM baby_rooming_logs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 母乳哺育評估 ----------
+// 哺餵母乳評估提醒（比照參考系統：入住第 3 天應執行；最早一筆評估視為執行）
+function bfReminder(baby) {
+  const bk = db.prepare(`
+    SELECT check_in FROM bookings WHERE mother_id = ? AND status IN ('checked_in','checked_out')
+    ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(baby.mother_id);
+  if (!bk || !bk.check_in) return null;
+  const remind = new Date(new Date(bk.check_in).getTime() + 2 * 86400000).toISOString().slice(0, 10);
+  const first = db.prepare(`
+    SELECT a.assess_date, u.name AS nurse_name FROM breastfeeding_assessments a
+    LEFT JOIN users u ON u.id = a.nurse_id WHERE a.baby_id = ?
+    ORDER BY a.assess_date, a.id LIMIT 1`).get(baby.id);
+  return {
+    remind_date: remind, day_label: '入住第3天',
+    done_date: first ? first.assess_date : '', done_by: first ? (first.nurse_name || '') : ''
+  };
+}
+
+app.get('/api/babies/:id/breastfeeding', requireStaff, (req, res) => {
+  const baby = db.prepare(`
+    SELECT b.*, m.name AS mother_name, m.delivery_type, m.delivery_date,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+    FROM babies b JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const rows = db.prepare(`
+    SELECT a.*, u.name AS nurse_name FROM breastfeeding_assessments a
+    LEFT JOIN users u ON u.id = a.nurse_id
+    WHERE a.baby_id = ? ORDER BY a.assess_date DESC, a.id DESC LIMIT 100`).all(baby.id);
+  for (const r of rows) { try { r.items = JSON.parse(r.items); } catch (e) { r.items = {}; } }
+  res.json({ baby, rows, reminder: bfReminder(baby) });
+});
+
+app.post('/api/babies/:id/breastfeeding', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.assess_date || '') ? b.assess_date : today();
+  const items = (b.items && typeof b.items === 'object') ? b.items : {};
+  const weight = b.current_weight_g === '' || b.current_weight_g == null ? null : Number(b.current_weight_g);
+  const info = db.prepare(`INSERT INTO breastfeeding_assessments
+    (baby_id, nurse_id, assess_date, current_weight_g, parity, feed_type,
+     avg_pump_ml, milk_brand, milk_amount, items, other_note)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    baby.id, req.session.user.id, date, isNaN(weight) ? null : weight,
+    String(b.parity || '').slice(0, 20), String(b.feed_type || '').slice(0, 20),
+    String(b.avg_pump_ml || '').slice(0, 30), String(b.milk_brand || '').slice(0, 50),
+    String(b.milk_amount || '').slice(0, 30),
+    JSON.stringify(items).slice(0, 8000), String(b.other_note || '').slice(0, 500));
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/breastfeeding/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM breastfeeding_assessments WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 寶寶評估單（中衛必要欄位－嬰兒個案基本資料＋嬰兒入住評估） ----------
+// 個案基本資料（每寶寶一筆，覆寫更新）白名單欄位
+const BCP_FIELDS = [
+  'checkin_date', 'checkin_time', 'birth_date', 'birth_time', 'birth_place', 'apgar',
+  'delivery_modes', 'delivery_other',
+  'birth_weight_cat', 'birth_weight_g', 'discharge_weight_cat', 'discharge_weight_g', 'current_weight_g',
+  'birth_length_cat', 'birth_length_cm', 'current_length_cm',
+  'prom', 'doic', 'ma', 'metabolic_screen', 'metabolic_screen_date', 'vaccination',
+  'hbig_date', 'hbv_date',
+  'flu_fever', 'flu_cough', 'flu_diarrhea', 'flu_rash',
+  'ev_temp', 'ev_mouth_red', 'ev_mouth_blister', 'ev_limb_blister', 'ev_limb_rash',
+  'special_care', 'caregiver_id_no',
+  'handover_note', 'swim_count'   // 新生兒交班單頁的重要備註／寶寶游泳次數（同一份個案 profile 保存）
+];
+// 入住評估白名單欄位
+const BIA_FIELDS = [
+  'bt', 'hr', 'rr', 'head_circ', 'head_status', 'head_status_note',
+  'fontanelle', 'fontanelle_note', 'scalp', 'hematoma_site', 'hematoma_size', 'scalp_other_note',
+  'eye_left', 'eye_right', 'pupil_left', 'pupil_right',
+  'ear', 'ear_note', 'nose', 'nose_note',
+  'mouth', 'mouth_conditions', 'mouth_other_note', 'neck', 'neck_note',
+  'skin_color', 'skin_conditions', 'skin_notes', 'rash_left', 'rash_right',
+  'chest', 'chest_note', 'resp_rate', 'resp_pattern', 'resp_pattern_note',
+  'heart_rate', 'heart_rate_note', 'limb_temp', 'limb_color',
+  'abdomen', 'abdomen_note', 'bowel_sound', 'caregiver_id_no'
+];
+// 嬰兒病歷號：系統帶入，依寶寶編號固定產生（沿用於基本資料與入住評估）
+const babyMedicalNo = id => 'B' + String(id).padStart(5, '0');
+
+app.get('/api/babies/:id/eval', requireStaff, (req, res) => {
+  const baby = db.prepare(`
+    SELECT b.*, m.name AS mother_name,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.baby_check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS baby_check_in,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS mother_check_in
+    FROM babies b JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const prof = db.prepare(`
+    SELECT p.*, u.name AS nurse_name FROM baby_case_profiles p
+    LEFT JOIN users u ON u.id = p.nurse_id WHERE p.baby_id = ?`).get(baby.id);
+  if (prof) { try { prof.data = JSON.parse(prof.data); } catch (e) { prof.data = {}; } }
+  const rows = db.prepare(`
+    SELECT a.*, u.name AS nurse_name FROM baby_intake_assessments a
+    LEFT JOIN users u ON u.id = a.nurse_id
+    WHERE a.baby_id = ? ORDER BY a.assess_date DESC, a.assess_time DESC, a.id DESC LIMIT 100`).all(baby.id);
+  for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
+  res.json({ baby, medical_no: babyMedicalNo(baby.id), profile: prof || null, rows });
+});
+
+// 個案基本資料存檔（部分欄位亦可，與既有資料合併；「入住日存檔」即只送入住日期時間）
+app.put('/api/babies/:id/eval-profile', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT b.id, b.mother_id FROM babies b WHERE b.id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+  const isTime = v => /^\d{2}:\d{2}/.test(v || '');
+  for (const k of ['checkin_date', 'birth_date', 'metabolic_screen_date', 'hbig_date', 'hbv_date']) {
+    if (b[k] !== undefined && b[k] !== '' && !isDate(b[k])) return res.status(400).json({ error: '日期格式錯誤（YYYY-MM-DD）' });
+  }
+  for (const k of ['checkin_time', 'birth_time']) {
+    if (b[k] !== undefined && b[k] !== '' && !isTime(b[k])) return res.status(400).json({ error: '時間格式錯誤（HH:MM）' });
+    if (b[k]) b[k] = String(b[k]).slice(0, 5);
+  }
+  if (b.apgar !== undefined && b.apgar !== '') {
+    const a = Number(b.apgar);
+    if (!(a >= 1 && a <= 10)) return res.status(400).json({ error: 'APGAR 需為 1～10' });
+  }
+  const cur = db.prepare('SELECT data FROM baby_case_profiles WHERE baby_id = ?').get(baby.id);
+  let data = {};
+  if (cur) { try { data = JSON.parse(cur.data); } catch (e) { data = {}; } }
+  for (const k of BCP_FIELDS) if (b[k] !== undefined) {
+    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+  }
+  data.medical_no = babyMedicalNo(baby.id);
+  const json = JSON.stringify(data).slice(0, 8000);
+  if (cur) {
+    db.prepare(`UPDATE baby_case_profiles SET nurse_id=?, data=?, updated_at=datetime('now','localtime') WHERE baby_id=?`)
+      .run(req.session.user.id, json, baby.id);
+  } else {
+    db.prepare('INSERT INTO baby_case_profiles (baby_id, nurse_id, data) VALUES (?,?,?)')
+      .run(baby.id, req.session.user.id, json);
+  }
+  // 入住日期同步至進行中訂房的「寶寶入住日」（帳務不同住天數計算沿用此欄位）
+  if (isDate(b.checkin_date)) {
+    db.prepare(`UPDATE bookings SET baby_check_in = ? WHERE id =
+      (SELECT id FROM bookings WHERE mother_id = ? AND status = 'checked_in' ORDER BY check_in DESC LIMIT 1)`)
+      .run(b.checkin_date, baby.mother_id);
+  }
+  logAudit(req, { action: 'update', entity: 'baby_case_profiles', entity_id: baby.id, summary: '寶寶評估單－個案基本資料' });
+  res.json({ ok: true });
+});
+
+// 嬰兒入住評估（新增一筆）
+app.post('/api/babies/:id/intake-assessments', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.assess_date || '') ? b.assess_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.assess_time || '') ? b.assess_time.slice(0, 5) : '';
+  if (!time) return res.status(400).json({ error: '請填寫評估時間' });
+  const bt = Number(b.bt), hr = Number(b.hr), rr = Number(b.rr), head = Number(b.head_circ);
+  if (!(bt > 0 && bt <= 99.9)) return res.status(400).json({ error: 'BT（肛溫）需為 0～99.9（°C）' });
+  if (!(hr > 0 && hr <= 999)) return res.status(400).json({ error: 'HR（心跳）需為 0～999（bpm）' });
+  if (!(rr > 0 && rr <= 999)) return res.status(400).json({ error: 'RR（呼吸）需為 0～999（bpm）' });
+  if (!(head > 0 && head <= 999.9)) return res.status(400).json({ error: '頭圍需為 0～999.9（cm）' });
+  const data = { medical_no: babyMedicalNo(baby.id) };
+  for (const k of BIA_FIELDS) if (b[k] !== undefined) {
+    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+  }
+  const info = db.prepare(`INSERT INTO baby_intake_assessments
+    (baby_id, nurse_id, assess_date, assess_time, data) VALUES (?,?,?,?,?)`).run(
+    baby.id, req.session.user.id, date, time, JSON.stringify(data).slice(0, 8000));
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/baby-intake/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM baby_intake_assessments WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 兒科醫師診視紀錄（醫師巡診） ----------
+// data 僅收白名單欄位；各部位以陣列（多選）／字串（單選、補述）保存
+const BDV_FIELDS = [
+  'gest_weeks', 'birth_days', 'birth_weight_g',
+  'skin', 'skin_other', 'head', 'head_hema_sides', 'fontanelle',
+  'eyes', 'eye_secretion_side', 'eye_secretion_color', 'eye_secretion_amount', 'eye_conj_side',
+  'mouth', 'mouth_other', 'neck', 'neck_side', 'clavicle', 'clavicle_side',
+  'heart', 'lungs', 'lung_note', 'umbilicus', 'umb_other',
+  'genital', 'genital_undescended_side', 'genital_hernia_side', 'genital_other',
+  'buttock', 'rash_w', 'rash_h'
+];
+function normalizeDoctorVisit(b) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.visit_date || '') ? b.visit_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.visit_time || '') ? b.visit_time.slice(0, 5) : '';
+  const weight = (b.weight_g === '' || b.weight_g == null) ? null : Number(b.weight_g);
+  if (weight != null && !(weight > 0 && weight <= 99999.9)) return { error: '體重需為 0～99999.9（gm）' };
+  const data = {};
+  for (const k of BDV_FIELDS) if (b[k] !== undefined) {
+    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+  }
+  return { date, time, weight, data, note: String(b.note || '').slice(0, 600) };
+}
+
+app.get('/api/babies/:id/doctor-visits', requireStaff, (req, res) => {
+  const baby = db.prepare(`
+    SELECT b.*, m.name AS mother_name,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS mother_check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS mother_check_out
+    FROM babies b JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const rows = db.prepare(`
+    SELECT v.*, u.name AS recorded_by_name, e.name AS edited_by_name
+    FROM baby_doctor_visits v
+    LEFT JOIN users u ON u.id = v.recorded_by
+    LEFT JOIN users e ON e.id = v.edited_by
+    WHERE v.baby_id = ? ORDER BY v.visit_date DESC, v.visit_time DESC, v.id DESC LIMIT 200`).all(baby.id);
+  for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
+  res.json({ baby, rows });
+});
+
+app.post('/api/babies/:id/doctor-visits', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.visit_time || '')) return res.status(400).json({ error: '請填寫診視時間' });
+  const v = normalizeDoctorVisit(b);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const info = db.prepare(`INSERT INTO baby_doctor_visits
+    (baby_id, recorded_by, visit_date, visit_time, weight_g, data, note)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    baby.id, req.session.user.id, v.date, v.time, v.weight,
+    JSON.stringify(v.data).slice(0, 8000), v.note);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/baby-doctor-visits/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM baby_doctor_visits WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到診視紀錄' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.visit_time || '')) return res.status(400).json({ error: '請填寫診視時間' });
+  const v = normalizeDoctorVisit(b);
+  if (v.error) return res.status(400).json({ error: v.error });
+  db.prepare(`UPDATE baby_doctor_visits SET visit_date=?, visit_time=?, weight_g=?, data=?, note=?,
+    edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
+    v.date, v.time, v.weight, JSON.stringify(v.data).slice(0, 8000), v.note,
+    req.session.user.id, cur.id);
+  logAudit(req, { action: 'update', entity: 'baby_doctor_visits', entity_id: cur.id, summary: '兒科醫師診視紀錄修改' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/baby-doctor-visits/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM baby_doctor_visits WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 新生兒交班單 ----------
+const BHO_FEED = ['瓶', '針', '杯'];
+const BHO_PACIFIER = ['可吃', '禁嘴', '必要時可吃'];
+const BHO_ISOLATION = ['寶寶隔離', '奶瓶隔離'];
+const BHO_SLEEP = ['安穩', '安撫可睡著', '哭鬧'];
+function normalizeHandover(b) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.handover_date || '') ? b.handover_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.handover_time || '') ? b.handover_time.slice(0, 5) : '';
+  const num = (v, max) => {
+    if (v === '' || v == null) return null;
+    const n = Number(v);
+    return (n > 0 && n <= max) ? n : NaN;
+  };
+  const weight = num(b.weight_g, 99999.9), jaundice = num(b.jaundice, 99.9);
+  if (Number.isNaN(weight)) return { error: '體重需為 0～99999.9（gm）' };
+  if (Number.isNaN(jaundice)) return { error: '黃疸值需為 0～99.9（mg/dl）' };
+  return {
+    date, time, weight, jaundice,
+    feed_method: BHO_FEED.includes(b.feed_method) ? b.feed_method : '',
+    pacifier: BHO_PACIFIER.includes(b.pacifier) ? b.pacifier : '',
+    isolation: JSON.stringify((Array.isArray(b.isolation) ? b.isolation : []).filter(x => BHO_ISOLATION.includes(x))),
+    sleep: BHO_SLEEP.includes(b.sleep) ? b.sleep : '',
+    cord: String(b.cord || '').slice(0, 100),
+    note: String(b.note || '').slice(0, 600)
+  };
+}
+
+app.get('/api/babies/:id/handovers', requireStaff, (req, res) => {
+  const baby = db.prepare(`
+    SELECT b.*, m.name AS mother_name, m.delivery_type,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+    FROM babies b JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const prof = db.prepare('SELECT data FROM baby_case_profiles WHERE baby_id = ?').get(baby.id);
+  let profData = {};
+  if (prof) { try { profData = JSON.parse(prof.data); } catch (e) { profData = {}; } }
+  const rows = db.prepare(`
+    SELECT h.*, u.name AS nurse_name, e.name AS edited_by_name
+    FROM baby_handovers h
+    LEFT JOIN users u ON u.id = h.nurse_id
+    LEFT JOIN users e ON e.id = h.edited_by
+    WHERE h.baby_id = ? ORDER BY h.handover_date DESC, h.handover_time DESC, h.id DESC LIMIT 200`).all(baby.id);
+  for (const r of rows) { try { r.isolation = JSON.parse(r.isolation); } catch (e) { r.isolation = []; } }
+
+  // 表頭彙整：疫苗／胎次奶品／週數／最後喝奶／黃疸／現在體重
+  const vacc = kind => db.prepare(`SELECT administered_at FROM vaccinations
+    WHERE baby_id = ? AND vaccine = ? AND status = 'done' AND administered_at != ''
+    ORDER BY administered_at DESC LIMIT 1`).get(baby.id, kind);
+  const bfa = db.prepare(`SELECT parity, milk_brand FROM breastfeeding_assessments
+    WHERE baby_id = ? ORDER BY assess_date DESC, id DESC LIMIT 1`).get(baby.id);
+  const bdv = db.prepare(`SELECT data FROM baby_doctor_visits
+    WHERE baby_id = ? ORDER BY visit_date DESC, visit_time DESC, id DESC LIMIT 1`).get(baby.id);
+  let gestWeeks = '';
+  if (bdv) { try { gestWeeks = JSON.parse(bdv.data).gest_weeks || ''; } catch (e) { /* */ } }
+  const lastFeed = db.prepare(`SELECT recorded_at, feed_method, amount_ml FROM baby_records
+    WHERE baby_id = ? AND record_type = 'feeding' ORDER BY recorded_at DESC LIMIT 1`).get(baby.id);
+  const firstJaundice = db.prepare(`SELECT value_num, recorded_at FROM baby_records
+    WHERE baby_id = ? AND record_type = 'jaundice' AND value_num IS NOT NULL ORDER BY recorded_at LIMIT 1`).get(baby.id);
+  const lastJaundice = db.prepare(`SELECT value_num, recorded_at FROM baby_records
+    WHERE baby_id = ? AND record_type = 'jaundice' AND value_num IS NOT NULL ORDER BY recorded_at DESC LIMIT 1`).get(baby.id);
+  const lastWeight = db.prepare(`SELECT value_num, recorded_at FROM baby_records
+    WHERE baby_id = ? AND record_type = 'weight' AND value_num IS NOT NULL ORDER BY recorded_at DESC LIMIT 1`).get(baby.id);
+  // 照護紀錄與交班單皆可能有最新體重／黃疸：取日期較新者
+  const newer = (rec, hoRow, field) => {
+    const hoDate = hoRow ? `${hoRow.handover_date} ${hoRow.handover_time}` : '';
+    if (rec && (!hoRow || rec.recorded_at >= hoDate)) return { value: rec.value_num, at: rec.recorded_at.slice(0, 10) };
+    if (hoRow) return { value: hoRow[field], at: hoRow.handover_date };
+    return null;
+  };
+  const hoWeight = rows.find(r => r.weight_g != null);
+  const hoJaundice = rows.find(r => r.jaundice != null);
+  const header = {
+    bcg_date: (vacc('bcg') || {}).administered_at || '',
+    hbig_date: (vacc('hepb_immunoglobulin') || {}).administered_at || profData.hbig_date || '',
+    parity: bfa ? bfa.parity : '', milk_brand: bfa ? bfa.milk_brand : '',
+    gest_weeks: gestWeeks,
+    birth_place: profData.birth_place || '',
+    last_feed: lastFeed || null,
+    jaundice_birth: firstJaundice ? firstJaundice.value_num : null,
+    jaundice_now: newer(lastJaundice, hoJaundice, 'jaundice'),
+    weight_now: newer(lastWeight, hoWeight, 'weight_g'),
+    handover_note: profData.handover_note || '', swim_count: profData.swim_count || '',
+    feed_method_now: rows.length ? rows[0].feed_method : '',
+    pacifier_now: rows.length ? rows[0].pacifier : ''
+  };
+
+  // 寶寶每日奶量統計（近 14 天）：母奶／配方／總量、小便大便次數、親子同室時數
+  const stats = db.prepare(`
+    SELECT date(recorded_at) AS d,
+      SUM(CASE WHEN record_type='feeding' AND (feed_method LIKE '%母%' OR feed_method LIKE '%親%') THEN COALESCE(amount_ml,0) ELSE 0 END) AS breast_ml,
+      SUM(CASE WHEN record_type='feeding' AND feed_method LIKE '%配方%' THEN COALESCE(amount_ml,0) ELSE 0 END) AS formula_ml,
+      SUM(CASE WHEN record_type='feeding' THEN COALESCE(amount_ml,0) ELSE 0 END) AS total_ml,
+      SUM(CASE WHEN record_type='diaper' AND diaper_kind='濕' THEN 1 ELSE 0 END) AS urine,
+      SUM(CASE WHEN record_type='diaper' AND diaper_kind='便' THEN 1 ELSE 0 END) AS stool
+    FROM baby_records WHERE baby_id = ? AND record_type IN ('feeding','diaper')
+    GROUP BY date(recorded_at) ORDER BY d DESC LIMIT 14`).all(baby.id);
+  const roomingLogs = db.prepare(`SELECT log_date, out_time, return_time FROM baby_rooming_logs
+    WHERE baby_id = ? AND out_time != '' AND return_time != ''`).all(baby.id);
+  const roomingHours = {};
+  for (const l of roomingLogs) {
+    const [oh, om] = l.out_time.split(':').map(Number), [rh, rm] = l.return_time.split(':').map(Number);
+    let hrs = (rh * 60 + rm - oh * 60 - om) / 60;
+    if (hrs < 0) hrs += 24;   // 跨夜
+    roomingHours[l.log_date] = (roomingHours[l.log_date] || 0) + hrs;
+  }
+  for (const s of stats) s.rooming_hours = roomingHours[s.d] ? Math.round(roomingHours[s.d] * 10) / 10 : 0;
+
+  res.json({ baby, rows, header, stats });
+});
+
+app.post('/api/babies/:id/handovers', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.handover_time || '')) return res.status(400).json({ error: '請填寫交班時間' });
+  const v = normalizeHandover(b);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const info = db.prepare(`INSERT INTO baby_handovers
+    (baby_id, nurse_id, handover_date, handover_time, feed_method, pacifier, isolation,
+     weight_g, jaundice, cord, sleep, note)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    baby.id, req.session.user.id, v.date, v.time, v.feed_method, v.pacifier, v.isolation,
+    v.weight, v.jaundice, v.cord, v.sleep, v.note);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/baby-handovers/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM baby_handovers WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到交班紀錄' });
+  const b = req.body || {};
+  if (!/^\d{2}:\d{2}/.test(b.handover_time || '')) return res.status(400).json({ error: '請填寫交班時間' });
+  const v = normalizeHandover(b);
+  if (v.error) return res.status(400).json({ error: v.error });
+  db.prepare(`UPDATE baby_handovers SET handover_date=?, handover_time=?, feed_method=?, pacifier=?,
+    isolation=?, weight_g=?, jaundice=?, cord=?, sleep=?, note=?,
+    edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
+    v.date, v.time, v.feed_method, v.pacifier, v.isolation,
+    v.weight, v.jaundice, v.cord, v.sleep, v.note, req.session.user.id, cur.id);
+  logAudit(req, { action: 'update', entity: 'baby_handovers', entity_id: cur.id, summary: '新生兒交班單修改' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/baby-handovers/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM baby_handovers WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 產後嬰兒結案 ----------
+const BCL_REASONS = ['期滿結案', '提前退住', '轉院', '其他'];
+const BCL_DEST = ['返家', '轉至醫療院所', '其他'];
+const BCL_CORD = ['已脫落', '未脫落－乾燥', '未脫落－潮濕', '其他'];
+const BCL_FEEDING = ['純母乳', '混合哺餵', '配方奶'];
+const BCL_EDU = ['沐浴衛教', '臍帶護理', '餵奶技巧', '預防注射時程', '黃疸觀察', '安全睡眠', '大小便觀察', '體溫量測'];
+const BCL_FIELDS = [
+  'reason', 'reason_other', 'destination', 'hospital', 'destination_other',
+  'weight_g', 'jaundice', 'cord', 'cord_other', 'feeding', 'educations', 'follow_up'
+];
+
+app.get('/api/babies/:id/closure', requireStaff, (req, res) => {
+  const baby = db.prepare(`
+    SELECT b.*, m.name AS mother_name, m.status AS mother_status,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS mother_check_out
+    FROM babies b JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const closure = db.prepare(`
+    SELECT c.*, u.name AS nurse_name, e.name AS edited_by_name FROM baby_closures c
+    LEFT JOIN users u ON u.id = c.nurse_id
+    LEFT JOIN users e ON e.id = c.edited_by WHERE c.baby_id = ?`).get(baby.id);
+  if (closure) { try { closure.data = JSON.parse(closure.data); } catch (e) { closure.data = {}; } }
+  // 住期摘要：入住日（評估單個案資料 → 訂房寶寶入住日）、最新體重／黃疸（照護紀錄 vs 交班單取較新）、疫苗
+  const prof = db.prepare('SELECT data FROM baby_case_profiles WHERE baby_id = ?').get(baby.id);
+  let profData = {};
+  if (prof) { try { profData = JSON.parse(prof.data); } catch (e) { profData = {}; } }
+  const bk = db.prepare(`SELECT baby_check_in FROM bookings WHERE mother_id = ? AND status = 'checked_in'
+    ORDER BY check_in DESC LIMIT 1`).get(baby.mother_id);
+  const lastRec = type => db.prepare(`SELECT value_num, recorded_at FROM baby_records
+    WHERE baby_id = ? AND record_type = ? AND value_num IS NOT NULL ORDER BY recorded_at DESC LIMIT 1`).get(baby.id, type);
+  const hoW = db.prepare(`SELECT weight_g, handover_date FROM baby_handovers
+    WHERE baby_id = ? AND weight_g IS NOT NULL ORDER BY handover_date DESC, handover_time DESC LIMIT 1`).get(baby.id);
+  const hoJ = db.prepare(`SELECT jaundice, handover_date FROM baby_handovers
+    WHERE baby_id = ? AND jaundice IS NOT NULL ORDER BY handover_date DESC, handover_time DESC LIMIT 1`).get(baby.id);
+  const pick = (rec, ho, field) => {
+    if (rec && (!ho || rec.recorded_at.slice(0, 10) >= ho.handover_date)) return { value: rec.value_num, at: rec.recorded_at.slice(0, 10) };
+    if (ho) return { value: ho[field], at: ho.handover_date };
+    return null;
+  };
+  const vacc = kind => (db.prepare(`SELECT administered_at FROM vaccinations
+    WHERE baby_id = ? AND vaccine = ? AND status = 'done' AND administered_at != ''
+    ORDER BY administered_at DESC LIMIT 1`).get(baby.id, kind) || {}).administered_at || '';
+  const lastNursing = db.prepare(`SELECT data FROM baby_nursing_assessments
+    WHERE baby_id = ? ORDER BY assess_date DESC, assess_time DESC, id DESC LIMIT 1`).get(baby.id);
+  let lastCord = '';
+  if (lastNursing) { try { lastCord = JSON.parse(lastNursing.data).cord || ''; } catch (e) { /* */ } }
+  const summary = {
+    checkin_date: profData.checkin_date || (bk && bk.baby_check_in) || '',
+    weight_now: pick(lastRec('weight'), hoW, 'weight_g'),
+    jaundice_now: pick(lastRec('jaundice'), hoJ, 'jaundice'),
+    cord_last: lastCord,
+    bcg_date: vacc('bcg'), hbv_date: vacc('hepb') || profData.hbv_date || '',
+    hbig_date: vacc('hepb_immunoglobulin') || profData.hbig_date || ''
+  };
+  res.json({ baby, closure: closure || null, summary, options: {
+    reasons: BCL_REASONS, destinations: BCL_DEST, cords: BCL_CORD, feedings: BCL_FEEDING, educations: BCL_EDU
+  } });
+});
+
+// 結案存檔（已結案則更新）
+app.put('/api/babies/:id/closure', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.close_date || '') ? b.close_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.close_time || '') ? b.close_time.slice(0, 5) : '';
+  if (!time) return res.status(400).json({ error: '請填寫結案時間' });
+  if (!BCL_REASONS.includes(b.reason)) return res.status(400).json({ error: '請選擇結案原因' });
+  if (!BCL_DEST.includes(b.destination)) return res.status(400).json({ error: '請選擇去向' });
+  if (b.reason === '其他' && !String(b.reason_other || '').trim()) return res.status(400).json({ error: '結案原因選「其他」時，補述必填' });
+  if (b.destination === '轉至醫療院所' && !String(b.hospital || '').trim()) return res.status(400).json({ error: '去向選「轉至醫療院所」時，院所名稱必填' });
+  if (b.destination === '其他' && !String(b.destination_other || '').trim()) return res.status(400).json({ error: '去向選「其他」時，補述必填' });
+  const num = (v, max) => {
+    if (v === '' || v == null) return null;
+    const n = Number(v);
+    return (n > 0 && n <= max) ? n : NaN;
+  };
+  const weight = num(b.weight_g, 99999.9), jaundice = num(b.jaundice, 99.9);
+  if (Number.isNaN(weight)) return res.status(400).json({ error: '結案體重需為 0～99999.9（gm）' });
+  if (Number.isNaN(jaundice)) return res.status(400).json({ error: '黃疸值需為 0～99.9（mg/dl）' });
+  const data = {};
+  for (const k of BCL_FIELDS) if (b[k] !== undefined) {
+    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+  }
+  data.weight_g = weight;
+  data.jaundice = jaundice;
+  data.educations = (Array.isArray(b.educations) ? b.educations : []).filter(x => BCL_EDU.includes(x));
+  const note = String(b.note || '').slice(0, 600);
+  const cur = db.prepare('SELECT id FROM baby_closures WHERE baby_id = ?').get(baby.id);
+  const json = JSON.stringify(data).slice(0, 8000);
+  if (cur) {
+    db.prepare(`UPDATE baby_closures SET close_date=?, close_time=?, data=?, note=?,
+      edited_at=datetime('now','localtime'), edited_by=? WHERE baby_id=?`)
+      .run(date, time, json, note, req.session.user.id, baby.id);
+  } else {
+    db.prepare(`INSERT INTO baby_closures (baby_id, nurse_id, close_date, close_time, data, note)
+      VALUES (?,?,?,?,?,?)`).run(baby.id, req.session.user.id, date, time, json, note);
+  }
+  logAudit(req, { action: cur ? 'update' : 'create', entity: 'baby_closures', entity_id: baby.id, summary: '產後嬰兒結案' });
+  res.json({ ok: true });
+});
+
+// 解除結案（管理員）
+app.delete('/api/baby-closures/:babyId', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM baby_closures WHERE baby_id = ?').run(req.params.babyId);
+  logAudit(req, { action: 'delete', entity: 'baby_closures', entity_id: req.params.babyId, summary: '解除產後嬰兒結案' });
+  res.json({ ok: true });
+});
+
+// ---------- 媽媽護理（中衛日常評估欄位） ----------
+// data 僅收白名單欄位
+const MNA_FIELDS = [
+  'pain_nrs', 'bowel_count',
+  'uterus', 'fundus_note',
+  'lochia_amount', 'lochia_color', 'lochia_clot', 'clot_note',
+  'wound', 'wound_exudate_amount', 'wound_exudate_color',
+  'breast_l', 'breast_l_milk', 'breast_l_mastitis',
+  'breast_r', 'breast_r_milk', 'breast_r_mastitis',
+  'bf_skill', 'mental', 'activity', 'nurse_id_no',
+  'diet', 'urination', 'sleep', 'education', 'note'   // 非必填欄位（報表用）
+];
+// 媽媽病歷號：沿用會員編號（M+5 碼，建檔時已產生）
+const motherMedicalNo = m => m.member_no || ('M' + String(m.id).padStart(5, '0'));
+// 護理指導單提醒排程：入住第 1／3／7／10 天
+const GUIDANCE_DAYS = [1, 3, 7, 10];
+
+app.get('/api/mothers/:id/nursing', requireStaff, (req, res) => {
+  const mother = db.prepare(`
+    SELECT m.*,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_out
+    FROM mothers m WHERE m.id = ?`).get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const rows = db.prepare(`
+    SELECT a.*, u.name AS nurse_name FROM mother_nursing_assessments a
+    LEFT JOIN users u ON u.id = a.nurse_id
+    WHERE a.mother_id = ? ORDER BY a.assess_date DESC, a.assess_time DESC, a.id DESC LIMIT 200`).all(mother.id);
+  for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
+  const problems = db.prepare(`SELECT p.*, u.name AS nurse_name FROM mother_health_problems p
+    LEFT JOIN users u ON u.id = p.nurse_id WHERE p.mother_id = ? ORDER BY p.start_date DESC, p.id DESC`).all(mother.id);
+  const scales = db.prepare(`SELECT s.*, u.name AS nurse_name FROM mother_scales s
+    LEFT JOIN users u ON u.id = s.nurse_id WHERE s.mother_id = ? ORDER BY s.fill_date DESC, s.id DESC LIMIT 100`).all(mother.id);
+  for (const s of scales) { try { s.answers = JSON.parse(s.answers); } catch (e) { s.answers = []; } }
+  const guidance = db.prepare(`SELECT g.*, u.name AS nurse_name FROM mother_guidance_logs g
+    LEFT JOIN users u ON u.id = g.nurse_id WHERE g.mother_id = ? ORDER BY g.done_date, g.id`).all(mother.id);
+  // 護理指導單提醒（入住第 1/3/7/10 天；依序以任一指導單執行紀錄視為完成）
+  let reminders = [];
+  if (mother.check_in) {
+    const used = new Set();
+    reminders = GUIDANCE_DAYS.map(day => {
+      const remind = new Date(new Date(mother.check_in).getTime() + (day - 1) * 86400000).toISOString().slice(0, 10);
+      const log = guidance.find(g => !used.has(g.id) && g.done_date >= remind);
+      if (log) used.add(log.id);
+      return { remind_date: remind, day_label: `入住 第${day}天`,
+        done_date: log ? log.done_date : '', done_by: log ? (log.nurse_name || '') : '', kind: log ? log.kind : '' };
+    });
+  }
+  const todayPhoto = db.prepare(`SELECT * FROM mother_breast_photos
+    WHERE mother_id = ? AND taken_date = ? ORDER BY id DESC LIMIT 1`).get(mother.id, today());
+  // 寶寶基本資料（母乳認知與支持評估表頭）：性別/出生/體重＋週數（醫師巡診）＋生產醫院（寶寶評估單）＋胎次（母乳哺育評估）
+  const baby = db.prepare('SELECT * FROM babies WHERE mother_id = ? ORDER BY id LIMIT 1').get(mother.id);
+  let babyInfo = null;
+  if (baby) {
+    const bdv = db.prepare(`SELECT data FROM baby_doctor_visits WHERE baby_id = ?
+      ORDER BY visit_date DESC, visit_time DESC, id DESC LIMIT 1`).get(baby.id);
+    const prof = db.prepare('SELECT data FROM baby_case_profiles WHERE baby_id = ?').get(baby.id);
+    const bfa = db.prepare(`SELECT parity FROM breastfeeding_assessments WHERE baby_id = ?
+      ORDER BY assess_date DESC, id DESC LIMIT 1`).get(baby.id);
+    let gestWeeks = '', birthPlace = '';
+    try { gestWeeks = JSON.parse((bdv || {}).data || '{}').gest_weeks || ''; } catch (e) { /* */ }
+    try { birthPlace = JSON.parse((prof || {}).data || '{}').birth_place || ''; } catch (e) { /* */ }
+    babyInfo = {
+      gender: baby.gender, birth_date: baby.birth_date, birth_weight_g: baby.birth_weight_g,
+      gest_weeks: gestWeeks, birth_place: birthPlace, parity: bfa ? bfa.parity : ''
+    };
+  }
+  res.json({ mother, medical_no: motherMedicalNo(mother), rows, problems, scales, guidance, reminders,
+    today_photo: todayPhoto || null, baby_info: babyInfo });
+});
+
+app.post('/api/mothers/:id/nursing', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.assess_date || '') ? b.assess_date : today();
+  const time = /^\d{2}:\d{2}/.test(b.assess_time || '') ? b.assess_time.slice(0, 5) : '';
+  if (!time) return res.status(400).json({ error: '請填寫紀錄時間' });
+  const num = (v, max, label) => {
+    const n = Number(v);
+    if (!(n > 0 && n <= max)) throw new Error(`${label}需為 0～${max}`);
+    return n;
+  };
+  let temp, pulse, resp, sys, dia;
+  try {
+    temp = num(b.temperature, 99.9, '體溫');
+    pulse = num(b.pulse, 999, '脈搏');
+    resp = num(b.respiration, 999, '呼吸');
+    sys = num(b.systolic, 999, '收縮壓');
+    dia = num(b.diastolic, 999, '舒張壓');
+  } catch (e) { return res.status(400).json({ error: e.message }); }
+  const data = {};
+  for (const k of MNA_FIELDS) if (b[k] !== undefined) {
+    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 300) : b[k];
+  }
+  const info = db.prepare(`INSERT INTO mother_nursing_assessments
+    (mother_id, nurse_id, assess_date, assess_time, temperature, pulse, respiration, systolic, diastolic, data)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    mother.id, req.session.user.id, date, time, temp, pulse, resp, sys, dia,
+    JSON.stringify(data).slice(0, 8000));
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/mother-nursing/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM mother_nursing_assessments WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// 護理指導單執行（產婦護理／母乳哺育）
+app.post('/api/mothers/:id/guidance', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  if (!['care', 'breastfeeding'].includes(b.kind)) return res.status(400).json({ error: '指導單類別錯誤' });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.done_date || '') ? b.done_date : today();
+  const info = db.prepare(`INSERT INTO mother_guidance_logs (mother_id, nurse_id, kind, done_date, note)
+    VALUES (?,?,?,?,?)`).run(mother.id, req.session.user.id, b.kind, date, String(b.note || '').slice(0, 300));
+  res.json({ id: info.lastInsertRowid });
+});
+app.delete('/api/mother-guidance/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM mother_guidance_logs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// 量表評估（apgar 家庭功能 5 題 0~2 分；epds 愛丁堡憂鬱 10 題 0~3 分＋年齡/判定；bf_awareness 母乳認知與支持完整問卷）
+// bf_awareness 問卷白名單欄位（基本資料／認知／經驗／支持系統）
+const BFAW_FIELDS = [
+  'language', 'ob_history', 'breast_surgery', 'pain_relief', 'discharge_feeding',
+  'src', 'method', 'method_other', 'benefits', 'this_feed',
+  'prev_feed', 'prev_feed_time', 'r_staff', 'r_staff_other', 'r_mom', 'r_mom_other',
+  'r_baby', 'r_baby_other', 'r_social', 'prev_rooming', 'prev_rooming_reason',
+  'cohab', 'cohab_other', 'family_help', 'family_view', 'family_view_reason',
+  'helpers', 'consult', 'consult_title', 'helpless'
+];
+app.post('/api/mothers/:id/scales', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  if (!['apgar', 'epds', 'bf_awareness'].includes(b.kind)) return res.status(400).json({ error: '量表類別錯誤' });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.fill_date || '') ? b.fill_date : today();
+  let total = null, stored;
+  if (b.kind === 'apgar') {
+    const answers = Array.isArray(b.answers) ? b.answers : [];
+    if (answers.length !== 5 || answers.some(a => ![0, 1, 2].includes(a))) {
+      return res.status(400).json({ error: '家庭功能評估需回答 5 題（每題 0～2 分）' });
+    }
+    total = answers.reduce((s, a) => s + a, 0);
+    stored = answers;
+  } else if (b.kind === 'epds') {
+    // answers 為 10 題分數陣列；另存年齡與判定結果（正常／再觀察／建議進一步評估）
+    const arr = Array.isArray(b.answers) ? b.answers : ((b.answers || {}).a || []);
+    if (arr.length !== 10 || arr.some(a => ![0, 1, 2, 3].includes(a))) {
+      return res.status(400).json({ error: '愛丁堡憂鬱量表需回答 10 題（每題 0～3 分）' });
+    }
+    total = arr.reduce((s, a) => s + a, 0);
+    stored = { a: arr, age: String(b.age || '').slice(0, 10), result: String(b.result || '').slice(0, 50) };
+  } else {
+    // 母乳認知與支持：完整問卷物件，僅收白名單欄位（陣列＝多選、字串＝單選/文字）
+    const src = (b.answers && typeof b.answers === 'object' && !Array.isArray(b.answers)) ? b.answers : {};
+    stored = {};
+    for (const k of BFAW_FIELDS) {
+      if (src[k] === undefined) continue;
+      stored[k] = Array.isArray(src[k]) ? src[k].map(x => String(x).slice(0, 100)).slice(0, 30) : String(src[k]).slice(0, 200);
+    }
+  }
+  const info = db.prepare(`INSERT INTO mother_scales (mother_id, nurse_id, kind, fill_date, answers, total, note)
+    VALUES (?,?,?,?,?,?,?)`).run(mother.id, req.session.user.id, b.kind, date,
+    JSON.stringify(stored).slice(0, 6000), total, String(b.note || '').slice(0, 300));
+  res.json({ id: info.lastInsertRowid, total });
+});
+app.delete('/api/mother-scales/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM mother_scales WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// 健康問題列表
+app.post('/api/mothers/:id/health-problems', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  if (!String(b.item || '').trim()) return res.status(400).json({ error: '問題項目必填' });
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(b.start_date || '') ? b.start_date : today();
+  const info = db.prepare(`INSERT INTO mother_health_problems (mother_id, nurse_id, item, start_date, end_date)
+    VALUES (?,?,?,?,?)`).run(mother.id, req.session.user.id,
+    String(b.item).trim().slice(0, 200), start,
+    /^\d{4}-\d{2}-\d{2}$/.test(b.end_date || '') ? b.end_date : '');
+  res.json({ id: info.lastInsertRowid });
+});
+app.put('/api/mother-health-problems/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM mother_health_problems WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到健康問題' });
+  const b = req.body || {};
+  db.prepare('UPDATE mother_health_problems SET item = ?, start_date = ?, end_date = ? WHERE id = ?').run(
+    String(b.item ?? cur.item).trim().slice(0, 200),
+    /^\d{4}-\d{2}-\d{2}$/.test(b.start_date || '') ? b.start_date : cur.start_date,
+    b.end_date === '' ? '' : (/^\d{4}-\d{2}-\d{2}$/.test(b.end_date || '') ? b.end_date : cur.end_date),
+    cur.id);
+  res.json({ ok: true });
+});
+app.delete('/api/mother-health-problems/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM mother_health_problems WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 產婦入住護理評估表（中衛必要欄位＋中衛入住評估欄位） ----------
+// data 僅收白名單欄位（陣列＝多選、其餘存字串）
+const MIA_FIELDS = [
+  // 中衛必要欄位
+  'id_no', 'companion_name', 'companion_phone', 'companion_relation',
+  'county', 'district', 'address', 'tel',
+  'education', 'education_other', 'languages', 'language_other', 'marital',
+  'gravidity', 'parity', 'abortus', 'delivery_modes', 'delivery_other',
+  'high_risk', 'high_risk_other', 'occupation',
+  'allergy_cat', 'allergy_food', 'allergy_drug',
+  'alcohol', 'alcohol_other', 'smoking', 'smoking_other',
+  'past_history', 'past_history_other',
+  'rpr', 'hiv', 'varicella', 'hbsag', 'hbeag',
+  'medication', 'medication_detail', 'travel', 'travel_note', 'fever_hx', 'fever_note',
+  'contact_flag', 'contact_items', 'contact_other',
+  'infection_flag', 'infection_items',
+  'special_flag', 'special_items', 'special_other', 'recorder_id_no',
+  // 中衛入住評估欄位
+  'height', 'weight', 'temperature', 'respiration', 'bp',
+  'ear_l', 'ear_l_other', 'ear_r', 'ear_r_other',
+  'nose', 'nose_other', 'mouth', 'mouth_other', 'neck', 'neck_other', 'vision', 'vision_note',
+  'consciousness', 'skin', 'skin_items', 'skin_other_note', 'emotion', 'emotion_items',
+  'attitude', 'resp_quality', 'pulse', 'resp_pattern', 'resp_pattern_other',
+  'heart_rate', 'heart_rate_other', 'limb_temp', 'limb_color',
+  'abdomen', 'abdomen_other', 'upper_limb', 'upper_limb_other', 'lower_limb', 'lower_limb_other',
+  'urination', 'urination_note', 'bowel', 'bowel_note', 'uterus', 'fundus_note',
+  'lochia_amount', 'lochia_nature', 'clot', 'clot_note',
+  'wound', 'wound_exu_amount', 'wound_exu_color', 'activity',
+  'needs', 'needs_other', 'breast_l', 'breast_l_other', 'breast_r', 'breast_r_other',
+  'breast_lump', 'lump_note', 'nipple_len', 'nipple_len_other', 'nipple_size', 'nipple_size_other',
+  'bf_exp', 'bf_prev_duration', 'bf_stop_reasons', 'bf_stop_other',
+  'bf_intent', 'bf_no_reason', 'bf_planned_time', 'bf_planned_other',
+  'family_support', 'pain', 'pain_score', 'pain_site', 'pain_nature', 'pain_time', 'pain_note',
+  'report_note'
+];
+
+app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
+  const mother = db.prepare(`
+    SELECT m.*,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_in
+    FROM mothers m WHERE m.id = ?`).get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const rec = db.prepare(`
+    SELECT a.*, u.name AS nurse_name FROM mother_intake_assessments a
+    LEFT JOIN users u ON u.id = a.nurse_id WHERE a.mother_id = ?`).get(mother.id);
+  if (rec) { try { rec.data = JSON.parse(rec.data); } catch (e) { rec.data = {}; } }
+  res.json({ mother, medical_no: motherMedicalNo(mother), record: rec || null });
+});
+
+app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  // 數值範圍檢核（有填才驗）
+  const numChecks = [
+    ['height', 999.9, '身高需為 0～999.9（cm）'], ['weight', 999.9, '體重需為 0～999.9（kg）'],
+    ['temperature', 99.9, '體溫需為 0～99.9（°C）'], ['respiration', 999, '呼吸需為 0～999（次/分）'],
+    ['pulse', 999, '脈搏需為 0～999'], ['pain_score', 10, '疼痛分數需為 0～10']
+  ];
+  for (const [k, max, msg] of numChecks) {
+    if (b[k] !== undefined && b[k] !== '') {
+      const n = Number(b[k]);
+      if (!(n >= 0 && n <= max)) return res.status(400).json({ error: msg });
+    }
+  }
+  const cur = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(mother.id);
+  let data = {};
+  if (cur) { try { data = JSON.parse(cur.data); } catch (e) { data = {}; } }
+  for (const k of MIA_FIELDS) if (b[k] !== undefined) {
+    data[k] = Array.isArray(b[k]) ? b[k].map(x => String(x).slice(0, 100)).slice(0, 30)
+      : (typeof b[k] === 'string' ? b[k].slice(0, 500) : b[k]);
+  }
+  const json = JSON.stringify(data).slice(0, 16000);
+  if (cur) {
+    db.prepare(`UPDATE mother_intake_assessments SET nurse_id=?, data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+      .run(req.session.user.id, json, mother.id);
+  } else {
+    db.prepare('INSERT INTO mother_intake_assessments (mother_id, nurse_id, data) VALUES (?,?,?)')
+      .run(mother.id, req.session.user.id, json);
+  }
+  // 身分證號同步回住客資料（媽媽護理等中衛欄位共用）
+  if (typeof b.id_no === 'string' && b.id_no.trim()) {
+    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(b.id_no.trim().slice(0, 10), mother.id);
+  }
+  logAudit(req, { action: cur ? 'update' : 'create', entity: 'mother_intake_assessments', entity_id: mother.id, summary: '產婦入住護理評估表' });
+  res.json({ ok: true });
+});
+
+// 乳房圖示（每日照片）
+app.post('/api/mothers/:id/breast-photos', requireStaff, upload.single('photo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '請選擇圖片檔案' });
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test((req.body || {}).taken_date || '') ? req.body.taken_date : today();
+  const info = db.prepare(`INSERT INTO mother_breast_photos (mother_id, nurse_id, taken_date, photo_file, note)
+    VALUES (?,?,?,?,?)`).run(mother.id, req.session.user.id, date, req.file.filename,
+    String((req.body || {}).note || '').slice(0, 200));
+  res.json({ id: info.lastInsertRowid, file: req.file.filename });
+});
+app.delete('/api/mother-breast-photos/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT photo_file FROM mother_breast_photos WHERE id = ?').get(req.params.id);
+  if (cur) removeUploadFile(cur.photo_file);
+  db.prepare('DELETE FROM mother_breast_photos WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 app.post('/api/babies/:id/photos', requireStaff, upload.single('photo'), (req, res) => {
@@ -2814,6 +3750,118 @@ app.get('/api/room-calendar', requireStaff, (req, res) => {
   res.json({ start, end, days, rooms, bookings });
 });
 
+// ---------- 媽媽房況／寶寶房況看板 ----------
+// 媽媽房況：每間房的即時狀態（入住中住客、住到第幾天、今日進退房、照護與房務摘要、下一筆預約）
+app.get('/api/room-status/mothers', requireStaff, (req, res) => {
+  const d = today();
+  const rooms = db.prepare('SELECT id, name, room_type, price_per_day, notes FROM rooms WHERE active=1 ORDER BY name').all();
+  const occupants = db.prepare(`
+    SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out, bk.baby_check_in,
+           m.id AS mother_id, m.name AS mother_name, m.phone, m.delivery_type, m.delivery_date,
+           m.meal_diet, m.diet_notes, m.medical_notes, m.hk_dnd, m.hk_needs,
+           (SELECT COUNT(*) FROM mother_records mr WHERE mr.mother_id = m.id AND date(mr.recorded_at) = ?) AS today_care_count,
+           (SELECT MAX(mr.recorded_at) FROM mother_records mr WHERE mr.mother_id = m.id) AS last_care_at,
+           (SELECT COUNT(*) FROM housekeeping_logs h WHERE h.status = 'pending'
+             AND (h.mother_id = m.id OR h.room_id = bk.room_id)) AS pending_tasks
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+    WHERE bk.status = 'checked_in'
+    ORDER BY bk.check_in DESC`).all(d);
+  // 每房下一筆預約（含今日應到）
+  const upcoming = db.prepare(`
+    SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out,
+           m.id AS mother_id, m.name AS mother_name, m.phone
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+    WHERE bk.status = 'reserved' AND bk.check_out > ?
+    ORDER BY bk.check_in`).all(d);
+  // 在住寶寶依媽媽彙總（顯示母嬰同室狀況）
+  const babies = db.prepare(`
+    SELECT b.mother_id, b.name, b.location FROM babies b
+    JOIN mothers m ON m.id = b.mother_id WHERE m.status = 'checked_in'`).all();
+  const babiesByMom = {};
+  for (const b of babies) (babiesByMom[b.mother_id] = babiesByMom[b.mother_id] || []).push(b);
+  const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+  const list = rooms.map(r => {
+    const occ = occupants.find(o => o.room_id === r.id) || null;
+    const next = upcoming.find(u => u.room_id === r.id) || null;
+    if (occ) {
+      occ.stay_day = Math.max(1, dayDiff(occ.check_in, d) + 1);  // 住到第幾天（資料異常時至少顯示第 1 天）
+      occ.stay_total = dayDiff(occ.check_in, occ.check_out);     // 合約天數
+      occ.babies = babiesByMom[occ.mother_id] || [];
+    }
+    let state = 'vacant';
+    if (occ) state = occ.check_out <= d ? 'due_out' : 'occupied'; // 今日（含逾期）應退房
+    else if (next && next.check_in <= d) state = 'due_in';        // 今日應入住
+    else if (next) state = 'reserved';
+    return { ...r, state, occupant: occ, next_booking: next };
+  });
+  const stats = {
+    total: list.length,
+    occupied: list.filter(x => x.state === 'occupied' || x.state === 'due_out').length,
+    due_out: list.filter(x => x.state === 'due_out').length,
+    due_in: list.filter(x => x.state === 'due_in').length,
+    vacant: list.filter(x => x.state === 'vacant' || x.state === 'reserved').length
+  };
+  res.json({ date: d, stats, rooms: list });
+});
+
+// 寶寶房況：在住寶寶的位置（嬰兒室／母嬰同室）與今日照護即時摘要
+app.get('/api/room-status/babies', requireStaff, (req, res) => {
+  const d = today();
+  const rows = db.prepare(`
+    SELECT b.id, b.name, b.gender, b.birth_date, b.birth_weight_g, b.location, b.notes,
+           m.id AS mother_id, m.name AS mother_name,
+           (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+             WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
+             ORDER BY bk.check_in DESC LIMIT 1) AS room_name,
+           (SELECT MAX(ll.moved_at) FROM baby_location_logs ll WHERE ll.baby_id = b.id) AS moved_at,
+           (SELECT MAX(recorded_at) FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding') AS last_feed_at,
+           (SELECT feed_method FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding'
+             ORDER BY recorded_at DESC LIMIT 1) AS last_feed_method,
+           (SELECT amount_ml FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding'
+             ORDER BY recorded_at DESC LIMIT 1) AS last_feed_ml,
+           (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding'
+             AND date(recorded_at) = ?) AS feed_count,
+           (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'diaper'
+             AND diaper_kind = '濕' AND date(recorded_at) = ?) AS diaper_wet,
+           (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'diaper'
+             AND diaper_kind = '便' AND date(recorded_at) = ?) AS diaper_stool,
+           (SELECT value_num FROM baby_records WHERE baby_id = b.id AND record_type = 'temperature'
+             ORDER BY recorded_at DESC LIMIT 1) AS last_temp,
+           (SELECT recorded_at FROM baby_records WHERE baby_id = b.id AND record_type = 'temperature'
+             ORDER BY recorded_at DESC LIMIT 1) AS last_temp_at,
+           (SELECT value_num FROM baby_records WHERE baby_id = b.id AND record_type = 'jaundice'
+             ORDER BY recorded_at DESC LIMIT 1) AS last_jaundice,
+           (SELECT value_num FROM baby_records WHERE baby_id = b.id AND record_type = 'weight'
+             ORDER BY recorded_at DESC LIMIT 1) AS last_weight,
+           (SELECT a.data FROM baby_nursing_assessments a WHERE a.baby_id = b.id
+             ORDER BY a.assess_date DESC, a.assess_time DESC, a.id DESC LIMIT 1) AS last_assess_data,
+           (SELECT a.assess_date || ' ' || a.assess_time FROM baby_nursing_assessments a WHERE a.baby_id = b.id
+             ORDER BY a.assess_date DESC, a.assess_time DESC, a.id DESC LIMIT 1) AS last_assess_at,
+           (SELECT COUNT(*) FROM baby_closures c WHERE c.baby_id = b.id) AS closed
+    FROM babies b JOIN mothers m ON m.id = b.mother_id
+    WHERE m.status = 'checked_in'
+    ORDER BY b.location, m.name, b.name`).all(d, d, d);
+  for (const b of rows) {
+    b.age_days = b.birth_date ? Math.round((new Date(d) - new Date(b.birth_date)) / 86400000) : null;
+    // 最近一次寶寶護理評估的臍帶狀態（房況卡片顯示用）
+    try { b.cord = JSON.parse(b.last_assess_data || '{}').cord || ''; } catch (e) { b.cord = ''; }
+    delete b.last_assess_data;
+  }
+  const alerts = abnormalRecords(d, d); // 今日異常照護紀錄（門檻取自系統設定）
+  res.json({
+    date: d,
+    stats: {
+      total: rows.length,
+      nursery: rows.filter(b => b.location === 'nursery').length,
+      rooming: rows.filter(b => b.location === 'rooming').length,
+      isolation: rows.filter(b => b.location === 'isolation').length,
+      out: rows.filter(b => b.location === 'out').length,
+      alerts: alerts.length
+    },
+    babies: rows, alerts
+  });
+});
+
 // ---------- 房務清潔 ----------
 // 在住住客的清潔需求總覽（含勿擾時間／需求項目／備註）＋今日任務統計
 app.get('/api/housekeeping', requireStaff, (req, res) => {
@@ -3011,7 +4059,7 @@ const EXPORTS = {
     label: '寶寶',
     columns: [{ key: 'name', label: '寶寶' }, { key: 'mother_name', label: '媽媽' }, { key: 'gender', label: '性別' }, { key: 'birth_date', label: '出生日' }, { key: 'birth_weight_g', label: '出生體重(g)' }, { key: 'location', label: '目前位置' }, { key: 'notes', label: '備註' }],
     rows: () => db.prepare(`SELECT b.*, m.name AS mother_name FROM babies b JOIN mothers m ON m.id = b.mother_id ORDER BY b.id`).all()
-      .map(b => ({ ...b, gender: b.gender === 'male' ? '男' : b.gender === 'female' ? '女' : '', location: b.location === 'rooming' ? '母嬰同室' : '嬰兒室' }))
+      .map(b => ({ ...b, gender: b.gender === 'male' ? '男' : b.gender === 'female' ? '女' : '', location: BABY_LOCATION_TW[b.location] || '嬰兒室' }))
   },
   bookings: {
     label: '訂房',
@@ -3681,7 +4729,7 @@ app.get('/api/handover-todos', requireStaff, (req, res) => {
 app.get('/api/modules', requireStaff, (req, res) => res.json(MODULES));
 
 app.get('/api/users', requireStaff, (req, res) => {
-  const rows = db.prepare('SELECT id, username, name, role, phone, active, permissions FROM users ORDER BY id').all();
+  const rows = db.prepare('SELECT id, username, name, role, phone, id_no, active, permissions FROM users ORDER BY id').all();
   res.json(rows.map(u => ({ ...u, permissions: parsePermissions(u.permissions) })));
 });
 
@@ -3697,9 +4745,9 @@ app.post('/api/users', requireAdmin, (req, res) => {
   const role = u.role === 'admin' ? 'admin' : 'nurse';
   try {
     const info = db.prepare(
-      'INSERT INTO users (username, password_hash, name, role, phone, permissions) VALUES (?,?,?,?,?,?)').run(
+      'INSERT INTO users (username, password_hash, name, role, phone, id_no, permissions) VALUES (?,?,?,?,?,?,?)').run(
       u.username, hashPassword(u.password), u.name, role, u.phone || '',
-      role === 'admin' ? '' : sanitizePerms(u.permissions));
+      String(u.id_no || '').slice(0, 10), role === 'admin' ? '' : sanitizePerms(u.permissions));
     logAudit(req, { action: 'create', entity: 'users', entity_id: info.lastInsertRowid, summary: u.username });
     res.json({ id: info.lastInsertRowid });
   } catch (e) {
@@ -3718,8 +4766,9 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
     if (admins <= 1) return res.status(400).json({ error: '至少需保留一位啟用中的管理員' });
   }
   const perms = role === 'admin' ? '' : sanitizePerms(u.permissions !== undefined ? u.permissions : parsePermissions(cur.permissions));
-  db.prepare('UPDATE users SET name=?, role=?, phone=?, active=?, permissions=? WHERE id=?').run(
+  db.prepare('UPDATE users SET name=?, role=?, phone=?, id_no=?, active=?, permissions=? WHERE id=?').run(
     u.name ?? cur.name, role, u.phone ?? cur.phone,
+    String(u.id_no ?? cur.id_no ?? '').slice(0, 10),
     (u.active === undefined ? cur.active : (u.active ? 1 : 0)), perms, cur.id);
   if (u.password) db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(u.password), cur.id);
   logAudit(req, { action: 'update', entity: 'users', entity_id: cur.id, summary: cur.username });
