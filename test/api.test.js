@@ -953,3 +953,120 @@ test('寶寶評估單：帳號身分證字號可維護並帶入 session', async 
   const login = await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
   assert.strictEqual(login.data.user.id_no, 'A123456789');
 });
+
+test('員工基本資料：登入權限0-5對映 role/active、旗標對映模組權限、預設密碼', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const c = await req('POST', '/api/employees', { username: 'emp_t1', name: '測試員', login_level: 3, flag_physician: 1, flag_nursing: 1, department: '護理部' });
+  assert.strictEqual(c.status, 200);
+  const e = (await req('GET', '/api/employees')).data.find(u => u.username === 'emp_t1');
+  assert.strictEqual(e.role, 'nurse');
+  assert.strictEqual(e.active, 1);
+  assert.strictEqual(e.login_level, 3);
+  assert.ok(e.permissions.includes('physician'));
+  assert.ok(e.permissions.includes('mother_care') && e.permissions.includes('baby_care'));
+  await req('POST', '/api/employees', { username: 'emp_t5', name: '主管', login_level: 5 });
+  assert.strictEqual((await req('GET', '/api/employees')).data.find(u => u.username === 'emp_t5').role, 'admin');
+  await req('POST', '/api/employees', { username: 'emp_t0', name: '停用', login_level: 0 });
+  const saved = cookie; cookie = '';
+  assert.strictEqual((await req('POST', '/api/login', { username: 'emp_t0', password: 'emp_t0' }, false)).status, 401);
+  cookie = '';
+  assert.strictEqual((await req('POST', '/api/login', { username: 'emp_t5', password: 'emp_t5' }, false)).status, 200);
+  cookie = saved;
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+});
+
+test('備品：CSV 匯入(編號 upsert)、進出/盤點、庫存彙總與分頁向後相容', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const imp = await req('POST', '/api/supplies/import', { items: [
+    { code: 'SUP1', name: '測試備品A', category: '其他備品', unit: '個', price: '100', safety_stock: '2', front_sellable: 'yes' },
+    { code: 'SUP1', name: '測試備品A改', price: '120' }
+  ] });
+  assert.strictEqual(imp.status, 200);
+  assert.strictEqual(imp.data.added, 1);
+  assert.strictEqual(imp.data.updated, 1);
+  const sup = (await req('GET', '/api/supplies')).data.find(s => s.code === 'SUP1');
+  assert.strictEqual(sup.price, 120);
+  assert.strictEqual(sup.name, '測試備品A改');
+  assert.strictEqual((await req('POST', `/api/supplies/${sup.id}/txns`, { txn_type: 'in', quantity: 10, vendor: '廠商A', expiry_date: '2027-01-01' })).status, 200);
+  assert.strictEqual((await req('POST', `/api/supplies/${sup.id}/txns`, { txn_type: 'out', quantity: 3, area: '嬰兒室' })).status, 200);
+  assert.strictEqual((await req('POST', `/api/supplies/${sup.id}/txns`, { txn_type: 'adjust', quantity: 9 })).status, 200);
+  const sum = (await req('GET', '/api/supplies/stock-summary')).data.find(s => s.code === 'SUP1');
+  assert.strictEqual(sum.total_in, 10);
+  assert.strictEqual(sum.total_out, 3);
+  const pg = (await req('GET', '/api/supply-txns?type=inout&page=1&pageSize=1')).data;
+  assert.ok(Array.isArray(pg.rows) && pg.total >= 2 && pg.pageSize === 1);
+  assert.ok(Array.isArray((await req('GET', '/api/supply-txns?type=inout')).data));
+  const inTx = (await req('GET', '/api/supply-txns?type=in')).data.find(t => t.supply_code === 'SUP1');
+  assert.strictEqual(inTx.vendor, '廠商A');
+  assert.strictEqual(inTx.expiry_date, '2027-01-01');
+});
+
+test('參觀：新增(胎次/生產醫院)、取消明細、時段設定、伺服器端分頁/篩選', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const c = await req('POST', '/api/tours', { name: '測試媽媽X', phone: '0912', tour_at: '2026-07-15 14:00', due_date: '2026-09-01', source: '官網', parity: '第2胎', birth_hospital: '台大' });
+  assert.strictEqual(c.status, 200);
+  const tid = c.data.id;
+  const paged = (await req('GET', '/api/tours?field=tour&from=2026-07-01&to=2026-07-31&page=1&pageSize=100')).data;
+  assert.ok(Array.isArray(paged.rows) && typeof paged.total === 'number');
+  const t = paged.rows.find(x => x.id === tid);
+  assert.strictEqual(t.parity, '第2胎');
+  assert.strictEqual(t.birth_hospital, '台大');
+  assert.strictEqual((await req('POST', `/api/tours/${tid}/cancel`, { reason: '臨時有事' })).status, 200);
+  const cancelled = (await req('GET', '/api/tours?only_cancelled=1&page=1&pageSize=100')).data.rows.find(x => x.id === tid);
+  assert.strictEqual(cancelled.status, 'lost');
+  assert.strictEqual(cancelled.cancel_reason, '臨時有事');
+  assert.ok(cancelled.cancel_by_name);
+  const c2 = await req('POST', '/api/tours', { name: 'Y', tour_at: '2026-07-16 10:00' });
+  assert.strictEqual((await req('POST', `/api/tours/${c2.data.id}/cancel`, {})).status, 400);
+  assert.strictEqual((await req('POST', '/api/tour-slots', { slot_date: '2026-07-20', open_from: '10:00', open_to: '12:00', capacity: 2 })).status, 200);
+  assert.strictEqual((await req('POST', '/api/tour-slots', { slot_date: '2026-07-25', closed: 1 })).status, 200);
+  const slots = (await req('GET', '/api/tour-slots?from=2026-07&to=2026-07')).data;
+  assert.ok(slots.length >= 2);
+  assert.strictEqual((await req('DELETE', `/api/tour-slots/${slots[0].id}`)).status, 200);
+  assert.ok(Array.isArray((await req('GET', '/api/tours')).data));
+});
+
+test('膳食：訂餐狀態/備註；月子餐換餐家屬申請→員工審核', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mom = (await req('GET', '/api/mothers')).data.find(m => m.status === 'checked_in');
+  assert.ok(mom);
+  const d = '2026-07-05';
+  assert.strictEqual((await req('POST', '/api/meals', { mother_id: mom.id, meal_date: d, meal_type: 'lunch', choice: 'A家', note: '少鹽' })).status, 200);
+  assert.strictEqual((await req('POST', '/api/meals/status', { mother_id: mom.id, meal_date: d, meal_type: 'lunch', status: 'served' })).status, 200);
+  const o = (await req('GET', `/api/meals?date=${d}`)).data.orders.find(x => x.mother_id === mom.id && x.meal_type === 'lunch');
+  assert.strictEqual(o.status, 'served');
+  assert.strictEqual(o.note, '少鹽');
+  assert.strictEqual((await req('POST', '/api/meals/status', { mother_id: mom.id, meal_date: '2030-01-01', meal_type: 'dinner', status: 'served' })).status, 404);
+  const saved = cookie; cookie = '';
+  assert.strictEqual((await req('POST', '/api/family/login', { code: 'DEMO1234' }, false)).status, 200);
+  assert.strictEqual((await req('POST', '/api/family/meal-swap', { meal_date: d, slot: '午餐', to_choice: '素食', reason: '過敏' })).status, 200);
+  cookie = saved;
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mine = (await req('GET', '/api/meal-swaps?status=pending')).data.find(x => x.to_choice === '素食');
+  assert.ok(mine);
+  assert.strictEqual((await req('POST', `/api/meal-swaps/${mine.id}/handle`, { action: 'approved', staff_note: '已安排' })).status, 200);
+  assert.strictEqual((await req('GET', '/api/meal-swaps')).data.find(x => x.id === mine.id).status, 'approved');
+});
+
+test('商城：商品 CSV 匯入(品名 upsert)', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const r = await req('POST', '/api/products/import', { items: [
+    { name: '測試商品Z', category: '媽媽用品', price: '200', stock: '5', track_stock: 'yes' },
+    { name: '測試商品Z', price: '250' }
+  ] });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.data.added, 1);
+  assert.strictEqual(r.data.updated, 1);
+  assert.strictEqual((await req('GET', '/api/products')).data.find(x => x.name === '測試商品Z').price, 250);
+});
+
+test('寶寶餵奶：親餵左右分鐘數紀錄與回傳', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const baby = (await req('GET', '/api/babies')).data[0];
+  assert.ok(baby);
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/records`, { record_type: 'feeding', feed_method: '親餵', feed_left_min: '10', feed_right_min: '8' })).status, 200);
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const f = (await req('GET', `/api/babies/${baby.id}/records?date=${today}`)).data.find(r => r.record_type === 'feeding' && r.feed_left_min === 10);
+  assert.ok(f);
+  assert.strictEqual(f.feed_right_min, 8);
+});

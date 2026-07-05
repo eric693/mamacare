@@ -5014,7 +5014,7 @@ async function supplyFlowPage(cfg) {
 
 // 4. 備品進出明細表
 async function viewSupplyMovements() {
-  const [supplies, txns] = await Promise.all([api('/supplies'), api('/supply-txns?type=inout')]);
+  const supplies = await api('/supplies');
   const smap = Object.fromEntries(supplies.map(s => [s.id, s]));
   const cats = supplyCats(supplies);
   const [mf, mt] = monthBounds();
@@ -5039,15 +5039,28 @@ async function viewSupplyMovements() {
       <div class="sec-hd">備品進出明細表（查詢結果）</div>
       <div class="row no-print" style="justify-content:flex-end;gap:8px;margin-bottom:6px"><button class="btn small" id="sm-csv">匯出 Excel（CSV）</button><button class="btn small secondary" id="sm-print">資料列印</button></div>
       <div class="table-wrap" id="sm-result"></div>
+      <div id="sm-pager"></div>
     </div>`;
-  let current = [];
-  const render = (rows) => {
-    current = rows;
+  const params = () => {
+    const kf = main().querySelector('input[name="sm-kf"]:checked').value;
+    const p = new URLSearchParams({ type: 'inout' });
+    if ($('#sm-from').value) p.set('from', $('#sm-from').value);
+    if ($('#sm-to').value) p.set('to', $('#sm-to').value);
+    if ($('#sm-cat').value) p.set('category', $('#sm-cat').value);
+    const kw = $('#sm-kw').value.trim();
+    if (kw) { p.set('keyword', kw); p.set('kw_field', kf); }
+    return p;
+  };
+  const rowToArr = t => [(t.created_at || '').slice(0, 10), t.supply_code || '', t.supply_category || '', t.supply_name, t.supply_unit || '', t.txn_type === 'in' ? t.quantity : '', t.txn_type === 'out' ? t.quantity : '', (smap[t.supply_id] || {}).stock ?? ''];
+  const load = async (page = 1) => {
+    const p = params(); p.set('page', page); p.set('pageSize', PAGE_SIZE);
+    const { rows, total, pageSize } = await api('/supply-txns?' + p.toString());
+    const base = (page - 1) * pageSize;
     $('#sm-result').innerHTML = `<table class="data stack">
       <thead><tr><th>筆數</th><th>日期</th><th>產品編號</th><th>產品分類</th><th>產品名稱</th><th>單位</th><th>進貨數量</th><th>領貨數量</th><th>目前庫存量</th></tr></thead>
       <tbody>${rows.map((t, i) => `
         <tr>
-          <td data-label="筆數">${i + 1}</td>
+          <td data-label="筆數">${base + i + 1}</td>
           <td data-label="日期">${esc((t.created_at || '').slice(0, 10))}</td>
           <td data-label="產品編號">${esc(t.supply_code || '—')}</td>
           <td data-label="產品分類">${esc(t.supply_category || '—')}</td>
@@ -5057,29 +5070,20 @@ async function viewSupplyMovements() {
           <td data-label="領貨數量">${t.txn_type === 'out' ? t.quantity : ''}</td>
           <td data-label="目前庫存量">${(smap[t.supply_id] || {}).stock ?? '—'}</td>
         </tr>`).join('') || '<tr><td colspan="9"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#sm-pager').innerHTML = pagerBar(total, page, pageSize);
+    wirePager(page, total, pageSize, load);
   };
-  const filtered = () => {
-    const from = $('#sm-from').value, to = $('#sm-to').value, cat = $('#sm-cat').value;
-    const kw = $('#sm-kw').value.trim(), kf = main().querySelector('input[name="sm-kf"]:checked').value;
-    return txns.filter(t => {
-      const d = (t.created_at || '').slice(0, 10);
-      if (from && d < from) return false;
-      if (to && d > to) return false;
-      if (cat && t.supply_category !== cat) return false;
-      if (kw) { const v = kf === 'code' ? (t.supply_code || '') : (t.supply_name || ''); if (!v.includes(kw)) return false; }
-      return true;
-    });
-  };
-  const go = () => render(filtered());
-  $('#sm-go').onclick = go;
+  $('#sm-go').onclick = () => load(1);
   $('#sm-print').onclick = () => window.print();
-  $('#sm-csv').onclick = () => {
-    if (!current.length) { alert('查無資料可匯出'); return; }
+  $('#sm-csv').onclick = async () => {
+    const p = params(); p.set('page', 1); p.set('pageSize', 200);
+    const { rows, total } = await api('/supply-txns?' + p.toString());
+    if (!rows.length) { alert('查無資料可匯出'); return; }
+    if (total > rows.length) alert(`資料共 ${total} 筆，匯出前 ${rows.length} 筆；如需完整請縮小日期範圍。`);
     downloadCsv(`備品進出明細_${todayStr()}.csv`,
-      ['日期', '產品編號', '產品分類', '產品名稱', '單位', '進貨數量', '領貨數量', '目前庫存量'],
-      current.map(t => [(t.created_at || '').slice(0, 10), t.supply_code || '', t.supply_category || '', t.supply_name, t.supply_unit || '', t.txn_type === 'in' ? t.quantity : '', t.txn_type === 'out' ? t.quantity : '', (smap[t.supply_id] || {}).stock ?? '']));
+      ['日期', '產品編號', '產品分類', '產品名稱', '單位', '進貨數量', '領貨數量', '目前庫存量'], rows.map(rowToArr));
   };
-  go();
+  load(1);
 }
 
 // 5. 庫存盤點
@@ -5150,7 +5154,7 @@ function adjustStock(id, name, stock, unit) {
 
 // 6. 庫存盤點明細表
 async function viewStocktakeDetail() {
-  const [supplies, txns] = await Promise.all([api('/supplies'), api('/supply-txns?type=adjust')]);
+  const supplies = await api('/supplies');
   const cats = supplyCats(supplies);
   const [mf, mt] = monthBounds();
   main().innerHTML = `
@@ -5177,15 +5181,28 @@ async function viewStocktakeDetail() {
       <div class="sec-hd">庫存盤點明細表（查詢結果）</div>
       <div class="row no-print" style="justify-content:flex-end;gap:8px;margin-bottom:6px"><button class="btn small" id="sd-csv">匯出 Excel（CSV）</button><button class="btn small secondary" id="sd-print">資料列印</button></div>
       <div class="table-wrap" id="sd-result"></div>
+      <div id="sd-pager"></div>
     </div>`;
-  let current = [];
-  const render = (rows) => {
-    current = rows;
+  const params = () => {
+    const kf = main().querySelector('input[name="sd-kf"]:checked').value;
+    const p = new URLSearchParams({ type: 'adjust' });
+    if ($('#sd-from').value) p.set('from', $('#sd-from').value);
+    if ($('#sd-to').value) p.set('to', $('#sd-to').value);
+    if ($('#sd-cat').value) p.set('category', $('#sd-cat').value);
+    const kw = $('#sd-kw').value.trim();
+    if (kw) { p.set('keyword', kw); p.set('kw_field', kf); }
+    return p;
+  };
+  const rowToArr = t => [(t.created_at || '').slice(0, 16), t.supply_code || '', t.supply_category || '', t.supply_name, t.balance_after, t.staff_name || ''];
+  const load = async (page = 1) => {
+    const p = params(); p.set('page', page); p.set('pageSize', PAGE_SIZE);
+    const { rows, total, pageSize } = await api('/supply-txns?' + p.toString());
+    const base = (page - 1) * pageSize;
     $('#sd-result').innerHTML = `<table class="data stack">
       <thead><tr><th>筆數</th><th>盤點日期</th><th>產品編號</th><th>產品分類</th><th>產品名稱</th><th>目前庫存量</th><th>建檔人</th></tr></thead>
       <tbody>${rows.map((t, i) => `
         <tr>
-          <td data-label="筆數">${i + 1}</td>
+          <td data-label="筆數">${base + i + 1}</td>
           <td data-label="盤點日期">${esc((t.created_at || '').slice(0, 16))}</td>
           <td data-label="產品編號">${esc(t.supply_code || '—')}</td>
           <td data-label="產品分類">${esc(t.supply_category || '—')}</td>
@@ -5193,34 +5210,25 @@ async function viewStocktakeDetail() {
           <td data-label="目前庫存量">${t.balance_after}${esc(t.supply_unit || '')}</td>
           <td data-label="建檔人">${esc(t.staff_name || '—')}</td>
         </tr>`).join('') || '<tr><td colspan="7"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#sd-pager').innerHTML = pagerBar(total, page, pageSize);
+    wirePager(page, total, pageSize, load);
   };
-  const filtered = () => {
-    const from = $('#sd-from').value, to = $('#sd-to').value, cat = $('#sd-cat').value;
-    const kw = $('#sd-kw').value.trim(), kf = main().querySelector('input[name="sd-kf"]:checked').value;
-    return txns.filter(t => {
-      const d = (t.created_at || '').slice(0, 10);
-      if (from && d < from) return false;
-      if (to && d > to) return false;
-      if (cat && t.supply_category !== cat) return false;
-      if (kw) { const v = kf === 'code' ? (t.supply_code || '') : (t.supply_name || ''); if (!v.includes(kw)) return false; }
-      return true;
-    });
-  };
-  const go = () => render(filtered());
-  $('#sd-go').onclick = go;
+  $('#sd-go').onclick = () => load(1);
   $('#sd-print').onclick = () => window.print();
-  $('#sd-csv').onclick = () => {
-    if (!current.length) { alert('查無資料可匯出'); return; }
+  $('#sd-csv').onclick = async () => {
+    const p = params(); p.set('page', 1); p.set('pageSize', 200);
+    const { rows, total } = await api('/supply-txns?' + p.toString());
+    if (!rows.length) { alert('查無資料可匯出'); return; }
+    if (total > rows.length) alert(`資料共 ${total} 筆，匯出前 ${rows.length} 筆；如需完整請縮小日期範圍。`);
     downloadCsv(`庫存盤點明細_${todayStr()}.csv`,
-      ['盤點日期', '產品編號', '產品分類', '產品名稱', '目前庫存量', '建檔人'],
-      current.map(t => [(t.created_at || '').slice(0, 16), t.supply_code || '', t.supply_category || '', t.supply_name, t.balance_after, t.staff_name || '']));
+      ['盤點日期', '產品編號', '產品分類', '產品名稱', '目前庫存量', '建檔人'], rows.map(rowToArr));
   };
   $('#sd-stock').onclick = () => {
     downloadCsv(`最新庫存量_${todayStr()}.csv`,
       ['產品編號', '產品分類', '產品名稱', '單位', '目前庫存量', '安全庫存量'],
       supplies.filter(s => s.active).map(s => [s.code || '', s.category || '', s.name, s.unit || '', s.stock, s.safety_stock]));
   };
-  go();
+  load(1);
 }
 
 /* ---------- 課程與服務 ---------- */
@@ -11290,6 +11298,22 @@ function downloadCsv(filename, header, rows) {
   const a = document.createElement('a'); a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
 }
+// 伺服器端分頁列（單頁只會有一個，故用固定 id pg-prev/pg-next）
+const PAGE_SIZE = 20;
+function pagerBar(total, page, pageSize) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  return `<div class="row no-print" style="justify-content:center;gap:12px;align-items:center;margin-top:10px">
+    <button class="btn small secondary" id="pg-prev" ${page <= 1 ? 'disabled' : ''}>‹ 上一頁</button>
+    <span style="font-size:.85rem;color:var(--muted)">第 ${page} / ${pages} 頁　共 ${total} 筆</span>
+    <button class="btn small secondary" id="pg-next" ${page >= pages ? 'disabled' : ''}>下一頁 ›</button>
+  </div>`;
+}
+function wirePager(page, total, pageSize, go) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const prev = document.getElementById('pg-prev'), next = document.getElementById('pg-next');
+  if (prev) prev.onclick = () => { if (page > 1) go(page - 1); };
+  if (next) next.onclick = () => { if (page < pages) go(page + 1); };
+}
 const TOUR_DATE_FIELDS = [['tour', '以預約參觀日查詢'], ['due', '以預產期查詢'], ['reg', '以報名日期查詢']];
 function tourQueryForm(prefix, { fromDefault, toDefault, withName = true } = {}) {
   return `
@@ -11319,10 +11343,20 @@ function tourMatch(t, q) {
   if (q.phone && !(t.phone || '').includes(q.phone)) return false;
   return true;
 }
+// 由查詢表單組出伺服器端 /tours 查詢參數
+function tourQueryParams(prefix, { withName = true, onlyCancelled = false } = {}) {
+  const q = tourQueryRead(prefix, withName);
+  const p = new URLSearchParams({ field: q.fld });
+  if (q.from) p.set('from', q.from);
+  if (q.to) p.set('to', q.to);
+  if (q.name) p.set('name', q.name);
+  if (q.phone) p.set('phone', q.phone);
+  if (onlyCancelled) p.set('only_cancelled', '1');
+  return p;
+}
 
 // 1. 潛在客戶資料
 async function viewProspects() {
-  const tours = await api('/tours');
   const [mf, mt] = monthBounds();
   main().innerHTML = `
     <div class="page-title">潛在客戶資料</div>
@@ -11334,13 +11368,17 @@ async function viewProspects() {
     <div class="card">
       <div class="sec-hd">潛在客戶資料（查詢結果）</div>
       <div class="table-wrap" id="pc-result"></div>
+      <div id="pc-pager"></div>
     </div>`;
-  const render = (list) => {
+  const load = async (page = 1) => {
+    const p = tourQueryParams('pc'); p.set('page', page); p.set('pageSize', PAGE_SIZE);
+    const { rows, total, pageSize } = await api('/tours?' + p.toString());
+    const base = (page - 1) * pageSize;
     $('#pc-result').innerHTML = `<table class="data stack">
       <thead><tr><th>筆數</th><th>媽媽姓名</th><th>預產期<br>預約參觀日<br>報名日期</th><th>聯絡電話</th><th>生產醫院<br>訊息來源</th><th>備註</th><th>建檔人</th></tr></thead>
-      <tbody>${list.map((t, i) => `
+      <tbody>${rows.map((t, i) => `
         <tr>
-          <td data-label="筆數">${i + 1}</td>
+          <td data-label="筆數">${base + i + 1}</td>
           <td data-label="媽媽姓名">${esc(t.name)}</td>
           <td data-label="預產期/參觀/報名"><small>${esc(t.due_date || '—')}<br><span style="color:#b23">${esc((t.tour_at || '—').slice(0, 16))}</span><br><span style="color:#2a7f78">${esc((t.created_at || '—').slice(0, 10))}</span></small></td>
           <td data-label="聯絡電話">${esc(t.phone || '—')}</td>
@@ -11348,15 +11386,15 @@ async function viewProspects() {
           <td data-label="備註">${esc(t.note || '—')}</td>
           <td data-label="建檔人">${esc(t.created_by_name || '—')}</td>
         </tr>`).join('') || '<tr><td colspan="7"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#pc-pager').innerHTML = pagerBar(total, page, pageSize);
+    wirePager(page, total, pageSize, load);
   };
-  const go = () => render(tours.filter(t => tourMatch(t, tourQueryRead('pc'))));
-  $('#pc-go').onclick = go;
-  go();
+  $('#pc-go').onclick = () => load(1);
+  load(1);
 }
 
 // 2. 預約參觀報名資料
 async function viewTourSignups() {
-  const tours = await api('/tours');
   const canWrite = canAccess('#/tours');
   main().innerHTML = `
     <div class="page-title">預約參觀報名資料</div>
@@ -11371,13 +11409,20 @@ async function viewTourSignups() {
     <div class="card">
       <div class="sec-hd">預約參觀報名資料（查詢結果）</div>
       <div class="table-wrap" id="ts-result"></div>
+      <div id="ts-pager"></div>
     </div>`;
-  const render = (list) => {
+  let current = [], curPage = 1;
+  const load = async (page = 1) => {
+    curPage = page;
+    const p = tourQueryParams('ts'); p.set('page', page); p.set('pageSize', PAGE_SIZE);
+    const { rows, total, pageSize } = await api('/tours?' + p.toString());
+    current = rows;
+    const base = (page - 1) * pageSize;
     $('#ts-result').innerHTML = `<table class="data stack">
       <thead><tr><th>筆數</th><th>參觀日期-時段</th><th>媽媽姓名</th><th>預產期-胎次</th><th>聯絡電話</th><th>填寫日期<br>訊息來源</th><th>是否出席</th><th>建檔人/日期</th><th class="no-print">列印</th></tr></thead>
-      <tbody>${list.map((t, i) => `
+      <tbody>${rows.map((t, i) => `
         <tr>
-          <td data-label="筆數">${i + 1}</td>
+          <td data-label="筆數">${base + i + 1}</td>
           <td data-label="參觀日期-時段">${esc((t.tour_at || '').slice(0, 10))}<br><small>${esc((t.tour_at || '').slice(11, 16))}</small></td>
           <td data-label="媽媽姓名">${esc(t.name)}</td>
           <td data-label="預產期-胎次">${esc(t.due_date || '—')}${t.parity ? `<br><small>${esc(t.parity)}</small>` : ''}</td>
@@ -11390,13 +11435,14 @@ async function viewTourSignups() {
         </tr>`).join('') || '<tr><td colspan="9"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
     $('#ts-result').querySelectorAll('[data-att]').forEach(b => b.onclick = async () => {
       await api(`/tours/${b.dataset.id}`, { method: 'PUT', body: { attended: b.dataset.att } });
-      const t = tours.find(x => x.id == b.dataset.id); if (t) t.attended = b.dataset.att; go();
+      load(curPage);
     });
-    $('#ts-result').querySelectorAll('[data-print]').forEach(b => b.onclick = () => printTourSignup(tours.find(x => x.id == b.dataset.print)));
+    $('#ts-result').querySelectorAll('[data-print]').forEach(b => b.onclick = () => printTourSignup(current.find(x => x.id == b.dataset.print)));
+    $('#ts-pager').innerHTML = pagerBar(total, page, pageSize);
+    wirePager(page, total, pageSize, load);
   };
-  const go = () => render(tours.filter(t => tourMatch(t, tourQueryRead('ts'))));
-  $('#ts-go').onclick = go;
-  go();
+  $('#ts-go').onclick = () => load(1);
+  load(1);
 }
 function printTourSignup(t) {
   if (!t) return;
@@ -11419,7 +11465,6 @@ function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => 
 
 // 3. 取消預約明細表
 async function viewTourCancellations() {
-  const tours = (await api('/tours')).filter(t => t.cancel_at);
   const [mf, mt] = monthBounds();
   main().innerHTML = `
     <div class="page-title">取消預約明細表</div>
@@ -11432,15 +11477,18 @@ async function viewTourCancellations() {
       <div class="sec-hd">取消預約明細表（查詢結果）</div>
       <div class="row no-print" style="justify-content:flex-end;margin-bottom:6px"><button class="btn small" id="tc-csv">匯出 Excel（CSV）</button></div>
       <div class="table-wrap" id="tc-result"></div>
+      <div id="tc-pager"></div>
     </div>`;
-  let current = [];
-  const render = (list) => {
-    current = list;
+  const rowToArr = t => [t.name, t.phone || '', (t.tour_at || '').slice(0, 16), t.due_date || '', (t.created_at || '').slice(0, 10), t.cancel_at || '', t.cancel_reason || '', t.cancel_by_name || ''];
+  const load = async (page = 1) => {
+    const p = tourQueryParams('tc', { withName: false, onlyCancelled: true }); p.set('page', page); p.set('pageSize', PAGE_SIZE);
+    const { rows, total, pageSize } = await api('/tours?' + p.toString());
+    const base = (page - 1) * pageSize;
     $('#tc-result').innerHTML = `<table class="data stack">
       <thead><tr><th>筆數</th><th>媽媽姓名</th><th>聯絡電話</th><th>原預約日期<br>時段</th><th>預產期<br>報名日期</th><th>取消時間</th><th>取消原因</th><th>取消人</th></tr></thead>
-      <tbody>${list.map((t, i) => `
+      <tbody>${rows.map((t, i) => `
         <tr>
-          <td data-label="筆數">${i + 1}</td>
+          <td data-label="筆數">${base + i + 1}</td>
           <td data-label="媽媽姓名">${esc(t.name)}</td>
           <td data-label="聯絡電話">${esc(t.phone || '—')}</td>
           <td data-label="原預約日期/時段">${esc((t.tour_at || '').slice(0, 10))}<br><small>${esc((t.tour_at || '').slice(11, 16))}</small></td>
@@ -11449,16 +11497,19 @@ async function viewTourCancellations() {
           <td data-label="取消原因">${esc(t.cancel_reason || '—')}</td>
           <td data-label="取消人">${esc(t.cancel_by_name || '—')}</td>
         </tr>`).join('') || '<tr><td colspan="8"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#tc-pager').innerHTML = pagerBar(total, page, pageSize);
+    wirePager(page, total, pageSize, load);
   };
-  const go = () => render(tours.filter(t => tourMatch(t, tourQueryRead('tc', false))));
-  $('#tc-go').onclick = go;
-  $('#tc-csv').onclick = () => {
-    if (!current.length) { alert('查無資料可匯出'); return; }
+  $('#tc-go').onclick = () => load(1);
+  $('#tc-csv').onclick = async () => {
+    const p = tourQueryParams('tc', { withName: false, onlyCancelled: true }); p.set('page', 1); p.set('pageSize', 200);
+    const { rows, total } = await api('/tours?' + p.toString());
+    if (!rows.length) { alert('查無資料可匯出'); return; }
+    if (total > rows.length) alert(`資料共 ${total} 筆，匯出前 ${rows.length} 筆；如需完整請縮小日期範圍。`);
     downloadCsv(`取消預約明細_${todayStr()}.csv`,
-      ['媽媽姓名', '聯絡電話', '原預約時段', '預產期', '報名日期', '取消時間', '取消原因', '取消人'],
-      current.map(t => [t.name, t.phone || '', (t.tour_at || '').slice(0, 16), t.due_date || '', (t.created_at || '').slice(0, 10), t.cancel_at || '', t.cancel_reason || '', t.cancel_by_name || '']));
+      ['媽媽姓名', '聯絡電話', '原預約時段', '預產期', '報名日期', '取消時間', '取消原因', '取消人'], rows.map(rowToArr));
   };
-  go();
+  load(1);
 }
 
 // 4. 預約參觀時段設定

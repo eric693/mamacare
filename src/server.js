@@ -3111,19 +3111,38 @@ app.get('/api/supplies/stock-summary', requireStaff, (req, res) => {
     FROM supplies s WHERE s.active = 1 ORDER BY s.category, s.name`).all());
 });
 
-// 備品進出／盤點明細：全域異動清單（type 可篩 in/out/adjust；日期區間）
+// 分頁參數：帶 page/pageSize 才啟用（回 {rows,total,page,pageSize}）；否則沿用原本回陣列
+function pageParams(req, def = 20, max = 200) {
+  const enabled = req.query.page !== undefined || req.query.pageSize !== undefined;
+  const pageSize = Math.min(max, Math.max(1, parseInt(req.query.pageSize, 10) || def));
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  return { enabled, page, pageSize, offset: (page - 1) * pageSize };
+}
+
+// 備品進出／盤點明細：全域異動清單（type 可篩 in/out/adjust；日期區間；關鍵字；分類；可分頁）
 app.get('/api/supply-txns', requireStaff, (req, res) => {
   const type = String(req.query.type || '');
   const from = String(req.query.from || ''), to = String(req.query.to || '');
+  const kw = String(req.query.keyword || '').trim();
+  const kwField = req.query.kw_field === 'code' ? 'code' : 'name';
+  const category = String(req.query.category || '').trim();
   const cond = [], args = [];
   if (['in', 'out', 'adjust'].includes(type)) { cond.push('st.txn_type = ?'); args.push(type); }
   else if (type === 'inout') { cond.push("st.txn_type IN ('in','out')"); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(from)) { cond.push('date(st.created_at) >= ?'); args.push(from); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(to)) { cond.push('date(st.created_at) <= ?'); args.push(to); }
+  if (category) { cond.push('s.category = ?'); args.push(category); }
+  if (kw) { cond.push(kwField === 'code' ? 's.code LIKE ?' : 's.name LIKE ?'); args.push('%' + kw + '%'); }
   const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
-  res.json(db.prepare(`SELECT st.*, s.name AS supply_name, s.code AS supply_code, s.category AS supply_category, s.unit AS supply_unit, u.name AS staff_name
-    FROM supply_txns st JOIN supplies s ON s.id = st.supply_id LEFT JOIN users u ON u.id = st.created_by
-    ${where} ORDER BY st.id DESC LIMIT 1000`).all(...args));
+  const fromJoin = 'FROM supply_txns st JOIN supplies s ON s.id = st.supply_id LEFT JOIN users u ON u.id = st.created_by';
+  const cols = 'SELECT st.*, s.name AS supply_name, s.code AS supply_code, s.category AS supply_category, s.unit AS supply_unit, u.name AS staff_name';
+  const pg = pageParams(req);
+  if (pg.enabled) {
+    const total = db.prepare(`SELECT COUNT(*) c ${fromJoin} ${where}`).get(...args).c;
+    const rows = db.prepare(`${cols} ${fromJoin} ${where} ORDER BY st.id DESC LIMIT ? OFFSET ?`).all(...args, pg.pageSize, pg.offset);
+    return res.json({ rows, total, page: pg.page, pageSize: pg.pageSize });
+  }
+  res.json(db.prepare(`${cols} ${fromJoin} ${where} ORDER BY st.id DESC LIMIT 1000`).all(...args));
 });
 
 // 低水位採購（叫貨）單：庫存 ≤ 安全庫存者，建議補到目標補貨量（未設則安全庫存兩倍）
@@ -3587,18 +3606,35 @@ app.post('/api/meal-swaps/:id/handle', requireStaff, (req, res) => {
 });
 
 // ---------- 參觀預約（潛在客戶追蹤） ----------
+// 支援伺服器端篩選（field 日期欄位 tour/due/reg + from/to、name、phone、status、only_cancelled）與分頁（帶 page）
 app.get('/api/tours', requireStaff, (req, res) => {
-  const rows = db.prepare(`
-    SELECT t.*,
+  const field = { tour: 'date(t.tour_at)', due: 't.due_date', reg: 'date(t.created_at)' }[req.query.field] || null;
+  const from = String(req.query.from || ''), to = String(req.query.to || '');
+  const name = String(req.query.name || '').trim(), phone = String(req.query.phone || '').trim();
+  const status = ['scheduled', 'visited', 'signed', 'lost'].includes(req.query.status) ? req.query.status : '';
+  const cond = [], args = [];
+  if (field && /^\d{4}-\d{2}-\d{2}$/.test(from)) { cond.push(`${field} >= ?`); args.push(from); }
+  if (field && /^\d{4}-\d{2}-\d{2}$/.test(to)) { cond.push(`${field} <= ?`); args.push(to); }
+  if (name) { cond.push('t.name LIKE ?'); args.push('%' + name + '%'); }
+  if (phone) { cond.push('t.phone LIKE ?'); args.push('%' + phone + '%'); }
+  if (status) { cond.push('t.status = ?'); args.push(status); }
+  if (req.query.only_cancelled === '1') cond.push("t.cancel_at != ''");
+  const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+  const cols = `SELECT t.*,
       uc.name AS created_by_name, ux.name AS cancel_by_name,
       (SELECT COUNT(*) FROM tour_logs l WHERE l.tour_id = t.id) AS log_count,
       (SELECT l.body FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log,
       (SELECT l.created_at FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log_at
     FROM tours t
     LEFT JOIN users uc ON uc.id = t.created_by
-    LEFT JOIN users ux ON ux.id = t.cancel_by
-    ORDER BY t.tour_at DESC LIMIT 300`).all();
-  res.json(rows);
+    LEFT JOIN users ux ON ux.id = t.cancel_by`;
+  const pg = pageParams(req);
+  if (pg.enabled) {
+    const total = db.prepare(`SELECT COUNT(*) c FROM tours t ${where}`).get(...args).c;
+    const rows = db.prepare(`${cols} ${where} ORDER BY t.tour_at DESC LIMIT ? OFFSET ?`).all(...args, pg.pageSize, pg.offset);
+    return res.json({ rows, total, page: pg.page, pageSize: pg.pageSize });
+  }
+  res.json(db.prepare(`${cols} ${where} ORDER BY t.tour_at DESC LIMIT 300`).all(...args));
 });
 
 // 某筆參觀預約的追蹤 log（時間序）
