@@ -444,7 +444,7 @@ function openBatchRound(babies, onSaved) {
       }
       if (!posts.length) { body.querySelector('#br-err').textContent = '請至少填寫一項'; return; }
       try {
-        for (const [id, rec] of posts) await api(`/babies/${id}/records`, { method: 'POST', body: rec });
+        await api('/baby-records/batch', { method: 'POST', body: { records: posts.map(([id, rec]) => ({ baby_id: id, ...rec })) } });
         closeModal(); onSaved && onSaved();
       } catch (e) { body.querySelector('#br-err').textContent = e.message; }
     };
@@ -756,7 +756,7 @@ async function viewBabyCare() {
         const file = body.querySelector('#ph-file').files[0];
         if (!file) { body.querySelector('#ph-err').textContent = '請選擇圖片'; return; }
         const fd = new FormData();
-        fd.append('photo', file);
+        fd.append('photo', await compressImage(file));
         fd.append('note', body.querySelector('#ph-note').value);
         try {
           await api(`/babies/${babyId}/photos`, { method: 'POST', body: fd });
@@ -972,7 +972,7 @@ function openMotherAssessment(motherId, onSaved) {
       if (note) records.push({ record_type: 'note', value_text: note });
       if (!records.length) { body.querySelector('#as-err').textContent = '請至少填寫一個項目'; return; }
       try {
-        for (const r of records) await api(`/mothers/${motherId}/records`, { method: 'POST', body: r });
+        await api(`/mothers/${motherId}/records/batch`, { method: 'POST', body: { records } });
         closeModal();
         onSaved && onSaved();
       } catch (e) { body.querySelector('#as-err').textContent = e.message; }
@@ -4512,7 +4512,8 @@ function productImportModal() {
       if (!items.length) { body.querySelector('#pi-err').textContent = '沒有可匯入的商品'; return; }
       try {
         const res = await api('/products/import', { method: 'POST', body: { items } });
-        alert(`匯入完成：新增 ${res.added}、更新 ${res.updated}、略過 ${res.skipped}`);
+        alert(`匯入完成：新增 ${res.added}、更新 ${res.updated}、略過 ${res.skipped}`
+          + (res.duplicates && res.duplicates.length ? `\n注意：檔案中有重複鍵（以最後一筆為準）：${res.duplicates.join('、')}` : ''));
         closeModal(); viewShop();
       } catch (e) { body.querySelector('#pi-err').textContent = e.message; }
     };
@@ -4548,7 +4549,7 @@ function openProductForm(p, cats) {
     if (ed.id) {
       val('#pf-img').onchange = async () => {
         const f = val('#pf-img').files[0]; if (!f) return;
-        const fd = new FormData(); fd.append('image', f);
+        const fd = new FormData(); fd.append('image', await compressImage(f));
         try { const r = await api(`/products/${ed.id}/image`, { method: 'POST', body: fd });
           val('#pf-imgprev').innerHTML = `<img src="${esc(r.image)}">`;
         } catch (e) { val('#pf-err').textContent = e.message; }
@@ -4909,7 +4910,8 @@ function supplyImportModal() {
       if (!items.length) { body.querySelector('#ci-err').textContent = '沒有可匯入的品項'; return; }
       try {
         const res = await api('/supplies/import', { method: 'POST', body: { items } });
-        alert(`匯入完成：新增 ${res.added}、更新 ${res.updated}、略過 ${res.skipped}`);
+        alert(`匯入完成：新增 ${res.added}、更新 ${res.updated}、略過 ${res.skipped}`
+          + (res.duplicates && res.duplicates.length ? `\n注意：檔案中有重複鍵（以最後一筆為準）：${res.duplicates.join('、')}` : ''));
         closeModal(); viewSupplyItems();
       } catch (e) { body.querySelector('#ci-err').textContent = e.message; }
     };
@@ -6531,7 +6533,7 @@ async function viewMotherNursing() {
     const f = $('#mna-photo-file').files[0];
     if (!f) { alert('請先選擇圖片'); return; }
     const fd = new FormData();
-    fd.append('photo', f);
+    fd.append('photo', await compressImage(f));
     fd.append('taken_date', todayStr());
     try { await api(`/mothers/${momId}/breast-photos`, { method: 'POST', body: fd }); viewMotherNursing(); }
     catch (e) { alert(e.message); }
@@ -11328,6 +11330,29 @@ function tourFieldDate(t, f) { return f === 'due' ? (t.due_date || '') : f === '
 // 本月起迄（YYYY-MM-DD）
 function monthBounds() { const s = todayStr().slice(0, 7); const d = new Date(); const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); return [s + '-01', s + '-' + String(last).padStart(2, '0')]; }
 // 產生 CSV 並下載（含 BOM，Excel 可正確顯示中文）
+// 上傳前於瀏覽器端壓縮圖片：長邊縮到 maxDim、轉 JPEG，降低上傳量與儲存空間；失敗或非圖片則原檔回傳
+function compressImage(file, maxDim = 1600, quality = 0.82) {
+  return new Promise((resolve) => {
+    if (!file || !/^image\//.test(file.type) || /gif|svg/.test(file.type)) return resolve(file);
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const long = Math.max(img.width, img.height);
+      if (long <= maxDim && file.size < 800 * 1024) return resolve(file); // 已夠小就不重壓
+      const scale = Math.min(1, maxDim / long);
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      c.toBlob(b => {
+        if (b && b.size < file.size) resolve(new File([b], (file.name || 'photo').replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }));
+        else resolve(file);
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
 function downloadCsv(filename, header, rows) {
   const q = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const body = [header.map(q).join(','), ...rows.map(r => r.map(q).join(','))].join('\r\n');
@@ -12341,7 +12366,7 @@ function openTestimonialForm(t) {
     const v = id => body.querySelector(id);
     if (ed.id) v('#tf-img').onchange = async () => {
       const f = v('#tf-img').files[0]; if (!f) return;
-      const fd = new FormData(); fd.append('photo', f);
+      const fd = new FormData(); fd.append('photo', await compressImage(f));
       try { const r = await api(`/testimonials/${ed.id}/photo`, { method: 'POST', body: fd });
         v('#tf-imgprev').innerHTML = `<img src="${esc(r.photo)}">`;
       } catch (e) { v('#tf-err').textContent = e.message; }

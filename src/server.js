@@ -564,6 +564,35 @@ app.post('/api/babies/:id/records', requireStaff, (req, res) => {
   res.json({ id: info.lastInsertRowid });
 });
 
+// 寶寶照護紀錄批次新增（巡房批次用）：多位寶寶／多筆一次寫入，單一交易原子性
+app.post('/api/baby-records/batch', requireStaff, (req, res) => {
+  const list = Array.isArray((req.body || {}).records) ? req.body.records : [];
+  const valid = list.filter(r => r && r.record_type && r.baby_id);
+  if (!valid.length) return res.status(400).json({ error: '沒有可儲存的紀錄' });
+  const ins = db.prepare(`INSERT INTO baby_records
+    (baby_id, nurse_id, record_type, feed_method, amount_ml, feed_left_min, feed_right_min, diaper_kind, diaper_rash, value_num, value_text, note, location, recorded_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const getLoc = db.prepare('SELECT location FROM babies WHERE id = ?');
+  const nowStr = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19).replace('T', ' ');
+  const alerts = [];
+  const tx = db.transaction(() => {
+    for (const r of valid) {
+      const recordedAt = (r.recorded_at && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(r.recorded_at)) ? r.recorded_at : nowStr();
+      let location = BABY_LOCATIONS.includes(r.location) ? r.location : '';
+      if (!location) { const b = getLoc.get(r.baby_id); location = b ? b.location : ''; }
+      const rash = (r.record_type === 'diaper' && DIAPER_RASH_LEVELS.includes(r.diaper_rash)) ? r.diaper_rash : '';
+      const lmin = r.record_type === 'feeding' && r.feed_left_min !== '' && r.feed_left_min != null ? Math.max(0, Math.round(Number(r.feed_left_min))) : null;
+      const rmin = r.record_type === 'feeding' && r.feed_right_min !== '' && r.feed_right_min != null ? Math.max(0, Math.round(Number(r.feed_right_min))) : null;
+      ins.run(r.baby_id, req.session.user.id, r.record_type, r.feed_method || '', r.amount_ml || null, lmin, rmin,
+        r.diaper_kind || '', rash, r.value_num ?? null, (r.value_text || '').slice(0, 200), r.note || '', location, recordedAt);
+      alerts.push({ babyId: r.baby_id, type: r.record_type, value: r.value_num, recordedAt });
+    }
+  });
+  tx();
+  for (const a of alerts) maybeAlertAbnormal(a.babyId, a.type, a.value, a.recordedAt); // 交易外再送異常通知
+  res.json({ added: valid.length });
+});
+
 // 體溫／黃疸超出設定門檻時，即時推播 LINE 給值班（需設定 token 與 line_staff_alert_id）
 function abnormalReason(type, value, s) {
   const v = Number(value);
@@ -2146,6 +2175,19 @@ app.post('/api/mothers/:id/records', requireStaff, (req, res) => {
   res.json({ id: info.lastInsertRowid });
 });
 
+// 媽媽照護紀錄批次新增（一次評估多項）：單一交易原子性
+app.post('/api/mothers/:id/records/batch', requireStaff, (req, res) => {
+  const list = Array.isArray((req.body || {}).records) ? req.body.records : [];
+  const valid = list.filter(r => r && r.record_type);
+  if (!valid.length) return res.status(400).json({ error: '沒有可儲存的紀錄' });
+  const ins = db.prepare('INSERT INTO mother_records (mother_id, nurse_id, record_type, value_text, note) VALUES (?,?,?,?,?)');
+  const tx = db.transaction(() => {
+    for (const r of valid) ins.run(req.params.id, req.session.user.id, r.record_type, r.value_text || '', r.note || '');
+  });
+  tx();
+  res.json({ added: valid.length });
+});
+
 // 編輯媽媽照護紀錄（保留修改軌跡）
 app.put('/api/mother-records/:id', requireStaff, (req, res) => {
   const cur = db.prepare('SELECT * FROM mother_records WHERE id = ?').get(req.params.id);
@@ -2741,6 +2783,10 @@ app.post('/api/products', requireAdmin, (req, res) => {
 app.post('/api/products/import', requireAdmin, (req, res) => {
   const list = Array.isArray((req.body || {}).items) ? req.body.items : [];
   if (!list.length) return res.status(400).json({ error: '沒有可匯入的商品' });
+  // 檔內重複品名偵測（提醒用，仍會以最後一筆為準匯入）
+  const nameCount = {};
+  for (const r of list) { const n = String(r.name || '').trim(); if (n) nameCount[n] = (nameCount[n] || 0) + 1; }
+  const duplicates = Object.keys(nameCount).filter(k => nameCount[k] > 1);
   const findByName = db.prepare('SELECT id FROM products WHERE name = ?');
   const ins = db.prepare(`INSERT INTO products (name, category, price, cost, description, track_stock, stock, active, sort, created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
@@ -2762,7 +2808,7 @@ app.post('/api/products/import', requireAdmin, (req, res) => {
     }
   });
   tx();
-  res.json({ added, updated, skipped });
+  res.json({ added, updated, skipped, duplicates });
 });
 
 app.put('/api/products/:id', requireAdmin, (req, res) => {
@@ -3080,6 +3126,10 @@ app.post('/api/supplies', requireAdmin, (req, res) => {
 app.post('/api/supplies/import', requireAdmin, (req, res) => {
   const list = Array.isArray((req.body || {}).items) ? req.body.items : [];
   if (!list.length) return res.status(400).json({ error: '沒有可匯入的品項' });
+  // 檔內重複產品編號偵測（提醒用；空白編號一律新增，不視為重複）
+  const codeCount = {};
+  for (const r of list) { const c = String(r.code || '').trim(); if (c) codeCount[c] = (codeCount[c] || 0) + 1; }
+  const duplicates = Object.keys(codeCount).filter(k => codeCount[k] > 1);
   const findByCode = db.prepare('SELECT id FROM supplies WHERE code = ? AND code != \'\'');
   const ins = db.prepare(`INSERT INTO supplies (name, category, unit, safety_stock, note, active, code, price, has_expiry, front_sellable)
     VALUES (?,?,?,?,?,1,?,?,?,?)`);
@@ -3100,7 +3150,7 @@ app.post('/api/supplies/import', requireAdmin, (req, res) => {
     }
   });
   tx();
-  res.json({ added, updated, skipped });
+  res.json({ added, updated, skipped, duplicates });
 });
 
 // 備品庫存盤點彙總：每品項的入庫總數／出庫總數／目前庫存（期初＝目前－入庫＋出庫）

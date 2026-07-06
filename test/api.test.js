@@ -1070,3 +1070,35 @@ test('寶寶餵奶：親餵左右分鐘數紀錄與回傳', async () => {
   assert.ok(f);
   assert.strictEqual(f.feed_right_min, 8);
 });
+
+test('批次端點：寶寶巡房批次、媽媽評估批次一次寫入（原子）', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const babies = (await req('GET', '/api/babies')).data;
+  assert.ok(babies.length);
+  const b1 = babies[0].id, b2 = (babies[1] || babies[0]).id;
+  const r = await req('POST', '/api/baby-records/batch', { records: [
+    { baby_id: b1, record_type: 'temperature', value_num: 36.8 },
+    { baby_id: b2, record_type: 'feeding', feed_method: '親餵', feed_left_min: 5 }
+  ] });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.data.added, 2);
+  assert.strictEqual((await req('POST', '/api/baby-records/batch', { records: [] })).status, 400);
+  const mom = (await req('GET', '/api/mothers')).data.find(m => m.status === 'checked_in');
+  const rm = await req('POST', `/api/mothers/${mom.id}/records/batch`, { records: [
+    { record_type: 'note', value_text: '批次A' }, { record_type: 'vital', value_text: 'BP 120/80' }
+  ] });
+  assert.strictEqual(rm.status, 200);
+  assert.strictEqual(rm.data.added, 2);
+});
+
+test('匯入重複鍵偵測：supplies(編號)、products(品名) 回傳 duplicates', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const s = await req('POST', '/api/supplies/import', { items: [
+    { code: 'DUPX', name: '甲' }, { code: 'DUPX', name: '乙' }, { code: 'OKX', name: '丙' }
+  ] });
+  assert.deepStrictEqual(s.data.duplicates, ['DUPX']);
+  const p = await req('POST', '/api/products/import', { items: [
+    { name: '重複品X', price: 100 }, { name: '重複品X', price: 120 }
+  ] });
+  assert.deepStrictEqual(p.data.duplicates, ['重複品X']);
+});

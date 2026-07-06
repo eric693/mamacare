@@ -6,6 +6,20 @@ const { db } = require('./db');
 const BACKUP_DIR = path.join(__dirname, '..', 'backups');
 const RETAIN = Number(process.env.BACKUP_RETAIN || 30); // 保留份數
 const NAME_RE = /^mamacare-\d{4}-\d{2}-\d{2}(_\d{6})?\.db$/;
+// 異地備份目的地（設 BACKUP_OFFSITE_DIR 即啟用：可指向外接硬碟、NAS 掛載點、rclone/S3 掛載…）
+const OFFSITE_DIR = process.env.BACKUP_OFFSITE_DIR || '';
+
+// 每次備份後同步複製到異地目的地（不影響主備份成敗）
+function copyOffsite(srcPath, name) {
+  if (!OFFSITE_DIR) return;
+  try {
+    if (!fs.existsSync(OFFSITE_DIR)) fs.mkdirSync(OFFSITE_DIR, { recursive: true });
+    fs.copyFileSync(srcPath, path.join(OFFSITE_DIR, name));
+    // 異地也套用相同保留份數
+    const files = fs.readdirSync(OFFSITE_DIR).filter(n => NAME_RE.test(n)).sort((a, b) => (a < b ? 1 : -1));
+    for (const f of files.slice(RETAIN)) { try { fs.unlinkSync(path.join(OFFSITE_DIR, f)); } catch (e) { /* */ } }
+  } catch (e) { console.error('[backup] 異地備份失敗：', e.message); }
+}
 
 function ensureDir() {
   if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -41,6 +55,7 @@ async function runBackup(manual) {
   const dest = path.join(BACKUP_DIR, name);
   await db.backup(dest);
   prune();
+  copyOffsite(dest, name); // 異地同步（若已設定 BACKUP_OFFSITE_DIR）
   const st = fs.statSync(dest);
   return { name, size: st.size, created_at: st.mtime.toISOString().slice(0, 19).replace('T', ' ') };
 }
