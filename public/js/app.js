@@ -5549,25 +5549,43 @@ function openCouponForm(c) {
 
 /* ---------- 會員（媽媽） ---------- */
 async function viewMembers() {
-  const rows = await api('/members');
   main().innerHTML = `
     <div class="page-title">會員</div>
+    <div class="card no-print">
+      <div class="form-grid">
+        <div class="field"><label>搜尋<small>（姓名／會員編號／電話）</small></label><input id="mb-kw"></div>
+        <div class="field"><label>狀態</label><select id="mb-status"><option value="">全部</option>${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+        <div class="full row" style="justify-content:center"><button class="btn" id="mb-go">送出查詢</button></div>
+      </div>
+    </div>
     <div class="card">
-      ${filterBar({ placeholder: '搜尋姓名 / 會員編號…' })}
-      <div class="table-wrap"><table class="data stack">
-        <thead><tr><th>會員編號</th><th>姓名</th><th>電話</th><th>點數</th><th></th></tr></thead>
-        <tbody>${rows.length ? rows.map(m => `
-          <tr data-filter="${esc(m.name + ' ' + m.member_no + ' ' + (m.phone || ''))}">
-            <td data-label="會員編號">${esc(m.member_no)}</td>
-            <td data-label="姓名">${esc(m.name)}　<span class="badge ${STATUS_BADGE[m.status] || 'gray'}">${STATUS_LABEL[m.status] || m.status}</span></td>
-            <td data-label="電話">${esc(m.phone || '-')}</td>
-            <td data-label="點數"><strong>${m.points}</strong> 點</td>
-            <td data-label="操作"><button class="btn small secondary" data-pts="${m.id}" data-name="${esc(m.name)}" data-cur="${m.points}">調整點數</button></td>
-          </tr>`).join('') : '<tr><td colspan="5"><div class="empty">尚無會員</div></td></tr>'}</tbody>
-      </table></div>
+      <div class="table-wrap" id="mb-result"></div>
+      <div id="mb-pager"></div>
     </div>`;
-  wireFilter(main());
-  main().querySelectorAll('[data-pts]').forEach(b => b.onclick = () => openPointsAdjust(b.dataset.pts, b.dataset.name, b.dataset.cur));
+  const load = async (page = 1) => {
+    const p = new URLSearchParams({ page, pageSize: PAGE_SIZE });
+    if ($('#mb-kw').value.trim()) p.set('keyword', $('#mb-kw').value.trim());
+    if ($('#mb-status').value) p.set('status', $('#mb-status').value);
+    const { rows, total, pageSize } = await api('/members?' + p.toString());
+    const base = (page - 1) * pageSize;
+    $('#mb-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>會員編號</th><th>姓名</th><th>電話</th><th>點數</th><th class="no-print"></th></tr></thead>
+      <tbody>${rows.length ? rows.map((m, i) => `
+        <tr>
+          <td data-label="筆數">${base + i + 1}</td>
+          <td data-label="會員編號">${esc(m.member_no)}</td>
+          <td data-label="姓名">${esc(m.name)}　<span class="badge ${STATUS_BADGE[m.status] || 'gray'}">${STATUS_LABEL[m.status] || m.status}</span></td>
+          <td data-label="電話">${esc(m.phone || '-')}</td>
+          <td data-label="點數"><strong>${m.points}</strong> 點</td>
+          <td data-label="操作" class="no-print"><button class="btn small secondary" data-pts="${m.id}" data-name="${esc(m.name)}" data-cur="${m.points}">調整點數</button></td>
+        </tr>`).join('') : '<tr><td colspan="6"><div class="empty">查無會員</div></td></tr>'}</tbody></table>`;
+    $('#mb-result').querySelectorAll('[data-pts]').forEach(b => b.onclick = () => openPointsAdjust(b.dataset.pts, b.dataset.name, b.dataset.cur));
+    $('#mb-pager').innerHTML = pagerBar(total, page, pageSize);
+    wirePager(page, total, pageSize, load);
+  };
+  $('#mb-go').onclick = () => load(1);
+  $('#mb-kw').onkeydown = e => { if (e.key === 'Enter') load(1); };
+  load(1);
 }
 function openPointsAdjust(id, name, cur) {
   openModal(`調整點數：${name}（目前 ${cur} 點）`, `
@@ -10260,6 +10278,11 @@ async function viewBulletins() {
       </div>
     </div>
     <div class="card">
+      <div class="sec-hd">交辦事項與公佈欄查詢</div>
+      ${filterBar({ placeholder: '搜尋標題 / 指派 / 內容…' })}
+      <small style="color:var(--muted)">＊搜尋同時套用到下方交辦事項與公佈欄。</small>
+    </div>
+    <div class="card">
       <div class="sec-hd">交辦事項（未完成 ${tasks.filter(t => !t.done).length}／共 ${tasks.length}）</div>
       <div class="table-wrap">
         <table class="data stack">
@@ -10285,7 +10308,7 @@ async function viewBulletins() {
     <div class="card">
       <div class="sec-hd">公佈欄（${notices.length} 則）</div>
       ${notices.map(n => `
-        <div style="border-bottom:1px dotted var(--border);padding:8px 0">
+        <div data-filter="${esc(n.title)} ${esc(n.body || '')} ${esc(n.created_name || '')}" style="border-bottom:1px dotted var(--border);padding:8px 0">
           <div class="row between" style="flex-wrap:wrap;gap:6px">
             <b>${n.pinned ? '<span class="badge pink">置頂</span> ' : ''}${esc(n.title)}</b>
             <small style="color:var(--muted)">${esc((n.created_at || '').slice(0, 16))}　${esc(n.created_name || '')}
@@ -10308,6 +10331,7 @@ async function viewBulletins() {
       viewBulletins();
     } catch (e) { err.textContent = e.message; }
   };
+  wireFilter(main());
   main().querySelectorAll('[data-done]').forEach(b => b.onclick = async () => {
     const [id, done] = b.dataset.done.split('|');
     await api(`/bulletins/${id}`, { method: 'PUT', body: { done: done === '1' } });
@@ -10341,6 +10365,7 @@ async function viewDocuments() {
       <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
         <div class="sec-hd" style="flex:1;min-width:200px">文件清單（${rows.length} 份）</div>
       </div>
+      ${filterBar({ placeholder: '搜尋文件名稱 / 分類…' })}
       <div class="table-wrap">
         <table class="data stack">
           <thead><tr><th>文件名稱</th><th>分類</th><th>大小</th><th>備註</th><th>上傳</th><th class="no-print">操作</th></tr></thead>
@@ -10372,6 +10397,7 @@ async function viewDocuments() {
     try { await api('/documents', { method: 'POST', body: fd }); viewDocuments(); }
     catch (e) { err.textContent = e.message; }
   };
+  wireFilter(main());
   main().querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     if (!confirm('確定刪除此文件？檔案將一併移除。')) return;
     await api(`/documents/${b.dataset.del}`, { method: 'DELETE' });

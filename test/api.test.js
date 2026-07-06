@@ -1102,3 +1102,13 @@ test('匯入重複鍵偵測：supplies(編號)、products(品名) 回傳 duplica
   ] });
   assert.deepStrictEqual(p.data.duplicates, ['重複品X']);
 });
+
+test('會員：伺服器端關鍵字/狀態篩選與分頁，且無 page 相容回陣列', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const pg = (await req('GET', '/api/members?page=1&pageSize=2')).data;
+  assert.ok(Array.isArray(pg.rows) && typeof pg.total === 'number' && pg.pageSize === 2);
+  const inHouse = (await req('GET', '/api/members?status=checked_in&page=1&pageSize=100')).data;
+  assert.ok(inHouse.rows.every(r => r.status === 'checked_in'));
+  const arr = (await req('GET', '/api/members')).data;   // 下拉用：無 page 回陣列
+  assert.ok(Array.isArray(arr));
+});

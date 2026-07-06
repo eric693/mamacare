@@ -3432,7 +3432,20 @@ app.delete('/api/coupons/:id', requireAdmin, (req, res) => {
 
 // 會員列表（媽媽即會員）
 app.get('/api/members', requireStaff, (req, res) => {
-  res.json(db.prepare(`SELECT id, name, phone, member_no, points, status FROM mothers ORDER BY id DESC`).all());
+  const kw = String(req.query.keyword || '').trim();
+  const status = ['reserved', 'checked_in', 'checked_out', 'cancelled'].includes(req.query.status) ? req.query.status : '';
+  const cond = [], args = [];
+  if (kw) { cond.push('(name LIKE ? OR member_no LIKE ? OR phone LIKE ?)'); args.push('%' + kw + '%', '%' + kw + '%', '%' + kw + '%'); }
+  if (status) { cond.push('status = ?'); args.push(status); }
+  const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+  const cols = 'SELECT id, name, phone, member_no, points, status FROM mothers';
+  const pg = pageParams(req);
+  if (pg.enabled) {
+    const total = db.prepare(`SELECT COUNT(*) c FROM mothers ${where}`).get(...args).c;
+    const rows = db.prepare(`${cols} ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, pg.pageSize, pg.offset);
+    return res.json({ rows, total, page: pg.page, pageSize: pg.pageSize });
+  }
+  res.json(db.prepare(`${cols} ${where} ORDER BY id DESC`).all(...args));
 });
 // 手動調整點數
 app.post('/api/members/:id/points', requireAdmin, (req, res) => {
