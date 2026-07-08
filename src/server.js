@@ -128,8 +128,8 @@ const MODULES = [
 ];
 const MODULE_KEYS = MODULES.map(m => m.key);
 // 寶寶位置狀態（房況卡片顏色）：嬰兒室／親子同室／隔離室／不在館內
-const BABY_LOCATIONS = ['nursery', 'rooming', 'isolation', 'out'];
-const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內' };
+const BABY_LOCATIONS = ['nursery', 'rooming', 'isolation', 'out', 'hospital'];
+const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中' };
 // 路由 → 模組對照（依序比對，先精準後一般）；未命中者視為基礎共用端點，任何登入員工皆可存取
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
@@ -5899,6 +5899,7 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
       rooming: rows.filter(b => b.location === 'rooming').length,
       isolation: rows.filter(b => b.location === 'isolation').length,
       out: rows.filter(b => b.location === 'out').length,
+      hospital: rows.filter(b => b.location === 'hospital').length,
       alerts: alerts.length
     },
     babies: rows, alerts

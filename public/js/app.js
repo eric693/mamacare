@@ -49,12 +49,12 @@ const STATUS_BADGE = {
 };
 const MEAL_LABEL = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' };
 const MEAL_STATUS = { preparing: '備餐中', served: '已出餐', cancelled: '取消' };
-const LOCATION_LABEL = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內' };
-const LOCATION_BADGE = { nursery: 'teal', rooming: 'purple', isolation: 'yellow', out: 'green' };
+const LOCATION_LABEL = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中' };
+const LOCATION_BADGE = { nursery: 'teal', rooming: 'purple', isolation: 'yellow', out: 'green', hospital: 'red' };
 // 寶寶房況卡片圖例顏色（標題＝性別、卡身＝狀態）
 const BABY_LEGEND = [
   ['男', '#5ec8f2'], ['女', '#f291b2'],
-  ['親子同室', '#d9a6ee'], ['隔離室', '#f6df7a'], ['不在館內', '#9ccc9c'], ['嬰兒室', '#ffffff']
+  ['親子同室', '#d9a6ee'], ['隔離室', '#f6df7a'], ['不在館內', '#9ccc9c'], ['住院中', '#f3b1b1'], ['嬰兒室', '#ffffff']
 ];
 const TOUR_STATUS_LABEL = { scheduled: '待參觀', visited: '已參觀', signed: '已簽約', lost: '未成交' };
 const TOUR_STATUS_BADGE = { scheduled: 'yellow', visited: 'teal', signed: 'green', lost: 'gray' };
@@ -6151,7 +6151,7 @@ async function viewBabyRooms() {
           <div class="row" style="gap:6px;align-items:center;margin-top:6px">
             <small style="color:var(--muted)">狀態切換：</small>
             <select data-loc-sel="${b.id}" data-name="${esc(b.name)}" data-loc="${b.location}" style="width:auto;padding:4px 8px;font-size:.85rem">
-              ${['nursery', 'rooming', 'isolation', 'out'].map(l => `<option value="${l}" ${b.location === l ? 'selected' : ''}>${LOCATION_LABEL[l]}</option>`).join('')}
+              ${['nursery', 'rooming', 'isolation', 'out', 'hospital'].map(l => `<option value="${l}" ${b.location === l ? 'selected' : ''}>${LOCATION_LABEL[l]}</option>`).join('')}
             </select>
           </div>
         </div>` : ''}
@@ -6179,6 +6179,7 @@ async function viewBabyRooms() {
       <div class="stat"><div class="num">${st.rooming}</div><div class="label">親子同室</div></div>
       <div class="stat"><div class="num" style="color:${st.isolation ? 'var(--warn)' : 'var(--primary)'}">${st.isolation}</div><div class="label">隔離室</div></div>
       <div class="stat"><div class="num">${st.out}</div><div class="label">不在館內</div></div>
+      <div class="stat"><div class="num" style="color:${st.hospital ? 'var(--danger)' : 'var(--primary)'}">${st.hospital}</div><div class="label">住院中</div></div>
       <div class="stat"><div class="num" style="color:${st.alerts ? 'var(--danger)' : 'var(--primary)'}">${st.alerts}</div><div class="label">今日異常紀錄</div></div>
     </div>
     ${data.alerts.length ? `
@@ -6196,6 +6197,7 @@ async function viewBabyRooms() {
           <button class="btn small secondary" data-board-flt="rooming">親子同室</button>
           <button class="btn small secondary" data-board-flt="isolation">隔離室</button>
           <button class="btn small secondary" data-board-flt="out">不在館內</button>
+          <button class="btn small secondary" data-board-flt="hospital">住院中</button>
           <button class="btn small secondary" data-board-flt="alert">有警示</button>
         </div>
         <div class="row" style="gap:6px">

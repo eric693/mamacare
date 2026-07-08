@@ -64,7 +64,7 @@ function init() {
     birth_date TEXT DEFAULT '',
     birth_weight_g INTEGER,
     notes TEXT DEFAULT '',
-    location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out')),
+    location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
 
@@ -94,7 +94,7 @@ function init() {
     value_num REAL,
     photo_file TEXT DEFAULT '',
     note TEXT DEFAULT '',
-    location TEXT DEFAULT '' CHECK (location IN ('','nursery','rooming','isolation','out')),
+    location TEXT DEFAULT '' CHECK (location IN ('','nursery','rooming','isolation','out','hospital')),
     recorded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_baby_records_baby ON baby_records(baby_id, recorded_at);
@@ -104,7 +104,7 @@ function init() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     baby_id INTEGER NOT NULL REFERENCES babies(id),
     nurse_id INTEGER REFERENCES users(id),
-    location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out')),
+    location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
     note TEXT DEFAULT '',
     moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
@@ -1327,6 +1327,47 @@ function init() {
     db.pragma('foreign_keys = OFF');
     tx();
     db.pragma('foreign_keys = ON');
+  }
+  // 寶寶位置狀態再擴充：新增「住院中(hospital)」（放寬既有 CHECK 需重建表）
+  const babyHosp = (db.prepare("SELECT sql FROM sqlite_master WHERE name='babies'").get() || {}).sql || '';
+  if (!babyHosp.includes("'hospital'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE babies_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        name TEXT NOT NULL,
+        gender TEXT DEFAULT '' CHECK (gender IN ('','male','female')),
+        birth_date TEXT DEFAULT '',
+        birth_weight_g INTEGER,
+        notes TEXT DEFAULT '',
+        location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )`);
+      db.exec(`INSERT INTO babies_new (id, mother_id, name, gender, birth_date, birth_weight_g, notes, location, created_at)
+        SELECT id, mother_id, name, gender, birth_date, birth_weight_g, notes, location, created_at FROM babies`);
+      db.exec('DROP TABLE babies');
+      db.exec('ALTER TABLE babies_new RENAME TO babies');
+    });
+    db.pragma('foreign_keys = OFF'); tx(); db.pragma('foreign_keys = ON');
+  }
+  const bllHosp = (db.prepare("SELECT sql FROM sqlite_master WHERE name='baby_location_logs'").get() || {}).sql || '';
+  if (!bllHosp.includes("'hospital'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE baby_location_logs_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        baby_id INTEGER NOT NULL REFERENCES babies(id),
+        nurse_id INTEGER REFERENCES users(id),
+        location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
+        note TEXT DEFAULT '',
+        moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )`);
+      db.exec(`INSERT INTO baby_location_logs_new (id, baby_id, nurse_id, location, note, moved_at)
+        SELECT id, baby_id, nurse_id, location, note, moved_at FROM baby_location_logs`);
+      db.exec('DROP TABLE baby_location_logs');
+      db.exec('ALTER TABLE baby_location_logs_new RENAME TO baby_location_logs');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_baby_location_logs_baby ON baby_location_logs(baby_id, moved_at)');
+    });
+    db.pragma('foreign_keys = OFF'); tx(); db.pragma('foreign_keys = ON');
   }
 
   // 照護紀錄可編輯：最後修改者／時間（明細變更另由 audit_logs 留軌跡）。須在上述重建之後執行

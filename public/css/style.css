@@ -558,6 +558,7 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 .bbc-body.loc-rooming { background: #f5e6fb; }
 .bbc-body.loc-isolation { background: #fdf3c9; }
 .bbc-body.loc-out { background: #e4f3e5; }
+.bbc-body.loc-hospital { background: #fbe0e0; }
 .bbc-foot { padding: 8px 14px; border-top: 1px solid var(--border); background: #fafcfc; }
 .legend-sq { display: inline-block; width: 13px; height: 13px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, 0.15); vertical-align: -2px; margin-right: 4px; }
 
