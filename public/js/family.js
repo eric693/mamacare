@@ -12,6 +12,7 @@ const FAM_NUM_UNIT = { temperature: '度C', weight: 'g', jaundice: 'mg/dL', resp
 
 let family = null;
 let activeTab = 'report';
+let babyLocation = '';
 
 function recordDetail(r) {
   switch (r.record_type) {
@@ -41,6 +42,10 @@ async function loadReport() {
     return;
   }
   const s = rpt.summary;
+  // 親子同室時才顯示「親子同室紀錄」分頁（讓家屬自行登記）
+  babyLocation = rpt.baby.location;
+  const roomingTab = $('#tab-rooming');
+  if (roomingTab) roomingTab.hidden = babyLocation !== 'rooming';
   $('#baby-title').textContent = `${rpt.baby.name} 的一天`;
   const days = rpt.baby.birth_date
     ? Math.floor((new Date(date) - new Date(rpt.baby.birth_date)) / 86400000) + 1 : null;
@@ -160,6 +165,66 @@ async function loadMessages() {
   };
 }
 
+// 親子同室紀錄：寶寶在媽媽房內時，家屬可自行一鍵登記餵奶／尿布／睡眠／小提醒
+async function loadRooming() {
+  const date = $('#report-date').value;
+  let rpt;
+  try { rpt = await api(`/family/report?date=${date}`); }
+  catch (e) { if (e.status === 401) { showLogin(); return; }
+    $('#panel').innerHTML = `<div class="card"><div class="error-msg">${esc(e.message)}</div></div>`; return; }
+  babyLocation = rpt.baby.location;
+  const roomingTab = $('#tab-rooming'); if (roomingTab) roomingTab.hidden = babyLocation !== 'rooming';
+  if (babyLocation !== 'rooming') {
+    $('#panel').innerHTML = `<div class="card"><h3>親子同室紀錄</h3>
+      <div class="empty">寶寶目前不在親子同室，暫時無法自行登記。<br>當護理站將寶寶抱來親子同室後，這裡就能自己記錄囉！</div></div>`;
+    return;
+  }
+  const items = rpt.records.filter(r => r.record_type !== 'photo');
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>親子同室紀錄</h3>
+      <p style="font-size:.85rem;color:#888">寶寶在您房內時，餵奶、換尿布、睡眠都可以自己記錄，護理站也會同步看到。</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin:8px 0">
+        <button class="btn small" data-fr="feeding-親餵">親餵</button>
+        <button class="btn small" data-fr="feeding-瓶餵">瓶餵…</button>
+        <button class="btn small secondary" data-fr="diaper-濕">濕尿布</button>
+        <button class="btn small secondary" data-fr="diaper-便">大便</button>
+        <button class="btn small secondary" data-fr="sleep">睡眠</button>
+        <button class="btn small secondary" data-fr="note">小提醒…</button>
+      </div>
+      <span class="error-msg" id="fr-err"></span>
+    </div>
+    <div class="card">
+      <h3>今日登記（${esc(date)}）</h3>
+      ${items.length ? `<ul class="timeline">${items.map(r => `
+        <li>
+          <div class="time">${fmtTime(r.recorded_at)}</div>
+          <div class="what">${TYPE_LABEL[r.record_type] || r.record_type}
+            <span style="font-weight:400">${esc(recordDetail(r))}</span></div>
+          ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
+        </li>`).join('')}</ul>` : '<div class="empty">今天還沒有紀錄，點上方按鈕開始登記</div>'}
+    </div>`;
+  $('#panel').querySelectorAll('[data-fr]').forEach(btn => btn.onclick = async () => {
+    const key = btn.dataset.fr;
+    let body;
+    if (key === 'feeding-親餵') body = { record_type: 'feeding', feed_method: '親餵' };
+    else if (key === 'feeding-瓶餵') {
+      const v = prompt('瓶餵奶量（ml），可留空：', '');
+      if (v === null) return;
+      body = { record_type: 'feeding', feed_method: '瓶餵', amount_ml: v.trim() === '' ? '' : v.trim() };
+    } else if (key === 'diaper-濕') body = { record_type: 'diaper', diaper_kind: '濕' };
+    else if (key === 'diaper-便') body = { record_type: 'diaper', diaper_kind: '便' };
+    else if (key === 'sleep') body = { record_type: 'sleep' };
+    else if (key === 'note') {
+      const t = prompt('想記下的小提醒：', '');
+      if (t === null || !t.trim()) return;
+      body = { record_type: 'note', note: t.trim() };
+    }
+    try { await api('/family/records', { method: 'POST', body }); loadRooming(); }
+    catch (e) { $('#fr-err').textContent = e.message; }
+  });
+}
+
 async function loadSiblings() {
   try {
     const s = await api('/family/siblings');
@@ -179,12 +244,13 @@ async function loadSiblings() {
 
 function setTab(tab) {
   activeTab = tab;
-  ['report', 'timeline', 'photos', 'trends', 'meal', 'shop', 'programs', 'survey', 'messages'].forEach(t =>
+  ['report', 'rooming', 'timeline', 'photos', 'trends', 'meal', 'shop', 'programs', 'survey', 'messages'].forEach(t =>
     $(`#tab-${t}`).classList.toggle('active', t === tab));
   if (tab === 'shop') { loadShop(); return; }
   if (tab === 'programs') { loadPrograms(); return; }
   if (tab === 'meal') { loadConfinementMeal(); return; }
   if (tab === 'survey') { loadSurveys(); return; }
+  if (tab === 'rooming') { loadRooming(); return; }
   loadReport();
 }
 
@@ -512,6 +578,7 @@ $('#report-date').onchange = () => {
   else loadReport();
 };
 $('#tab-report').onclick = () => setTab('report');
+$('#tab-rooming').onclick = () => setTab('rooming');
 $('#tab-timeline').onclick = () => setTab('timeline');
 $('#tab-photos').onclick = () => setTab('photos');
 $('#tab-trends').onclick = () => setTab('trends');
