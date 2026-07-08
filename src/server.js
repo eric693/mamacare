@@ -670,6 +670,22 @@ app.put('/api/babies/:id/location', requireStaff, (req, res) => {
   res.json({ ok: true, location: loc });
 });
 
+// 臍帶掉落：一次性事件，記錄後不可重複（同步寫入一筆觀察紀錄供日報／時間軸顯示）
+app.post('/api/babies/:id/cord-off', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id, cord_off_at, location FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  if (baby.cord_off_at) return res.status(409).json({ error: '臍帶掉落已登記過，無法重複登記' });
+  const at = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19).replace('T', ' ');
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE babies SET cord_off_at = ? WHERE id = ?').run(at, baby.id);
+    db.prepare(`INSERT INTO baby_records (baby_id, nurse_id, record_type, value_text, note, location, recorded_at)
+      VALUES (?, ?, 'cord', '臍帶掉落', ?, ?, ?)`)
+      .run(baby.id, req.session.user.id, (req.body && req.body.note) || '', baby.location || '', at);
+  });
+  tx();
+  res.json({ ok: true, cord_off_at: at });
+});
+
 app.get('/api/babies/:id/location-logs', requireStaff, (req, res) => {
   const rows = db.prepare(`
     SELECT ll.*, u.name AS nurse_name FROM baby_location_logs ll

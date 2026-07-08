@@ -1113,6 +1113,9 @@ function init() {
   if (!babyCols.includes('location')) {
     db.exec("ALTER TABLE babies ADD COLUMN location TEXT NOT NULL DEFAULT 'nursery'");
   }
+  if (!babyCols.includes('cord_off_at')) {   // 臍帶掉落時間（一次性事件）
+    db.exec("ALTER TABLE babies ADD COLUMN cord_off_at TEXT DEFAULT ''");
+  }
   const brCols = db.prepare('PRAGMA table_info(baby_records)').all().map(c => c.name);
   if (!brCols.includes('location')) {
     db.exec("ALTER TABLE baby_records ADD COLUMN location TEXT DEFAULT ''");

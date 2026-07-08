@@ -479,6 +479,7 @@ async function viewBabyCare() {
         <button class="btn secondary" id="bc-round">巡房批次</button>
         <button class="btn secondary" id="bc-photo">上傳照片</button>
         <button class="btn secondary" id="bc-report">寶寶日報</button>
+        <button class="btn secondary" id="bc-mar">給藥紀錄</button>
         <button class="btn" id="bc-send" style="background:var(--accent)">發送日報給家屬</button>
       </div>
       <div class="row mt">
@@ -487,6 +488,7 @@ async function viewBabyCare() {
         <button class="btn small secondary" data-quick="stool">大便</button>
         <button class="btn small secondary" data-quick="bath">沐浴完成</button>
         <button class="btn small" id="bc-quickfeed">餵奶</button>
+        <button class="btn small secondary" id="bc-cord">臍帶掉落</button>
       </div>
       <div class="row mt" id="bc-loc"></div>
       <div class="ok-msg" id="bc-msg"></div>
@@ -538,8 +540,22 @@ async function viewBabyCare() {
     $('#bc-loc-log').onclick = () => showLocLogs(baby);
   };
 
+  // 臍帶掉落：一次性；已登記則停用按鈕
+  const updateCordBtn = () => {
+    const btn = $('#bc-cord'); if (!btn) return;
+    const baby = babyById($('#bc-baby').value);
+    if (baby && baby.cord_off_at) {
+      btn.disabled = true;
+      btn.textContent = `臍帶已掉落（${String(baby.cord_off_at).slice(5, 10)}）`;
+    } else {
+      btn.disabled = false;
+      btn.textContent = '臍帶掉落';
+    }
+  };
+
   const refresh = async () => {
     renderLoc();
+    updateCordBtn();
     const babyId = $('#bc-baby').value;
     if (!babyId) { $('#bc-list').innerHTML = '<div class="empty">尚無寶寶資料</div>'; return; }
     const rows = await api(`/babies/${babyId}/records?date=${$('#bc-date').value}`);
@@ -591,6 +607,28 @@ async function viewBabyCare() {
   });
 
   $('#bc-round').onclick = () => openBatchRound(list.filter(b => b.mother_status === 'checked_in'), refresh);
+
+  // 給藥紀錄：跳出 MAR 視窗（同新生兒醫療分頁），＋給藥儲存後自動關閉
+  $('#bc-mar').onclick = () => {
+    const babyId = $('#bc-baby').value; if (!babyId) return;
+    const baby = babyById(babyId);
+    openBabyMar(babyId, baby ? baby.name : '');
+  };
+
+  // 臍帶掉落：一次性事件，確認後登記並停用按鈕
+  $('#bc-cord').onclick = async () => {
+    const babyId = $('#bc-baby').value; if (!babyId) return;
+    const baby = babyById(babyId);
+    if (baby && baby.cord_off_at) return;
+    if (!confirm(`確認登記「${baby ? baby.name : '寶寶'}」臍帶掉落？此紀錄只能登記一次。`)) return;
+    try {
+      const r = await api(`/babies/${babyId}/cord-off`, { method: 'POST', body: {} });
+      if (baby) baby.cord_off_at = r.cord_off_at;
+      $('#bc-msg').textContent = '已登記臍帶掉落';
+      setTimeout(() => { const el = $('#bc-msg'); if (el) el.textContent = ''; }, 1500);
+      refresh();
+    } catch (e) { alert(e.message); }
+  };
 
   // 餵奶一鍵快速記錄：精簡輸入（方式＋奶量／親餵左右分鐘）
   $('#bc-quickfeed').onclick = () => {
@@ -4126,7 +4164,7 @@ async function renderNewbornMedical(babyId) {
   });
 }
 
-function marForm(babyId) {
+function marForm(babyId, onSaved) {
   openModal('新增給藥紀錄', `
     <div class="form-grid">
       <div class="field full"><label>藥品名稱</label><input id="mar-drug" list="mar-drug-list">${dataList('mar-drug-list', 'med_drug_options')}</div>
@@ -4148,9 +4186,34 @@ function marForm(babyId) {
         administered_at: fromDtInput(body.querySelector('#mar-admin').value),
         note: body.querySelector('#mar-note').value.trim()
       };
-      try { await api(`/babies/${babyId}/meds`, { method: 'POST', body: payload }); closeModal(); renderNewbornMedical(babyId); }
+      try { await api(`/babies/${babyId}/meds`, { method: 'POST', body: payload }); closeModal(); (onSaved || (() => renderNewbornMedical(babyId)))(); }
       catch (e) { body.querySelector('#mar-err').textContent = e.message; }
     };
+  });
+}
+
+// 寶寶照護頁的「給藥紀錄」快捷視窗：沿用新生兒醫療分頁的 MAR，＋給藥儲存後自動關閉
+async function openBabyMar(babyId, babyName) {
+  const isAdmin = currentUser.role === 'admin';
+  let d;
+  try { d = await api(`/babies/${babyId}/medical`); }
+  catch (e) { openModal('給藥紀錄 MAR', `<div class="error-msg">${esc(e.message)}</div>`); return; }
+  const marRows = d.meds.map(m => `<tr>
+    <td data-label="時間">${esc(m.administered_at || m.scheduled_at || '')}</td>
+    <td data-label="藥品">${esc(m.drug_name)} ${esc(m.dose || '')}<br><small>${esc(m.route || '')} ${esc(m.ordered_by ? '醫囑:' + m.ordered_by : '')}</small></td>
+    <td data-label="狀態"><span class="badge ${MED_STATUS_BADGE[m.status]}">${MED_STATUS_LABEL[m.status]}</span></td>
+    <td data-label="給藥者">${esc(m.nurse_name || '')}<br><small>${esc(m.note || '')}</small></td>
+    <td>${isAdmin ? `<button class="btn small danger" data-del-med="${m.id}">刪</button>` : ''}</td></tr>`).join('')
+    || '<tr><td colspan="5"><div class="empty">無給藥紀錄</div></td></tr>';
+  openModal(`給藥紀錄 MAR　${esc(babyName || '')}`, `
+    <div class="row" style="margin-bottom:8px"><button class="btn small" id="bmar-add">＋ 給藥</button></div>
+    <div class="table-wrap"><table class="data stack"><thead><tr><th>時間</th><th>藥品/劑量</th><th>狀態</th><th>給藥者/備註</th><th></th></tr></thead><tbody>${marRows}</tbody></table></div>`,
+  body => {
+    body.querySelector('#bmar-add').onclick = () => marForm(babyId, () => closeModal());  // 儲存後自動關閉
+    body.querySelectorAll('[data-del-med]').forEach(b => b.onclick = async () => {
+      if (!confirm('確定刪除此筆給藥紀錄？')) return;
+      await api(`/meds/${b.dataset.delMed}`, { method: 'DELETE' }); openBabyMar(babyId, babyName);
+    });
   });
 }
 

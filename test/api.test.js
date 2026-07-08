@@ -1186,3 +1186,21 @@ test('親子同室紀錄：家屬僅在寶寶 rooming 時可自行登記', async
   assert.ok(rpt.records.some(r => r.record_type === 'feeding' && (r.note || '').includes('家屬登記')));
   cookie = saved;
 });
+
+test('臍帶掉落：一次性登記，重複登記回 409 並寫入觀察紀錄', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const baby = (await req('GET', '/api/babies')).data.find(b => !b.cord_off_at);
+  assert.ok(baby, '需有尚未登記臍帶掉落的寶寶');
+  const r1 = await req('POST', `/api/babies/${baby.id}/cord-off`, {});
+  assert.strictEqual(r1.status, 200);
+  assert.ok(r1.data.cord_off_at);
+  // 寶寶清單反映 cord_off_at
+  const after = (await req('GET', '/api/babies')).data.find(b => b.id === baby.id);
+  assert.ok(after.cord_off_at);
+  // 當日紀錄新增一筆臍帶觀察
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const recs = (await req('GET', `/api/babies/${baby.id}/records?date=${today}`)).data;
+  assert.ok(recs.some(x => x.record_type === 'cord' && x.value_text === '臍帶掉落'));
+  // 重複登記 → 409
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/cord-off`, {})).status, 409);
+});
