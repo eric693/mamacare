@@ -6162,10 +6162,16 @@ async function viewBabyRooms() {
     String(a.room_name || 'zzz').localeCompare(String(z.room_name || 'zzz'), 'zh-Hant', { numeric: true }) || a.id - z.id);
   const floors = {};
   for (const b of sortedBabies) { const fl = String(b.room_name || '')[0] || '其他'; (floors[fl] = floors[fl] || []).push(b); }
-  const cards = Object.keys(floors)
-    .sort((a, z) => String(a).localeCompare(String(z), 'zh-Hant', { numeric: true }))
-    .map(fl => `<div class="bbc-floor">${/^\d/.test(fl) ? fl + ' 樓' : esc(fl)}</div>
-      <div class="bbc-grid">${floors[fl].map(renderBabyCard).join('')}</div>`).join('');
+  const natCmp = (a, z) => String(a).localeCompare(String(z), 'zh-Hant', { numeric: true });
+  const cards = Object.keys(floors).sort(natCmp).map(fl => {
+    // 每樓再以「房」為單位：一格＝一房，同房雙胞胎併在同一格內（上下並列），不佔用第二個房位
+    const byRoom = {};
+    for (const b of floors[fl]) { const rn = b.room_name || '（未排房）'; (byRoom[rn] = byRoom[rn] || []).push(b); }
+    const roomCells = Object.keys(byRoom).sort(natCmp)
+      .map(rn => `<div class="bbc-room">${byRoom[rn].map(renderBabyCard).join('')}</div>`).join('');
+    return `<div class="bbc-floor">${/^\d/.test(fl) ? fl + ' 樓' : esc(fl)}</div>
+      <div class="bbc-grid">${roomCells}</div>`;
+  }).join('');
   const alertRows = data.alerts.map(a => `
     <tr><td data-label="時間">${esc(fmtTime(a.recorded_at))}</td>
       <td data-label="寶寶">${esc(a.baby_name)}</td>

@@ -513,6 +513,8 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 @media (min-width: 820px) { .bbc-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (min-width: 1040px) { .bbc-grid { grid-template-columns: repeat(4, 1fr); } }
 @media (min-width: 1240px) { .bbc-grid { grid-template-columns: repeat(5, 1fr); } }
+/* 一格＝一房；同房雙胞胎在格內上下並列（不佔第二個房位） */
+.bbc-room { display: flex; flex-direction: column; gap: 8px; }
 .room-card {
   background: var(--card);
   border: 1px solid var(--border);
