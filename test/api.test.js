@@ -1204,3 +1204,30 @@ test('臍帶掉落：一次性登記，重複登記回 409 並寫入觀察紀錄
   // 重複登記 → 409
   assert.strictEqual((await req('POST', `/api/babies/${baby.id}/cord-off`, {})).status, 409);
 });
+
+test('醫師巡診總覽：入住中篩選＋日期區間＋關鍵字（姓名/房號）查詢', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const baby = (await req('GET', '/api/babies')).data.find(b => b.mother_status === 'checked_in');
+  assert.ok(baby, '需有在住寶寶');
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const at = `${today}T09:30`;
+  const created = await req('POST', '/api/physician-visits', {
+    subject_type: 'baby', baby_id: baby.id, specialty: 'pediatrics', visit_type: 'routine',
+    visit_at: at, physician: '林小兒科醫師', assessment: '一般狀況良好', plan: '續觀察'
+  });
+  assert.strictEqual(created.status, 200);
+  // in_house=1 應含此筆，且帶出 mother_name / room_name
+  const inHouse = (await req('GET', '/api/physician-visits?in_house=1')).data;
+  const mine = inHouse.find(v => v.id === created.data.id);
+  assert.ok(mine, '入住中清單應含新建紀錄');
+  assert.ok(mine.mother_name, '應帶出媽媽姓名');
+  // 日期區間命中
+  assert.ok((await req('GET', `/api/physician-visits?in_house=1&start=${today}&end=${today}`)).data.some(v => v.id === created.data.id));
+  // 日期區間未命中
+  assert.ok(!(await req('GET', '/api/physician-visits?in_house=1&start=2000-01-01&end=2000-01-02')).data.some(v => v.id === created.data.id));
+  // 關鍵字（媽媽姓名）命中
+  const byName = (await req('GET', `/api/physician-visits?in_house=1&kwtype=name&kw=${encodeURIComponent(mine.mother_name)}`)).data;
+  assert.ok(byName.some(v => v.id === created.data.id));
+  // 關鍵字（不存在）未命中
+  assert.ok(!(await req('GET', '/api/physician-visits?in_house=1&kwtype=name&kw=絕對不存在的名字ZZZ')).data.some(v => v.id === created.data.id));
+});

@@ -5479,17 +5479,38 @@ const VISIT_SPECIALTIES = ['pediatrics', 'obgyn', 'other'];
 const VISIT_TYPES = ['routine', 'follow_up', 'acute', 'discharge'];
 app.get('/api/physician-visits', requireStaff, (req, res) => {
   const conds = [], args = {};
+  // 有效媽媽（媽媽巡診用 v.mother_id；寶寶巡診用寶寶的媽媽 b.mother_id）目前在住的房號
+  const roomSub = `(SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+      WHERE bk.mother_id = COALESCE(v.mother_id, b.mother_id) AND bk.status = 'checked_in'
+      ORDER BY bk.check_in DESC LIMIT 1)`;
   if (req.query.subject) { conds.push('v.subject_type = @subject'); args.subject = req.query.subject; }
   if (req.query.specialty) { conds.push('v.specialty = @specialty'); args.specialty = req.query.specialty; }
   if (req.query.baby_id) { conds.push('v.baby_id = @baby_id'); args.baby_id = req.query.baby_id; }
   if (req.query.mother_id) { conds.push('v.mother_id = @mother_id'); args.mother_id = req.query.mother_id; }
   if (req.query.month) { conds.push("strftime('%Y-%m', v.visit_at) = @month"); args.month = req.query.month; }
+  // 僅顯示「入住中」的巡診紀錄
+  if (req.query.in_house === '1' || req.query.in_house === 'true') {
+    conds.push("COALESCE(m.status, bmo.status) = 'checked_in'");
+  }
+  if (req.query.start) { conds.push('date(v.visit_at) >= @start'); args.start = req.query.start; }
+  if (req.query.end) { conds.push('date(v.visit_at) <= @end'); args.end = req.query.end; }
+  const kw = (req.query.kw || '').trim();
+  if (kw) {
+    args.kw = `%${kw}%`;
+    if (req.query.kwtype === 'room') conds.push(`${roomSub} LIKE @kw`);
+    else conds.push('COALESCE(m.name, bmo.name) LIKE @kw');   // 預設：媽媽姓名
+  }
   const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
   const rows = db.prepare(`
-    SELECT v.*, b.name AS baby_name, m.name AS mother_name, u.name AS recorded_by_name
+    SELECT v.*, b.name AS baby_name,
+      COALESCE(m.name, bmo.name) AS mother_name,
+      COALESCE(m.status, bmo.status) AS mother_status,
+      u.name AS recorded_by_name,
+      ${roomSub} AS room_name
     FROM physician_visits v
     LEFT JOIN babies b ON b.id = v.baby_id
     LEFT JOIN mothers m ON m.id = v.mother_id
+    LEFT JOIN mothers bmo ON bmo.id = b.mother_id
     LEFT JOIN users u ON u.id = v.recorded_by
     ${where} ORDER BY v.visit_at DESC, v.id DESC`).all(args);
   res.json(rows);

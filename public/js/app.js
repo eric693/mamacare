@@ -3839,12 +3839,39 @@ function incidentForm(i, babies, mothers) {
 async function viewPhysicianVisits() {
   const isAdmin = currentUser.role === 'admin';
   const spec = window._pvSpec || '';
+  const q = window._pvQuery || {};   // { start, end, kw, kwtype }
+  const params = new URLSearchParams({ in_house: '1' });   // 僅顯示入住中
+  if (spec) params.set('specialty', spec);
+  if (q.start) params.set('start', q.start);
+  if (q.end) params.set('end', q.end);
+  if (q.kw) { params.set('kw', q.kw); params.set('kwtype', q.kwtype || 'name'); }
   const [visits, babies, mothers] = await Promise.all([
-    api('/physician-visits' + (spec ? `?specialty=${spec}` : '')), api('/babies'), api('/mothers')
+    api('/physician-visits?' + params.toString()), api('/babies'), api('/mothers')
   ]);
   const filterBtn = (val, label) => `<button class="btn small ${spec === val ? '' : 'secondary'}" data-filter="${val}">${label}</button>`;
+  const som = todayStr().slice(0, 8) + '01';
   main().innerHTML = `
-    <div class="page-title">醫師巡診就醫紀錄</div>
+    <div class="page-title">醫師巡診就醫紀錄 <small style="font-weight:400;color:var(--muted);font-size:.85rem">（僅顯示入住中）</small></div>
+    <div class="card">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px">
+        ${canAccess('#/baby-doctor') ? '<a class="btn small" href="#/baby-doctor">兒科醫師診視（寶寶房況）</a>' : ''}
+        ${canAccess('#/mother-doctor') ? '<a class="btn small" href="#/mother-doctor">產科醫師診視（媽媽房況）</a>' : ''}
+      </div>
+      <div class="form-grid" style="align-items:end">
+        <div class="field"><label>查詢日期（起）</label><input type="date" id="pv-start" value="${esc(q.start || '')}" placeholder="${som}"></div>
+        <div class="field"><label>查詢日期（迄）</label><input type="date" id="pv-end" value="${esc(q.end || '')}"></div>
+        <div class="field"><label>關鍵字查詢</label><input id="pv-kw" value="${esc(q.kw || '')}" placeholder="輸入媽媽姓名或房號"></div>
+        <div class="field"><label>查詢欄位</label>
+          <div class="row" style="gap:14px;padding-top:6px">
+            <label><input type="radio" name="pv-kwtype" value="room" ${q.kwtype === 'room' ? 'checked' : ''}> 媽媽房號</label>
+            <label><input type="radio" name="pv-kwtype" value="name" ${q.kwtype !== 'room' ? 'checked' : ''}> 媽媽姓名</label>
+          </div>
+        </div>
+        <div class="field"><label>&nbsp;</label>
+          <div class="row" style="gap:6px"><button class="btn" id="pv-search">送出查詢</button><button class="btn secondary" id="pv-reset">清除</button></div>
+        </div>
+      </div>
+    </div>
     <div class="card">
       <div class="row" style="margin-bottom:10px">
         <button class="btn" id="pv-new">＋ 新增巡診紀錄</button>
@@ -3853,22 +3880,39 @@ async function viewPhysicianVisits() {
       </div>
       <div class="table-wrap"><table class="data stack">
         <thead><tr><th>巡診時間</th><th>科別/類型</th><th>對象</th><th>醫師</th><th>評估/處置</th><th>追蹤</th><th>操作</th></tr></thead>
-        <tbody>${visits.map(v => `
+        <tbody>${visits.map(v => {
+    const detailHref = v.subject_type === 'baby'
+      ? (canAccess('#/baby-doctor') ? `#/baby-doctor?b=${v.baby_id}` : '')
+      : (canAccess('#/mother-doctor') ? `#/mother-doctor?m=${v.mother_id}` : '');
+    return `
           <tr>
             <td data-label="巡診時間">${esc(v.visit_at)}<br><small>${esc(v.recorded_by_name || '')}</small></td>
             <td data-label="科別"><span class="badge teal">${VISIT_SPECIALTY_LABEL[v.specialty] || v.specialty}</span><br><small><span class="badge ${VISIT_TYPE_BADGE[v.visit_type] || 'gray'}">${VISIT_TYPE_LABEL[v.visit_type] || ''}</span></small></td>
-            <td data-label="對象">${esc(v.baby_name || v.mother_name || '-')}<br><small>${v.subject_type === 'baby' ? '寶寶' : '媽媽'}</small></td>
+            <td data-label="對象">${v.room_name ? `<span class="badge gray">${esc(v.room_name)}</span> ` : ''}${esc(v.baby_name || v.mother_name || '-')}<br><small>${v.subject_type === 'baby' ? `寶寶（${esc(v.mother_name || '')}）` : '媽媽'}</small></td>
             <td data-label="醫師">${esc(v.physician || '-')}</td>
             <td data-label="評估/處置">${esc((v.assessment || '').slice(0, 30))}${(v.assessment || '').length > 30 ? '…' : ''}<br><small>處置：${esc((v.plan || '').slice(0, 24))}</small></td>
             <td data-label="追蹤">${v.referral ? '<span class="badge red">轉診</span> ' : ''}${esc((v.follow_up || '').slice(0, 20))}</td>
             <td data-label="操作">
               <button class="btn small secondary" data-edit="${v.id}">檢視/編輯</button>
+              ${detailHref ? `<a class="btn small secondary" href="${detailHref}">詳細診視</a>` : ''}
               ${isAdmin ? `<button class="btn small danger" data-del="${v.id}">刪除</button>` : ''}
             </td>
-          </tr>`).join('') || '<tr><td colspan="7"><div class="empty">尚無巡診紀錄</div></td></tr>'}</tbody>
+          </tr>`;
+  }).join('') || '<tr><td colspan="7"><div class="empty">尚無符合條件的巡診紀錄</div></td></tr>'}</tbody>
       </table></div>
     </div>`;
   main().querySelectorAll('[data-filter]').forEach(b => b.onclick = () => { window._pvSpec = b.dataset.filter; viewPhysicianVisits(); });
+  const runSearch = () => {
+    window._pvQuery = {
+      start: $('#pv-start').value, end: $('#pv-end').value,
+      kw: $('#pv-kw').value.trim(),
+      kwtype: (main().querySelector('input[name="pv-kwtype"]:checked') || {}).value || 'name'
+    };
+    viewPhysicianVisits();
+  };
+  $('#pv-search').onclick = runSearch;
+  $('#pv-kw').onkeydown = e => { if (e.key === 'Enter') runSearch(); };
+  $('#pv-reset').onclick = () => { window._pvQuery = {}; viewPhysicianVisits(); };
   $('#pv-new').onclick = () => physicianVisitForm(null, babies, mothers);
   main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => physicianVisitForm(visits.find(v => v.id == b.dataset.edit), babies, mothers));
   main().querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
