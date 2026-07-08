@@ -866,7 +866,7 @@ async function viewMotherCare() {
           <input type="date" id="mc-date" value="${todayStr()}">
         </div>
       </div>
-      <div class="row mt"><button class="btn" id="mc-assess">一頁式評估</button><button class="btn secondary" id="mc-add">單項紀錄</button></div>
+      <div class="row mt"><small style="color:var(--muted)">本頁僅供查詢；新增／填寫請至「媽媽護理」頁。</small></div>
     </div>
     <div class="card">
       <h3>當日紀錄</h3>
@@ -885,7 +885,6 @@ async function viewMotherCare() {
         <div class="time">${fmtTime(r.recorded_at)}　${esc(r.nurse_name || '')}
           ${r.edited_at ? `<span class="badge gray" title="最後修改：${esc(r.edited_at)}">已修改</span>` : ''}
           <span style="float:right">
-            <button class="btn small secondary" data-edit="${r.id}">編輯</button>
             ${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${r.id}">刪除</button>` : ''}
           </span>
         </div>
@@ -893,7 +892,6 @@ async function viewMotherCare() {
         ${r.value_text ? `<div class="detail">${esc(r.value_text)}</div>` : ''}
         ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
       </li>`).join('')}</ul>` : '<div class="empty">當日尚無紀錄</div>';
-    $('#mc-list').querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openMotherRecordEdit(rows.find(x => x.id == btn.dataset.edit), refresh));
     $('#mc-list').querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
       if (!confirm('確定刪除這筆紀錄？')) return;
       await api(`/mother-records/${btn.dataset.del}`, { method: 'DELETE' }); refresh();
@@ -901,52 +899,6 @@ async function viewMotherCare() {
   };
   $('#mc-mother').onchange = refresh;
   $('#mc-date').onchange = refresh;
-
-  $('#mc-assess').onclick = () => {
-    const id = $('#mc-mother').value;
-    if (!id) return;
-    openMotherAssessment(id, refresh);
-  };
-
-  $('#mc-add').onclick = () => {
-    const id = $('#mc-mother').value;
-    if (!id) return;
-    openModal('新增媽媽照護紀錄', `
-      <div class="field">
-        <label>紀錄類型</label>
-        <select id="mr-type">${Object.entries(MOTHER_TYPE_LABEL)
-          .map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
-      </div>
-      <div class="field">
-        <label>觀察內容</label>
-        <textarea id="mr-value" placeholder="例如：BP 110/70, HR 76；或：子宮收縮良好"></textarea>
-      </div>
-      <div class="field">
-        <label>備註</label>
-        <input id="mr-note">
-      </div>
-      <div class="row mt">
-        <button class="btn" id="mr-save">儲存</button>
-        <span class="error-msg" id="mr-err"></span>
-      </div>`, body => {
-      body.querySelector('#mr-save').onclick = async () => {
-        try {
-          await api(`/mothers/${id}/records`, {
-            method: 'POST',
-            body: {
-              record_type: body.querySelector('#mr-type').value,
-              value_text: body.querySelector('#mr-value').value,
-              note: body.querySelector('#mr-note').value
-            }
-          });
-          closeModal();
-          refresh();
-        } catch (e) {
-          body.querySelector('#mr-err').textContent = e.message;
-        }
-      };
-    });
-  };
 
   refresh();
 }
@@ -8827,11 +8779,10 @@ async function viewMotherGuidance() {
   const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
   const { mother, guidance, reminders } = await api(`/mothers/${momId}/guidance`);
-  const kindLabel = k => k === 'care' ? '產婦護理指導單' : '母乳哺育指導單';
-  const logs = [...guidance].sort((a, b) => b.done_date < a.done_date ? -1 : (b.done_date > a.done_date ? 1 : b.id - a.id));
+  const kindLabel = k => k === 'care' ? '產婦衛教指導單' : '母乳哺育評估單';
 
   main().innerHTML = `
-    <div class="page-title">護理指導 <small style="font-weight:400;color:var(--muted);font-size:.9rem">產婦護理／母乳哺育指導單</small></div>
+    <div class="page-title">衛教指導 <small style="font-weight:400;color:var(--muted);font-size:.9rem">產婦衛教指導單／母乳哺育評估單</small></div>
     <div class="card no-print">
       <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
         <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
@@ -8839,6 +8790,10 @@ async function viewMotherGuidance() {
         <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
         <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
         <button class="btn small secondary" id="mgl-print">資料列印</button>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn" data-guide-btn="care">產婦衛教指導單</button>
+        <button class="btn" data-guide-btn="breastfeeding">母乳哺育評估單</button>
       </div>
     </div>
     <div class="card">
@@ -8861,61 +8816,29 @@ async function viewMotherGuidance() {
         </table>
       </div>
     </div>
-    <div class="card no-print" id="mgl-form">
-      <div class="sec-hd">新增指導紀錄</div>
-      <div class="form-grid">
-        <div class="field"><label>指導單類別 <b class="req">*</b></label>
-          <div class="row" style="gap:14px;padding-top:8px">
-            <label class="bna-chk"><input type="radio" name="mglr-kind" value="care" checked> 產婦護理指導單</label>
-            <label class="bna-chk"><input type="radio" name="mglr-kind" value="breastfeeding"> 母乳哺育指導單</label>
-          </div></div>
-        <div class="field"><label>執行日期 <b class="req">*</b></label><input type="date" id="mgl-date" value="${todayStr()}"></div>
-        <div class="field full"><label>指導內容備註<small>（限 300 字）</small></label><textarea id="mgl-note" maxlength="300" rows="2"></textarea></div>
-        <div class="full row" style="gap:10px">
-          <button class="btn" id="mgl-save">資料新增</button>
-          <span class="error-msg" id="mgl-err"></span>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="row between no-print"><h3>指導紀錄（${logs.length} 筆）</h3></div>
-      <div class="table-wrap">
-        <table class="data stack">
-          <thead><tr><th>執行日期</th><th>指導單</th><th>備註</th><th>執行人</th><th class="no-print"></th></tr></thead>
-          <tbody>${logs.map(g => `
-            <tr data-filter="${esc(g.done_date)} ${esc(g.nurse_name || '')}">
-              <td data-label="執行日期">${esc(g.done_date)}</td>
-              <td data-label="指導單">${kindLabel(g.kind)}</td>
-              <td data-label="備註"><small>${esc(g.note || '—')}</small></td>
-              <td data-label="執行人">${esc(g.nurse_name || '—')}</td>
-              <td data-label="" class="no-print">${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${g.id}">刪</button>` : ''}</td>
-            </tr>`).join('') || '<tr><td colspan="5"><div class="empty">尚無指導紀錄</div></td></tr>'}</tbody>
-        </table>
-      </div>
-    </div>`;
+    `;
 
   $('#mgl-mom').onchange = () => { location.hash = `#/mother-guidance?m=${$('#mgl-mom').value}`; };
   $('#mgl-print').onclick = () => window.print();
 
-  $('#mgl-save').onclick = async () => {
-    const err = $('#mgl-err');
-    err.textContent = '';
-    const kind = main().querySelector('input[name="mglr-kind"]:checked').value;
-    const date = $('#mgl-date').value;
-    if (!date) { err.textContent = '請填寫執行日期'; return; }
-    try {
-      await api(`/mothers/${momId}/guidance`, { method: 'POST', body: {
-        kind, done_date: date, note: $('#mgl-note').value.trim()
-      } });
-      viewMotherGuidance();
-    } catch (e) { err.textContent = e.message; }
-  };
-  main().querySelectorAll('[data-del]').forEach(btn => {
-    btn.onclick = async () => {
-      if (!confirm('確定刪除這筆指導紀錄？')) return;
-      await api(`/mother-guidance/${btn.dataset.del}`, { method: 'DELETE' });
-      viewMotherGuidance();
-    };
+  // 新增指導紀錄：點按鈕跳出視窗（產婦衛教指導單／母乳哺育評估單）
+  main().querySelectorAll('[data-guide-btn]').forEach(btn => btn.onclick = () => {
+    const kind = btn.dataset.guideBtn;
+    openModal(kindLabel(kind), `
+      <div class="field"><label>執行日期 <b class="req">*</b></label><input type="date" id="gf-date" value="${todayStr()}"></div>
+      <div class="field"><label>指導內容備註<small>（限 300 字）</small></label><textarea id="gf-note" maxlength="300" rows="3"></textarea></div>
+      <div class="row mt"><button class="btn" id="gf-save">資料新增</button><span class="error-msg" id="gf-err"></span></div>`, body => {
+      body.querySelector('#gf-save').onclick = async () => {
+        const date = body.querySelector('#gf-date').value;
+        if (!date) { body.querySelector('#gf-err').textContent = '請填寫執行日期'; return; }
+        try {
+          await api(`/mothers/${momId}/guidance`, { method: 'POST', body: {
+            kind, done_date: date, note: body.querySelector('#gf-note').value.trim()
+          } });
+          closeModal(); viewMotherGuidance();
+        } catch (e) { body.querySelector('#gf-err').textContent = e.message; }
+      };
+    });
   });
 }
 
