@@ -10765,7 +10765,7 @@ const PP_LABELS = {
   order_detail: '媽媽訂單明細查詢', cleaning10: '10日打掃明細表', baby_out: '寶寶不在館內明細查詢',
   early_checkout: '提前退房明細表', baby_detail: '寶寶資料明細表', ar_detail: '媽媽應收帳款明細表',
   room_card_usage: '住房卡使用明細表',
-  mom_nursing_q: '媽媽護理資料查詢', baby_care_q: '寶寶護理資料查詢', bf_rate: '母乳哺育率報表',
+  discharged_care_q: '已出住照護資料查詢', bf_rate: '母乳哺育率報表',
   rooming_stats: '親子同室統計分析', infection_quality: '護理感控品質查詢',
   epds_q: '愛丁堡憂鬱量查詢', epds_stats: '愛丁堡憂鬱量統計', person_days: '入住人日數統計表',
   inout_month: '產後出入住月報表', mom_rooming: '媽媽親子同室統計'
@@ -10813,11 +10813,9 @@ async function viewPpReport() {
           <select id="pp-kind"><option value="">全部查詢</option><option value="contract">合約退訂</option><option value="booking">訂房取消</option></select></div>` : ''}
         ${key === 'baby_out' ? `<div class="field" style="margin:0"><label style="color:var(--danger)">選項</label>
           <label class="bna-chk" style="padding-top:8px"><input type="checkbox" id="pp-onlyout"> 僅查詢不在館內明細</label></div>` : ''}
-        ${['mom_nursing_q', 'baby_care_q'].includes(key) ? `<div class="field" style="margin:0"><label>關鍵字查詢</label>
+        ${['discharged_care_q'].includes(key) ? `<div class="field" style="margin:0"><label>媽媽姓名查詢</label>
           <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
-            <input id="pp-name" style="max-width:160px">
-            <label class="bna-chk"><input type="radio" name="pp-kwt" value="room"> 媽媽房號</label>
-            <label class="bna-chk"><input type="radio" name="pp-kwt" value="name" checked> 媽媽姓名</label>
+            <input id="pp-name" style="max-width:200px" placeholder="輸入已出住媽媽姓名">
           </div></div>` : ''}
         ${['checkin_info', 'cancel_stats', 'early_checkout', 'baby_detail', 'epds_q', 'mom_rooming'].includes(key) ? `<div class="field" style="margin:0"><label>媽媽姓名</label><input id="pp-name"></div>` : ''}
         <button class="btn" id="pp-go">送出查詢</button>

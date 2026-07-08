@@ -4675,55 +4675,48 @@ const PP_REPORTS = {
       return out.sort((a, b) => b.d < a.d ? -1 : 1);
     } },
   // ---------- 護理紀錄資料 ----------
-  mom_nursing_q: { label: '媽媽護理資料查詢', columns: [
-    ['dt', '護理日期'], ['who', '媽媽房號/姓名'], ['vitals', '生命徵象/傷口狀況'],
-    ['uterus', '宮縮/惡露/其他'], ['breast', '哺乳情形/乳房狀況'], ['nurse', '護理師']],
-    run: (f, t, q) => db.prepare(`SELECT a.assess_date || ' ' || a.assess_time dt, m.name mother,
-      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id=bk.room_id WHERE bk.mother_id=m.id
-        AND bk.status IN ('checked_in','checked_out') ORDER BY bk.status='checked_in' DESC, bk.check_in DESC LIMIT 1) room,
-      a.temperature, a.pulse, a.respiration, a.systolic, a.diastolic, a.data, u.name nurse
-      FROM mother_nursing_assessments a JOIN mothers m ON m.id = a.mother_id
-      LEFT JOIN users u ON u.id = a.nurse_id
-      WHERE a.assess_date BETWEEN ? AND ? ORDER BY a.assess_date DESC, a.assess_time DESC`).all(f, t)
-      .filter(r => q.kw_type === 'room' ? (!q.name || (r.room || '').includes(q.name)) : (!q.name || r.mother.includes(q.name)))
-      .map(r => {
-      let d = {};
-      try { d = JSON.parse(r.data); } catch (e) { d = {}; }
-      return { dt: r.dt, who: `${r.room || '—'} ${r.mother}`,
-        vitals: `${r.temperature}°C 脈${r.pulse} 呼${r.respiration} ${r.systolic}/${r.diastolic}` +
-          (d.wound ? `｜傷口:${d.wound}` : ''),
-        uterus: [d.uterus && `宮縮:${d.uterus}`, (d.lochia_amount || d.lochia_color) && `惡露:${[d.lochia_amount, d.lochia_color].filter(Boolean).join('/')}`,
-          d.pain_nrs != null && `疼痛:${d.pain_nrs}`].filter(Boolean).join('｜'),
-        breast: [d.bf_skill && `親餵:${d.bf_skill}`, `左${d.breast_l || '-'}/右${d.breast_r || '-'}`,
-          (d.breast_l_mastitis === '有' || d.breast_r_mastitis === '有') && '⚠乳腺炎'].filter(Boolean).join('｜'),
-        nurse: r.nurse || '' };
-    }) },
-  baby_care_q: { label: '寶寶護理資料查詢', columns: [
-    ['dt', '護理日期'], ['who', '媽媽房號/寶寶'], ['vitals', '體重/體溫/心跳/黃疸'], ['cord', '臍帶'],
-    ['milk', '母乳/配方奶'], ['skin', '活力/膚色/皮膚/紅臀'], ['elim', '小便/大便'], ['nurse', '護理師']],
-    run: (f, t, q) => db.prepare(`SELECT a.assess_date || ' ' || a.assess_time dt, b.name baby, m.name mother,
-      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id=bk.room_id WHERE bk.mother_id=m.id
-        AND bk.status IN ('checked_in','checked_out') ORDER BY bk.status='checked_in' DESC, bk.check_in DESC LIMIT 1) room,
-      a.weight_g, a.temperature, a.data, u.name nurse,
-      (SELECT r2.value_num FROM baby_records r2 WHERE r2.baby_id=a.baby_id AND r2.record_type='jaundice'
-        AND substr(r2.recorded_at,1,10)=a.assess_date ORDER BY r2.recorded_at DESC LIMIT 1) jaundice
-      FROM baby_nursing_assessments a JOIN babies b ON b.id = a.baby_id JOIN mothers m ON m.id = b.mother_id
-      LEFT JOIN users u ON u.id = a.nurse_id
-      WHERE a.assess_date BETWEEN ? AND ? ORDER BY a.assess_date DESC, a.assess_time DESC`).all(f, t)
-      .filter(r => q.kw_type === 'room' ? (!q.name || (r.room || '').includes(q.name)) : (!q.name || r.mother.includes(q.name) || r.baby.includes(q.name)))
-      .map(r => {
-      let d = {};
-      try { d = JSON.parse(r.data); } catch (e) { d = {}; }
-      return { dt: r.dt, who: `${r.room || '—'} ${r.baby}（${r.mother}）`,
-        vitals: [r.weight_g && `${r.weight_g}g`, r.temperature && `${r.temperature}°C`,
-          d.heart_rate && `心跳${d.heart_rate}`, r.jaundice != null && `黃疸${r.jaundice}`].filter(Boolean).join('｜'),
-        cord: d.cord || '',
-        milk: [(d.milk_types || []).join ? (d.milk_types || []).join('/') : d.milk_types, d.milk_note].filter(Boolean).join(' '),
-        skin: [d.muscle_tone && `活力:${d.muscle_tone}`, d.skin_color, (d.skin_conditions || []).join ? (d.skin_conditions || []).join('/') : '',
-          (d.rash_left || d.rash_right) && `紅臀:左${d.rash_left || '-'}/右${d.rash_right || '-'}`].filter(Boolean).join('｜'),
-        elim: [d.urine && `小便:${d.urine}`, d.stool && `大便:${d.stool}`].filter(Boolean).join('｜'),
-        nurse: r.nurse || '' };
-    }) },
+  // 已出住照護資料查詢：僅「已退住」媽寶，媽寶照護資料整合成一本，依媽媽姓名／月份查詢
+  discharged_care_q: { label: '已出住照護資料查詢', columns: [
+    ['month', '歸檔月份'], ['dt', '護理日期'], ['kind', '類別'], ['who', '媽媽／寶寶'],
+    ['summary', '照護摘要'], ['nurse', '護理師']],
+    run: (f, t, q) => {
+      const name = (q.name || '').trim();
+      const moms = db.prepare(`SELECT a.assess_date, a.assess_time, m.name mother,
+        a.temperature, a.pulse, a.respiration, a.systolic, a.diastolic, a.data, u.name nurse
+        FROM mother_nursing_assessments a JOIN mothers m ON m.id = a.mother_id
+        LEFT JOIN users u ON u.id = a.nurse_id
+        WHERE m.status = 'checked_out' AND a.assess_date BETWEEN ? AND ?`).all(f, t);
+      const babies = db.prepare(`SELECT a.assess_date, a.assess_time, b.name baby, m.name mother,
+        a.weight_g, a.temperature, a.data, u.name nurse
+        FROM baby_nursing_assessments a JOIN babies b ON b.id = a.baby_id JOIN mothers m ON m.id = b.mother_id
+        LEFT JOIN users u ON u.id = a.nurse_id
+        WHERE m.status = 'checked_out' AND a.assess_date BETWEEN ? AND ?`).all(f, t);
+      const rows = [];
+      for (const r of moms) {
+        if (name && !r.mother.includes(name)) continue;
+        let d = {}; try { d = JSON.parse(r.data); } catch (e) { d = {}; }
+        rows.push({ _mother: r.mother, month: (r.assess_date || '').slice(0, 7),
+          dt: `${r.assess_date} ${r.assess_time}`, kind: '媽媽', who: r.mother,
+          summary: [`${r.temperature}°C 脈${r.pulse} 呼${r.respiration} ${r.systolic}/${r.diastolic}`,
+            d.wound && `傷口:${d.wound}`, d.uterus && `宮縮:${d.uterus}`,
+            (d.lochia_amount || d.lochia_color) && `惡露:${[d.lochia_amount, d.lochia_color].filter(Boolean).join('/')}`,
+            d.bf_skill && `親餵:${d.bf_skill}`].filter(Boolean).join('｜'),
+          nurse: r.nurse || '' });
+      }
+      for (const r of babies) {
+        if (name && !r.mother.includes(name)) continue;
+        let d = {}; try { d = JSON.parse(r.data); } catch (e) { d = {}; }
+        rows.push({ _mother: r.mother, month: (r.assess_date || '').slice(0, 7),
+          dt: `${r.assess_date} ${r.assess_time}`, kind: '寶寶', who: `${r.baby}（${r.mother}）`,
+          summary: [r.weight_g && `${r.weight_g}g`, r.temperature && `${r.temperature}°C`,
+            d.cord && `臍帶:${d.cord}`, d.skin_color && `膚色:${d.skin_color}`,
+            (d.milk_types || []).join ? (d.milk_types || []).join('/') : d.milk_types].filter(Boolean).join('｜'),
+          nurse: r.nurse || '' });
+      }
+      // 整合成一本：先依媽媽姓名、再依月份／日期排序（同一媽媽的媽寶資料集中、按月歸檔）
+      rows.sort((a, b) => a._mother.localeCompare(b._mother, 'zh-Hant') || (a.month < b.month ? 1 : a.month > b.month ? -1 : (a.dt < b.dt ? 1 : -1)));
+      return rows.map(({ _mother, ...r }) => r);
+    } },
   bf_rate: { label: '母乳哺育率報表', columns: [
     ['mother', '媽媽姓名'], ['check_in', '入住日期'], ['bf_count', '親餵次數'], ['breast_ml', '母乳量(cc)'],
     ['formula_ml', '配方奶量(cc)'], ['total_ml', '喝奶總量(cc)'], ['pure_rate', '純母乳比例(%)'], ['total_rate', '總母乳比例(%)']],
