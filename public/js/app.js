@@ -6103,7 +6103,7 @@ async function viewBabyRooms() {
   const tempLow = parseFloat(SETTINGS.temp_low) || 36.0;
   const jaundiceAlert = parseFloat(SETTINGS.jaundice_alert) || 13;
   const canCare = canAccess('#/baby-care');
-  const cards = data.babies.map(b => {
+  const renderBabyCard = (b) => {
     const feedHrs = hoursSince(b.last_feed_at);
     const feedOver = feedHrs != null && feedHrs >= feedGap;
     const tempAbn = b.last_temp != null && (b.last_temp >= tempHigh || b.last_temp <= tempLow);
@@ -6145,7 +6145,8 @@ async function viewBabyRooms() {
             ${canAccess('#/baby-doctor') ? `<a class="btn small" href="#/baby-doctor?b=${b.id}">醫師巡診</a>` : ''}
             <a class="btn small" href="#/baby-handover?b=${b.id}">新生兒交班單</a>
             <a class="btn small ${b.closed ? 'secondary' : ''}" href="#/baby-close?b=${b.id}">產後嬰兒結案${b.closed ? ' ✓' : ''}</a>
-            <a class="btn small secondary" href="#/baby-care">照護紀錄</a>
+            ${canAccess('#/mother-guidance') ? `<a class="btn small" href="#/mother-guidance?m=${b.mother_id}">衛教指導</a>` : ''}
+            <a class="btn small secondary" href="#/baby-care">寶寶照護</a>
           </div>
           <div class="row" style="gap:6px;align-items:center;margin-top:6px">
             <small style="color:var(--muted)">狀態切換：</small>
@@ -6155,7 +6156,16 @@ async function viewBabyRooms() {
           </div>
         </div>` : ''}
       </div>`;
-  }).join('');
+  };
+  // 依房號排序（同房雙胞胎相鄰），再依樓層（房號開頭字元）分組，每樓一區塊、每排 5 房
+  const sortedBabies = [...data.babies].sort((a, z) =>
+    String(a.room_name || 'zzz').localeCompare(String(z.room_name || 'zzz'), 'zh-Hant', { numeric: true }) || a.id - z.id);
+  const floors = {};
+  for (const b of sortedBabies) { const fl = String(b.room_name || '')[0] || '其他'; (floors[fl] = floors[fl] || []).push(b); }
+  const cards = Object.keys(floors)
+    .sort((a, z) => String(a).localeCompare(String(z), 'zh-Hant', { numeric: true }))
+    .map(fl => `<div class="bbc-floor">${/^\d/.test(fl) ? fl + ' 樓' : esc(fl)}</div>
+      <div class="bbc-grid">${floors[fl].map(renderBabyCard).join('')}</div>`).join('');
   const alertRows = data.alerts.map(a => `
     <tr><td data-label="時間">${esc(fmtTime(a.recorded_at))}</td>
       <td data-label="寶寶">${esc(a.baby_name)}</td>
@@ -6196,7 +6206,7 @@ async function viewBabyRooms() {
       <div class="row" style="gap:6px 16px;flex-wrap:wrap;margin-top:8px;font-size:.88rem;color:var(--muted)">
         ${BABY_LEGEND.map(([label, color]) => `<span><i class="legend-sq" style="background:${color}"></i>${label}</span>`).join('')}
       </div>
-      <div class="board-grid mt" id="bs-grid">${cards || '<div class="empty">目前沒有在住寶寶</div>'}</div>
+      <div class="mt" id="bs-grid">${cards || '<div class="empty">目前沒有在住寶寶</div>'}</div>
     </div>`;
   $('#bs-refresh').onclick = viewBabyRooms;
   wireBoardFilter(main(), '#bs-grid');
