@@ -1196,6 +1196,16 @@ function init() {
   // 膳食訂餐狀態：備餐中／已出餐／取消（未訂＝無此筆）
   const moCols = db.prepare('PRAGMA table_info(meal_orders)').all().map(c => c.name);
   if (!moCols.includes('status')) db.exec("ALTER TABLE meal_orders ADD COLUMN status TEXT NOT NULL DEFAULT 'preparing'");
+  // 衛教完成紀錄：對應「衛教時間表設定」，記錄某媽媽某天某衛教項目已完成（供護理提醒判斷）
+  db.exec(`CREATE TABLE IF NOT EXISTS edu_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    edu_day INTEGER NOT NULL,
+    item TEXT NOT NULL,
+    done_by INTEGER REFERENCES users(id),
+    done_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(mother_id, edu_day, item)
+  )`);
   // 月子餐「我要換餐」：家屬線上申請、員工端審核
   db.exec(`CREATE TABLE IF NOT EXISTS meal_swap_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

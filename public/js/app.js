@@ -271,6 +271,7 @@ async function viewDashboard() {
   main().innerHTML = `
     <div class="page-title">總覽　<span style="font-weight:400;font-size:.85rem;color:var(--muted)">${todayStr()}</span></div>
     ${remCard}
+    <div id="dash-nr"></div>
     <div class="stat-grid">
       <div class="stat"><div class="num">${d.occupied}/${d.totalRooms}</div><div class="label">入住房數 / 總房數</div></div>
       <div class="stat"><div class="num">${d.mothersIn}</div><div class="label">在住媽媽</div></div>
@@ -328,6 +329,7 @@ async function viewDashboard() {
       <h3>近 30 天入住率趨勢 (%)</h3>
       ${svgLineChart(d.occupancy_trend, { unit: '%' })}
     </div>`;
+  loadNursingReminders('#dash-nr');
 }
 
 /* ---------- 寶寶日報：摘要 / 異常 / 列印 ---------- */
@@ -6095,6 +6097,32 @@ async function viewMotherRooms() {
   });
 }
 
+// 護理提醒橫幅（本班護理紀錄未完成／衛教未完成／家屬護理需求未處理），看板與儀表板共用
+async function loadNursingReminders(sel) {
+  const box = document.querySelector(sel); if (!box) return;
+  let d; try { d = await api('/nursing-reminders'); } catch (e) { return; }
+  const ri = d.records_incomplete, ep = d.edu_pending, nn = d.nursing_needs;
+  const eduCount = ep.reduce((s, m) => s + m.items.length, 0);
+  if (!ri.length && !eduCount && !nn.length) {
+    box.innerHTML = `<div class="card"><h3 style="margin:0">護理提醒（${esc(d.shift)}班）</h3><div class="empty">目前沒有待辦提醒 ✓</div></div>`;
+    return;
+  }
+  box.innerHTML = `<div class="card" style="border-left:4px solid var(--warn)">
+    <h3 style="margin:0 0 8px">護理提醒（${esc(d.shift)}班・${esc(d.date)}）</h3>
+    <details ${ri.length ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">本班護理紀錄未完成　<span class="badge ${ri.length ? 'red' : 'green'}">${ri.length}</span></summary>
+      <div style="margin:6px 0 10px">${ri.length ? ri.map(b => `<div style="padding:2px 0">${esc(b.room_name || '')}　${esc(b.baby_name)}（媽媽 ${esc(b.mother_name)}）${canAccess('#/baby-nursing') ? ` <a class="btn small secondary" href="#/baby-nursing?b=${b.baby_id}">去記錄</a>` : ''}</div>`).join('') : '<div class="empty">全部完成</div>'}</div></details>
+    <details ${eduCount ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">衛教未完成　<span class="badge ${eduCount ? 'yellow' : 'green'}">${eduCount}</span></summary>
+      <div style="margin:6px 0 10px">${ep.length ? ep.map(m => `<div style="margin:4px 0"><b>${esc(m.room_name || '')}　${esc(m.mother_name)}</b>（入住第 ${m.day} 天）
+        ${m.items.map(it => `<div class="row" style="gap:6px;align-items:center;margin:2px 0 2px 8px"><span class="badge gray">第${it.day}天</span> ${esc(it.item)} <button class="btn small" data-edu-done="${m.mother_id}|${it.day}|${esc(it.item)}">標記完成</button></div>`).join('')}</div>`).join('') : '<div class="empty">全部完成</div>'}</div></details>
+    <details ${nn.length ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">家屬護理需求未處理　<span class="badge ${nn.length ? 'red' : 'green'}">${nn.length}</span></summary>
+      <div style="margin:6px 0 2px">${nn.length ? nn.map(n => `<div style="padding:2px 0">${esc(n.room_name || '')}　${esc(n.baby_name)}（${esc(n.mother_name)}）：<small style="color:var(--muted)">${esc((n.last_body || '').slice(0, 40))}</small> <span class="badge red">${n.unread}</span>${canAccess('#/family') ? ` <a class="btn small secondary" href="#/family">前往回覆</a>` : ''}</div>`).join('') : '<div class="empty">無</div>'}</div></details>
+  </div>`;
+  box.querySelectorAll('[data-edu-done]').forEach(b => b.onclick = async () => {
+    const [mid, day, ...rest] = b.dataset.eduDone.split('|'); const item = rest.join('|');
+    try { await api('/edu-records', { method: 'POST', body: { mother_id: Number(mid), edu_day: Number(day), item } }); loadNursingReminders(sel); }
+    catch (e) { alert(e.message); }
+  });
+}
 async function viewBabyRooms() {
   const data = await api('/room-status/babies');
   const st = data.stats;
@@ -6188,6 +6216,7 @@ async function viewBabyRooms() {
       <div class="stat"><div class="num" style="color:${st.hospital ? 'var(--danger)' : 'var(--primary)'}">${st.hospital}</div><div class="label">住院中</div></div>
       <div class="stat"><div class="num" style="color:${st.alerts ? 'var(--danger)' : 'var(--primary)'}">${st.alerts}</div><div class="label">今日異常紀錄</div></div>
     </div>
+    <div id="nr-banner"></div>
     ${data.alerts.length ? `
     <div class="card">
       <h3>今日異常照護紀錄</h3>
@@ -6218,6 +6247,7 @@ async function viewBabyRooms() {
     </div>`;
   $('#bs-refresh').onclick = viewBabyRooms;
   wireBoardFilter(main(), '#bs-grid');
+  loadNursingReminders('#nr-banner');
   // 狀態切換（嬰兒室／親子同室／隔離室／不在館內；留存異動紀錄）
   main().querySelectorAll('[data-loc-sel]').forEach(sel => {
     sel.onchange = async () => {
@@ -6306,7 +6336,7 @@ async function viewMotherNursing() {
   }
   const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
-  const { mother, medical_no, rows, problems, scales, reminders, today_photo, baby_info } = await api(`/mothers/${momId}/nursing`);
+  const { mother, medical_no, rows, problems, scales, reminders, today_photo, baby_info, babies } = await api(`/mothers/${momId}/nursing`);
   const now = new Date();
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const idNo = currentUser.id_no || '';
@@ -6379,6 +6409,7 @@ async function viewMotherNursing() {
         <a class="btn small secondary" href="#/mother-handover?m=${momId}">產婦交班單</a>
         <a class="btn small secondary" href="#/mother-guidance?m=${momId}">護理指導</a>
         <a class="btn small secondary" href="#/mother-close?m=${momId}">產婦結案</a>
+        ${(babies || []).map(b => `<a class="btn small secondary" href="#/breastfeeding?b=${b.id}">母乳哺育評估${(babies || []).length > 1 ? `（${esc(b.name)}）` : ''}</a>`).join('')}
         ${canAccess('#/mother-doctor') ? `<a class="btn small secondary" href="#/mother-doctor?m=${momId}">醫師巡診</a>` : ''}
         <button class="btn small secondary" id="mna-print">資料列印</button>
       </div>
@@ -11947,7 +11978,8 @@ function bfaCell(name, val, text) {
 async function viewBreastfeeding() {
   const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
   if (!want) { location.hash = '#/baby-nursing'; return; }
-  const { baby, rows, reminder } = await api(`/babies/${want}/breastfeeding`);
+  const { baby, rows, reminder, prefill } = await api(`/babies/${want}/breastfeeding`);
+  const pre = prefill || {};
   const ageDays = baby.birth_date ? Math.round((new Date(todayStr()) - new Date(baby.birth_date)) / 86400000) : '';
 
   const sectionRows = BFA_SECTIONS.map(sec => sec.rows.map((r, i) => `
@@ -11977,7 +12009,8 @@ async function viewBreastfeeding() {
     <div class="page-title">母乳哺育評估表</div>
     <div class="card no-print">
       <div class="row" style="gap:8px;flex-wrap:wrap">
-        <a class="btn small secondary" href="#/baby-nursing?b=${baby.id}">回寶寶護理</a>
+        ${canAccess('#/baby-nursing') ? `<a class="btn small secondary" href="#/baby-nursing?b=${baby.id}">回寶寶護理</a>` : ''}
+        ${canAccess('#/mother-nursing') ? `<a class="btn small secondary" href="#/mother-nursing?m=${baby.mother_id}">回媽媽護理</a>` : ''}
         <button class="btn small secondary" id="bfa-print">列印</button>
         ${reminder ? `<span style="font-size:.85rem;color:var(--muted)">提醒：${esc(reminder.remind_date)}（${esc(reminder.day_label)}）應執行${reminder.done_date ? `，已於 ${esc(reminder.done_date)} 由 ${esc(reminder.done_by)} 執行` : '，<b style="color:var(--warn)">尚未執行</b>'}</span>` : ''}
       </div>
@@ -11989,10 +12022,10 @@ async function viewBreastfeeding() {
         <div class="field"><label>寶寶</label><input value="${esc(baby.name)}${baby.gender ? `（${baby.gender === 'male' ? '男' : '女'}）` : ''}" disabled></div>
         <div class="field"><label>房號／媽媽</label><input value="${esc(baby.room_name || '—')}／${esc(baby.mother_name)}" disabled></div>
         <div class="field"><label>出生體重（g）</label><input value="${baby.birth_weight_g ?? ''}" disabled></div>
-        <div class="field"><label>目前體重（g）</label><input type="number" step="0.1" min="0" id="bfa-weight"></div>
+        <div class="field"><label>目前體重（g）<small>（寶寶護理帶入，可修改）</small></label><input type="number" step="0.1" min="0" id="bfa-weight" value="${pre.current_weight_g ?? ''}"></div>
         <div class="field"><label>生產方式</label><input value="${esc(baby.delivery_type || '—')}" disabled></div>
         <div class="field"><label>產後天數</label><input value="${ageDays}" disabled></div>
-        <div class="field"><label>胎次</label><input id="bfa-parity" maxlength="20"></div>
+        <div class="field"><label>胎次<small>（入住評估／客戶管理帶入，可修改）</small></label><input id="bfa-parity" maxlength="20" value="${esc(pre.parity || '')}"></div>
         <div class="field"><label>哺餵方式</label><div class="row" style="gap:12px;padding-top:8px">${BFA_FEED_TYPES.map(t => `<label class="bna-chk"><input type="radio" name="bfa-feedtype" value="${t}"> ${t}</label>`).join('')}</div></div>
         <div class="field"><label>平均每次擠奶量</label><input id="bfa-pump" maxlength="30"></div>
         <div class="field"><label>奶品</label><input id="bfa-brand" maxlength="50"></div>
@@ -12605,7 +12638,7 @@ const ROUTE_PERM = {
   '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
-  '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': 'baby_care', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
+  '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': ['baby_care', 'mother_care'], '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/program-calendar': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
   '#/tours': 'tours', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
@@ -12615,7 +12648,9 @@ const ROUTE_PERM = {
 function canAccess(hash) {
   const mod = ROUTE_PERM[hash];
   if (!mod) return true;
-  return currentUser.role === 'admin' || (currentUser.modules || []).includes(mod);
+  if (currentUser.role === 'admin') return true;
+  const mods = Array.isArray(mod) ? mod : [mod];
+  return mods.some(m => (currentUser.modules || []).includes(m));
 }
 
 async function route() {
