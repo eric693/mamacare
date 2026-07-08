@@ -1643,7 +1643,16 @@ const DEFAULT_SETTINGS = {
   hk_sheet_days: '7',
   hk_supply_days: '1',
   hk_updated_by: '',                     // 打掃定期工作最後異動人
-  hk_updated_at: ''                      // 打掃定期工作最後異動時間
+  hk_updated_at: '',                     // 打掃定期工作最後異動時間
+  // 衛教時間表：入住第 N 天應完成的衛教項目（JSON 陣列，管理員可於「衛教時間表設定」自由增修）
+  edu_schedule: JSON.stringify([
+    { day: 1, items: ['入住環境與設施介紹', '母嬰同室說明', '按需哺乳與親餵姿勢'] },
+    { day: 2, items: ['新生兒沐浴示範', '臍帶護理'] },
+    { day: 3, items: ['母乳哺育技巧與擠乳', '乳房護理'] },
+    { day: 5, items: ['新生兒黃疸觀察', '餵食與活動力觀察'] },
+    { day: 7, items: ['產後營養與運動', '情緒支持（產後憂鬱衛教）'] },
+    { day: 10, items: ['返家準備與注意事項', '預防注射與新生兒篩檢說明'] }
+  ])
 };
 
 function ensureSettings() {

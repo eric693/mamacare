@@ -11244,6 +11244,61 @@ async function viewDoorLight() {
 function parseJsonArraySetting(v, fallback) {
   try { const a = JSON.parse(v); return Array.isArray(a) ? a : fallback; } catch (e) { return fallback; }
 }
+
+/* ---------- 衛教時間表設定（入住第 N 天 → 衛教項目，管理員可自由增修）---------- */
+async function viewEduSchedule() {
+  const canWrite = currentUser.role === 'admin';
+  const s = await api('/settings');
+  const sched = parseJsonArraySetting(s.edu_schedule, []).filter(x => x && Number(x.day) > 0)
+    .map(x => ({ day: Number(x.day), items: Array.isArray(x.items) ? x.items : [] }))
+    .sort((a, b) => a.day - b.day);
+  const save = async (list) => {
+    await api('/settings', { method: 'PUT', body: { edu_schedule: JSON.stringify(list.sort((a, b) => a.day - b.day)) } });
+    viewEduSchedule();
+  };
+  main().innerHTML = `
+    <div class="page-title">衛教時間表設定 <small style="font-weight:400;color:var(--muted);font-size:.9rem">入住第 N 天應完成的衛教項目</small></div>
+    <div class="card no-print">
+      ${canWrite ? '<button class="btn" id="es-add">新增日程</button>' : '<small style="color:var(--muted)">僅管理員可維護</small>'}
+      <small style="color:var(--muted);display:block;margin-top:6px">＊此表供「護理提醒」判斷各媽媽當日應完成哪些衛教；可自由增減天數與項目。</small>
+    </div>
+    <div class="card">
+      <div class="sec-hd">衛教時間表（${sched.length} 個日程）</div>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th style="width:120px">入住天數</th><th>衛教項目</th><th class="no-print" style="width:130px"></th></tr></thead>
+        <tbody>${sched.map((d, i) => `
+          <tr>
+            <td data-label="入住天數">第 ${d.day} 天</td>
+            <td data-label="衛教項目">${d.items.length ? d.items.map(it => `<span class="badge teal" style="margin:2px">${esc(it)}</span>`).join(' ') : '—'}</td>
+            <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${i}">編輯</button> <button class="btn small danger" data-del="${i}">刪</button>` : ''}</td>
+          </tr>`).join('') || '<tr><td colspan="3"><div class="empty">尚未設定衛教時間表</div></td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+  if (!canWrite) return;
+  const form = (idx) => {
+    const d = idx == null ? { day: '', items: [] } : sched[idx];
+    openModal(idx == null ? '新增衛教日程' : '編輯衛教日程', `
+      <div class="field"><label>入住第幾天 <b class="req">*</b></label><input type="number" min="1" id="es-day" value="${d.day || ''}"></div>
+      <div class="field"><label>衛教項目<small>（每行一項）</small></label><textarea id="es-items" rows="6">${esc((d.items || []).join('\n'))}</textarea></div>
+      <div class="row mt"><button class="btn" id="es-save">存檔</button><span class="error-msg" id="es-err"></span></div>`, body => {
+      body.querySelector('#es-save').onclick = () => {
+        const day = Number(body.querySelector('#es-day').value);
+        const items = body.querySelector('#es-items').value.split('\n').map(x => x.trim()).filter(Boolean);
+        if (!(day > 0)) { body.querySelector('#es-err').textContent = '請輸入正確的入住天數'; return; }
+        if (!items.length) { body.querySelector('#es-err').textContent = '請至少填一個衛教項目'; return; }
+        // 同一天視為覆蓋（避免重複日程）
+        const next = sched.filter((_, j) => j !== idx).filter(x => x.day !== day).concat([{ day, items }]);
+        closeModal(); save(next);
+      };
+    });
+  };
+  $('#es-add').onclick = () => form(null);
+  main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => form(Number(b.dataset.edit)));
+  main().querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    if (!confirm('確定刪除此日程？')) return;
+    save(sched.filter((_, i) => i !== Number(b.dataset.del)));
+  });
+}
 async function viewDischargeMeds() {
   const canWrite = currentUser.role === 'admin';
   const s = await api('/settings');
@@ -12465,6 +12520,7 @@ const routes = {
   '#/cleaning-schedule': viewCleaningSchedule,
   '#/door-light': viewDoorLight,
   '#/discharge-meds': viewDischargeMeds,
+  '#/edu-schedule': viewEduSchedule,
   '#/epds-template': viewEpdsTemplate,
   '#/room-types': viewRoomTypes,
   '#/room-list': viewRoomList,
@@ -12546,7 +12602,7 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': 'baby_care', '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
