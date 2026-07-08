@@ -1788,11 +1788,11 @@ async function viewHousekeeping() {
   });
 }
 
-function openHkNeedsForm(r) {
+function openHkNeedsForm(r, onDone) {
   const cur = (r.hk_needs || '').split(',').map(s => s.trim()).filter(Boolean);
   const checks = hkNeedOptions().map(n =>
     `<label class="perm-chk"><input type="checkbox" value="${esc(n)}" ${cur.includes(n) ? 'checked' : ''}> ${esc(n)}</label>`).join('');
-  openModal(`清潔需求 — ${esc(r.room_name)} 房 ${esc(r.mother_name)}`, `
+  openModal(`需求設定 — ${esc(r.room_name)} 房 ${esc(r.mother_name)}`, `
     <div class="form-grid">
       <div class="field full"><label>勿擾時間</label><input id="hk-dnd" value="${esc(r.hk_dnd || '')}" placeholder="例如：13:00-15:00 午休"></div>
       <div class="field full"><label>需求項目</label><div style="display:flex;flex-wrap:wrap;gap:8px">${checks}</div></div>
@@ -1805,7 +1805,7 @@ function openHkNeedsForm(r) {
         await api(`/mothers/${r.mother_id}/housekeeping`, { method: 'PUT', body: {
           hk_dnd: body.querySelector('#hk-dnd').value, hk_needs: needs, hk_notes: body.querySelector('#hk-notes').value
         } });
-        closeModal(); viewHousekeeping();
+        closeModal(); (onDone || viewHousekeeping)();
       } catch (e) { body.querySelector('#hk-err').textContent = e.message; }
     };
   });
@@ -6171,7 +6171,7 @@ async function viewMotherRooms() {
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
           ${canAccess('#/mother-care-query') ? '<a class="btn small secondary" href="#/mother-care-query">媽媽照護紀錄查詢</a>' : ''}
-          ${canAccess('#/nursing-needs') ? '<a class="btn small secondary" href="#/nursing-needs">護理需求</a>' : ''}
+          ${canAccess('#/mother-needs') ? '<a class="btn small secondary" href="#/mother-needs">媽媽護理需求</a>' : ''}
           ${canAccess('#/rounds-list') ? '<a class="btn small secondary" href="#/rounds-list">醫師查房清單</a>' : ''}
           ${canAccess('#/baby-announcements') ? '<a class="btn small secondary" href="#/baby-announcements">寶寶報喜</a>' : ''}
           ${canAccess('#/mother-intake-blank') ? '<a class="btn small secondary" href="#/mother-intake-blank">空白媽媽評估單</a>' : ''}
@@ -6272,46 +6272,70 @@ async function viewCareRecordQuery(kind) {
   };
 }
 
-/* ---------- 護理需求（家屬入口聯繫護理站的未處理需求；呈現如房務清潔頁） ---------- */
-async function viewNursingNeeds() {
-  const msgs = await api('/family-messages');
-  const pending = msgs.filter(m => m.sender === 'family' && !m.read_by_staff);
-  const render = list => list.length
-    ? `<div class="table-wrap"><table class="data stack">
-        <thead><tr><th>時間</th><th>寶寶</th><th>媽媽</th><th>需求內容</th><th>操作</th></tr></thead>
-        <tbody>${list.map(m => `<tr>
-          <td data-label="時間">${esc((m.created_at || '').slice(0, 16))}</td>
-          <td data-label="寶寶">${esc(m.baby_name || '')}</td>
-          <td data-label="媽媽">${esc(m.mother_name || '')}</td>
-          <td data-label="需求內容">${esc(m.body || '')}</td>
-          <td data-label="操作">
-            <button class="btn small" data-reply="${m.baby_id}">回覆</button>
-            <button class="btn small secondary" data-read="${m.baby_id}">標記已處理</button>
-          </td></tr>`).join('')}</tbody></table></div>`
-    : '<div class="empty">目前沒有待處理的護理需求</div>';
+/* ---------- 護理需求（家屬入口留言；區分媽媽／寶寶；呈現如房務清潔頁，保留勿擾時間＋編輯需求） ---------- */
+async function viewNursingNeeds(kind) {
+  kind = kind === 'baby' ? 'baby' : kind === 'mother' ? 'mother' : 'all';
+  const title = kind === 'baby' ? '寶寶護理需求' : kind === 'mother' ? '媽媽護理需求' : '護理需求';
+  const data = await api('/nursing-needs');
+  const reqLine = (m, who) => `
+    <div class="row between" style="align-items:center;gap:6px;margin:2px 0">
+      <div><span class="badge ${who === 'mother' ? 'teal' : 'gray'}">${who === 'mother' ? '媽媽' : '寶寶'}</span>
+        ${who === 'baby' && m.baby_name ? `<b>${esc(m.baby_name)}</b>：` : ''}${esc(m.body)}
+        <small style="color:var(--muted)">（${esc((m.created_at || '').slice(5, 16))}・${esc(m.sender_name || '')}）</small></div>
+      <div class="row" style="gap:4px">
+        <button class="btn small" data-reply="${m.baby_id}">回覆</button>
+        <button class="btn small secondary" data-done="${m.id}">標記已處理</button>
+      </div>
+    </div>`;
+  const cards = data.residents.map(r => {
+    const showMother = kind !== 'baby';
+    const showBaby = kind !== 'mother';
+    const mReqs = showMother ? r.mother_requests : [];
+    const bReqs = showBaby ? r.baby_requests : [];
+    const hkNeeds = (r.hk_needs || '').split(',').map(s => s.trim()).filter(Boolean);
+    const total = mReqs.length + bReqs.length;
+    return `
+      <div class="card" style="margin:0${total ? ';border-left:4px solid var(--warn)' : ''}">
+        <div class="row between" style="align-items:flex-start">
+          <div><strong>${esc(r.room_name || '未排房')} 房</strong>　${esc(r.mother_name)}
+            ${total ? `<span class="badge red">${total}</span>` : ''}</div>
+          <button class="btn small secondary" data-hk-edit="${r.mother_id}">編輯需求</button>
+        </div>
+        <div style="font-size:.86rem;margin-top:6px">
+          <div>勿擾時間：${r.hk_dnd ? esc(r.hk_dnd) : '<span style="color:var(--muted)">未設定</span>'}</div>
+          ${hkNeeds.length ? `<div style="margin-top:4px">房務需求：${hkNeeds.map(n => `<span class="badge teal">${esc(n)}</span>`).join(' ')}</div>` : ''}
+          <div style="margin-top:6px">護理需求：${total ? '' : '<span style="color:var(--muted)">無待處理</span>'}</div>
+          ${mReqs.map(m => reqLine(m, 'mother')).join('')}
+          ${bReqs.map(m => reqLine(m, 'baby')).join('')}
+        </div>
+      </div>`;
+  }).join('') || '<div class="empty">目前無入住中住客</div>';
+  const pendingCount = data.residents.reduce((s, r) =>
+    s + (kind !== 'baby' ? r.mother_requests.length : 0) + (kind !== 'mother' ? r.baby_requests.length : 0), 0);
   main().innerHTML = `
-    <div class="page-title">護理需求 <small style="font-weight:400;color:var(--muted);font-size:.85rem">來源：家屬入口「聯繫護理站」</small></div>
+    <div class="page-title">${title} <small style="font-weight:400;color:var(--muted);font-size:.85rem">來源：家屬入口留言</small></div>
     <div class="card">
       <div class="row between" style="flex-wrap:wrap;gap:8px">
-        <div class="sec-hd" style="margin:0">待處理護理需求　<span class="badge ${pending.length ? 'red' : 'green'}">${pending.length}</span></div>
+        <h3 style="margin:0">住客需求（入住中 ${data.residents.length} 位）　<span class="badge ${pendingCount ? 'red' : 'green'}">待處理 ${pendingCount}</span></h3>
         <button class="btn small secondary" id="nn-refresh">重新整理</button>
       </div>
-      <div id="nn-list" style="margin-top:8px">${render(pending)}</div>
+      <p style="font-size:.8rem;color:var(--muted);margin:6px 0 10px">家屬於「家屬入口」送出留言後，會依媽媽／寶寶顯示在此；可設定勿擾時間、回覆或標記已處理。</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">${cards}</div>
     </div>`;
-  $('#nn-refresh').onclick = viewNursingNeeds;
-  const wire = () => {
-    main().querySelectorAll('[data-reply]').forEach(b => b.onclick = async () => {
-      const text = prompt('回覆家屬：', '');
-      if (text === null || !text.trim()) return;
-      try { await api(`/family-messages/${b.dataset.reply}/reply`, { method: 'POST', body: { body: text.trim() } }); viewNursingNeeds(); }
-      catch (e) { alert(e.message); }
-    });
-    main().querySelectorAll('[data-read]').forEach(b => b.onclick = async () => {
-      try { await api(`/family-messages/${b.dataset.read}/read`, { method: 'POST', body: {} }); viewNursingNeeds(); }
-      catch (e) { alert(e.message); }
-    });
-  };
-  wire();
+  const refresh = () => viewNursingNeeds(kind);
+  $('#nn-refresh').onclick = refresh;
+  main().querySelectorAll('[data-hk-edit]').forEach(b => b.onclick = () =>
+    openHkNeedsForm(data.residents.find(r => String(r.mother_id) === b.dataset.hkEdit), refresh));
+  main().querySelectorAll('[data-reply]').forEach(b => b.onclick = async () => {
+    const text = prompt('回覆家屬：', '');
+    if (text === null || !text.trim()) return;
+    try { await api(`/family-messages/${b.dataset.reply}/reply`, { method: 'POST', body: { body: text.trim() } }); refresh(); }
+    catch (e) { alert(e.message); }
+  });
+  main().querySelectorAll('[data-done]').forEach(b => b.onclick = async () => {
+    try { await api(`/family-messages/msg/${b.dataset.done}/read`, { method: 'POST', body: {} }); refresh(); }
+    catch (e) { alert(e.message); }
+  });
 }
 
 // 護理提醒橫幅（本班護理紀錄未完成／衛教未完成／家屬護理需求未處理），看板與儀表板共用
@@ -6335,7 +6359,7 @@ async function loadNursingReminders(sel) {
       <div style="margin:6px 0 10px">${ep.length ? ep.map(m => `<div style="margin:4px 0"><b>${esc(m.room_name || '')}　${esc(m.mother_name)}</b>（入住第 ${m.day} 天）
         ${m.items.map(it => `<div class="row" style="gap:6px;align-items:center;margin:2px 0 2px 8px"><span class="badge gray">第${it.day}天</span> ${esc(it.item)} <button class="btn small" data-edu-done="${m.mother_id}|${it.day}|${esc(it.item)}">標記完成</button></div>`).join('')}</div>`).join('') : '<div class="empty">全部完成</div>'}</div></details>
     <details ${nn.length ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">家屬護理需求未處理　<span class="badge ${nn.length ? 'red' : 'green'}">${nn.length}</span></summary>
-      <div style="margin:6px 0 2px">${nn.length ? nn.map(n => `<div style="padding:2px 0">${esc(n.room_name || '')}　${esc(n.baby_name)}（${esc(n.mother_name)}）：<small style="color:var(--muted)">${esc((n.last_body || '').slice(0, 40))}</small> <span class="badge red">${n.unread}</span>${canAccess('#/family') ? ` <a class="btn small secondary" href="#/family">前往回覆</a>` : ''}</div>`).join('') : '<div class="empty">無</div>'}</div></details>
+      <div style="margin:6px 0 2px">${nn.length ? nn.map(n => `<div style="padding:2px 0">${esc(n.room_name || '')}　${esc(n.baby_name)}（${esc(n.mother_name)}）：<small style="color:var(--muted)">${esc((n.last_body || '').slice(0, 40))}</small> <span class="badge red">${n.unread}</span>${canAccess('#/nursing-needs') ? ` <a class="btn small secondary" href="#/nursing-needs">前往處理</a>` : ''}</div>`).join('') : '<div class="empty">無</div>'}</div></details>
   </div>`;
   box.querySelectorAll('[data-edu-done]').forEach(b => b.onclick = async () => {
     const [mid, day, ...rest] = b.dataset.eduDone.split('|'); const item = rest.join('|');
@@ -6457,7 +6481,7 @@ async function viewBabyRooms() {
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
           ${canAccess('#/baby-care-query') ? '<a class="btn small secondary" href="#/baby-care-query">寶寶照護紀錄查詢</a>' : ''}
-          ${canAccess('#/nursing-needs') ? '<a class="btn small secondary" href="#/nursing-needs">護理需求</a>' : ''}
+          ${canAccess('#/baby-needs') ? '<a class="btn small secondary" href="#/baby-needs">寶寶護理需求</a>' : ''}
           <small style="color:var(--muted)">${esc(data.date)}</small>
           <button class="btn small secondary" id="bs-refresh">重新整理</button>
         </div>
@@ -12785,7 +12809,9 @@ const routes = {
   '#/baby-rooms': viewBabyRooms,
   '#/mother-care-query': () => viewCareRecordQuery('mother'),
   '#/baby-care-query': () => viewCareRecordQuery('baby'),
-  '#/nursing-needs': viewNursingNeeds,
+  '#/nursing-needs': () => viewNursingNeeds('all'),
+  '#/mother-needs': () => viewNursingNeeds('mother'),
+  '#/baby-needs': () => viewNursingNeeds('baby'),
   '#/baby-nursing': viewBabyNursing,
   '#/baby-eval': viewBabyEval,
   '#/baby-doctor': viewBabyDoctor,
@@ -12862,7 +12888,7 @@ const ROUTE_PERM = {
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
   '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
-  '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family',
+  '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family', '#/mother-needs': 'family', '#/baby-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': ['baby_care', 'mother_care'], '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/program-calendar': 'programs', '#/members': 'members', '#/coupons': 'coupons',

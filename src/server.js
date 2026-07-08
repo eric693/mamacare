@@ -6240,6 +6240,37 @@ app.post('/api/family-messages/:babyId/read', requireStaff, (req, res) => {
   db.prepare(`UPDATE family_messages SET read_by_staff=1 WHERE baby_id=? AND sender='family'`).run(req.params.babyId);
   res.json({ ok: true });
 });
+// 標記單一則家屬護理需求為已處理
+app.post('/api/family-messages/msg/:id/read', requireStaff, (req, res) => {
+  const info = db.prepare(`UPDATE family_messages SET read_by_staff=1 WHERE id=? AND sender='family'`).run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: '找不到留言' });
+  res.json({ ok: true });
+});
+
+// 護理需求總覽（依入住媽媽彙整；區分媽媽／寶寶需求＋勿擾時間，供護理需求頁使用）
+app.get('/api/nursing-needs', requireStaff, (req, res) => {
+  const d = today();
+  const residents = db.prepare(`
+    SELECT m.id AS mother_id, m.name AS mother_name, m.hk_dnd, m.hk_needs, m.hk_notes,
+           (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+             WHERE bk.mother_id = m.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1) AS room_name
+    FROM mothers m WHERE m.status = 'checked_in'
+    ORDER BY room_name`).all();
+  const reqStmt = db.prepare(`
+    SELECT fm.id, fm.baby_id, fm.body, fm.subject_type, fm.created_at, fm.sender_name, b.name AS baby_name
+    FROM family_messages fm JOIN babies b ON b.id = fm.baby_id
+    WHERE b.mother_id = ? AND fm.sender = 'family' AND fm.read_by_staff = 0
+    ORDER BY fm.created_at DESC`);
+  const list = residents.map(r => {
+    const reqs = reqStmt.all(r.mother_id);
+    return {
+      ...r,
+      mother_requests: reqs.filter(x => x.subject_type === 'mother'),
+      baby_requests: reqs.filter(x => x.subject_type !== 'mother')
+    };
+  });
+  res.json({ date: d, residents: list });
+});
 
 // ---------- 資料匯出（Excel / PDF）與每日備份 ----------
 const BABY_TYPE_TW = { feeding: '餵食', diaper: '換尿布', temperature: '體溫', weight: '體重', jaundice: '黃疸值', bath: '沐浴', sleep: '睡眠', photo: '照片', note: '備註', respiration: '呼吸', heart_rate: '心跳', spo2: '血氧', length: '身長', head_circ: '頭圍', skin: '膚色', cord: '臍帶', vomit: '溢吐奶', activity: '活動力', stool: '大便性狀' };
@@ -7687,19 +7718,21 @@ app.post('/api/family/switch-baby', requireFamily, (req, res) => {
 // 家屬留言（家屬端）
 app.get('/api/family/messages', requireFamily, (req, res) => {
   const babyId = req.session.family.baby_id;
-  const rows = db.prepare(`SELECT id, sender, sender_name, body, created_at FROM family_messages
-    WHERE baby_id=? ORDER BY created_at`).all(babyId);
+  const rows = db.prepare(`SELECT id, sender, sender_name, body, subject_type, read_by_staff, created_at FROM family_messages
+    WHERE baby_id=? ORDER BY created_at DESC`).all(babyId);
   db.prepare(`UPDATE family_messages SET read_by_family=1 WHERE baby_id=? AND sender='staff'`).run(babyId);
   res.json(rows);
 });
 
 app.post('/api/family/messages', requireFamily, (req, res) => {
-  const body = ((req.body || {}).body || '').trim();
+  const b = req.body || {};
+  const body = (b.body || '').trim();
   if (!body) return res.status(400).json({ error: '請輸入留言內容' });
   if (body.length > 1000) return res.status(400).json({ error: '留言過長' });
+  const subject_type = b.subject_type === 'mother' ? 'mother' : 'baby';
   const f = req.session.family;
-  const info = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body, read_by_family)
-    VALUES (?,?, 'family', ?, ?, 1)`).run(f.baby_id, f.id, f.name + (f.relation ? `（${f.relation}）` : ''), body);
+  const info = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body, subject_type, read_by_family)
+    VALUES (?,?, 'family', ?, ?, ?, 1)`).run(f.baby_id, f.id, f.name + (f.relation ? `（${f.relation}）` : ''), body, subject_type);
   // 即時通知值班：家屬留言推播 LINE（需設定 token 與 line_staff_alert_id）
   try {
     const s = getSettings();

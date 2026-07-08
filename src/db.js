@@ -1123,6 +1123,11 @@ function init() {
   if (!brCols.includes('diaper_rash')) {
     db.exec("ALTER TABLE baby_records ADD COLUMN diaper_rash TEXT DEFAULT ''");
   }
+  // 家屬留言：區分是媽媽或寶寶的護理需求
+  const fmCols = db.prepare('PRAGMA table_info(family_messages)').all().map(c => c.name);
+  if (!fmCols.includes('subject_type')) {
+    db.exec("ALTER TABLE family_messages ADD COLUMN subject_type TEXT DEFAULT 'baby'");
+  }
 
   // 會員：媽媽自動為會員，掛點數與會員編號
   const mCols = db.prepare('PRAGMA table_info(mothers)').all().map(c => c.name);

@@ -140,28 +140,51 @@ async function loadReport() {
 }
 
 async function loadMessages() {
-  let msgs = [];
-  try { msgs = await api('/family/messages'); } catch (e) {
+  let msgs = [], rpt = null;
+  try {
+    [msgs, rpt] = await Promise.all([api('/family/messages'), api('/family/report')]);
+  } catch (e) {
     if (e.status === 401) { showLogin(); return; }
   }
-  const bubbles = msgs.map(m => `
-    <div style="margin:6px 0;text-align:${m.sender === 'family' ? 'right' : 'left'}">
-      <div style="display:inline-block;max-width:82%;padding:8px 12px;border-radius:12px;background:${m.sender === 'family' ? '#cdeae4' : '#f0f0f0'}">
-        <div style="font-size:.72rem;color:#888">${esc(m.sender_name || (m.sender === 'family' ? '我' : '護理站'))}・${esc(m.created_at)}</div>
-        ${esc(m.body)}</div></div>`).join('');
+  const babyName = (rpt && rpt.baby && rpt.baby.name) || '寶寶';
+  const motherName = (rpt && rpt.baby && rpt.baby.mother_name) || '媽媽';
+  // 我送出的護理需求留言（非對話；依媽媽／寶寶區分），護理站回覆以附註呈現
+  const items = msgs.map(m => {
+    if (m.sender === 'family') {
+      const who = m.subject_type === 'mother' ? '媽媽' : '寶寶';
+      const done = m.read_by_staff;
+      return `<div class="card" style="margin:8px 0;padding:10px 12px">
+        <div style="font-size:.75rem;color:#888">${esc(m.created_at)}</div>
+        <div style="margin:3px 0"><span class="badge ${m.subject_type === 'mother' ? 'teal' : 'gray'}">${who}的護理需求</span>
+          <span class="badge ${done ? 'green' : 'yellow'}">${done ? '已處理' : '待處理'}</span></div>
+        <div>${esc(m.body)}</div></div>`;
+    }
+    return `<div style="margin:8px 0 8px 14px;padding:8px 12px;background:#f0f0f0;border-radius:10px">
+      <div style="font-size:.72rem;color:#888">護理站回覆・${esc(m.created_at)}</div>${esc(m.body)}</div>`;
+  }).join('');
   $('#panel').innerHTML = `
     <div class="card">
       <h3>聯絡護理站</h3>
-      <p style="font-size:.85rem;color:#888">有任何照護問題或需求都可以在這裡留言，護理站會盡快回覆。</p>
-      <div style="max-height:50vh;overflow:auto;margin:10px 0">${bubbles || '<div class="empty">還沒有留言，傳第一則訊息給護理站吧！</div>'}</div>
-      <div class="field"><textarea id="msg-body" rows="2" placeholder="輸入留言…"></textarea></div>
-      <div class="row"><button class="btn" id="msg-send">送出</button><span class="error-msg" id="msg-err"></span></div>
+      <p style="font-size:.85rem;color:#888">有任何照護需求都可以在這裡留言，請先選擇這是「媽媽」或「寶寶」的需求，護理站看到後會盡快處理。</p>
+      <div class="field"><label>需求對象</label>
+        <select id="msg-subject">
+          <option value="baby">寶寶（${esc(babyName)}）</option>
+          <option value="mother">媽媽（${esc(motherName)}）</option>
+        </select></div>
+      <div class="field"><textarea id="msg-body" rows="3" placeholder="輸入護理需求或想告知護理站的事…"></textarea></div>
+      <div class="row"><button class="btn" id="msg-send">送出留言</button><span class="error-msg" id="msg-err"></span></div>
+    </div>
+    <div class="card">
+      <h3>我的留言紀錄</h3>
+      <div style="max-height:52vh;overflow:auto;margin-top:6px">${items || '<div class="empty">還沒有留言，送出第一則需求給護理站吧！</div>'}</div>
     </div>`;
   $('#msg-send').onclick = async () => {
     const text = $('#msg-body').value.trim();
     if (!text) return;
-    try { await api('/family/messages', { method: 'POST', body: { body: text } }); loadMessages(); }
-    catch (e) { $('#msg-err').textContent = e.message; }
+    try {
+      await api('/family/messages', { method: 'POST', body: { body: text, subject_type: $('#msg-subject').value } });
+      loadMessages();
+    } catch (e) { $('#msg-err').textContent = e.message; }
   };
 }
 

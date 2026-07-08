@@ -1262,3 +1262,30 @@ test('媽媽房況：stats 含 needs 欄位', async () => {
   const d = (await req('GET', '/api/room-status/mothers')).data;
   assert.strictEqual(typeof d.stats.needs, 'number');
 });
+
+test('護理需求：家屬留言區分媽媽/寶寶，護理站彙整與單筆標記已處理', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const baby = (await req('GET', '/api/babies')).data.find(b => b.mother_status === 'checked_in');
+  assert.ok(baby);
+  const saved = cookie; cookie = '';
+  assert.strictEqual((await req('POST', '/api/family/login', { code: 'DEMO1234' }, false)).status, 200);
+  const famCookie = cookie;
+  assert.strictEqual((await req('POST', '/api/family/messages', { body: '媽媽傷口有點痛', subject_type: 'mother' })).status, 200);
+  assert.strictEqual((await req('POST', '/api/family/messages', { body: '寶寶好像肚子餓', subject_type: 'baby' })).status, 200);
+  // 家屬端：可看到自己的留言含 subject_type
+  const mine = (await req('GET', '/api/family/messages')).data;
+  assert.ok(mine.some(m => m.sender === 'family' && m.subject_type === 'mother' && m.body === '媽媽傷口有點痛'));
+  cookie = saved;
+  // 護理站：彙整依媽媽，區分 mother_requests / baby_requests
+  const nn = (await req('GET', '/api/nursing-needs')).data;
+  const res = nn.residents.find(r => r.mother_requests.some(x => x.body === '媽媽傷口有點痛'));
+  assert.ok(res, 'mother_requests 應含媽媽需求');
+  assert.ok(res.baby_requests.some(x => x.body === '寶寶好像肚子餓'), 'baby_requests 應含寶寶需求');
+  // 單筆標記已處理後消失
+  const mid = res.mother_requests.find(x => x.body === '媽媽傷口有點痛').id;
+  assert.strictEqual((await req('POST', `/api/family-messages/msg/${mid}/read`, {})).status, 200);
+  const nn2 = (await req('GET', '/api/nursing-needs')).data;
+  const res2 = nn2.residents.find(r => r.mother_id === res.mother_id);
+  assert.ok(!res2.mother_requests.some(x => x.id === mid), '標記已處理後不應再出現');
+  assert.strictEqual((await req('POST', '/api/family-messages/msg/999999/read', {})).status, 404);
+});
