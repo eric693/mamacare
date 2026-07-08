@@ -7148,6 +7148,7 @@ async function viewBabyNursing() {
           <select id="bna-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
         <a class="btn small secondary" href="#/baby-rooms">回寶寶房況</a>
         <a class="btn small secondary" href="#/baby-eval?b=${babyId}">寶寶評估單</a>
+        ${canAccess('#/baby-doctor') ? `<a class="btn small secondary" href="#/baby-doctor?b=${babyId}">醫師巡診</a>` : ''}
         <a class="btn small secondary" href="#/breastfeeding?b=${babyId}">母乳哺育評估</a>
         <a class="btn small secondary" href="#/baby-handover?b=${babyId}">新生兒交班單</a>
         <a class="btn small secondary" href="#/baby-close?b=${babyId}">嬰兒結案</a>
@@ -7239,76 +7240,7 @@ async function viewBabyNursing() {
             </tr>` : '<tr><td colspan="5"><div class="empty">媽媽尚未入住，無提醒排程</div></td></tr>'}</tbody>
         </table>
       </div>
-    </div>
-    <div class="card no-print">
-      <h3>寶寶親子同室－編輯</h3>
-      <div class="form-grid">
-        <div class="field"><label>護理紀錄日期 <b class="req">*</b></label><input type="date" id="brl-date" value="${todayStr()}"></div>
-        <div class="field"><label>紀錄時間 <b class="req">*</b></label><input type="time" id="brl-time" value="${hhmm}"></div>
-        <div class="field"><label>親餵（分鐘）</label><input type="number" min="0" id="brl-bf-min" placeholder="未親餵留空"></div>
-        <div class="field"><label>母乳（ml）</label><input type="number" min="0" id="brl-bm"></div>
-        <div class="field"><label>配方奶（ml）</label><input type="number" min="0" id="brl-fm"></div>
-        <div class="field"><label>大便</label><input id="brl-stool" maxlength="50" placeholder="次數／性狀"></div>
-        <div class="field"><label>小便</label><input id="brl-urine" maxlength="50" placeholder="次數／性狀"></div>
-        <div class="field"><label>推出時間</label><input type="time" id="brl-out"></div>
-        <div class="field"><label>返室時間</label><input type="time" id="brl-return"></div>
-        <div class="field full"><label>敍述性護理紀錄<small>（限 300 字）</small></label><textarea id="brl-note" maxlength="300"></textarea></div>
-        <div class="full row" style="gap:10px">
-          <button class="btn" id="brl-save">資料新增</button>
-          <span class="error-msg" id="brl-err"></span>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>寶寶親子同室（${rooming.length} 筆）</h3>
-      <div class="table-wrap">
-        <table class="data stack">
-          <thead><tr><th>護理日期</th><th>奶量</th><th>大便</th><th>小便</th><th>推出時間</th><th>返室時間</th><th>敍述性紀錄</th><th>建檔人</th><th class="no-print"></th></tr></thead>
-          <tbody>${rooming.map(l => {
-            const milk = [
-              l.breastfeed_min != null ? `親餵 ${l.breastfeed_min} 分鐘` : '',
-              l.breast_milk_ml != null ? `母乳 ${l.breast_milk_ml} ml` : '',
-              l.formula_ml != null ? `配方奶 ${l.formula_ml} ml` : ''
-            ].filter(Boolean).join('・');
-            return `
-            <tr>
-              <td data-label="護理日期">${esc(l.log_date)}<br><small>${esc(l.log_time)}</small></td>
-              <td data-label="奶量"><small>${esc(milk || '—')}</small></td>
-              <td data-label="大便">${esc(l.stool || '—')}</td>
-              <td data-label="小便">${esc(l.urine || '—')}</td>
-              <td data-label="推出時間">${esc(l.out_time || '—')}</td>
-              <td data-label="返室時間">${esc(l.return_time || '—')}</td>
-              <td data-label="敍述性紀錄"><small>${esc(l.note || '—')}</small></td>
-              <td data-label="建檔人">${esc(l.nurse_name || '—')}</td>
-              <td data-label="" class="no-print">${currentUser.role === 'admin' ? `<button class="btn small danger" data-brl-del="${l.id}">刪除</button>` : ''}</td>
-            </tr>`;
-          }).join('') || '<tr><td colspan="9"><div class="empty">尚無親子同室紀錄</div></td></tr>'}</tbody>
-        </table>
-      </div>
     </div>`;
-
-  $('#brl-save').onclick = async () => {
-    const err = $('#brl-err');
-    err.textContent = '';
-    const gv = id => $(id).value.trim();
-    if (!gv('#brl-date') || !gv('#brl-time')) { err.textContent = '請填寫紀錄日期與時間'; return; }
-    try {
-      await api(`/babies/${babyId}/rooming-logs`, { method: 'POST', body: {
-        log_date: gv('#brl-date'), log_time: gv('#brl-time'),
-        breastfeed_min: gv('#brl-bf-min'), breast_milk_ml: gv('#brl-bm'), formula_ml: gv('#brl-fm'),
-        stool: gv('#brl-stool'), urine: gv('#brl-urine'),
-        out_time: gv('#brl-out'), return_time: gv('#brl-return'), note: gv('#brl-note')
-      } });
-      viewBabyNursing();
-    } catch (e) { err.textContent = e.message; }
-  };
-  main().querySelectorAll('[data-brl-del]').forEach(btn => {
-    btn.onclick = async () => {
-      if (!confirm('確定刪除這筆親子同室紀錄？')) return;
-      await api(`/baby-rooming/${btn.dataset.brlDel}`, { method: 'DELETE' });
-      viewBabyNursing();
-    };
-  });
 
   $('#bna-baby').onchange = () => { location.hash = `#/baby-nursing?b=${$('#bna-baby').value}`; };
   $('#bna-print').onclick = () => window.print();
