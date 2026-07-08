@@ -2002,7 +2002,11 @@ app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
     SELECT a.*, u.name AS nurse_name FROM mother_intake_assessments a
     LEFT JOIN users u ON u.id = a.nurse_id WHERE a.mother_id = ?`).get(mother.id);
   if (rec) { try { rec.data = JSON.parse(rec.data); } catch (e) { rec.data = {}; } }
-  res.json({ mother, medical_no: motherMedicalNo(mother), record: rec || null });
+  // 量表填寫概況（供入住評估表以顏色標示：家庭功能 apgar／愛丁堡 epds）
+  const scaleRows = db.prepare(`SELECT kind, COUNT(*) c, MAX(fill_date) last FROM mother_scales WHERE mother_id = ? GROUP BY kind`).all(mother.id);
+  const scales = {};
+  for (const s of scaleRows) scales[s.kind] = { count: s.c, last: s.last };
+  res.json({ mother, medical_no: motherMedicalNo(mother), record: rec || null, scales });
 });
 
 app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {
