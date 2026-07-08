@@ -5861,6 +5861,8 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
            (SELECT MAX(mr.recorded_at) FROM mother_records mr WHERE mr.mother_id = m.id) AS last_care_at,
            (SELECT COUNT(*) FROM housekeeping_logs h WHERE h.status = 'pending'
              AND (h.mother_id = m.id OR h.room_id = bk.room_id)) AS pending_tasks,
+           (SELECT COUNT(*) FROM family_messages fm JOIN babies b2 ON b2.id = fm.baby_id
+             WHERE b2.mother_id = m.id AND fm.sender = 'family' AND fm.read_by_staff = 0) AS need_count,
            (SELECT COUNT(*) FROM mother_closures c WHERE c.mother_id = m.id) AS closed
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
     WHERE bk.status = 'checked_in'
@@ -5898,9 +5900,56 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     occupied: list.filter(x => x.state === 'occupied' || x.state === 'due_out').length,
     due_out: list.filter(x => x.state === 'due_out').length,
     due_in: list.filter(x => x.state === 'due_in').length,
-    vacant: list.filter(x => x.state === 'vacant' || x.state === 'reserved').length
+    vacant: list.filter(x => x.state === 'vacant' || x.state === 'reserved').length,
+    needs: list.filter(x => x.occupant && x.occupant.need_count > 0).length
   };
   res.json({ date: d, stats, rooms: list });
+});
+
+// 照護紀錄查詢（僅入住中）：kind=mother|baby，可依日期區間、媽媽姓名／房號關鍵字查詢
+app.get('/api/care-records/query', requireStaff, (req, res) => {
+  const kind = req.query.kind === 'baby' ? 'baby' : 'mother';
+  const kw = (req.query.kw || '').trim();
+  const kwtype = req.query.kwtype === 'room' ? 'room' : 'name';
+  const conds = ["m.status = 'checked_in'"], args = {};
+  if (req.query.start) { conds.push('date(x.recorded_at) >= @start'); args.start = req.query.start; }
+  if (req.query.end) { conds.push('date(x.recorded_at) <= @end'); args.end = req.query.end; }
+  const roomSub = `(SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+      WHERE bk.mother_id = m.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1)`;
+  if (kw) {
+    args.kw = `%${kw}%`;
+    if (kwtype === 'room') conds.push(`${roomSub} LIKE @kw`);
+    else conds.push(kind === 'baby' ? '(m.name LIKE @kw OR b.name LIKE @kw)' : 'm.name LIKE @kw');
+  }
+  const where = 'WHERE ' + conds.join(' AND ');
+  let rows;
+  if (kind === 'baby') {
+    rows = db.prepare(`
+      SELECT x.recorded_at, x.record_type, x.feed_method, x.amount_ml, x.diaper_kind, x.diaper_rash,
+             x.value_num, x.value_text, x.note, b.name AS baby_name, m.name AS mother_name,
+             u.name AS nurse_name, ${roomSub} AS room_name
+      FROM baby_records x JOIN babies b ON b.id = x.baby_id JOIN mothers m ON m.id = b.mother_id
+      LEFT JOIN users u ON u.id = x.nurse_id
+      ${where} AND x.record_type != 'photo'
+      ORDER BY x.recorded_at DESC LIMIT 1000`).all(args);
+    return res.json(rows.map(r => ({
+      recorded_at: r.recorded_at, room_name: r.room_name || '', subject: r.baby_name,
+      mother_name: r.mother_name, type: BABY_TYPE_TW[r.record_type] || r.record_type,
+      detail: babyDetailTW(r), note: r.note || '', nurse_name: r.nurse_name || ''
+    })));
+  }
+  rows = db.prepare(`
+    SELECT x.recorded_at, x.record_type, x.value_text, x.note, m.name AS mother_name,
+           u.name AS nurse_name, ${roomSub} AS room_name
+    FROM mother_records x JOIN mothers m ON m.id = x.mother_id
+    LEFT JOIN users u ON u.id = x.nurse_id
+    ${where}
+    ORDER BY x.recorded_at DESC LIMIT 1000`).all(args);
+  res.json(rows.map(r => ({
+    recorded_at: r.recorded_at, room_name: r.room_name || '', subject: r.mother_name,
+    mother_name: r.mother_name, type: MOTHER_TYPE_TW[r.record_type] || r.record_type,
+    detail: r.value_text || '', note: r.note || '', nurse_name: r.nurse_name || ''
+  })));
 });
 
 // 寶寶房況：在住寶寶的位置（嬰兒室／母嬰同室）與今日照護即時摘要
@@ -6126,7 +6175,18 @@ app.get('/api/nursing-reminders', requireStaff, (req, res) => {
     FROM family_messages fm JOIN babies b ON b.id = fm.baby_id JOIN mothers m ON m.id = b.mother_id
     WHERE fm.sender = 'family' AND fm.read_by_staff = 0 GROUP BY fm.baby_id ORDER BY last_at DESC`).all();
 
-  res.json({ shift: SHIFT_TW2[shiftKey], date: today, records_incomplete, edu_pending, nursing_needs });
+  // 4) 媽媽護理紀錄未完成：在住媽媽當日尚未有任何護理紀錄（每天 9:30 後才提醒；當日 nurse 儲存即消失）
+  const mm = nowLocal.getUTCMinutes();
+  const showMother = hh > 9 || (hh === 9 && mm >= 30);
+  let mother_records_incomplete = [];
+  if (showMother) {
+    const hasMR = db.prepare(`SELECT 1 FROM mother_records WHERE mother_id = ? AND date(recorded_at) = ? LIMIT 1`);
+    mother_records_incomplete = moms
+      .filter(mo => !hasMR.get(mo.id, today))
+      .map(mo => ({ mother_id: mo.id, mother_name: mo.name, room_name: mo.room_name }));
+  }
+
+  res.json({ shift: SHIFT_TW2[shiftKey], date: today, records_incomplete, edu_pending, nursing_needs, mother_records_incomplete });
 });
 
 // 標記某媽媽某天某衛教項目已完成

@@ -6096,6 +6096,7 @@ async function viewMotherRooms() {
     const occ = r.occupant, next = r.next_booking;
     const states = [r.state];
     if (occ && occ.pending_tasks > 0) states.push('has_tasks');
+    if (occ && occ.need_count > 0) states.push('has_needs');
     let body = '';
     if (occ) {
       const babyLine = (occ.babies || []).length
@@ -6134,10 +6135,8 @@ async function viewMotherRooms() {
       occ && canAccess('#/mother-intake') ? `<a class="btn small" href="#/mother-intake?m=${occ.mother_id}">入住評估表</a>` : '',
       occ && canAccess('#/mother-doctor') ? `<a class="btn small" href="#/mother-doctor?m=${occ.mother_id}">醫師巡診</a>` : '',
       occ && canAccess('#/mother-handover') ? `<a class="btn small" href="#/mother-handover?m=${occ.mother_id}">產婦交班單</a>` : '',
-      occ && canAccess('#/mother-care') ? `<a class="btn small secondary" href="#/mother-care?m=${occ.mother_id}">照護紀錄</a>` : '',
       occ && canAccess('#/mother-guidance') ? `<a class="btn small" href="#/mother-guidance?m=${occ.mother_id}">護理指導</a>` : '',
       occ && canAccess('#/mother-close') ? `<a class="btn small ${occ.closed ? 'secondary' : ''}" href="#/mother-close?m=${occ.mother_id}">產婦結案${occ.closed ? ' ✓' : ''}</a>` : '',
-      occ && canAccess('#/housekeeping') ? `<button class="btn small secondary" data-hk-room="${r.id}" data-hk-mom="${occ.mother_id}" data-hk-label="${esc(r.name)}／${esc(occ.mother_name)}">＋房務任務</button>` : '',
       !occ && canAccess('#/rooms') ? `<a class="btn small secondary" href="#/rooms">訂房管理</a>` : ''
     ].filter(Boolean).join('');
     return `
@@ -6153,11 +6152,12 @@ async function viewMotherRooms() {
   main().innerHTML = `
     <div class="page-title">媽媽房況</div>
     <div class="stat-grid">
-      <div class="stat"><div class="num">${st.total}</div><div class="label">總房數</div></div>
       <div class="stat"><div class="num">${st.occupied}</div><div class="label">入住中</div></div>
       <div class="stat"><div class="num">${st.due_out}</div><div class="label">應退房</div></div>
       <div class="stat"><div class="num">${st.due_in}</div><div class="label">今日入住</div></div>
+      <div class="stat"><div class="num" ${st.needs ? 'style="color:var(--danger)"' : ''}>${st.needs}</div><div class="label">有護理需求</div></div>
     </div>
+    <div id="nr-banner"></div>
     <div class="card">
       <div class="row between" style="flex-wrap:wrap;gap:8px">
         <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -6167,8 +6167,11 @@ async function viewMotherRooms() {
           <button class="btn small secondary" data-board-flt="due_in">今日入住</button>
           <button class="btn small secondary" data-board-flt="vacant">空房</button>
           <button class="btn small secondary" data-board-flt="has_tasks">有待辦房務</button>
+          <button class="btn small secondary" data-board-flt="has_needs">有護理需求</button>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
+          ${canAccess('#/mother-care-query') ? '<a class="btn small secondary" href="#/mother-care-query">媽媽照護紀錄查詢</a>' : ''}
+          ${canAccess('#/nursing-needs') ? '<a class="btn small secondary" href="#/nursing-needs">護理需求</a>' : ''}
           ${canAccess('#/rounds-list') ? '<a class="btn small secondary" href="#/rounds-list">醫師查房清單</a>' : ''}
           ${canAccess('#/baby-announcements') ? '<a class="btn small secondary" href="#/baby-announcements">寶寶報喜</a>' : ''}
           ${canAccess('#/mother-intake-blank') ? '<a class="btn small secondary" href="#/mother-intake-blank">空白媽媽評估單</a>' : ''}
@@ -6182,6 +6185,7 @@ async function viewMotherRooms() {
     </div>`;
   $('#rs-refresh').onclick = viewMotherRooms;
   wireBoardFilter(main(), '#rs-grid');
+  loadNursingReminders('#nr-banner');
   // 快速新增房務任務
   main().querySelectorAll('[data-hk-room]').forEach(btn => {
     btn.onclick = () => openModal(`新增房務任務 — ${btn.dataset.hkLabel}`, `
@@ -6204,20 +6208,129 @@ async function viewMotherRooms() {
   });
 }
 
+/* ---------- 照護紀錄查詢（媽媽／寶寶；僅入住中） ---------- */
+const CRQ_STATE = {};
+async function viewCareRecordQuery(kind) {
+  kind = kind === 'baby' ? 'baby' : 'mother';
+  const title = kind === 'baby' ? '寶寶照護資料查詢' : '媽媽照護資料查詢';
+  const st = CRQ_STATE[kind] || (CRQ_STATE[kind] = { start: todayStr().slice(0, 8) + '01', end: todayStr(), kw: '', kwtype: 'name' });
+  main().innerHTML = `
+    <div class="page-title">${title} <small style="font-weight:400;color:var(--muted);font-size:.85rem">（僅供查詢入住中的照護資料）</small></div>
+    <div class="card">
+      <div class="sec-hd">${title}（資料查詢）</div>
+      <div class="form-grid" style="align-items:end">
+        <div class="field"><label>查詢日期區間（起）</label><input type="date" id="crq-start" value="${esc(st.start)}"></div>
+        <div class="field"><label>查詢日期區間（迄）</label><input type="date" id="crq-end" value="${esc(st.end)}"></div>
+        <div class="field"><label>關鍵字查詢</label><input id="crq-kw" value="${esc(st.kw)}" placeholder="輸入媽媽姓名或房號"></div>
+        <div class="field"><label>查詢欄位</label>
+          <div class="row" style="gap:14px;padding-top:6px">
+            <label><input type="radio" name="crq-kwtype" value="room" ${st.kwtype === 'room' ? 'checked' : ''}> 媽媽房號</label>
+            <label><input type="radio" name="crq-kwtype" value="name" ${st.kwtype !== 'room' ? 'checked' : ''}> 媽媽姓名</label>
+          </div></div>
+        <div class="field"><label>&nbsp;</label><button class="btn" id="crq-run">送出查詢</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" style="margin:0">${title}（查詢結果）</div>
+        <div class="row" style="gap:6px"><button class="btn small secondary" id="crq-print">資料列印</button><button class="btn small" id="crq-csv">匯出Excel</button></div>
+      </div>
+      <div id="crq-result"><div class="empty">您輸入的條件，查無資料 …</div></div>
+    </div>`;
+  let lastRows = [];
+  const cols = [
+    { key: 'time', label: '時間' }, { key: 'room', label: '房號' },
+    { key: 'subject', label: kind === 'baby' ? '寶寶（媽媽）' : '媽媽' },
+    { key: 'type', label: '類型' }, { key: 'detail', label: '內容' },
+    { key: 'note', label: '備註' }, { key: 'nurse', label: '護理師' }
+  ];
+  const toRow = r => ({
+    time: (r.recorded_at || '').slice(0, 16), room: r.room_name || '',
+    subject: kind === 'baby' ? `${r.subject}（${r.mother_name || ''}）` : r.subject,
+    type: r.type, detail: r.detail || '', note: r.note || '', nurse: r.nurse_name || ''
+  });
+  const run = async () => {
+    st.start = $('#crq-start').value; st.end = $('#crq-end').value; st.kw = $('#crq-kw').value.trim();
+    st.kwtype = (main().querySelector('input[name="crq-kwtype"]:checked') || {}).value || 'name';
+    const p = new URLSearchParams({ kind });
+    if (st.start) p.set('start', st.start); if (st.end) p.set('end', st.end);
+    if (st.kw) { p.set('kw', st.kw); p.set('kwtype', st.kwtype); }
+    const rows = await api('/care-records/query?' + p.toString());
+    lastRows = rows.map(toRow);
+    $('#crq-result').innerHTML = lastRows.length
+      ? `<div class="table-wrap"><table class="data stack"><thead><tr>${cols.map(c => `<th>${c.label}</th>`).join('')}</tr></thead>
+          <tbody>${lastRows.map(r => `<tr>${cols.map(c => `<td data-label="${c.label}">${esc(r[c.key])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+         <div style="color:var(--muted);font-size:.85rem;margin-top:6px">共 ${lastRows.length} 筆</div>`
+      : '<div class="empty">您輸入的條件，查無資料 …</div>';
+  };
+  $('#crq-run').onclick = run;
+  $('#crq-kw').onkeydown = e => { if (e.key === 'Enter') run(); };
+  $('#crq-print').onclick = () => { if (!lastRows.length) return alert('尚無查詢結果'); printTable(title, cols, lastRows); };
+  $('#crq-csv').onclick = () => {
+    if (!lastRows.length) return alert('尚無查詢結果');
+    downloadCsv(`${title}_${todayStr()}.csv`, cols.map(c => c.label), lastRows.map(r => cols.map(c => r[c.key])));
+  };
+}
+
+/* ---------- 護理需求（家屬入口聯繫護理站的未處理需求；呈現如房務清潔頁） ---------- */
+async function viewNursingNeeds() {
+  const msgs = await api('/family-messages');
+  const pending = msgs.filter(m => m.sender === 'family' && !m.read_by_staff);
+  const render = list => list.length
+    ? `<div class="table-wrap"><table class="data stack">
+        <thead><tr><th>時間</th><th>寶寶</th><th>媽媽</th><th>需求內容</th><th>操作</th></tr></thead>
+        <tbody>${list.map(m => `<tr>
+          <td data-label="時間">${esc((m.created_at || '').slice(0, 16))}</td>
+          <td data-label="寶寶">${esc(m.baby_name || '')}</td>
+          <td data-label="媽媽">${esc(m.mother_name || '')}</td>
+          <td data-label="需求內容">${esc(m.body || '')}</td>
+          <td data-label="操作">
+            <button class="btn small" data-reply="${m.baby_id}">回覆</button>
+            <button class="btn small secondary" data-read="${m.baby_id}">標記已處理</button>
+          </td></tr>`).join('')}</tbody></table></div>`
+    : '<div class="empty">目前沒有待處理的護理需求</div>';
+  main().innerHTML = `
+    <div class="page-title">護理需求 <small style="font-weight:400;color:var(--muted);font-size:.85rem">來源：家屬入口「聯繫護理站」</small></div>
+    <div class="card">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" style="margin:0">待處理護理需求　<span class="badge ${pending.length ? 'red' : 'green'}">${pending.length}</span></div>
+        <button class="btn small secondary" id="nn-refresh">重新整理</button>
+      </div>
+      <div id="nn-list" style="margin-top:8px">${render(pending)}</div>
+    </div>`;
+  $('#nn-refresh').onclick = viewNursingNeeds;
+  const wire = () => {
+    main().querySelectorAll('[data-reply]').forEach(b => b.onclick = async () => {
+      const text = prompt('回覆家屬：', '');
+      if (text === null || !text.trim()) return;
+      try { await api(`/family-messages/${b.dataset.reply}/reply`, { method: 'POST', body: { body: text.trim() } }); viewNursingNeeds(); }
+      catch (e) { alert(e.message); }
+    });
+    main().querySelectorAll('[data-read]').forEach(b => b.onclick = async () => {
+      try { await api(`/family-messages/${b.dataset.read}/read`, { method: 'POST', body: {} }); viewNursingNeeds(); }
+      catch (e) { alert(e.message); }
+    });
+  };
+  wire();
+}
+
 // 護理提醒橫幅（本班護理紀錄未完成／衛教未完成／家屬護理需求未處理），看板與儀表板共用
 async function loadNursingReminders(sel) {
   const box = document.querySelector(sel); if (!box) return;
   let d; try { d = await api('/nursing-reminders'); } catch (e) { return; }
   const ri = d.records_incomplete, ep = d.edu_pending, nn = d.nursing_needs;
+  const mri = d.mother_records_incomplete || [];
   const eduCount = ep.reduce((s, m) => s + m.items.length, 0);
-  if (!ri.length && !eduCount && !nn.length) {
+  if (!ri.length && !mri.length && !eduCount && !nn.length) {
     box.innerHTML = `<div class="card"><h3 style="margin:0">護理提醒（${esc(d.shift)}班）</h3><div class="empty">目前沒有待辦提醒 ✓</div></div>`;
     return;
   }
   box.innerHTML = `<div class="card" style="border-left:4px solid var(--warn)">
     <h3 style="margin:0 0 8px">護理提醒（${esc(d.shift)}班・${esc(d.date)}）</h3>
-    <details ${ri.length ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">本班護理紀錄未完成　<span class="badge ${ri.length ? 'red' : 'green'}">${ri.length}</span></summary>
+    <details ${ri.length ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">本班寶寶護理紀錄未完成　<span class="badge ${ri.length ? 'red' : 'green'}">${ri.length}</span></summary>
       <div style="margin:6px 0 10px">${ri.length ? ri.map(b => `<div style="padding:2px 0">${esc(b.room_name || '')}　${esc(b.baby_name)}（媽媽 ${esc(b.mother_name)}）${canAccess('#/baby-nursing') ? ` <a class="btn small secondary" href="#/baby-nursing?b=${b.baby_id}">去記錄</a>` : ''}</div>`).join('') : '<div class="empty">全部完成</div>'}</div></details>
+    <details ${mri.length ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">媽媽護理紀錄未完成　<span class="badge ${mri.length ? 'red' : 'green'}">${mri.length}</span></summary>
+      <div style="margin:6px 0 10px">${mri.length ? mri.map(m => `<div style="padding:2px 0">${esc(m.room_name || '')}　${esc(m.mother_name)}${canAccess('#/mother-nursing') ? ` <a class="btn small secondary" href="#/mother-nursing?m=${m.mother_id}">去記錄</a>` : ''}</div>`).join('') : '<div class="empty">全部完成</div>'}</div></details>
     <details ${eduCount ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">衛教未完成　<span class="badge ${eduCount ? 'yellow' : 'green'}">${eduCount}</span></summary>
       <div style="margin:6px 0 10px">${ep.length ? ep.map(m => `<div style="margin:4px 0"><b>${esc(m.room_name || '')}　${esc(m.mother_name)}</b>（入住第 ${m.day} 天）
         ${m.items.map(it => `<div class="row" style="gap:6px;align-items:center;margin:2px 0 2px 8px"><span class="badge gray">第${it.day}天</span> ${esc(it.item)} <button class="btn small" data-edu-done="${m.mother_id}|${it.day}|${esc(it.item)}">標記完成</button></div>`).join('')}</div>`).join('') : '<div class="empty">全部完成</div>'}</div></details>
@@ -6342,7 +6455,9 @@ async function viewBabyRooms() {
           <button class="btn small secondary" data-board-flt="hospital">住院中</button>
           <button class="btn small secondary" data-board-flt="alert">有警示</button>
         </div>
-        <div class="row" style="gap:6px">
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          ${canAccess('#/baby-care-query') ? '<a class="btn small secondary" href="#/baby-care-query">寶寶照護紀錄查詢</a>' : ''}
+          ${canAccess('#/nursing-needs') ? '<a class="btn small secondary" href="#/nursing-needs">護理需求</a>' : ''}
           <small style="color:var(--muted)">${esc(data.date)}</small>
           <button class="btn small secondary" id="bs-refresh">重新整理</button>
         </div>
@@ -12668,6 +12783,9 @@ const routes = {
   '#/baby-beds': viewBabyBeds,
   '#/mother-rooms': viewMotherRooms,
   '#/baby-rooms': viewBabyRooms,
+  '#/mother-care-query': () => viewCareRecordQuery('mother'),
+  '#/baby-care-query': () => viewCareRecordQuery('baby'),
+  '#/nursing-needs': viewNursingNeeds,
   '#/baby-nursing': viewBabyNursing,
   '#/baby-eval': viewBabyEval,
   '#/baby-doctor': viewBabyDoctor,
@@ -12744,6 +12862,7 @@ const ROUTE_PERM = {
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
   '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
+  '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': ['baby_care', 'mother_care'], '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/program-calendar': 'programs', '#/members': 'members', '#/coupons': 'coupons',
