@@ -7528,6 +7528,35 @@ app.get('/api/family/report', requireFamily, (req, res) => {
   res.json(report);
 });
 
+// 親子同室紀錄：寶寶在「親子同室」時，家屬可自行登記餵奶／尿布／睡眠／小提醒
+const FAMILY_REC_TYPES = new Set(['feeding', 'diaper', 'sleep', 'note']);
+app.post('/api/family/records', requireFamily, (req, res) => {
+  const babyId = req.session.family.baby_id;
+  const baby = db.prepare('SELECT id, location FROM babies WHERE id=?').get(babyId);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  if (baby.location !== 'rooming') return res.status(403).json({ error: '寶寶目前不在親子同室，暫時無法自行登記' });
+  const b = req.body || {};
+  const type = String(b.record_type || '');
+  if (!FAMILY_REC_TYPES.has(type)) return res.status(400).json({ error: '不支援的紀錄類型' });
+  let feed_method = '', amount_ml = null, diaper_kind = '', note = String(b.note || '').slice(0, 200);
+  if (type === 'feeding') {
+    feed_method = ['親餵', '瓶餵'].includes(b.feed_method) ? b.feed_method : '親餵';
+    if (b.amount_ml != null && b.amount_ml !== '') {
+      amount_ml = Math.round(Number(b.amount_ml));
+      if (!(amount_ml >= 0 && amount_ml <= 500)) return res.status(400).json({ error: '奶量數值不正確' });
+    }
+  } else if (type === 'diaper') {
+    diaper_kind = ['濕', '便'].includes(b.diaper_kind) ? b.diaper_kind : '濕';
+  }
+  const tag = '（家屬登記）';
+  const finalNote = note ? `${note}${tag}` : tag;
+  const info = db.prepare(`INSERT INTO baby_records
+    (baby_id, nurse_id, record_type, feed_method, amount_ml, diaper_kind, note, location)
+    VALUES (?, NULL, ?, ?, ?, ?, ?, 'rooming')`)
+    .run(babyId, type, feed_method, amount_ml, diaper_kind, finalNote);
+  res.json({ id: info.lastInsertRowid });
+});
+
 app.get('/api/family/trends', requireFamily, (req, res) => {
   res.json(buildTrends(req.session.family.baby_id));
 });

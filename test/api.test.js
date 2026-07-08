@@ -1135,3 +1135,27 @@ test('護理提醒：回傳三類待辦，且可標記衛教完成', async () =>
   // 缺欄位 → 400
   assert.strictEqual((await req('POST', '/api/edu-records', { mother_id: 1 })).status, 400);
 });
+
+test('母乳哺育評估：表頭帶入（體重/胎次）與媽媽護理權限可存取', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const baby = (await req('GET', '/api/room-status/babies')).data.babies[0];
+  // 目前體重＝寶寶照護紀錄最近一筆體重
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/records`,
+    { record_type: 'weight', value_num: 3456 })).status, 200);
+  // 胎次＝入住評估表優先（seed 無入住評估時走客戶管理，這裡直接寫入住評估驗證優先源）
+  assert.strictEqual((await req('PUT', `/api/mothers/${baby.mother_id}/intake`, { parity: '2' })).status, 200);
+  const g = await req('GET', `/api/babies/${baby.id}/breastfeeding`);
+  assert.strictEqual(g.status, 200);
+  assert.strictEqual(g.data.prefill.current_weight_g, 3456);
+  assert.strictEqual(g.data.prefill.parity, '2');
+  // 只有媽媽護理權限的帳號：可讀寫母乳哺育評估、仍被擋寶寶照護
+  await req('POST', '/api/users', { username: 'bfa_momnurse', password: 'p12345', name: '媽媽護理測試', role: 'nurse', permissions: ['mother_care'] });
+  const adminCookie = cookie;
+  cookie = '';
+  assert.strictEqual((await req('POST', '/api/login', { username: 'bfa_momnurse', password: 'p12345' })).status, 200);
+  assert.strictEqual((await req('GET', `/api/babies/${baby.id}/breastfeeding`)).status, 200);
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/breastfeeding`,
+    { assess_date: '2026-07-08', parity: '2', current_weight_g: 3456, items: { rows: { p0: 'L' } } })).status, 200);
+  assert.strictEqual((await req('GET', `/api/babies/${baby.id}/records`)).status, 403);
+  cookie = adminCookie;
+});
