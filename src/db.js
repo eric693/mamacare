@@ -491,6 +491,23 @@ function init() {
   );
   CREATE INDEX IF NOT EXISTS idx_family_msg_baby ON family_messages(baby_id, created_at);
 
+  -- 訪客預約：家屬替住民媽媽登記的探訪，或護理站代登；報到／取消由護理站操作
+  CREATE TABLE IF NOT EXISTS visitor_reservations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    family_id INTEGER REFERENCES family_members(id),
+    visitor_name TEXT NOT NULL,
+    relation TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    headcount INTEGER NOT NULL DEFAULT 1,
+    visit_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'booked' CHECK (status IN ('booked','arrived','cancelled')),
+    note TEXT DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_visitor_res_at ON visitor_reservations(visit_at);
+
   CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,

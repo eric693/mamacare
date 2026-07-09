@@ -267,10 +267,11 @@ async function loadSiblings() {
 
 function setTab(tab) {
   activeTab = tab;
-  ['report', 'rooming', 'timeline', 'photos', 'trends', 'meal', 'shop', 'programs', 'survey', 'messages'].forEach(t =>
+  ['report', 'rooming', 'timeline', 'photos', 'trends', 'meal', 'shop', 'programs', 'visitors', 'survey', 'messages'].forEach(t =>
     $(`#tab-${t}`).classList.toggle('active', t === tab));
   if (tab === 'shop') { loadShop(); return; }
   if (tab === 'programs') { loadPrograms(); return; }
+  if (tab === 'visitors') { loadVisitors(); return; }
   if (tab === 'meal') { loadConfinementMeal(); return; }
   if (tab === 'survey') { loadSurveys(); return; }
   if (tab === 'rooming') { loadRooming(); return; }
@@ -559,6 +560,68 @@ async function loadPrograms() {
   });
 }
 
+async function loadVisitors() {
+  let rows = [];
+  try { rows = await api('/family/visitor-reservations'); }
+  catch (e) {
+    if (e.status === 401) { showLogin(); return; }
+    $('#panel').innerHTML = `<div class="card"><div class="error-msg">${esc(e.message)}</div></div>`;
+    return;
+  }
+  const ST = { booked: ['已預約', 'yellow'], arrived: ['已報到', 'green'], cancelled: ['已取消', 'gray'] };
+  const trs = rows.length ? rows.map(v => {
+    const [label, color] = ST[v.status] || ['-', 'gray'];
+    return `<tr>
+      <td data-label="探訪時間">${esc(v.visit_at)}</td>
+      <td data-label="訪客">${esc(v.visitor_name)}${v.relation ? `　<small>${esc(v.relation)}</small>` : ''}</td>
+      <td data-label="人數">${v.headcount}</td>
+      <td data-label="狀態"><span class="badge ${color}">${label}</span></td>
+      <td data-label="操作">${v.status === 'booked' ? `<button class="btn small secondary" data-vr-cancel="${v.id}">取消</button>` : ''}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5"><div class="empty">尚無訪客預約</div></td></tr>';
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>登記訪客</h3>
+      <div class="form-grid">
+        <div class="field"><label>訪客姓名 *</label><input id="vr-name"></div>
+        <div class="field"><label>與媽媽關係</label><input id="vr-rel" placeholder="例如：先生、婆婆"></div>
+        <div class="field"><label>聯絡電話</label><input id="vr-phone" inputmode="tel"></div>
+        <div class="field"><label>人數</label><input type="number" id="vr-count" min="1" max="20" value="1"></div>
+        <div class="field"><label>探訪日期 *</label><input type="date" id="vr-date"></div>
+        <div class="field"><label>探訪時間 *</label><input type="time" id="vr-time" value="14:00"></div>
+        <div class="field full"><label>備註</label><input id="vr-note"></div>
+        <div class="full row"><button class="btn" id="vr-submit">送出預約</button>
+          <span class="error-msg" id="vr-err"></span><span style="color:var(--ok)" id="vr-ok"></span></div>
+      </div>
+      <small style="color:var(--muted)">依機構感控原則：訪客請於公共區域會客、進入前量體溫戴口罩；額溫 37.5 度以上或有呼吸道症狀請改期。</small>
+    </div>
+    <div class="card">
+      <h3>訪客預約紀錄</h3>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>探訪時間</th><th>訪客</th><th>人數</th><th>狀態</th><th>操作</th></tr></thead>
+        <tbody>${trs}</tbody></table></div>
+    </div>`;
+  $('#vr-submit').onclick = async () => {
+    $('#vr-err').textContent = ''; $('#vr-ok').textContent = '';
+    const date = $('#vr-date').value, time = $('#vr-time').value;
+    if (!date || !time) { $('#vr-err').textContent = '請選擇探訪日期與時間'; return; }
+    try {
+      const r = await api('/family/visitor-reservations', { method: 'POST', body: {
+        visitor_name: $('#vr-name').value.trim(), relation: $('#vr-rel').value.trim(),
+        phone: $('#vr-phone').value.trim(), headcount: Number($('#vr-count').value) || 1,
+        visit_at: `${date} ${time}`, note: $('#vr-note').value.trim()
+      } });
+      alert(r.message || '已送出訪客預約');
+      loadVisitors();
+    } catch (e) { $('#vr-err').textContent = e.message; }
+  };
+  $('#panel').querySelectorAll('[data-vr-cancel]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定取消此筆訪客預約？')) return;
+    try { await api(`/family/visitor-reservations/${b.dataset.vrCancel}/cancel`, { method: 'POST' }); loadVisitors(); }
+    catch (e) { alert(e.message); }
+  });
+}
+
 function showLogin() {
   family = null;
   $('#login-view').hidden = false;
@@ -608,6 +671,7 @@ $('#tab-trends').onclick = () => setTab('trends');
 $('#tab-meal').onclick = () => setTab('meal');
 $('#tab-shop').onclick = () => setTab('shop');
 $('#tab-programs').onclick = () => setTab('programs');
+$('#tab-visitors').onclick = () => setTab('visitors');
 $('#tab-survey').onclick = () => setTab('survey');
 $('#tab-messages').onclick = () => setTab('messages');
 

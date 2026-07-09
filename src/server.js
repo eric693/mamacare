@@ -112,6 +112,7 @@ const MODULES = [
   { key: 'invoices', label: '電子發票' },
   { key: 'contracts', label: '合約簽署' },
   { key: 'tours', label: '參觀預約' },
+  { key: 'visitors', label: '訪客預約' },
   { key: 'shifts', label: '排班與人力' },
   { key: 'family', label: '家屬帳號' },
   { key: 'crm', label: 'LINE／FB 客訊' },
@@ -173,6 +174,7 @@ const MODULE_RULES = [
   [/^\/api\/client-contracts/, 'tours'],
   [/^\/api\/pp-reports/, 'reports'],
   [/^\/api\/tour-calendar/, 'tours'],
+  [/^\/api\/visitor-reservations/, 'visitors'],
   [/^\/api\/(shifts|staffing-check)/, 'shifts'],
   [/^\/api\/family-members/, 'family'],
   [/^\/api\/crm/, 'crm'],
@@ -3429,6 +3431,43 @@ app.get('/api/family/signups', requireFamily, (req, res) => {
     WHERE s.family_id = ? ORDER BY s.created_at DESC`).all(req.session.family.id));
 });
 
+// ---------- 家屬端：訪客預約（登記／查詢／取消，同一位媽媽的家屬共同可見） ----------
+app.get('/api/family/visitor-reservations', requireFamily, (req, res) => {
+  const mid = familyMotherId(req.session.family);
+  if (!mid) return res.json([]);
+  res.json(db.prepare(`SELECT id, visitor_name, relation, phone, headcount, visit_at, status, note, created_at
+    FROM visitor_reservations WHERE mother_id = ?
+    ORDER BY visit_at DESC, id DESC LIMIT 100`).all(mid));
+});
+
+app.post('/api/family/visitor-reservations', requireFamily, (req, res) => {
+  const fam = req.session.family;
+  const mid = familyMotherId(fam);
+  if (!mid) return res.status(400).json({ error: '找不到寶寶資料' });
+  const b = req.body || {};
+  const name = String(b.visitor_name || '').trim();
+  if (!name) return res.status(400).json({ error: '訪客姓名必填' });
+  if (!validVisitAt(b.visit_at)) return res.status(400).json({ error: '探訪時間格式應為 YYYY-MM-DD HH:MM' });
+  const headcount = Math.min(Math.max(parseInt(b.headcount, 10) || 1, 1), 20);
+  const info = db.prepare(`INSERT INTO visitor_reservations
+    (mother_id, family_id, visitor_name, relation, phone, headcount, visit_at, note)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
+    mid, fam.id, name.slice(0, 50), String(b.relation || '').slice(0, 20),
+    String(b.phone || '').slice(0, 20), headcount, b.visit_at.trim(), String(b.note || '').slice(0, 200));
+  logAudit(req, { action: 'create', entity: 'visitor_reservation', entity_id: info.lastInsertRowid, summary: `家屬登記訪客:${fam.name}→${name}` });
+  res.json({ id: info.lastInsertRowid, message: '已送出訪客預約，探訪當日請至護理站報到' });
+});
+
+app.post('/api/family/visitor-reservations/:id/cancel', requireFamily, (req, res) => {
+  const mid = familyMotherId(req.session.family);
+  const cur = db.prepare('SELECT * FROM visitor_reservations WHERE id = ?').get(req.params.id);
+  if (!cur || cur.mother_id !== mid) return res.status(404).json({ error: '找不到資料' });
+  if (cur.status !== 'booked') return res.status(400).json({ error: '此筆預約已報到或已取消' });
+  db.prepare(`UPDATE visitor_reservations SET status = 'cancelled' WHERE id = ?`).run(cur.id);
+  logAudit(req, { action: 'update', entity: 'visitor_reservation', entity_id: cur.id, summary: `家屬取消訪客預約:${cur.visitor_name}` });
+  res.json({ ok: true });
+});
+
 // ---------- 優惠券 ----------
 app.get('/api/coupons', requireStaff, (req, res) => {
   res.json(db.prepare('SELECT * FROM coupons ORDER BY active DESC, id DESC').all());
@@ -4970,8 +5009,148 @@ app.get('/api/tour-calendar', requireStaff, (req, res) => {
   res.json({ month, rows });
 });
 
+// 總覽整合行事曆：參觀／課程／服務／入住／退住 彙整為統一事件（依登入者模組權限過濾）
+app.get('/api/overview-calendar', requireStaff, (req, res) => {
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(req.query.start || '') ? req.query.start : today();
+  const days = Math.min(Math.max(parseInt(req.query.days || '31', 10), 1), 62);
+  const end = new Date(new Date(start).getTime() + days * 86400000).toISOString().slice(0, 10); // 不含
+  const u = req.session.user;
+  const events = [];
+  if (userCan(u, 'tours')) {
+    db.prepare(`SELECT id, name, phone, tour_at, status FROM tours
+      WHERE date(tour_at) >= ? AND date(tour_at) < ? ORDER BY tour_at`).all(start, end)
+      .forEach(t => events.push({
+        type: 'tour', date: t.tour_at.slice(0, 10), time: t.tour_at.slice(11, 16),
+        title: t.name, detail: t.phone, status: t.status, link: '#/tour-calendar'
+      }));
+  }
+  if (userCan(u, 'programs')) {
+    // scheduled_at 為自由輸入，兼容 2026-07-10 與 2026/7/10 等格式，正規化後再篩範圍
+    db.prepare(`SELECT id, name, kind, scheduled_at, location FROM programs
+      WHERE active = 1 AND scheduled_at != ''`).all()
+      .forEach(p => {
+        const m = String(p.scheduled_at).trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}:\d{2}))?/);
+        if (!m) return;
+        const date = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+        if (date < start || date >= end) return;
+        events.push({
+          type: p.kind === 'course' ? 'course' : 'service', date,
+          time: (m[4] || '').padStart(5, '0'), title: p.name, detail: p.location, status: '', link: '#/program-calendar'
+        });
+      });
+  }
+  if (userCan(u, 'visitors')) {
+    db.prepare(`SELECT v.visit_at, v.visitor_name, v.headcount, v.status, m.name AS mother_name
+      FROM visitor_reservations v JOIN mothers m ON m.id = v.mother_id
+      WHERE v.status != 'cancelled' AND date(v.visit_at) >= ? AND date(v.visit_at) < ?
+      ORDER BY v.visit_at`).all(start, end)
+      .forEach(v => events.push({
+        type: 'visitor', date: v.visit_at.slice(0, 10), time: v.visit_at.slice(11, 16),
+        title: `${v.visitor_name} 訪 ${v.mother_name}`, detail: v.headcount > 1 ? `${v.headcount} 人` : '',
+        status: v.status, link: '#/visitor-reservations'
+      }));
+  }
+  // 入住／退住：bookings 的 GET 對所有員工開放，事件不另設權限
+  db.prepare(`SELECT bk.check_in AS d, bk.status, m.name AS mother_name, r.name AS room_name
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status != 'cancelled' AND bk.check_in >= ? AND bk.check_in < ? ORDER BY bk.check_in`).all(start, end)
+    .forEach(b => events.push({
+      type: 'checkin', date: b.d, time: '', title: `${b.mother_name}（${b.room_name}）`,
+      detail: '', status: b.status, link: '#/rooms'
+    }));
+  db.prepare(`SELECT bk.check_out AS d, bk.status, m.name AS mother_name, r.name AS room_name
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status != 'cancelled' AND bk.check_out >= ? AND bk.check_out < ? ORDER BY bk.check_out`).all(start, end)
+    .forEach(b => events.push({
+      type: 'checkout', date: b.d, time: '', title: `${b.mother_name}（${b.room_name}）`,
+      detail: '', status: b.status, link: '#/rooms'
+    }));
+  // 無時間（入住/退住）排每日最前，其餘依時間
+  events.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  res.json({ start, end, days, events });
+});
+
 app.delete('/api/tours/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM tours WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 訪客預約（住民探訪；家屬登記或護理站代登，報到／取消由護理站操作） ----------
+const VISITOR_STATUSES = ['booked', 'arrived', 'cancelled'];
+function validVisitAt(s) { return /^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$/.test(s || ''); }
+
+app.get('/api/visitor-reservations', requireStaff, (req, res) => {
+  const conds = [], args = [];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '')) { conds.push('date(v.visit_at) >= ?'); args.push(req.query.from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '')) { conds.push('date(v.visit_at) <= ?'); args.push(req.query.to); }
+  if (VISITOR_STATUSES.includes(req.query.status || '')) { conds.push('v.status = ?'); args.push(req.query.status); }
+  if ((req.query.q || '').trim()) {
+    conds.push('(v.visitor_name LIKE ? OR m.name LIKE ? OR v.phone LIKE ?)');
+    const k = `%${req.query.q.trim()}%`; args.push(k, k, k);
+  }
+  const rows = db.prepare(`
+    SELECT v.*, m.name AS mother_name,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
+        ORDER BY bk.check_in DESC LIMIT 1) AS room_name,
+      f.name AS family_name
+    FROM visitor_reservations v
+    JOIN mothers m ON m.id = v.mother_id
+    LEFT JOIN family_members f ON f.id = v.family_id
+    ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
+    ORDER BY v.visit_at DESC, v.id DESC`).all(...args);
+  res.json(rows);
+});
+
+app.post('/api/visitor-reservations', requireStaff, (req, res) => {
+  const b = req.body || {};
+  const name = String(b.visitor_name || '').trim();
+  if (!name) return res.status(400).json({ error: '訪客姓名必填' });
+  const mother = db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(b.mother_id);
+  if (!mother) return res.status(400).json({ error: '請選擇媽媽' });
+  if (!validVisitAt(b.visit_at)) return res.status(400).json({ error: '探訪時間格式應為 YYYY-MM-DD HH:MM' });
+  const headcount = Math.min(Math.max(parseInt(b.headcount, 10) || 1, 1), 20);
+  const info = db.prepare(`INSERT INTO visitor_reservations
+    (mother_id, visitor_name, relation, phone, headcount, visit_at, note, created_by)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
+    mother.id, name.slice(0, 50), String(b.relation || '').slice(0, 20),
+    String(b.phone || '').slice(0, 20), headcount, b.visit_at.trim(),
+    String(b.note || '').slice(0, 200), req.session.user.id);
+  logAudit(req, { action: 'create', entity: 'visitor_reservation', entity_id: info.lastInsertRowid, summary: `訪客預約:${name} 訪 ${mother.name}` });
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/visitor-reservations/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM visitor_reservations WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到資料' });
+  const b = req.body || {};
+  const sets = [], args = [];
+  if (b.visitor_name !== undefined) {
+    const name = String(b.visitor_name).trim();
+    if (!name) return res.status(400).json({ error: '訪客姓名必填' });
+    sets.push('visitor_name = ?'); args.push(name.slice(0, 50));
+  }
+  if (b.relation !== undefined) { sets.push('relation = ?'); args.push(String(b.relation).slice(0, 20)); }
+  if (b.phone !== undefined) { sets.push('phone = ?'); args.push(String(b.phone).slice(0, 20)); }
+  if (b.headcount !== undefined) { sets.push('headcount = ?'); args.push(Math.min(Math.max(parseInt(b.headcount, 10) || 1, 1), 20)); }
+  if (b.visit_at !== undefined) {
+    if (!validVisitAt(b.visit_at)) return res.status(400).json({ error: '探訪時間格式應為 YYYY-MM-DD HH:MM' });
+    sets.push('visit_at = ?'); args.push(b.visit_at.trim());
+  }
+  if (b.note !== undefined) { sets.push('note = ?'); args.push(String(b.note).slice(0, 200)); }
+  if (b.status !== undefined) {
+    if (!VISITOR_STATUSES.includes(b.status)) return res.status(400).json({ error: '狀態不正確' });
+    sets.push('status = ?'); args.push(b.status);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  db.prepare(`UPDATE visitor_reservations SET ${sets.join(', ')} WHERE id = ?`).run(...args, cur.id);
+  logAudit(req, { action: 'update', entity: 'visitor_reservation', entity_id: cur.id, summary: `訪客預約修改:${cur.visitor_name}${b.status ? '（狀態 ' + b.status + '）' : ''}` });
+  res.json({ ok: true });
+});
+
+app.delete('/api/visitor-reservations/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM visitor_reservations WHERE id = ?').run(req.params.id);
+  logAudit(req, { action: 'delete', entity: 'visitor_reservation', entity_id: Number(req.params.id), summary: '訪客預約刪除' });
   res.json({ ok: true });
 });
 

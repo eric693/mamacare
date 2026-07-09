@@ -216,7 +216,12 @@ function openBabyRecordEdit(r, onDone) {
 
 /* ---------- 總覽 ---------- */
 async function viewDashboard() {
-  const [d, reminders] = await Promise.all([api('/dashboard'), api('/reminders')]);
+  const _now = new Date();
+  const _mon = new Date(_now); _mon.setDate(_now.getDate() - ((_now.getDay() + 6) % 7)); // 本週一
+  const weekStart = `${_mon.getFullYear()}-${String(_mon.getMonth() + 1).padStart(2, '0')}-${String(_mon.getDate()).padStart(2, '0')}`;
+  const [d, reminders, weekCal] = await Promise.all([
+    api('/dashboard'), api('/reminders'), api(`/overview-calendar?start=${weekStart}&days=7`)
+  ]);
   const REM_LEVEL = { high: 'red', mid: 'yellow', low: 'gray' };
   const REM_TYPE = { checkout: '退房', unpaid: '帳款', contract: '合約', screening: '篩檢', incident: '異常', staffing: '人力', message: '留言', crm: '客訊', feeding: '餵奶', handover: '交班', cert: '證照', med: '給藥', vaccine: '疫苗', trend: '趨勢', tour: '跟進', care: '關懷' };
   const remCard = `
@@ -237,9 +242,32 @@ async function viewDashboard() {
         ? '<span class="badge green">符合</span>'
         : '<span class="badge red">人力不足</span>'}</td>
     </tr>`).join('');
-  const upcoming = d.upcoming.length
-    ? d.upcoming.map(u => `<li>${esc(u.check_in)}　${esc(u.mother_name)}　${esc(u.room_name)} 房</li>`).join('')
-    : '<li class="empty">近期無預約入住</li>';
+  // 本週行事曆（參觀／課程／服務／入住／退住 彙整）
+  const wkByDate = {};
+  for (const ev of weekCal.events) (wkByDate[ev.date] = wkByDate[ev.date] || []).push(ocItemHtml(ev));
+  const wkNames = ['一', '二', '三', '四', '五', '六', '日'];
+  let wkHead = '', wkCells = '';
+  for (let i = 0; i < 7; i++) {
+    const dt = new Date(_mon); dt.setDate(_mon.getDate() + i);
+    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    const isToday = key === todayStr();
+    wkHead += `<th style="text-align:center${isToday ? ';background:#eef6f0' : ''}">週${wkNames[i]} ${dt.getMonth() + 1}/${dt.getDate()}</th>`;
+    wkCells += `<td class="pc-day${isToday ? ' pc-today' : ''}" style="vertical-align:top;height:72px;min-width:90px">${(wkByDate[key] || []).join('') || ''}</td>`;
+  }
+  const weekCard = `
+    <div class="card">
+      <div class="row between"><h3>本週行事曆</h3><a class="btn small secondary" href="#/overview-calendar">看整月</a></div>
+      <div class="table-wrap">
+        <table class="data pc-cal"><thead><tr>${wkHead}</tr></thead><tbody><tr>${wkCells}</tr></tbody></table>
+      </div>
+      <small style="color:var(--muted)">${ocLegendHtml()}</small>
+      <style>
+        .pc-cal td.pc-day{border:1px solid var(--border);padding:3px}
+        .pc-cal td.pc-today{background:#eef6f0}
+        .pc-item{font-size:.72rem;background:#f0f4f8;border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
+      </style>
+    </div>`;
   const alerts = d.alerts.length
     ? d.alerts.map(a => `
       <li>
@@ -247,9 +275,6 @@ async function viewDashboard() {
         ${esc(a.baby_name)}：${esc(String(alertDetail(a)))}（${fmtTime(a.recorded_at)}）
       </li>`).join('')
     : '<li class="empty">今日無異常警示</li>';
-  const tourList = d.tours.length
-    ? d.tours.map(t => `<li>${esc(t.tour_at.slice(5, 16))}　${esc(t.name)}　${esc(t.phone)}${t.note ? `　<small>${esc(t.note)}</small>` : ''}</li>`).join('')
-    : '<li class="empty">近期無待參觀預約</li>';
   const babyRows = d.baby_status.map(b => `
     <tr>
       <td data-label="寶寶">${esc(b.name)}</td>
@@ -264,9 +289,6 @@ async function viewDashboard() {
     return `<span class="badge ${missing > 0 ? 'yellow' : 'green'}">
       ${MEAL_LABEL[m.meal_type]} ${m.ordered}/${d.mothers_in_house} 份${missing > 0 ? `（${missing} 位未訂）` : ''}</span>`;
   }).join(' ');
-  const checkoutList = d.checkouts.length
-    ? d.checkouts.map(c => `<li>${esc(c.check_out)}　${esc(c.mother_name)}　${esc(c.room_name)} 房</li>`).join('')
-    : '<li class="empty">近 7 日無退房</li>';
 
   main().innerHTML = `
     <div class="page-title">總覽　<span style="font-weight:400;font-size:.85rem;color:var(--muted)">${todayStr()}</span></div>
@@ -282,6 +304,7 @@ async function viewDashboard() {
       <div class="stat"><a href="#/incidents" style="text-decoration:none;color:inherit"><div class="num" ${d.open_incidents ? 'style="color:var(--danger)"' : ''}>${d.open_incidents}</div><div class="label">未結案異常事件</div></a></div>
       <div class="stat"><a href="#/newborn-medical" style="text-decoration:none;color:inherit"><div class="num" ${d.pending_screenings ? 'style="color:var(--danger)"' : ''}>${d.pending_screenings}</div><div class="label">待追蹤新生兒篩檢</div></a></div>
     </div>
+    ${weekCard}
     <div class="card">
       <h3>在住寶寶今日照護狀態</h3>
       ${d.baby_status.length ? `
@@ -314,22 +337,238 @@ async function viewDashboard() {
       </div>
     </div>
     <div class="card">
-      <h3>近 7 日退房</h3>
-      <ul class="timeline">${checkoutList}</ul>
-    </div>
-    <div class="card">
-      <h3>近期預約入住</h3>
-      <ul class="timeline">${upcoming}</ul>
-    </div>
-    <div class="card">
-      <h3>近期參觀預約</h3>
-      <ul class="timeline">${tourList}</ul>
-    </div>
-    <div class="card">
       <h3>近 30 天入住率趨勢 (%)</h3>
       ${svgLineChart(d.occupancy_trend, { unit: '%' })}
     </div>`;
+  ocWireLinks(main());
   loadNursingReminders('#dash-nr');
+}
+
+/* ---------- 總覽整合行事曆：參觀／課程／服務／入住／退住 ---------- */
+const OC_TYPES = [
+  ['tour', '參觀', '#e0762f'],
+  ['visitor', '訪客', '#7b5ea7'],
+  ['course', '課程', '#2a9d8f'],
+  ['service', '服務', '#8a94a6'],
+  ['checkin', '入住', '#3d8b57'],
+  ['checkout', '退住', '#c0504d']
+];
+const OC_COLOR = Object.fromEntries(OC_TYPES.map(t => [t[0], t[2]]));
+const OC_LABEL = Object.fromEntries(OC_TYPES.map(t => [t[0], t[1]]));
+function ocItemHtml(ev) {
+  const text = (ev.type === 'checkin' || ev.type === 'checkout')
+    ? `${OC_LABEL[ev.type]} ${ev.title}`
+    : `${ev.time ? ev.time + ' ' : ''}${ev.title}`;
+  const tip = `${OC_LABEL[ev.type]}｜${ev.title}${ev.detail ? '｜' + ev.detail : ''}${ev.time ? '｜' + ev.time : ''}`;
+  const clickable = ev.link && canAccess(ev.link);
+  return `<div class="pc-item" title="${esc(tip)}" ${clickable ? `data-oc-link="${esc(ev.link)}" style="cursor:pointer"` : 'style="cursor:default"'}>
+    <span class="dot" style="background:${OC_COLOR[ev.type]}"></span>${esc(text.length > 12 ? text.slice(0, 12) + '…' : text)}</div>`;
+}
+function ocLegendHtml(types) {
+  return OC_TYPES.filter(t => !types || types.includes(t[0]))
+    .map(t => `<span style="white-space:nowrap"><span class="dot" style="background:${t[2]}"></span>${t[1]}</span>`).join('　');
+}
+function ocWireLinks(root) {
+  root.querySelectorAll('[data-oc-link]').forEach(el => el.onclick = () => { location.hash = el.dataset.ocLink; });
+}
+let _ocState = null;
+async function viewOverviewCalendar() {
+  if (!_ocState) _ocState = { mode: 'month', anchor: todayStr(), types: Object.fromEntries(OC_TYPES.map(t => [t[0], true])) };
+  const st = _ocState;
+  const fmtD = dt => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const anchor = parse(st.anchor);
+  let gridStart, nDays, title;
+  if (st.mode === 'month') {
+    const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    gridStart = new Date(first); gridStart.setDate(1 - ((first.getDay() + 6) % 7)); // 週一起
+    nDays = 42; title = `${anchor.getFullYear()} 年 ${anchor.getMonth() + 1} 月`;
+  } else {
+    gridStart = new Date(anchor); gridStart.setDate(anchor.getDate() - ((anchor.getDay() + 6) % 7));
+    const end = new Date(gridStart); end.setDate(gridStart.getDate() + 6);
+    nDays = 7; title = `${fmtD(gridStart)} ~ ${fmtD(end)}`;
+  }
+  const cal = await api(`/overview-calendar?start=${fmtD(gridStart)}&days=${nDays}`);
+  const counts = {};
+  for (const ev of cal.events) counts[ev.type] = (counts[ev.type] || 0) + 1;
+  const shown = cal.events.filter(ev => st.types[ev.type]);
+  const byDate = {};
+  shown.forEach(ev => { (byDate[ev.date] = byDate[ev.date] || []).push(ocItemHtml(ev)); });
+  const dayCell = (d) => {
+    const key = fmtD(d);
+    const isToday = key === todayStr();
+    const dim = st.mode === 'month' && d.getMonth() !== anchor.getMonth();
+    return `<td class="pc-day${isToday ? ' pc-today' : ''}" style="vertical-align:top;height:88px;min-width:90px${dim ? ';opacity:.45' : ''}">
+      <div style="font-size:.8rem;color:var(--muted)">${d.getDate()}</div>${(byDate[key] || []).join('')}</td>`;
+  };
+  let grid = '';
+  for (let w = 0; w < nDays / 7; w++) {
+    let tds = '';
+    for (let i = 0; i < 7; i++) { const d = new Date(gridStart); d.setDate(gridStart.getDate() + w * 7 + i); tds += dayCell(d); }
+    grid += `<tr>${tds}</tr>`;
+  }
+  const wk = ['一', '二', '三', '四', '五', '六', '日'];
+  const chips = OC_TYPES.map(([k, label, color]) => `
+    <label style="white-space:nowrap;cursor:pointer">
+      <input type="checkbox" data-oc-type="${k}" ${st.types[k] ? 'checked' : ''}>
+      <span class="dot" style="background:${color}"></span>${label}${counts[k] ? ` ${counts[k]}` : ''}</label>`).join('　');
+  main().innerHTML = `
+    <div class="page-title">整合行事曆</div>
+    <div class="card no-print">
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div class="row" style="gap:6px">
+          <button class="btn small secondary" id="oc-prev">‹ 上一${st.mode === 'month' ? '月' : '週'}</button>
+          <button class="btn small secondary" id="oc-today">今天</button>
+          <button class="btn small secondary" id="oc-next">下一${st.mode === 'month' ? '月' : '週'} ›</button>
+          <strong style="align-self:center;margin-left:8px">${title}</strong>
+        </div>
+        <div class="row" style="gap:6px">
+          <button class="btn small ${st.mode === 'month' ? '' : 'secondary'}" id="oc-month">月</button>
+          <button class="btn small ${st.mode === 'week' ? '' : 'secondary'}" id="oc-week">週</button>
+        </div>
+      </div>
+      <div class="row" style="gap:4px;flex-wrap:wrap;margin-top:6px">${chips}</div>
+      <small style="color:var(--muted)">彙整參觀預約、課程與服務、入住與退住；點事件可跳到對應頁面（唯讀，編輯請至各模組）</small>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data pc-cal"><thead><tr>${wk.map(w => `<th style="text-align:center">週${w}</th>`).join('')}</tr></thead>
+          <tbody>${grid}</tbody></table>
+      </div>
+    </div>
+    <style>
+      .pc-cal td.pc-day{border:1px solid var(--border);padding:3px}
+      .pc-cal td.pc-today{background:#eef6f0}
+      .pc-item{font-size:.72rem;background:#f0f4f8;border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
+    </style>`;
+  const shift = (n) => {
+    const a = parse(st.anchor);
+    if (st.mode === 'month') a.setMonth(a.getMonth() + n); else a.setDate(a.getDate() + n * 7);
+    st.anchor = fmtD(a); viewOverviewCalendar();
+  };
+  $('#oc-prev').onclick = () => shift(-1);
+  $('#oc-next').onclick = () => shift(1);
+  $('#oc-today').onclick = () => { st.anchor = todayStr(); viewOverviewCalendar(); };
+  $('#oc-month').onclick = () => { st.mode = 'month'; viewOverviewCalendar(); };
+  $('#oc-week').onclick = () => { st.mode = 'week'; viewOverviewCalendar(); };
+  main().querySelectorAll('[data-oc-type]').forEach(cb => cb.onchange = () => {
+    st.types[cb.dataset.ocType] = cb.checked; viewOverviewCalendar();
+  });
+  ocWireLinks(main());
+}
+
+/* ---------- 訪客預約（護理站） ---------- */
+const VR_STATUS = { booked: ['已預約', 'yellow'], arrived: ['已報到', 'green'], cancelled: ['已取消', 'gray'] };
+let _vrState = null;
+async function viewVisitorReservations() {
+  if (!_vrState) _vrState = { from: todayStr(), to: '', status: '', q: '' };
+  const st = _vrState;
+  const qs = new URLSearchParams();
+  if (st.from) qs.set('from', st.from);
+  if (st.to) qs.set('to', st.to);
+  if (st.status) qs.set('status', st.status);
+  if (st.q) qs.set('q', st.q);
+  const rows = await api(`/visitor-reservations?${qs}`);
+  const isAdmin = currentUser.role === 'admin';
+  const trs = rows.map(v => {
+    const [label, color] = VR_STATUS[v.status] || ['-', 'gray'];
+    return `<tr>
+      <td data-label="探訪時間">${esc(v.visit_at)}</td>
+      <td data-label="媽媽">${esc(v.mother_name)}${v.room_name ? `（${esc(v.room_name)}）` : ''}</td>
+      <td data-label="訪客">${esc(v.visitor_name)}${v.relation ? `　<small>${esc(v.relation)}</small>` : ''}</td>
+      <td data-label="電話">${esc(v.phone || '-')}</td>
+      <td data-label="人數">${v.headcount}</td>
+      <td data-label="登記">${v.family_name ? `家屬 ${esc(v.family_name)}` : '護理站'}</td>
+      <td data-label="狀態"><span class="badge ${color}">${label}</span></td>
+      <td data-label="備註">${esc(v.note || '')}</td>
+      <td data-label="操作"><div class="row" style="gap:4px;flex-wrap:wrap">
+        ${v.status === 'booked' ? `<button class="btn small" data-vr-arrive="${v.id}">報到</button>
+          <button class="btn small secondary" data-vr-cancel="${v.id}">取消</button>` : ''}
+        <button class="btn small secondary" data-vr-edit="${v.id}">編輯</button>
+        ${isAdmin ? `<button class="btn small danger" data-vr-del="${v.id}">刪除</button>` : ''}
+      </div></td>
+    </tr>`;
+  }).join('');
+  main().innerHTML = `
+    <div class="page-title">訪客預約</div>
+    <div class="card no-print">
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field"><label>日期起</label><input type="date" id="vr-from" value="${st.from}"></div>
+        <div class="field"><label>日期迄</label><input type="date" id="vr-to" value="${st.to}"></div>
+        <div class="field"><label>狀態</label><select id="vr-status">
+          <option value="">全部</option>
+          ${Object.entries(VR_STATUS).map(([k, [label]]) => `<option value="${k}" ${st.status === k ? 'selected' : ''}>${label}</option>`).join('')}
+        </select></div>
+        <div class="field"><label>關鍵字（訪客／媽媽／電話）</label><input id="vr-q" value="${esc(st.q)}"></div>
+        <button class="btn small" id="vr-search">查詢</button>
+        <button class="btn small secondary" id="vr-clear">清除</button>
+        <span class="spacer"></span>
+        <button class="btn small" id="vr-add">新增訪客預約</button>
+      </div>
+      <small style="color:var(--muted)">家屬可在家屬入口登記，本頁彙整全部；探訪當日按「報到」。共 ${rows.length} 筆</small>
+    </div>
+    <div class="card">
+      ${rows.length ? `<div class="table-wrap"><table class="data stack">
+        <thead><tr><th>探訪時間</th><th>媽媽</th><th>訪客</th><th>電話</th><th>人數</th><th>登記</th><th>狀態</th><th>備註</th><th>操作</th></tr></thead>
+        <tbody>${trs}</tbody></table></div>` : '<div class="empty">查無訪客預約</div>'}
+    </div>`;
+  const refresh = () => viewVisitorReservations();
+  $('#vr-search').onclick = () => {
+    st.from = $('#vr-from').value; st.to = $('#vr-to').value;
+    st.status = $('#vr-status').value; st.q = $('#vr-q').value.trim(); refresh();
+  };
+  $('#vr-q').onkeydown = e => { if (e.key === 'Enter') $('#vr-search').click(); };
+  $('#vr-clear').onclick = () => { _vrState = { from: '', to: '', status: '', q: '' }; refresh(); };
+  $('#vr-add').onclick = () => openVisitorForm(null, refresh);
+  main().querySelectorAll('[data-vr-edit]').forEach(b => b.onclick = () =>
+    openVisitorForm(rows.find(v => v.id == b.dataset.vrEdit), refresh));
+  main().querySelectorAll('[data-vr-arrive]').forEach(b => b.onclick = async () => {
+    try { await api(`/visitor-reservations/${b.dataset.vrArrive}`, { method: 'PUT', body: { status: 'arrived' } }); refresh(); }
+    catch (e) { alert(e.message); }
+  });
+  main().querySelectorAll('[data-vr-cancel]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定取消此筆訪客預約？')) return;
+    try { await api(`/visitor-reservations/${b.dataset.vrCancel}`, { method: 'PUT', body: { status: 'cancelled' } }); refresh(); }
+    catch (e) { alert(e.message); }
+  });
+  main().querySelectorAll('[data-vr-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定刪除？刪除後無法復原')) return;
+    try { await api(`/visitor-reservations/${b.dataset.vrDel}`, { method: 'DELETE' }); refresh(); }
+    catch (e) { alert(e.message); }
+  });
+}
+async function openVisitorForm(v, onSaved) {
+  const ed = v || {};
+  const mothers = await api('/mothers');
+  const opts = mothers.filter(m => m.status !== 'checked_out' || m.id === ed.mother_id)
+    .map(m => `<option value="${m.id}" ${ed.mother_id === m.id ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('');
+  openModal(ed.id ? '編輯訪客預約' : '新增訪客預約', `
+    <div class="form-grid">
+      <div class="field"><label>媽媽 *</label><select id="vf-mother" ${ed.id ? 'disabled' : ''}><option value="">請選擇</option>${opts}</select></div>
+      <div class="field"><label>訪客姓名 *</label><input id="vf-name" value="${esc(ed.visitor_name || '')}"></div>
+      <div class="field"><label>關係</label><input id="vf-rel" value="${esc(ed.relation || '')}" placeholder="例如：先生、婆婆"></div>
+      <div class="field"><label>電話</label><input id="vf-phone" value="${esc(ed.phone || '')}"></div>
+      <div class="field"><label>人數</label><input type="number" id="vf-count" min="1" max="20" value="${ed.headcount ?? 1}"></div>
+      <div class="field"><label>探訪時間 *</label><input id="vf-when" value="${esc(ed.visit_at || '')}" placeholder="2026-07-10 14:00"></div>
+      <div class="field full"><label>備註</label><input id="vf-note" value="${esc(ed.note || '')}"></div>
+      <div class="full row"><button class="btn" id="vf-save">儲存</button><span class="error-msg" id="vf-err"></span></div>
+    </div>`, body => {
+    const el = id => body.querySelector(id);
+    el('#vf-save').onclick = async () => {
+      const payload = {
+        visitor_name: el('#vf-name').value.trim(), relation: el('#vf-rel').value.trim(),
+        phone: el('#vf-phone').value.trim(), headcount: Number(el('#vf-count').value) || 1,
+        visit_at: el('#vf-when').value.trim(), note: el('#vf-note').value.trim()
+      };
+      if (!ed.id) payload.mother_id = Number(el('#vf-mother').value) || 0;
+      try {
+        if (ed.id) await api(`/visitor-reservations/${ed.id}`, { method: 'PUT', body: payload });
+        else await api('/visitor-reservations', { method: 'POST', body: payload });
+        closeModal(); (onSaved || viewVisitorReservations)();
+      } catch (e) { el('#vf-err').textContent = e.message; }
+    };
+  });
 }
 
 /* ---------- 寶寶日報：摘要 / 異常 / 列印 ---------- */
@@ -12729,6 +12968,7 @@ async function viewAging() {
 /* ---------- 路由 ---------- */
 const routes = {
   '#/dashboard': viewDashboard,
+  '#/overview-calendar': viewOverviewCalendar,
   '#/baby-care': viewBabyCare,
   '#/newborn-medical': viewNewbornMedical,
   '#/physician-visits': viewPhysicianVisits,
@@ -12805,6 +13045,7 @@ const routes = {
   '#/meals': viewMeals,
   '#/meal-plan': viewMealPlan,
   '#/tours': viewTours,
+  '#/visitor-reservations': viewVisitorReservations,
   '#/prospects': viewProspects,
   '#/tour-signups': viewTourSignups,
   '#/tour-cancellations': viewTourCancellations,
@@ -12836,7 +13077,7 @@ const ROUTE_PERM = {
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': ['baby_care', 'mother_care'], '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/program-calendar': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
-  '#/tours': 'tours', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
+  '#/tours': 'tours', '#/visitor-reservations': 'visitors', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
   '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys',
   '#/audit-logs': 'audit', '#/export': 'export', '#/settings': 'settings', '#/users': 'users', '#/employees': 'users'
 };
