@@ -2680,7 +2680,9 @@ async function viewTours() {
           <tbody>${tours.map(t => `
             <tr data-q="${esc((t.name + ' ' + (t.phone || '') + ' ' + (t.source || '') + ' ' + (t.note || '') + ' ' + (t.last_log || '')).toLowerCase())}" data-status="${t.status}" data-source="${esc(t.source || '')}" data-date="${esc((t.tour_at || '').slice(0, 10))}">
               <td data-label="參觀時間">${esc(t.tour_at)}</td>
-              <td data-label="姓名">${esc(t.name)}</td>
+              <td data-label="姓名">${t.mother_id && canAccess('#/customers')
+                ? `<a href="#/customers?m=${t.mother_id}" title="開啟客戶資料">${esc(t.name)}</a>`
+                : esc(t.name)}</td>
               <td data-label="電話">${esc(t.phone || '-')}</td>
               <td data-label="預產期">${esc(t.due_date || '-')}</td>
               <td data-label="來源">${esc(t.source || '-')}</td>
@@ -9985,7 +9987,7 @@ async function viewCustomers() {
                   <button class="btn small secondary" data-trst="${t.id}|lost">未成交</button>` : ''}
                 ${t.status === 'visited' ? `<button class="btn small secondary" data-trst="${t.id}|lost">未成交</button>` : ''}
               </td></tr>`;
-          }).join('')}</tbody></table></div>` : '<div class="empty">尚無參觀紀錄（依姓名／電話比對）</div>'}
+          }).join('')}</tbody></table></div>` : '<div class="empty">尚無參觀紀錄（新增參觀時以電話自動關聯本客戶）</div>'}
       </div>
     </div>
     <div class="cpanel" data-tab="rooms">

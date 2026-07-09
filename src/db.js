@@ -1188,6 +1188,13 @@ function init() {
   if (!tourCols.includes('cancel_at')) db.exec("ALTER TABLE tours ADD COLUMN cancel_at TEXT DEFAULT ''");
   if (!tourCols.includes('cancel_by')) db.exec('ALTER TABLE tours ADD COLUMN cancel_by INTEGER');
   if (!tourCols.includes('created_by')) db.exec('ALTER TABLE tours ADD COLUMN created_by INTEGER');
+  if (!tourCols.includes('mother_id')) {
+    // 參觀 ↔ 客戶關聯：以電話比對 mothers；既有資料一次回填（同電話多筆取最新一位）
+    db.exec('ALTER TABLE tours ADD COLUMN mother_id INTEGER REFERENCES mothers(id)');
+    db.exec(`UPDATE tours SET mother_id = (
+      SELECT m.id FROM mothers m WHERE m.phone = tours.phone AND m.phone != '' ORDER BY m.id DESC LIMIT 1
+    ) WHERE phone != ''`);
+  }
   // 預約參觀時段設定：指定日期時段／不開放參觀日
   db.exec(`CREATE TABLE IF NOT EXISTS tour_slots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

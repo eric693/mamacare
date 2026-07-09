@@ -3763,12 +3763,14 @@ app.get('/api/tours', requireStaff, (req, res) => {
   const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
   const cols = `SELECT t.*,
       uc.name AS created_by_name, ux.name AS cancel_by_name,
+      cm.name AS customer_name, cm.status AS customer_status,
       (SELECT COUNT(*) FROM tour_logs l WHERE l.tour_id = t.id) AS log_count,
       (SELECT l.body FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log,
       (SELECT l.created_at FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log_at
     FROM tours t
     LEFT JOIN users uc ON uc.id = t.created_by
-    LEFT JOIN users ux ON ux.id = t.cancel_by`;
+    LEFT JOIN users ux ON ux.id = t.cancel_by
+    LEFT JOIN mothers cm ON cm.id = t.mother_id`;
   const pg = pageParams(req);
   if (pg.enabled) {
     const total = db.prepare(`SELECT COUNT(*) c FROM tours t ${where}`).get(...args).c;
@@ -3803,17 +3805,34 @@ app.post('/api/tours/:id/logs', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
+// 參觀 → 潛在客戶連動：以電話比對 mothers；查無且有電話則自動建潛客檔（基本資料以客戶檔為準）
+function tourCustomerLink(t, userId) {
+  const phone = String(t.phone || '').trim();
+  if (!phone) return { motherId: null, created: false };
+  const existing = db.prepare(`SELECT id FROM mothers WHERE phone = ? ORDER BY id DESC LIMIT 1`).get(phone);
+  if (existing) return { motherId: existing.id, created: false };
+  const info = db.prepare(`INSERT INTO mothers (name, phone, due_date, status) VALUES (?,?,?, 'reserved')`).run(
+    String(t.name || '').slice(0, 50), phone.slice(0, 20),
+    /^\d{4}-\d{2}-\d{2}$/.test(t.due_date || '') ? t.due_date : '');
+  custProfileUpsert(info.lastInsertRowid, {
+    source: t.source, parity: t.parity, hospital: t.birth_hospital
+  }, userId);
+  return { motherId: info.lastInsertRowid, created: true };
+}
+
 app.post('/api/tours', requireStaff, (req, res) => {
   const t = req.body || {};
   if (!t.name || !t.tour_at) return res.status(400).json({ error: '姓名與參觀時間必填' });
+  const link = tourCustomerLink(t, req.session.user.id);
   const info = db.prepare(`INSERT INTO tours
-    (name, phone, due_date, tour_at, source, status, note, follow_up_date, parity, attended, birth_hospital, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (name, phone, due_date, tour_at, source, status, note, follow_up_date, parity, attended, birth_hospital, created_by, mother_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     t.name, t.phone || '', t.due_date || '', t.tour_at, t.source || '',
     ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : 'scheduled', t.note || '', t.follow_up_date || '',
     String(t.parity || '').slice(0, 20), ['是', '否'].includes(t.attended) ? t.attended : '',
-    String(t.birth_hospital || '').slice(0, 50), req.session.user.id);
-  res.json({ id: info.lastInsertRowid });
+    String(t.birth_hospital || '').slice(0, 50), req.session.user.id, link.motherId);
+  if (link.created) logAudit(req, { action: 'create', entity: 'customer_profiles', entity_id: link.motherId, summary: `參觀預約自動建潛在客戶 ${t.name}` });
+  res.json({ id: info.lastInsertRowid, mother_id: link.motherId, customer_created: link.created });
 });
 
 app.put('/api/tours/:id', requireStaff, (req, res) => {
@@ -3821,14 +3840,22 @@ app.put('/api/tours/:id', requireStaff, (req, res) => {
   const cur = db.prepare('SELECT * FROM tours WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到參觀預約' });
   const status = ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : cur.status;
+  // 電話變更（或原本沒關聯）→ 重新比對客戶；電話清空則解除關聯
+  const newPhone = t.phone ?? cur.phone;
+  let motherId = cur.mother_id;
+  if (newPhone !== cur.phone || (!motherId && newPhone)) {
+    const link = tourCustomerLink({ ...cur, ...t, phone: newPhone }, req.session.user.id);
+    motherId = link.motherId;
+    if (link.created) logAudit(req, { action: 'create', entity: 'customer_profiles', entity_id: motherId, summary: `參觀預約自動建潛在客戶 ${t.name ?? cur.name}` });
+  }
   db.prepare(`UPDATE tours SET name = ?, phone = ?, due_date = ?, tour_at = ?, source = ?, status = ?, note = ?, follow_up_date = ?,
-    parity = ?, attended = ?, birth_hospital = ? WHERE id = ?`).run(
-    t.name ?? cur.name, t.phone ?? cur.phone, t.due_date ?? cur.due_date, t.tour_at ?? cur.tour_at,
+    parity = ?, attended = ?, birth_hospital = ?, mother_id = ? WHERE id = ?`).run(
+    t.name ?? cur.name, newPhone, t.due_date ?? cur.due_date, t.tour_at ?? cur.tour_at,
     t.source ?? cur.source, status, t.note ?? cur.note, t.follow_up_date ?? cur.follow_up_date,
     t.parity !== undefined ? String(t.parity).slice(0, 20) : cur.parity,
     t.attended !== undefined ? (['是', '否'].includes(t.attended) ? t.attended : '') : cur.attended,
     t.birth_hospital !== undefined ? String(t.birth_hospital).slice(0, 50) : cur.birth_hospital,
-    req.params.id);
+    motherId, req.params.id);
   if (status !== cur.status) {
     const L = { scheduled: '待參觀', visited: '已參觀', signed: '已簽約', lost: '未成交' };
     addTourLog(req.params.id, `狀態：${L[cur.status] || cur.status} → ${L[status] || status}`, req.session.user.id);
@@ -3969,8 +3996,8 @@ app.get('/api/customers/:motherId', requireStaff, (req, res) => {
   const logs = db.prepare(`SELECT l.*, u.name AS staff_name FROM customer_logs l
     LEFT JOIN users u ON u.id = l.created_by WHERE l.mother_id = ? ORDER BY l.id DESC LIMIT 100`).all(mother.id);
   const tours = db.prepare(`SELECT id, tour_at, status, note FROM tours
-    WHERE name = ? OR (? != '' AND phone = ?) ORDER BY tour_at DESC LIMIT 50`)
-    .all(mother.name, mother.phone || '', mother.phone || '');
+    WHERE mother_id = ? OR name = ? OR (? != '' AND phone = ?) ORDER BY tour_at DESC LIMIT 50`)
+    .all(mother.id, mother.name, mother.phone || '', mother.phone || '');
   const contracts = db.prepare(`
     SELECT c.id, c.title, c.status, c.created_at, c.signed_at, bk.check_in, bk.check_out, bk.room_id,
       r.name AS room_name, bk.total_amount
@@ -7438,8 +7465,9 @@ app.post('/api/public/tours', (req, res) => {
   const tourAt = `${date} ${/^\d{2}:\d{2}$/.test(time) ? time : '14:00'}`;
   const note = String(b.note || '').trim().slice(0, 500);
   const due = /^\d{4}-\d{2}-\d{2}$/.test(String(b.due_date || '')) ? b.due_date : '';
-  db.prepare(`INSERT INTO tours (name, phone, due_date, tour_at, source, status, note)
-    VALUES (?,?,?,?,?, 'scheduled', ?)`).run(name, phone, due, tourAt, '線上預約', note);
+  const link = tourCustomerLink({ name, phone, due_date: due, source: '線上預約' }, null);
+  db.prepare(`INSERT INTO tours (name, phone, due_date, tour_at, source, status, note, mother_id)
+    VALUES (?,?,?,?,?, 'scheduled', ?, ?)`).run(name, phone, due, tourAt, '線上預約', note, link.motherId);
   // 即時通知值班有新預約（若已設定 LINE）
   try {
     const s = getSettings();
