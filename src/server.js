@@ -4244,6 +4244,9 @@ app.get('/api/tours', requireStaff, (req, res) => {
   if (phone) { cond.push('t.phone LIKE ?'); args.push('%' + phone + '%'); }
   if (status) { cond.push('t.status = ?'); args.push(status); }
   if (req.query.only_cancelled === '1') cond.push("t.cancel_at != ''");
+  // 排除條件（潛在客戶查詢）：未參觀＝已取消；未成交＝status lost（含取消）
+  if (req.query.exclude_cancelled === '1') cond.push("(t.cancel_at IS NULL OR t.cancel_at = '')");
+  if (req.query.exclude_lost === '1') cond.push("t.status != 'lost'");
   const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
   const cols = `SELECT t.*,
       uc.name AS created_by_name, ux.name AS cancel_by_name,

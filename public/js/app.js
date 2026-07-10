@@ -12793,7 +12793,7 @@ function wirePager(page, total, pageSize, go) {
   if (prev) prev.onclick = () => { if (page > 1) go(page - 1); };
   if (next) next.onclick = () => { if (page < pages) go(page + 1); };
 }
-const TOUR_DATE_FIELDS = [['tour', '以預約參觀日查詢'], ['due', '以預產期查詢'], ['reg', '以報名日期查詢']];
+const TOUR_DATE_FIELDS = [['tour', '以預約參觀日查詢'], ['due', '以預產期查詢'], ['reg', '以聯繫日期查詢']];
 function tourQueryForm(prefix, { fromDefault, toDefault, withName = true } = {}) {
   return `
     <div class="form-grid">
@@ -12835,6 +12835,13 @@ function tourQueryParams(prefix, { withName = true, onlyCancelled = false } = {}
 }
 
 // 1. 潛在客戶資料
+// 參觀狀態顯示：取消（未參觀）優先於狀態欄
+function tourStatusBadge(t) {
+  if (t.cancel_at) return '<span class="badge gray">未參觀</span>';
+  const map = { scheduled: ['已預約', 'yellow'], visited: ['已參觀', 'teal'], signed: ['已簽約', 'green'], lost: ['未成交', 'gray'] };
+  const [l, c] = map[t.status] || [t.status || '—', 'gray'];
+  return `<span class="badge ${c}">${l}</span>`;
+}
 async function viewProspects() {
   const [mf, mt] = monthBounds();
   main().innerHTML = `
@@ -12842,33 +12849,60 @@ async function viewProspects() {
     <div class="card no-print">
       <div class="sec-hd">潛在客戶資料（資料查詢）</div>
       ${tourQueryForm('pc', { fromDefault: mf, toDefault: mt })}
-      <div class="row" style="justify-content:center;margin-top:8px"><button class="btn" id="pc-go">送出查詢</button></div>
+      <div class="row" style="gap:16px;flex-wrap:wrap;margin-top:4px">
+        <span style="font-size:.88rem;color:var(--muted)">排除條件（點選代表排除）：</span>
+        <label class="bna-chk"><input type="checkbox" id="pc-ex-cancel"> 未參觀</label>
+        <label class="bna-chk"><input type="checkbox" id="pc-ex-lost"> 未成交</label>
+      </div>
+      <div class="row" style="gap:10px;justify-content:center;margin-top:8px">
+        <button class="btn" id="pc-go">送出查詢</button>
+        <button class="btn secondary" id="pc-csv">匯出 EXCEL</button>
+      </div>
     </div>
     <div class="card">
       <div class="sec-hd">潛在客戶資料（查詢結果）</div>
       <div class="table-wrap" id="pc-result"></div>
       <div id="pc-pager"></div>
     </div>`;
+  const params = () => {
+    const p = tourQueryParams('pc');
+    if ($('#pc-ex-cancel').checked) p.set('exclude_cancelled', '1');
+    if ($('#pc-ex-lost').checked) p.set('exclude_lost', '1');
+    return p;
+  };
+  const rowToArr = t => [t.name, t.due_date || '', (t.tour_at || '').slice(0, 16), (t.created_at || '').slice(0, 10),
+    t.cancel_at ? '未參觀' : ({ scheduled: '已預約', visited: '已參觀', signed: '已簽約', lost: '未成交' }[t.status] || ''),
+    t.phone || '', t.note || '', t.created_by_name || ''];
   const load = async (page = 1) => {
-    const p = tourQueryParams('pc'); p.set('page', page); p.set('pageSize', PAGE_SIZE);
+    const p = params(); p.set('page', page); p.set('pageSize', PAGE_SIZE);
     const { rows, total, pageSize } = await api('/tours?' + p.toString());
     const base = (page - 1) * pageSize;
     $('#pc-result').innerHTML = `<table class="data stack">
-      <thead><tr><th>筆數</th><th>媽媽姓名</th><th>預產期<br>預約參觀日<br>報名日期</th><th>聯絡電話</th><th>生產醫院<br>訊息來源</th><th>備註</th><th>建檔人</th></tr></thead>
+      <thead><tr><th>筆數</th><th>媽媽姓名</th><th>預產期</th><th>預約參觀日</th><th>聯繫日期</th><th>狀態</th><th>聯絡電話</th><th>備註</th><th>建檔人</th></tr></thead>
       <tbody>${rows.map((t, i) => `
         <tr>
           <td data-label="筆數">${base + i + 1}</td>
           <td data-label="媽媽姓名">${esc(t.name)}</td>
-          <td data-label="預產期/參觀/報名"><small>${esc(t.due_date || '—')}<br><span style="color:#b23">${esc((t.tour_at || '—').slice(0, 16))}</span><br><span style="color:#2a7f78">${esc((t.created_at || '—').slice(0, 10))}</span></small></td>
+          <td data-label="預產期">${esc(t.due_date || '—')}</td>
+          <td data-label="預約參觀日"><span style="color:#b23">${esc((t.tour_at || '—').slice(0, 16))}</span></td>
+          <td data-label="聯繫日期"><span style="color:#2a7f78">${esc((t.created_at || '—').slice(0, 10))}</span></td>
+          <td data-label="狀態">${tourStatusBadge(t)}</td>
           <td data-label="聯絡電話">${esc(t.phone || '—')}</td>
-          <td data-label="生產醫院/來源"><small>${esc(t.birth_hospital || '—')}<br>${esc(t.source || '—')}</small></td>
           <td data-label="備註">${esc(t.note || '—')}</td>
           <td data-label="建檔人">${esc(t.created_by_name || '—')}</td>
-        </tr>`).join('') || '<tr><td colspan="7"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+        </tr>`).join('') || '<tr><td colspan="9"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
     $('#pc-pager').innerHTML = pagerBar(total, page, pageSize);
     wirePager(page, total, pageSize, load);
   };
   $('#pc-go').onclick = () => load(1);
+  $('#pc-csv').onclick = async () => {
+    const p = params(); p.set('page', 1); p.set('pageSize', 200);
+    const { rows, total } = await api('/tours?' + p.toString());
+    if (!rows.length) { alert('查無資料可匯出'); return; }
+    if (total > rows.length) alert(`資料共 ${total} 筆，匯出前 ${rows.length} 筆；如需完整請縮小日期範圍。`);
+    downloadCsv(`潛在客戶資料_${todayStr()}.csv`,
+      ['媽媽姓名', '預產期', '預約參觀日', '聯繫日期', '狀態', '聯絡電話', '備註', '建檔人'], rows.map(rowToArr));
+  };
   load(1);
 }
 
