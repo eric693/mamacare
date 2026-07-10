@@ -10645,12 +10645,11 @@ async function viewCustomers() {
       if (!(amount > 0)) { err.textContent = '請填寫收款金額'; return; }
       const bk = d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved');
       if (!bk) { err.textContent = '無進行中／預約訂房，無法登錄收款'; return; }
-      const note = [$q('#py-pnote').value.trim(),
-        $q('#py-pref').value.trim() ? `憑證:${$q('#py-pref').value.trim()}` : ''].filter(Boolean).join('｜');
+      const note = $q('#py-pnote').value.trim();
       try {
         await api(`/bookings/${bk.id}/payments`, { method: 'POST', body: {
           amount, method: $q('#py-pmethod').value, paid_on: $q('#py-pdate').value || todayStr(), note,
-          item: $q('#py-pitem').value
+          item: $q('#py-pitem').value, target: 'contract' // 入住前收款一律沖抵合約款
         } });
         selectCustomer(editId);
       } catch (e) { err.textContent = e.message; }
@@ -11250,20 +11249,19 @@ async function viewCustomers() {
         <div class="sec-hd">收款紀錄（新增）</div>
         <div class="form-grid">
           <div class="field"><label>收款日期</label><input type="date" id="py-pdate" value="${todayStr()}"></div>
-          <div class="field"><label>收款項目</label><select id="py-pitem">${['訂金', '房費', '尾款', '加購消費', '其他'].map(o => `<option>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>收款項目</label><select id="py-pitem">${['訂金', '其他'].map(o => `<option>${o}</option>`).join('')}</select></div>
           <div class="field"><label>收款方式</label><select id="py-pmethod">${paymentMethods().map(o => `<option>${esc(o)}</option>`).join('')}</select></div>
           <div class="field"><label>收款金額 <b class="req">*</b></label><input type="number" min="1" id="py-pamount"></div>
-          <div class="field"><label>收款備註</label><input id="py-pnote" maxlength="200"></div>
-          <div class="field"><label>憑證號碼</label><input id="py-pref" maxlength="50"></div>
+          <div class="field full"><label>收款備註</label><input id="py-pnote" maxlength="200"></div>
           <div class="full row" style="gap:10px">
             <button class="btn danger" id="py-pay-add">資料新增</button>
             <span class="error-msg" id="py-pay-err"></span>
-            ${!curBk ? '<small style="color:var(--danger)">此客戶無進行中／預約訂房，收款將無法登錄（請先於訂房管理建立）。</small>' : ''}
+            ${!curBk ? '<small style="color:var(--danger)">此客戶無進行中／預約訂房，收款將無法登錄（請先完成排房）。</small>' : ''}
           </div>
         </div>
       </div>
       <div class="card">
-        <div class="sec-hd">合約金額及消費明細</div>
+        <div class="sec-hd">合約金額（扣除入住前繳款）</div>
         <div class="table-wrap"><table class="data stack">
           <thead><tr><th>日期</th><th>摘要</th><th>金額</th><th>建檔人</th></tr></thead>
           <tbody>
@@ -11271,29 +11269,16 @@ async function viewCustomers() {
               <td data-label="摘要">合約金額</td>
               <td data-label="金額">$${contractTotal.toLocaleString()}</td>
               <td data-label="建檔人">${d.contract && d.contract.data.handler ? esc(d.contract.data.handler) : '—'}</td></tr>
-            ${d.charges.map(c => `
-            <tr><td data-label="日期">${esc(c.charged_on)}</td>
-              <td data-label="摘要">${esc(c.item_name)}×${c.quantity}${c.note ? `<br><small>${esc(c.note)}</small>` : ''}</td>
-              <td data-label="金額">$${((c.unit_price || 0) * c.quantity).toLocaleString()}</td>
-              <td data-label="建檔人">—</td></tr>`).join('')}
-            <tr><td colspan="4" style="text-align:right">應收合計：<b>$${receivable.toLocaleString()}</b></td></tr>
-            <tr><td colspan="4" style="text-align:right">已收合計：$${paidSum.toLocaleString()}　應收餘額：<b style="color:${balance > 0 ? 'var(--danger)' : 'var(--primary-dark)'}">$${balance.toLocaleString()}</b></td></tr>
+            ${d.payments.map(p => `
+            <tr><td data-label="日期">${esc(p.paid_on)}</td>
+              <td data-label="摘要">入住前繳款${p.item ? `（${esc(p.item)}）` : ''}｜${esc(p.method || '—')}${p.note ? `<br><small>${esc(p.note)}</small>` : ''}</td>
+              <td data-label="金額" style="color:var(--primary-dark)">−$${(p.amount || 0).toLocaleString()}</td>
+              <td data-label="建檔人">${esc(p.received_name || '—')}</td></tr>`).join('')}
+            <tr><td colspan="4" style="text-align:right">已繳合計：$${paidSum.toLocaleString()}
+              合約餘額：<b style="color:${contractTotal - paidSum > 0 ? 'var(--danger)' : 'var(--primary-dark)'}">$${(contractTotal - paidSum).toLocaleString()}</b></td></tr>
           </tbody>
         </table></div>
-      </div>
-      <div class="card">
-        <div class="sec-hd">收款明細（${d.payments.length} 筆）</div>
-        ${d.payments.length ? `<div class="table-wrap"><table class="data stack">
-          <thead><tr><th>收款日期</th><th>摘要</th><th>方式</th><th>金額</th><th>經手人</th></tr></thead>
-          <tbody>${d.payments.map(p => `
-            <tr><td data-label="收款日期">${esc(p.paid_on)}</td>
-              <td data-label="摘要"><small>${esc(p.note || '—')}</small></td>
-              <td data-label="方式">${esc(p.method || '—')}</td>
-              <td data-label="金額">$${(p.amount || 0).toLocaleString()}</td>
-              <td data-label="經手人">${esc(p.received_name || '—')}</td></tr>`).join('')}
-            <tr><td colspan="5" style="text-align:right"><b>已收合計：$${paidSum.toLocaleString()}</b></td></tr>
-          </tbody></table></div>` : '<div class="empty">尚無收款紀錄</div>'}
-        ${canAccess('#/billing') ? '<div class="row no-print" style="gap:6px;margin-top:8px"><a class="btn small" href="#/billing">收費帳務（退房結帳）</a></div>' : ''}
+        <small style="color:var(--muted)">合約餘額自動帶入入住管理／收費帳務（此處繳款均已同步至該訂房的繳費紀錄）。</small>
       </div>`;
       })()}
     </div>`;

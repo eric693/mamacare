@@ -2860,9 +2860,11 @@ app.post('/api/bookings/:id/payments', requireStaff, (req, res) => {
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: '金額需大於 0' });
   const bk = db.prepare('SELECT id FROM bookings WHERE id = ?').get(req.params.id);
   if (!bk) return res.status(404).json({ error: '找不到訂房' });
-  // 項目決定款別：房費／訂金／尾款＝合約款，其餘（泌乳、產後修復…）＝加購款；未帶項目時沿用指定款別
+  // 款別：房費／訂金／尾款＝合約款；其餘項目預設加購款，但呼叫端可明確指定（入住前收款「其他」歸合約款）
   const item = String(p.item || '').trim();
-  const target = item ? (['房費', '訂金', '尾款'].includes(item) ? 'contract' : 'addon') : (p.target === 'addon' ? 'addon' : 'contract');
+  const target = ['房費', '訂金', '尾款'].includes(item) ? 'contract'
+    : (p.target === 'addon' || p.target === 'contract') ? p.target
+    : item ? 'addon' : 'contract';
   const info = db.prepare(`INSERT INTO payments
     (booking_id, amount, method, paid_on, note, received_by, target, item) VALUES (?,?,?,?,?,?,?,?)`).run(
     bk.id, Math.round(amount), p.method || '現金', p.paid_on || today(), p.note || '', req.session.user.id, target, item);
@@ -4498,7 +4500,7 @@ app.get('/api/customers/:motherId', requireStaff, (req, res) => {
     FROM charge_items ci JOIN bookings bk ON bk.id = ci.booking_id
     WHERE bk.mother_id = ? ORDER BY ci.charged_on DESC, ci.id DESC LIMIT 200`).all(mother.id);
   const payments = db.prepare(`
-    SELECT p.booking_id, p.amount, p.method, p.paid_on, p.note, u.name AS received_name
+    SELECT p.booking_id, p.amount, p.method, p.paid_on, p.note, p.item, p.target, u.name AS received_name
     FROM payments p JOIN bookings bk ON bk.id = p.booking_id
     LEFT JOIN users u ON u.id = p.received_by
     WHERE bk.mother_id = ? ORDER BY p.paid_on DESC, p.id DESC LIMIT 200`).all(mother.id);
