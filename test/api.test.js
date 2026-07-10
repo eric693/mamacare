@@ -1123,6 +1123,23 @@ test('膳食：訂餐狀態/備註；月子餐換餐家屬申請→員工審核'
   assert.ok(o2.every(x => x.choice === '素食餐'), '訂餐應全部改為新廠商');
 });
 
+test('家屬聯絡清潔：送出申請→建立房務任務', async () => {
+  const saved = cookie; cookie = '';
+  assert.strictEqual((await req('POST', '/api/family/login', { code: 'DEMO1234' }, false)).status, 200);
+  assert.strictEqual((await req('POST', '/api/family/cleaning-request', { task: '不在清單' })).status, 400);
+  assert.strictEqual((await req('POST', '/api/family/cleaning-request', { task: '其他' })).status, 400);
+  const r = await req('POST', '/api/family/cleaning-request', { task: '更換床單', note: '下午時段方便' });
+  assert.strictEqual(r.status, 200);
+  cookie = saved;
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const hk = (await req('GET', '/api/housekeeping')).data;
+  const t = hk.tasks.find(x => x.id === r.data.id);
+  assert.ok(t, '房務清潔頁應看到家屬申請的任務');
+  assert.strictEqual(t.task, '更換床單');
+  assert.ok(t.note.includes('家屬申請'));
+  assert.ok(t.room_name, '任務應帶入住客房間');
+});
+
 test('商城：商品 CSV 匯入(品名 upsert)', async () => {
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
   const r = await req('POST', '/api/products/import', { items: [

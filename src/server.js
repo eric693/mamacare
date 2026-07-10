@@ -3791,6 +3791,29 @@ app.get('/api/family/meal-swap', requireFamily, (req, res) => {
   res.json(db.prepare('SELECT * FROM meal_swap_requests WHERE family_id = ? ORDER BY id DESC LIMIT 50').all(req.session.family.id));
 });
 
+// 家屬「聯絡清潔」：送出清潔申請 → 直接建立房務任務（房務清潔頁與看板待辦即可看到）
+const FAMILY_HK_TASKS = ['清潔地板', '更換床單', '馬桶', '浴室', '倒垃圾', '補充備品', '紫外線消毒', '清潔拖鞋', '清潔玻璃', '其他'];
+app.post('/api/family/cleaning-request', requireFamily, (req, res) => {
+  const mid = familyMotherId(req.session.family);
+  if (!mid) return res.status(400).json({ error: '找不到住客資料' });
+  const b = req.body || {};
+  let task = String(b.task || '').trim();
+  if (!FAMILY_HK_TASKS.includes(task)) return res.status(400).json({ error: '請選擇清潔任務' });
+  if (task === '其他') {
+    const t = String(b.task_other || '').trim();
+    if (!t) return res.status(400).json({ error: '任務選「其他」時請說明內容' });
+    task = t.slice(0, 100);
+  }
+  const bk = db.prepare(`SELECT room_id FROM bookings WHERE mother_id = ? AND status = 'checked_in'
+    ORDER BY check_in DESC LIMIT 1`).get(mid);
+  let date = /^\d{4}-\d{2}-\d{2}$/.test(b.scheduled_for || '') ? b.scheduled_for : today();
+  if (date < today()) date = today();
+  const note = ['家屬申請', String(b.note || '').trim()].filter(Boolean).join('：').slice(0, 200);
+  const info = db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note)
+    VALUES (?,?,?,?,?)`).run(bk ? bk.room_id : null, mid, task, date, note);
+  res.json({ id: info.lastInsertRowid });
+});
+
 // 月子餐換餐申請：員工端審核
 app.get('/api/meal-swaps', requireStaff, (req, res) => {
   const status = req.query.status;

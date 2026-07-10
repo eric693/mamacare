@@ -687,6 +687,54 @@ $('#tab-programs').onclick = () => setTab('programs');
 $('#tab-visitors').onclick = () => setTab('visitors');
 $('#tab-survey').onclick = () => setTab('survey');
 $('#tab-messages').onclick = () => setTab('messages');
+$('#tab-cleaning').onclick = () => openCleaningRequest();
+
+// 聯絡清潔：跳出清潔申請視窗（送出後建立房務任務，清潔人員即可看到）
+const HK_TASK_CHOICES = ['清潔地板', '更換床單', '馬桶', '浴室', '倒垃圾', '補充備品', '紫外線消毒', '清潔拖鞋', '清潔玻璃', '其他'];
+function openCleaningRequest() {
+  const old = document.getElementById('clean-modal');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'clean-modal';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:60;padding:16px';
+  const d = new Date();
+  const today = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  wrap.innerHTML = `
+    <div class="card" style="max-width:420px;width:100%;max-height:90vh;overflow:auto;margin:0">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">聯絡清潔</h3>
+        <button class="btn small secondary" id="cl-close">關閉</button>
+      </div>
+      <p style="font-size:.85rem;color:var(--muted)">送出後由清潔人員於排定日期處理。</p>
+      <div class="field"><label>任務</label>
+        <select id="cl-task">${HK_TASK_CHOICES.map(t => `<option>${t}</option>`).join('')}</select></div>
+      <div class="field" id="cl-other-wrap" style="display:none"><label>其他（請說明）</label>
+        <input id="cl-other" placeholder="請描述需要的清潔服務"></div>
+      <div class="field"><label>排定日期</label><input type="date" id="cl-date" value="${today}" min="${today}"></div>
+      <div class="field"><label>備註</label><textarea id="cl-note" rows="2" placeholder="例如：下午時段方便"></textarea></div>
+      <div class="row"><button class="btn" id="cl-send">送出</button><span class="error-msg" id="cl-err"></span><span id="cl-ok" style="color:var(--ok)"></span></div>
+    </div>`;
+  document.body.appendChild(wrap);
+  wrap.onclick = e => { if (e.target === wrap) wrap.remove(); };
+  wrap.querySelector('#cl-close').onclick = () => wrap.remove();
+  wrap.querySelector('#cl-task').onchange = () => {
+    wrap.querySelector('#cl-other-wrap').style.display = wrap.querySelector('#cl-task').value === '其他' ? '' : 'none';
+  };
+  wrap.querySelector('#cl-send').onclick = async () => {
+    wrap.querySelector('#cl-err').textContent = '';
+    wrap.querySelector('#cl-ok').textContent = '';
+    try {
+      await api('/family/cleaning-request', { method: 'POST', body: {
+        task: wrap.querySelector('#cl-task').value,
+        task_other: wrap.querySelector('#cl-other').value.trim(),
+        scheduled_for: wrap.querySelector('#cl-date').value,
+        note: wrap.querySelector('#cl-note').value.trim()
+      } });
+      wrap.querySelector('#cl-ok').textContent = '已送出清潔申請';
+      setTimeout(() => wrap.remove(), 1000);
+    } catch (e) { wrap.querySelector('#cl-err').textContent = e.message; }
+  };
+}
 
 (async () => {
   try {

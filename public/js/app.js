@@ -2133,13 +2133,16 @@ function openHkNeedsForm(r, onDone) {
   });
 }
 
+// 清潔任務固定選項（與家屬入口「聯絡清潔」一致；設定的常用任務會併入）
+const HK_TASK_OPTIONS = ['清潔地板', '更換床單', '馬桶', '浴室', '倒垃圾', '補充備品', '紫外線消毒', '清潔拖鞋', '清潔玻璃'];
 function openHkTaskForm(residents, date) {
+  const options = [...new Set([...HK_TASK_OPTIONS, ...hkTaskPresets()])];
   openModal('新增清潔任務', `
     <div class="form-grid">
       <div class="field full"><label>任務</label>
-        <input id="hkt-task" list="hkt-presets" placeholder="例如：更換床單">
-        <datalist id="hkt-presets">${hkTaskPresets().map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+        <select id="hkt-task">${options.map(p => `<option>${esc(p)}</option>`).join('')}<option>其他</option></select>
       </div>
+      <div class="field full" id="hkt-other-wrap" style="display:none"><label>其他（請說明）</label><input id="hkt-other" placeholder="請描述清潔任務"></div>
       <div class="field full"><label>對象房間／住客（可不選＝公共區域）</label>
         <select id="hkt-target"><option value="">— 公共區域 / 不指定 —</option>${residents.map(r =>
           `<option value="${r.room_id}|${r.mother_id}">${esc(r.room_name)} 房　${esc(r.mother_name)}</option>`).join('')}</select></div>
@@ -2147,9 +2150,11 @@ function openHkTaskForm(residents, date) {
       <div class="field full"><label>備註</label><input id="hkt-note"></div>
     </div>
     <div class="row mt"><button class="btn" id="hkt-save">新增</button><span class="error-msg" id="hkt-err"></span></div>`, body => {
+    const taskSel = body.querySelector('#hkt-task');
+    taskSel.onchange = () => { body.querySelector('#hkt-other-wrap').style.display = taskSel.value === '其他' ? '' : 'none'; };
     body.querySelector('#hkt-save').onclick = async () => {
-      const task = body.querySelector('#hkt-task').value.trim();
-      if (!task) { body.querySelector('#hkt-err').textContent = '請輸入任務'; return; }
+      const task = taskSel.value === '其他' ? body.querySelector('#hkt-other').value.trim() : taskSel.value;
+      if (!task) { body.querySelector('#hkt-err').textContent = '任務選「其他」時請說明內容'; return; }
       const [room_id, mother_id] = (body.querySelector('#hkt-target').value || '|').split('|');
       try {
         await api('/housekeeping/tasks', { method: 'POST', body: {
