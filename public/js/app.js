@@ -2258,6 +2258,48 @@ async function viewBilling() {
   });
 }
 
+// 另開視窗列印：寶寶報喜入住通知單
+function printBabyAnnounce(m, bk, birth, cd, p, stayDays) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const babyCells = p.babies.map((x, i) => `
+    <tr><td>體重${p.babies.length > 1 ? i + 1 : ''}</td><td>${x.weight_g} g</td>
+    <td>性別${p.babies.length > 1 ? i + 1 : ''}</td><td>${x.gender === 'male' ? '男' : '女'}</td></tr>`).join('');
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>入住通知單 - ${esc(m.name)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#111;max-width:760px;margin:24px auto;padding:0 24px}
+      h1{font-size:18px;text-align:center;margin:0 0 2px}
+      .sub{text-align:center;font-size:13px;color:#444;margin-bottom:12px}
+      table{width:100%;border-collapse:collapse;font-size:14px}
+      td{border:1px solid #333;padding:6px 8px}
+      td:nth-child(odd){background:#f4f6f5;width:14%;white-space:nowrap}
+      .wide td:nth-child(odd){width:auto}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>${esc(center)}　入住通知單</h1>
+    <div class="sub">第一聯　客服收執聯　（媽媽生日：${esc(m.birth_date || '—')}）</div>
+    <table>
+      <tr><td>房號</td><td>${esc(bk.room_name || '—')}</td><td>姓名</td><td>${esc(m.name)}</td>
+        <td>生產日期</td><td>${esc(birth.birth_date)}</td><td>後四碼</td><td>${esc(p.id4 || (m.id_no || '').slice(-4) || '—')}</td></tr>
+      <tr><td>入住日</td><td>${esc(bk.check_in || '—')}</td><td>出住日</td><td>${esc(bk.check_out || '—')}</td>
+        <td>生產方式</td><td>${esc(birth.birth_mode)}</td><td>胎次</td><td>${esc(cd.parity_no || '—')}</td></tr>
+      <tr><td>生產醫院</td><td>${esc(birth.birth_hospital)}</td><td>妊娠週數</td><td>${esc(p.weeks || '—')}</td>
+        <td>總天數</td><td>${stayDays ? stayDays + ' 天' : '—'}</td><td>哺乳衣尺寸</td><td>${esc(p.bra_size || '—')}</td></tr>
+      ${babyCells}
+      <tr><td>餐別</td><td>${esc(p.meal_choice || '—')}</td><td>禁忌</td><td colspan="5">${esc(p.diet_type || '')}　${esc(p.taboos || '無')}</td></tr>
+      <tr class="wide"><td>贈</td><td colspan="7">${esc(p.gift || cd.gift_content || '—')}</td></tr>
+      <tr class="wide"><td>電話</td><td colspan="7">媽咪：${esc(p.phone_mom || '—')}　　把拔：${esc(p.phone_dad || '—')}</td></tr>
+      <tr><td>車號</td><td>${esc(p.car_no || '—')}</td><td>製單</td><td>${esc(currentUser.name)}</td>
+        <td>日期</td><td colspan="3">${esc(todayStr())}</td></tr>
+    </table>
+    <div class="noprint" style="margin-top:20px;text-align:center">
+      <button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button>
+    </div>
+    </body></html>`);
+  win.document.close();
+}
+
 // 另開視窗列印／另存 PDF：加購消費明細
 function printCharges(b) {
   const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
@@ -10320,12 +10362,12 @@ async function viewCustomers() {
     $('#cust-tabs').querySelectorAll('button:not([disabled])').forEach(b => b.onclick = () => showTab(b.dataset.tab));
     renderLogs(d);
     $('#cust-extra').innerHTML = d ? panelsHTML(d) : '';
-    if (d) { wireContract(); wirePanels(d); }
+    if (d) { wireContract(d); wirePanels(d); }
     showTab(d ? curTab : 'lead');
   }
 
   // ----- 合約資料分頁：存檔／明細增刪／卡片與諮詢 -----
-  function wireContract() {
+  function wireContract(d) {
     const cput = async body => {
       await api(`/customers/${editId}/contract`, { method: 'PUT', body });
       await selectCustomer(editId);
@@ -10358,7 +10400,7 @@ async function viewCustomers() {
       $q('#ct-expout').value = new Date(new Date(expIn.value + 'T00:00:00Z').getTime() + days * 86400000)
         .toISOString().slice(0, 10);
     };
-    // 寶寶報喜：實際生產醫院／日期／方式皆填寫後才可按下；存檔後開啟寶寶報喜單
+    // 寶寶報喜：實際生產醫院／日期／方式皆填寫後才可按下；先存檔再開啟填寫視窗（入住通知單）
     const ctAnn = $q('#ct-announce');
     if (ctAnn) ctAnn.onclick = async () => {
       const err = $q('#ct-err');
@@ -10370,7 +10412,10 @@ async function viewCustomers() {
       }
       try {
         await api(`/customers/${editId}/contract`, { method: 'PUT', body: ctPayload() });
-        location.hash = `#/baby-announcements?d=${gv('#ct-bdate')}`;
+        openBabyAnnounce(d, {
+          birth_hospital: gv('#ct-bhosp'), birth_date: gv('#ct-bdate'), birth_mode: gv('#ct-bmode'),
+          baby_count: ($('#cust-extra').querySelector('input[name="ctr-babies"]:checked') || {}).value || (d.contract && d.contract.data.baby_count) || '單胞胎'
+        });
       } catch (e) { err.textContent = e.message; }
     };
     $q('#ct-fcsave').onclick = () => cput({
@@ -10478,6 +10523,100 @@ async function viewCustomers() {
     $q('#ct-gift-save').onclick = () => cput({
       gift_content: gv('#ct-gift'), gift_by: currentUser.name
     }).catch(e => alert(e.message));
+  }
+
+  // ----- 寶寶報喜：入住通知單填寫視窗（儲存後轉入床表／住客／膳食／房況） -----
+  function openBabyAnnounce(d, birth) {
+    const m = d.mother, cd = (d.contract && d.contract.data) || {}, prof = d.profile || {};
+    // 房號／入退住日：從排房紀錄（已預約優先）帶入
+    const bk = d.bookings.find(b => b.status === 'reserved') || d.bookings.find(b => b.status === 'checked_in') || {};
+    const nBabies = birth.baby_count === '三胞胎' ? 3 : birth.baby_count === '雙胞胎' ? 2 : 1;
+    const stayDays = bk.check_in && bk.check_out ? Math.round((new Date(bk.check_out) - new Date(bk.check_in)) / 86400000) : '';
+    const TABOOS = ['無', '牛肉', '羊肉', '內臟', '帶殼海鮮'];
+    const babyRow = i => `
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <b style="min-width:56px">寶寶${nBabies > 1 ? i + 1 : ''}</b>
+        <div class="field" style="margin:0;max-width:110px"><label>性別</label>
+          <select data-ba-gender><option value="male">男</option><option value="female">女</option></select></div>
+        <div class="field" style="margin:0;max-width:130px"><label>體重（g）</label><input type="number" min="0" data-ba-weight></div>
+      </div>`;
+    openModal(`寶寶報喜：${m.name}（入住通知單）`, `
+      <div class="form-grid">
+        <div class="field"><label>房號<small>（排房紀錄帶入）</small></label><input id="ba-room" value="${esc(bk.room_name || '')}" ${bk.room_name ? 'readonly' : 'placeholder="尚未排房"'}></div>
+        <div class="field"><label>姓名</label><input value="${esc(m.name)}" readonly></div>
+        <div class="field"><label>媽媽生日</label><input value="${esc(m.birth_date || '—')}" readonly></div>
+        <div class="field"><label>後四碼<small>（身分證自動帶入）</small></label><input id="ba-id4" maxlength="4" value="${esc((m.id_no || '').slice(-4))}"></div>
+        <div class="field"><label>入住日</label><input value="${esc(bk.check_in || '—')}" readonly></div>
+        <div class="field"><label>出住日</label><input value="${esc(bk.check_out || '—')}" readonly></div>
+        <div class="field"><label>總天數</label><input value="${stayDays ? stayDays + ' 天' : '—'}" readonly></div>
+        <div class="field"><label>生產日期</label><input value="${esc(birth.birth_date)}" readonly></div>
+        <div class="field"><label>生產方式</label><input value="${esc(birth.birth_mode)}" readonly></div>
+        <div class="field"><label>生產醫院</label><input value="${esc(birth.birth_hospital)}" readonly></div>
+        <div class="field"><label>胎次</label><input value="${esc(cd.parity_no || '—')}" readonly></div>
+        <div class="field"><label>妊娠週數</label><input id="ba-weeks" maxlength="10" placeholder="例如：38+2"></div>
+        <div class="field full" id="ba-babies">${Array.from({ length: nBabies }, (_, i) => babyRow(i)).join('')}</div>
+        <div class="field"><label>餐別</label>
+          <div class="row" style="gap:12px;padding-top:6px;flex-wrap:wrap">${mealChoices().map((c, i) =>
+            `<label class="bna-chk"><input type="radio" name="ba-meal" value="${esc(c)}" ${i === 0 ? 'checked' : ''}> ${esc(c)}</label>`).join('')}</div></div>
+        <div class="field"><label>哺乳衣尺寸</label>
+          <select id="ba-bra">${['S', 'M', 'L', 'XL', 'XXL'].map(s => `<option ${s === 'M' ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>禁忌（膳食）</label>
+          <div class="row" style="gap:12px;padding-top:6px">${['葷食', '全素', '蛋奶素'].map((t, i) =>
+            `<label class="bna-chk"><input type="radio" name="ba-diet" value="${t}" ${i === 0 ? 'checked' : ''}> ${t}</label>`).join('')}</div></div>
+        <div class="field"><label>禁忌食材</label>
+          <div class="row" style="gap:10px;padding-top:6px;flex-wrap:wrap">${TABOOS.map(t =>
+            `<label class="bna-chk"><input type="checkbox" data-ba-taboo value="${t}"> ${t}</label>`).join('')}
+            <input id="ba-taboo-other" placeholder="其他" style="max-width:140px"></div></div>
+        <div class="field full"><label>贈<small>（合約贈品內容帶入）</small></label><textarea id="ba-gift" rows="2" maxlength="300">${esc(cd.gift_content || '')}</textarea></div>
+        <div class="field"><label>電話（媽咪）</label><input id="ba-phone-mom" value="${esc(m.phone || '')}"></div>
+        <div class="field"><label>電話（把拔）</label><input id="ba-phone-dad" value="${esc(prof.contact_mobile || '')}"></div>
+        <div class="field"><label>車號</label><input id="ba-car" maxlength="15"></div>
+        <div class="field"><label>製單</label><input value="${esc(currentUser.name)}" readonly></div>
+        <div class="field"><label>日期（儲存日期）</label><input value="${todayStr()}" readonly></div>
+        <div class="full row"><button class="btn danger" id="ba-save">儲存</button><span class="error-msg" id="ba-err"></span></div>
+      </div>`, body => {
+      body.querySelector('#ba-save').onclick = async () => {
+        const err = body.querySelector('#ba-err');
+        err.textContent = '';
+        const babies = [...body.querySelectorAll('#ba-babies .row')].map(r => ({
+          gender: r.querySelector('[data-ba-gender]').value,
+          weight_g: Number(r.querySelector('[data-ba-weight]').value) || 0
+        }));
+        if (babies.some(x => !x.weight_g)) { err.textContent = '請填寫每位寶寶體重'; return; }
+        const taboos = [...body.querySelectorAll('[data-ba-taboo]:checked')].map(c => c.value);
+        const other = body.querySelector('#ba-taboo-other').value.trim();
+        if (other) taboos.push(other);
+        const payload = {
+          ...birth, weeks: body.querySelector('#ba-weeks').value.trim(), babies,
+          meal_choice: (body.querySelector('input[name="ba-meal"]:checked') || {}).value || '',
+          bra_size: body.querySelector('#ba-bra').value,
+          diet_type: (body.querySelector('input[name="ba-diet"]:checked') || {}).value || '',
+          taboos: taboos.join('、'), gift: body.querySelector('#ba-gift').value.trim(),
+          phone_mom: body.querySelector('#ba-phone-mom').value.trim(),
+          phone_dad: body.querySelector('#ba-phone-dad').value.trim(),
+          car_no: body.querySelector('#ba-car').value.trim(),
+          id4: body.querySelector('#ba-id4').value.trim(),
+          room_name: body.querySelector('#ba-room').value.trim()
+        };
+        try {
+          const r = await api(`/customers/${editId}/baby-announce`, { method: 'POST', body: payload });
+          closeModal();
+          openModal('寶寶報喜完成', `
+            <p>已儲存入住通知單${r.created_babies ? `，並建立 ${r.created_babies} 筆寶寶資料` : ''}。資料已轉入下列模組：</p>
+            <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+              ${canAccess('#/bed-planning') ? '<a class="btn small secondary" href="#/bed-planning" data-close-modal>實際入住床表</a>' : ''}
+              ${canAccess('#/residents') ? '<a class="btn small secondary" href="#/residents" data-close-modal>住客管理</a>' : ''}
+              ${canAccess('#/meals') ? '<a class="btn small secondary" href="#/meals" data-close-modal>膳食管理</a>' : ''}
+              <a class="btn small secondary" href="#/mother-rooms" data-close-modal>媽媽房況</a>
+              ${canAccess('#/baby-rooms') ? '<a class="btn small secondary" href="#/baby-rooms" data-close-modal>寶寶房況</a>' : ''}
+              <button class="btn small" id="ba-print">列印入住通知單</button>
+            </div>`, mBody => {
+            mBody.querySelector('#ba-print').onclick = () => printBabyAnnounce(m, bk, birth, cd, payload, stayDays);
+          });
+          selectCustomer(editId);
+        } catch (e) { err.textContent = e.message; }
+      };
+    });
   }
 
   // ----- 膳食資訊／消費及收款分頁 wiring -----

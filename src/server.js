@@ -4619,6 +4619,66 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   res.json({ ok: true, contract_no: cur.contract_no });
 });
 
+// 寶寶報喜：儲存入住通知單資料；建立寶寶資料（依胎數）、同步媽媽生產資訊
+// 儲存後資料轉入：實際入住床表／住客管理／膳食管理／媽媽房況／寶寶房況
+app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
+  const m = db.prepare('SELECT * FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!m) return res.status(404).json({ error: '找不到客戶' });
+  const b = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.birth_date || '')) return res.status(400).json({ error: '請填寫實際生產日期' });
+  const babiesIn = (Array.isArray(b.babies) ? b.babies : []).slice(0, 3);
+  if (!babiesIn.length) return res.status(400).json({ error: '請填寫寶寶性別／體重' });
+  const cur = ensureCustomerContract(m.id, req.session.user.id);
+  let data = {};
+  try { data = JSON.parse(cur.data); } catch (e) { data = {}; }
+  // 通知單內容存入合約資料（announce_*），儲存日期＝今日
+  const ann = {
+    announce_weeks: String(b.weeks || '').slice(0, 20),
+    announce_meal: String(b.meal_choice || '').slice(0, 30),
+    announce_bra: String(b.bra_size || '').slice(0, 10),
+    announce_diet_type: String(b.diet_type || '').slice(0, 10),
+    announce_taboos: String(b.taboos || '').slice(0, 200),
+    announce_car_no: String(b.car_no || '').slice(0, 20),
+    announce_id4: String(b.id4 || '').slice(0, 4),
+    announce_room: String(b.room_name || '').slice(0, 20),
+    announce_phone_mom: String(b.phone_mom || '').slice(0, 20),
+    announce_phone_dad: String(b.phone_dad || '').slice(0, 20),
+    announce_gift: String(b.gift || '').slice(0, 300),
+    announce_babies: JSON.stringify(babiesIn.map(x => ({ gender: x.gender === 'male' ? 'male' : x.gender === 'female' ? 'female' : '', weight_g: Math.round(Number(x.weight_g) || 0) }))),
+    announce_by: req.session.user.name,
+    announce_date: today()
+  };
+  Object.assign(data, ann);
+  if (b.birth_hospital !== undefined) data.birth_hospital = String(b.birth_hospital).slice(0, 100);
+  if (b.birth_mode !== undefined) data.birth_mode = String(b.birth_mode).slice(0, 20);
+  data.birth_date = b.birth_date;
+  const existingBefore = db.prepare('SELECT COUNT(*) c FROM babies WHERE mother_id = ?').get(m.id).c;
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+      .run(JSON.stringify(data).slice(0, 12000), m.id);
+    // 媽媽主檔：實際生產日期／方式；禁忌併入飲食備註
+    db.prepare('UPDATE mothers SET delivery_date=?, delivery_type=COALESCE(NULLIF(?,\'\'), delivery_type) WHERE id=?')
+      .run(b.birth_date, String(b.birth_mode || '').slice(0, 20), m.id);
+    if (String(b.taboos || '').trim() || String(b.diet_type || '').trim()) {
+      db.prepare('UPDATE mothers SET diet_notes=? WHERE id=?')
+        .run(`${String(b.diet_type || '').trim()} ${String(b.taboos || '').trim()}`.trim().slice(0, 500), m.id);
+    }
+    // 寶寶資料：不足胎數者補建（已存在的不動）；轉入寶寶房況／照護
+    const insBaby = db.prepare(`INSERT INTO babies (mother_id, name, gender, birth_date, birth_weight_g, notes)
+      VALUES (?,?,?,?,?,?)`);
+    for (let i = existingBefore; i < babiesIn.length; i++) {
+      const x = babiesIn[i];
+      insBaby.run(m.id, `${m.name}寶${babiesIn.length > 1 ? i + 1 : ''}`.trim(),
+        x.gender === 'male' || x.gender === 'female' ? x.gender : 'male',
+        b.birth_date, Math.round(Number(x.weight_g) || 0) || null, '寶寶報喜建檔');
+    }
+  });
+  tx();
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: m.id,
+    summary: `寶寶報喜：生產日 ${b.birth_date}、${babiesIn.length} 胎、餐別 ${ann.announce_meal || '—'}、車號 ${ann.announce_car_no || '—'}` });
+  res.json({ ok: true, created_babies: Math.max(0, babiesIn.length - existingBefore) });
+});
+
 // 合約明細：新增銷售房型（qty=訂房天數；price 未帶則取該房型每日房價）
 app.post('/api/customers/:motherId/contract/items', requireStaff, (req, res) => {
   const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.motherId);
