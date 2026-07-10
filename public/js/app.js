@@ -12942,18 +12942,18 @@ function printTourSignup(t) {
 }
 function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
-// 3. 取消預約明細表
+// 3. 未參觀查詢（取消預約明細）
 async function viewTourCancellations() {
   const [mf, mt] = monthBounds();
   main().innerHTML = `
-    <div class="page-title">取消預約明細表</div>
+    <div class="page-title">未參觀查詢</div>
     <div class="card no-print">
-      <div class="sec-hd">取消預約明細表（資料查詢）</div>
+      <div class="sec-hd">未參觀查詢（資料查詢）</div>
       ${tourQueryForm('tc', { fromDefault: mf, toDefault: mt, withName: false })}
       <div class="row" style="justify-content:center;margin-top:8px"><button class="btn" id="tc-go">送出查詢</button></div>
     </div>
     <div class="card">
-      <div class="sec-hd">取消預約明細表（查詢結果）</div>
+      <div class="sec-hd">未參觀查詢（查詢結果）</div>
       <div class="row no-print" style="justify-content:flex-end;margin-bottom:6px"><button class="btn small" id="tc-csv">匯出 Excel（CSV）</button></div>
       <div class="table-wrap" id="tc-result"></div>
       <div id="tc-pager"></div>
@@ -12985,10 +12985,88 @@ async function viewTourCancellations() {
     const { rows, total } = await api('/tours?' + p.toString());
     if (!rows.length) { alert('查無資料可匯出'); return; }
     if (total > rows.length) alert(`資料共 ${total} 筆，匯出前 ${rows.length} 筆；如需完整請縮小日期範圍。`);
-    downloadCsv(`取消預約明細_${todayStr()}.csv`,
+    downloadCsv(`未參觀查詢_${todayStr()}.csv`,
       ['媽媽姓名', '聯絡電話', '原預約時段', '預產期', '報名日期', '取消時間', '取消原因', '取消人'], rows.map(rowToArr));
   };
   load(1);
+}
+
+// 3b. 未成交查詢（狀態＝未成交的參觀）
+async function viewTourLost() {
+  const [mf, mt] = monthBounds();
+  main().innerHTML = `
+    <div class="page-title">未成交查詢</div>
+    <div class="card no-print">
+      <div class="sec-hd">未成交查詢（資料查詢）</div>
+      ${tourQueryForm('tl', { fromDefault: mf, toDefault: mt })}
+      <div class="row" style="justify-content:center;margin-top:8px"><button class="btn" id="tl-go">送出查詢</button></div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">未成交查詢（查詢結果）</div>
+      <div class="row no-print" style="justify-content:flex-end;margin-bottom:6px"><button class="btn small" id="tl-csv">匯出 Excel（CSV）</button></div>
+      <div class="table-wrap" id="tl-result"></div>
+      <div id="tl-pager"></div>
+    </div>`;
+  const rowToArr = t => [t.name, t.phone || '', (t.tour_at || '').slice(0, 16), t.due_date || '', t.source || '', t.last_log || '', (t.last_log_at || '').slice(0, 16)];
+  const params = () => { const p = tourQueryParams('tl'); p.set('status', 'lost'); return p; };
+  const load = async (page = 1) => {
+    const p = params(); p.set('page', page); p.set('pageSize', PAGE_SIZE);
+    const { rows, total, pageSize } = await api('/tours?' + p.toString());
+    const base = (page - 1) * pageSize;
+    $('#tl-result').innerHTML = `<table class="data stack">
+      <thead><tr><th>筆數</th><th>媽媽姓名</th><th>聯絡電話</th><th>參觀日期<br>時段</th><th>預產期</th><th>來源</th><th>最後追蹤</th></tr></thead>
+      <tbody>${rows.map((t, i) => `
+        <tr>
+          <td data-label="筆數">${base + i + 1}</td>
+          <td data-label="媽媽姓名">${esc(t.name)}</td>
+          <td data-label="聯絡電話">${esc(t.phone || '—')}</td>
+          <td data-label="參觀日期/時段">${esc((t.tour_at || '').slice(0, 10))}<br><small>${esc((t.tour_at || '').slice(11, 16))}</small></td>
+          <td data-label="預產期">${esc(t.due_date || '—')}</td>
+          <td data-label="來源">${esc(t.source || '—')}</td>
+          <td data-label="最後追蹤"><small>${t.last_log ? `${esc(t.last_log)}<br>${esc((t.last_log_at || '').slice(0, 16))}` : '—'}</small></td>
+        </tr>`).join('') || '<tr><td colspan="7"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
+    $('#tl-pager').innerHTML = pagerBar(total, page, pageSize);
+    wirePager(page, total, pageSize, load);
+  };
+  $('#tl-go').onclick = () => load(1);
+  $('#tl-csv').onclick = async () => {
+    const p = params(); p.set('page', 1); p.set('pageSize', 200);
+    const { rows, total } = await api('/tours?' + p.toString());
+    if (!rows.length) { alert('查無資料可匯出'); return; }
+    if (total > rows.length) alert(`資料共 ${total} 筆，匯出前 ${rows.length} 筆；如需完整請縮小日期範圍。`);
+    downloadCsv(`未成交查詢_${todayStr()}.csv`,
+      ['媽媽姓名', '聯絡電話', '參觀時段', '預產期', '來源', '最後追蹤', '追蹤時間'], rows.map(rowToArr));
+  };
+  load(1);
+}
+
+// 合約金額增加／減少查詢（由合約明細異動 LOG 判讀第一次 vs 最新合約金額）
+async function viewContractAmountChanges(dir) {
+  const { rows } = await api(`/contract-amount-changes?dir=${dir}`);
+  const label = dir === 'down' ? '減少' : '增加';
+  main().innerHTML = `
+    <div class="page-title">合約金額${label}查詢</div>
+    <div class="card">
+      <div class="sec-hd">合約金額${label}查詢（最新合約金額 ${dir === 'down' ? '<' : '>'} 第一次合約金額）</div>
+      ${filterBar({ placeholder: '搜尋媽媽 / 合約編號…' })}
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>筆數</th><th>媽媽</th><th>合約編號</th><th>第一次合約金額<br><small>（簽約日）</small></th><th>最新合約金額</th><th>${label}金額</th><th>最後異動</th><th></th></tr></thead>
+        <tbody>${rows.map((r, i) => `
+          <tr data-filter="${esc(r.mother_name + ' ' + (r.contract_no || ''))}">
+            <td data-label="筆數">${i + 1}</td>
+            <td data-label="媽媽">${esc(r.mother_name)}<br><small>${esc(r.phone || '')}</small></td>
+            <td data-label="合約編號">${esc(r.contract_no || '—')}</td>
+            <td data-label="第一次合約金額">${fmtMoney(r.first_amount)}<br><small>${esc(r.first_date)}</small></td>
+            <td data-label="最新合約金額">${fmtMoney(r.latest_amount)}</td>
+            <td data-label="${label}金額"><strong style="color:${dir === 'down' ? 'var(--danger)' : 'var(--primary-dark)'}">${r.diff > 0 ? '+' : ''}${fmtMoney(r.diff).replace('NT$ -', '−NT$ ')}</strong></td>
+            <td data-label="最後異動"><small>${esc((r.last_change_at || '').slice(0, 16))}</small></td>
+            <td data-label=""><button class="btn small secondary" data-open="${r.mother_id}">客戶管理</button></td>
+          </tr>`).join('') || `<tr><td colspan="8"><div class="empty">目前沒有合約金額${label}的客戶</div></td></tr>`}</tbody>
+      </table></div>
+      <small style="color:var(--muted)">依合約明細異動 LOG 判讀：第一次合約金額＝簽約首日建檔完成的金額；之後的新增／刪除明細造成${label}者列於本表。</small>
+    </div>`;
+  wireFilter(main());
+  main().querySelectorAll('[data-open]').forEach(b => b.onclick = () => { location.hash = `#/customers?m=${b.dataset.open}`; });
 }
 
 // 4. 預約參觀時段設定
@@ -13977,6 +14055,9 @@ const routes = {
   '#/prospects': viewProspects,
   '#/tour-signups': viewTourSignups,
   '#/tour-cancellations': viewTourCancellations,
+  '#/tour-lost': viewTourLost,
+  '#/contract-amount-up': () => viewContractAmountChanges('up'),
+  '#/contract-amount-down': () => viewContractAmountChanges('down'),
   '#/tour-slots': viewTourSlots,
   '#/shifts': viewShifts,
   '#/family': viewFamily,
@@ -14005,7 +14086,7 @@ const ROUTE_PERM = {
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': ['baby_care', 'mother_care'], '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
   '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/program-calendar': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
-  '#/tours': 'tours', '#/visitor-reservations': 'visitors', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
+  '#/tours': 'tours', '#/visitor-reservations': 'visitors', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-lost': 'tours', '#/contract-amount-up': 'tours', '#/contract-amount-down': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
   '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys',
   '#/audit-logs': 'audit', '#/export': 'export', '#/settings': 'settings', '#/users': 'users', '#/employees': 'users'
 };

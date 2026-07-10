@@ -125,9 +125,21 @@
         <button type="button" class="nav-group-hd" data-perm="tours">預約參觀管理<span class="chev">▾</span></button>
         <div class="nav-group-body">
           <a href="#/prospects" data-nav data-perm="tours">潛在客戶資料</a>
-          <a href="#/tour-signups" data-nav data-perm="tours">預約參觀報名資料</a>
-          <a href="#/tour-cancellations" data-nav data-perm="tours">取消預約明細表</a>
+          <!-- 隱藏（2026-07-10 依需求）：預約參觀報名資料，功能仍在、路由可直達
+          <a href="#/tour-signups" data-nav data-perm="tours">預約參觀報名資料</a> -->
+          <a href="#/tour-cancellations" data-nav data-perm="tours">未參觀查詢</a>
+          <a href="#/tour-lost" data-nav data-perm="tours">未成交查詢</a>
           <a href="#/tour-slots" data-nav data-perm="tours">預約參觀時段設定</a>
+        </div>
+      </div>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd" data-perm="tours">合約管理<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/client-contracts" data-nav data-perm="tours">客戶簽約資料</a>
+          <a href="#/cancellations" data-nav data-perm="tours">客戶退訂資料</a>
+          <a href="#/contract-transfers" data-nav data-perm="tours">合約轉住房資料</a>
+          <a href="#/contract-amount-up" data-nav data-perm="tours">合約金額增加查詢</a>
+          <a href="#/contract-amount-down" data-nav data-perm="tours">合約金額減少查詢</a>
         </div>
       </div>
       <a href="#/visitor-reservations" data-nav data-perm="visitors">訪客預約</a>
@@ -136,14 +148,6 @@
       <!-- <a href="#/crm" data-nav data-perm="crm">LINE／FB 客訊</a>
       <a href="#/testimonials" data-nav data-perm="testimonials">名人推薦</a> -->
       <div class="nav-section" data-section>後台</div>
-      <div class="nav-group" data-nav-group>
-        <button type="button" class="nav-group-hd" data-perm="tours">客戶及簽約資料<span class="chev">▾</span></button>
-        <div class="nav-group-body">
-          <a href="#/client-contracts" data-nav data-perm="tours">客戶簽約資料</a>
-          <a href="#/cancellations" data-nav data-perm="tours">客戶退訂資料</a>
-          <a href="#/contract-transfers" data-nav data-perm="tours">合約轉住房資料</a>
-        </div>
-      </div>
       <div class="nav-group" data-nav-group>
         <button type="button" class="nav-group-hd" data-perm="reports">產後報表查詢<span class="chev">▾</span></button>
         <div class="nav-group-body">

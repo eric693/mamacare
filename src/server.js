@@ -4699,10 +4699,14 @@ app.post('/api/customers/:motherId/contract/items', requireStaff, (req, res) => 
   let items = [];
   try { items = JSON.parse(cur.items); } catch (e) { items = []; }
   if (items.length >= 50) return res.status(400).json({ error: '明細筆數已達上限' });
+  const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  const before = totalOf(items);
   items.push({ name, qty, price: Math.round(price), by: req.session.user.name, at: today() });
   db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
     .run(JSON.stringify(items).slice(0, 12000), mother.id);
-  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id, summary: `合約明細新增 ${name} ${qty}天` });
+  // 金額變化記入 LOG（合約金額增加／減少查詢由此判讀）
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id,
+    summary: `合約明細新增 ${name} ${qty}天（金額 ${before}→${totalOf(items)}）` });
   res.json({ ok: true });
 });
 
@@ -4717,12 +4721,47 @@ app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, r
   let items = [];
   try { items = JSON.parse(cur.items); } catch (e) { items = []; }
   if (!(idx >= 0 && idx < items.length)) return res.status(400).json({ error: '明細序號錯誤' });
+  const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  const before = totalOf(items);
   const removed = items.splice(idx, 1)[0];
   db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
     .run(JSON.stringify(items), cur.mother_id);
   logAudit(req, { action: 'delete', entity: 'customer_contracts', entity_id: cur.mother_id,
-    summary: `合約明細刪除 ${removed.name} ${removed.qty}天（${reason}）` });
+    summary: `合約明細刪除 ${removed.name} ${removed.qty}天（${reason}）（金額 ${before}→${totalOf(items)}）` });
   res.json({ ok: true });
+});
+
+// 合約金額增加／減少查詢：由 LOG 判讀「第一次合約金額 vs 最新合約金額」
+// 第一次金額＝最早一筆金額異動 LOG 的變動前值（同日內的初始建檔視為第一次，取當日最後值）
+app.get('/api/contract-amount-changes', requireStaff, (req, res) => {
+  const dir = req.query.dir === 'down' ? 'down' : 'up';
+  const rows = [];
+  for (const c of db.prepare(`SELECT cc.*, m.name AS mother_name, m.phone FROM customer_contracts cc
+    JOIN mothers m ON m.id = cc.mother_id WHERE cc.status != 'cancelled'`).all()) {
+    let items = [];
+    try { items = JSON.parse(c.items); } catch (e) { items = []; }
+    const latest = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+    const logs = db.prepare(`SELECT summary, created_at FROM audit_logs
+      WHERE entity = 'customer_contracts' AND entity_id = ? AND summary LIKE '%（金額 %→%）%'
+      ORDER BY id`).all(String(c.mother_id));
+    const parsed = logs.map(l => {
+      const mch = l.summary.match(/（金額 (\d+)→(\d+)）/);
+      return mch ? { from: Number(mch[1]), to: Number(mch[2]), at: l.created_at } : null;
+    }).filter(Boolean);
+    if (!parsed.length) continue;
+    // 簽約當日的建檔（首日多筆新增）視為第一次合約金額：取首日最後一筆的 to
+    const firstDay = parsed[0].at.slice(0, 10);
+    const firstDayLogs = parsed.filter(p => p.at.slice(0, 10) === firstDay);
+    const first = firstDayLogs[firstDayLogs.length - 1].to;
+    const diff = latest - first;
+    if (dir === 'up' ? diff <= 0 : diff >= 0) continue;
+    const last = parsed[parsed.length - 1];
+    rows.push({ mother_id: c.mother_id, mother_name: c.mother_name, phone: c.phone,
+      contract_no: c.contract_no, first_amount: first, latest_amount: latest, diff,
+      first_date: firstDay, last_change_at: last.at });
+  }
+  rows.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  res.json({ dir, rows });
 });
 
 // ---------- 後台：公佈欄及交辦事項 ----------
