@@ -2169,7 +2169,12 @@ function openHkTaskForm(residents, date) {
 
 /* ---------- 收費帳務 ---------- */
 async function viewBilling() {
-  const rows = await api('/billing');
+  // 已退房且已結清者不顯示（僅列：入住中未結清／入住中已結清／已退房未結清）
+  const rows = (await api('/billing')).filter(b => !(b.status === 'checked_out' && b.balance <= 0));
+  const todayStr = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  // 入住超過 3 天仍未結清「合約金額」→ 整列變底色
+  const isOverdue = b => b.status === 'checked_in' && b.contract_balance > 0
+    && (new Date(todayStr) - new Date(b.check_in)) / 86400000 > 3;
   main().innerHTML = `
     <div class="page-title">收費帳務</div>
     <div class="card">
@@ -2178,7 +2183,7 @@ async function viewBilling() {
         <table class="data stack">
           <thead><tr><th>媽媽</th><th>房間 / 期間</th><th>應收</th><th>已收</th><th>未結餘額</th><th></th></tr></thead>
           <tbody>${rows.map(b => `
-            <tr data-filter="${esc(b.mother_name + ' ' + b.room_name)}" data-status="${b.balance > 0 ? 'unpaid' : 'paid'}">
+            <tr class="${isOverdue(b) ? 'row-overdue' : ''}" data-filter="${esc(b.mother_name + ' ' + b.room_name)}" data-status="${b.balance > 0 ? 'unpaid' : 'paid'}">
               <td data-label="媽媽">${esc(b.mother_name)}　<span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span></td>
               <td data-label="房間 / 期間">${esc(b.room_name)} 房<br><small>${esc(b.check_in)} ~ ${esc(b.check_out)}</small></td>
               <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶未入住 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
@@ -2186,10 +2191,11 @@ async function viewBilling() {
               <td data-label="未結餘額">${b.balance > 0
                 ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span><br><small>合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}</small>`
                 : '<span class="badge green">已結清</span>'}</td>
-              <td data-label="操作"><button class="btn small secondary" data-detail="${b.id}">收費明細</button></td>
+              <td data-label="操作"><button class="btn small secondary" data-detail="${b.id}">收費明細</button>${b.balance > 0 ? ` <button class="btn small" data-notify="${b.id}">通知繳費</button>` : ''}</td>
             </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚無訂房資料</div></td></tr>'}</tbody>
         </table>
       </div>
+      ${rows.some(isOverdue) ? '<p style="font-size:.8rem;color:var(--muted);margin:8px 0 0">底色列＝入住超過 3 天，合約金額尚未結清。</p>' : ''}
     </div>`;
   wireFilter(main());
   main().querySelectorAll('[data-detail]').forEach(btn => {
@@ -2197,6 +2203,13 @@ async function viewBilling() {
       $('#modal').onclose = () => { $('#modal').onclose = null; viewBilling(); };
       openBillingDetail(btn.dataset.detail);
     };
+  });
+  main().querySelectorAll('[data-notify]').forEach(btn => btn.onclick = async () => {
+    if (!confirm('發送繳費通知給家屬（留言＋已綁定者 LINE）？')) return;
+    try {
+      const r = await api(`/bookings/${btn.dataset.notify}/dun`, { method: 'POST' });
+      alert(`已送出繳費通知${r.notified ? `，並推播 ${r.notified} 位家屬 LINE` : '（家屬留言已送出；尚無綁定 LINE 之家屬）'}`);
+    } catch (e) { alert(e.message); }
   });
 }
 
