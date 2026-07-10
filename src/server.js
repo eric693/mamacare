@@ -6088,6 +6088,8 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
              AND (h.mother_id = m.id OR h.room_id = bk.room_id)) AS pending_tasks,
            (SELECT COUNT(*) FROM family_messages fm JOIN babies b2 ON b2.id = fm.baby_id
              WHERE b2.mother_id = m.id AND fm.sender = 'family' AND fm.read_by_staff = 0) AS need_count,
+           (SELECT COUNT(*) FROM meal_swap_requests ms
+             WHERE ms.mother_id = m.id AND ms.status = 'pending') AS meal_swap_count,
            (SELECT COUNT(*) FROM mother_closures c WHERE c.mother_id = m.id) AS closed
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
     WHERE bk.status = 'checked_in'

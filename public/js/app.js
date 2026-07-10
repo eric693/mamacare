@@ -1413,8 +1413,76 @@ function readMotherForm(body) {
 }
 
 async function viewResidents() {
-  const [mothers, babies] = await Promise.all([api('/mothers'), api('/babies')]);
-  // 呈現比照「媽媽房況」看板：卡片式（左側色條依狀態），保留搜尋與狀態篩選
+  const [data, mothers, babies] = await Promise.all([api('/room-status/mothers'), api('/mothers'), api('/babies')]);
+  const st = data.stats;
+  // 房況看板（呈現同媽媽房況；資訊區塊保留不變，卡片按鈕改為營運功能）
+  const boardCards = data.rooms.map(r => {
+    const occ = r.occupant, next = r.next_booking;
+    const states = [r.state];
+    if (occ && occ.pending_tasks > 0) states.push('has_tasks');
+    if (occ && occ.need_count > 0) states.push('has_needs');
+    if (occ && occ.meal_swap_count > 0) states.push('has_meal_swap');
+    const nextDue = occ && next && next.check_in <= data.date;
+    if (nextDue) states.push('due_in');
+    // 家屬傳送新訊息提示（護理留言／換餐申請）
+    const msgBadges = occ ? [
+      occ.need_count > 0 ? `<span class="badge red">家屬留言 ${occ.need_count}</span>` : '',
+      occ.meal_swap_count > 0 ? `<span class="badge yellow">換餐申請 ${occ.meal_swap_count}</span>` : ''
+    ].filter(Boolean).join(' ') : '';
+    let body = '';
+    if (occ) {
+      const babyLine = (occ.babies || []).length
+        ? occ.babies.map(b => `${esc(b.name)} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`).join('　')
+        : '<span style="color:var(--muted)">尚未登記</span>';
+      body = `
+        <div class="rs-name">${esc(occ.mother_name)}${occ.closed ? ' <span class="badge gray">已結案</span>' : ''}<small style="color:var(--muted);font-weight:400">　${esc(occ.phone || '')}</small></div>
+        <div class="rs-stay">
+          <div class="rs-bar"><i style="width:${Math.min(100, Math.round(occ.stay_day / Math.max(occ.stay_total, 1) * 100))}%"></i></div>
+          <small>第 ${occ.stay_day} / ${occ.stay_total} 天（${esc(occ.check_in)} ~ ${esc(occ.check_out)}）</small>
+        </div>
+        <div class="rs-kv">
+          ${occ.delivery_type ? `<span>生產：${esc(occ.delivery_type)}${occ.delivery_date ? `（${esc(occ.delivery_date)}）` : ''}</span>` : ''}
+          <span>膳食：${esc(occ.meal_diet || '一般')}${occ.diet_notes ? `・${esc(occ.diet_notes)}` : ''}</span>
+          ${occ.hk_dnd ? `<span>勿擾：${esc(occ.hk_dnd)}</span>` : ''}
+          ${occ.hk_needs ? `<span>房務需求：${esc(occ.hk_needs)}</span>` : ''}
+          ${occ.medical_notes ? `<span style="color:var(--danger)">醫療注意：${esc(occ.medical_notes)}</span>` : ''}
+          <span>寶寶：${babyLine}</span>
+          <span>今日照護 ${occ.today_care_count} 次${occ.last_care_at ? `・最後 ${fmtTime(occ.last_care_at)}（${sinceText(occ.last_care_at)}）` : ''}</span>
+          ${occ.pending_tasks > 0 ? `<span class="badge yellow">待辦房務 ${occ.pending_tasks} 件</span>` : ''}
+        </div>`;
+    } else if (next) {
+      body = `
+        <div class="rs-name" style="color:var(--muted)">${r.state === 'due_in' ? '今日應入住' : '下一筆預約'}</div>
+        <div class="rs-kv">
+          <span>${esc(next.mother_name)}${next.phone ? `　${esc(next.phone)}` : ''}</span>
+          <span>${esc(next.check_in)} ~ ${esc(next.check_out)}</span>
+        </div>`;
+    } else {
+      body = '<div class="rs-name" style="color:var(--muted)">目前空房，無排定預約</div>';
+    }
+    const nextLine = occ && next
+      ? `<div class="rs-next" ${nextDue ? 'style="color:var(--warn);font-weight:600"' : ''}>${nextDue ? '今日應入住' : '下一筆'}：${esc(next.mother_name)}　${esc(next.check_in)} 入住</div>` : '';
+    const actions = occ ? [
+      canAccess('#/meals') ? '<a class="btn small" href="#/meals">膳食管理</a>' : '',
+      canAccess('#/housekeeping') ? '<a class="btn small" href="#/housekeeping">房務清潔</a>' : '',
+      canAccess('#/billing') ? `<button class="btn small" data-bill="${occ.booking_id}">收費帳務</button>` : '',
+      canAccess('#/shop') ? '<a class="btn small" href="#/shop">商城商品</a>' : '',
+      canAccess('#/customers') ? `<button class="btn small" data-contract="${occ.mother_id}">合約資料</button>` : '',
+      canAccess('#/visitor-reservations') ? '<a class="btn small" href="#/visitor-reservations">訪客預約</a>' : '',
+      canAccess('#/family') ? '<a class="btn small" href="#/family">＋家屬帳號</a>' : ''
+    ].filter(Boolean).join('') : (canAccess('#/rooms') ? '<a class="btn small secondary" href="#/rooms">訂房管理</a>' : '');
+    return `
+      <div class="room-card ${r.state}" data-state="${states.join(' ')}">
+        <div class="row between" style="align-items:flex-start">
+          <div><span class="rs-room">${esc(r.name)}</span><small style="color:var(--muted)">　${esc(r.room_type)}</small></div>
+          <div style="text-align:right"><span class="badge ${ROOM_STATE_BADGE[r.state]}">${ROOM_STATE_LABEL[r.state]}</span>
+            ${msgBadges ? `<div style="margin-top:4px">${msgBadges}</div>` : ''}</div>
+        </div>
+        ${body}${nextLine}
+        ${actions ? `<div class="row" style="gap:6px;margin-top:10px">${actions}</div>` : ''}
+      </div>`;
+  }).join('');
+  // 媽媽／寶寶資料管理卡片（收合區塊；左側色條依狀態）
   const MOM_STATE_CLS = { checked_in: 'occupied', reserved: 'reserved', checked_out: '' };
   const motherCards = mothers.map(m => `
     <div class="room-card ${MOM_STATE_CLS[m.status] || ''}" data-filter="${esc(m.name + ' ' + (m.phone || '') + ' ' + (m.room_name || ''))}" data-status="${m.status}">
@@ -1453,23 +1521,75 @@ async function viewResidents() {
     </div>`).join('');
   main().innerHTML = `
     <div class="page-title">住客管理</div>
-    <div class="card">
-      <div class="row between">
-        <h3>媽媽</h3>
-        <button class="btn small" id="rs-add-mother">新增媽媽</button>
-      </div>
-      ${filterBar({ placeholder: '搜尋姓名 / 電話 / 房間…', statuses: [{ val: '', label: '全部' }, { val: 'reserved', label: '預約' }, { val: 'checked_in', label: '入住中' }, { val: 'checked_out', label: '已退房' }] })}
-      <div class="board-grid flt-zone">${motherCards || '<div class="empty">尚無媽媽資料</div>'}</div>
+    <div class="stat-grid">
+      <div class="stat"><div class="num">${st.total}</div><div class="label">總房數</div></div>
+      <div class="stat"><div class="num">${st.occupied}</div><div class="label">入住中</div></div>
+      <div class="stat"><div class="num">${st.due_out}</div><div class="label">應退房</div></div>
+      <div class="stat"><div class="num">${st.due_in}</div><div class="label">今日入住</div></div>
     </div>
     <div class="card">
-      <div class="row between">
-        <h3>寶寶</h3>
-        <button class="btn small" id="rs-add-baby">新增寶寶</button>
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button class="btn small" data-board-flt="all">全部</button>
+          <button class="btn small secondary" data-board-flt="occupied">入住中</button>
+          <button class="btn small secondary" data-board-flt="due_out">應退房</button>
+          <button class="btn small secondary" data-board-flt="due_in">今日入住</button>
+          <button class="btn small secondary" data-board-flt="vacant">空房</button>
+          <button class="btn small secondary" data-board-flt="has_tasks">有待辦房務</button>
+          <button class="btn small secondary" data-board-flt="has_meal_swap">有換餐申請</button>
+          <button class="btn small secondary" data-board-flt="has_needs">有護理需求</button>
+        </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button class="btn small" id="rs-add-mother">新增媽媽</button>
+          <button class="btn small" id="rs-add-baby">新增寶寶</button>
+          ${canAccess('#/mother-rooms-print') ? '<a class="btn small secondary" href="#/mother-rooms-print">房況列印</a>' : ''}
+          <small style="color:var(--muted)">${esc(data.date)}</small>
+          <button class="btn small secondary" id="rs-refresh">重新整理</button>
+        </div>
       </div>
-      ${filterBar({ placeholder: '搜尋寶寶 / 媽媽…', search: true })}
-      <div class="board-grid flt-zone">${babyCards || '<div class="empty">尚無寶寶資料</div>'}</div>
+      <div class="board-grid mt" id="rm-grid">${boardCards || '<div class="empty">尚未建立房間</div>'}</div>
+    </div>
+    <div class="card">
+      <details>
+        <summary style="cursor:pointer;font-weight:600">媽媽資料管理（${mothers.length}）　點擊展開 ▾</summary>
+        ${filterBar({ placeholder: '搜尋姓名 / 電話 / 房間…', statuses: [{ val: '', label: '全部' }, { val: 'reserved', label: '預約' }, { val: 'checked_in', label: '入住中' }, { val: 'checked_out', label: '已退房' }] })}
+        <div class="board-grid flt-zone">${motherCards || '<div class="empty">尚無媽媽資料</div>'}</div>
+      </details>
+    </div>
+    <div class="card">
+      <details>
+        <summary style="cursor:pointer;font-weight:600">寶寶資料管理（${babies.length}）　點擊展開 ▾</summary>
+        ${filterBar({ placeholder: '搜尋寶寶 / 媽媽…', search: true })}
+        <div class="board-grid flt-zone">${babyCards || '<div class="empty">尚無寶寶資料</div>'}</div>
+      </details>
     </div>`;
+  $('#rs-refresh').onclick = viewResidents;
+  wireBoardFilter(main(), '#rm-grid');
   wireFilter(main());
+  // 收費帳務：開啟該訂房收費明細
+  main().querySelectorAll('[data-bill]').forEach(b => b.onclick = () => openBillingDetail(b.dataset.bill));
+  // 合約資料：彈窗顯示此媽媽的合約資料
+  main().querySelectorAll('[data-contract]').forEach(b => b.onclick = async () => {
+    let d;
+    try { d = await api(`/customers/${b.dataset.contract}`); } catch (e) { alert(e.message); return; }
+    const ct = d.contract, cd = (ct && ct.data) || {};
+    openModal(`合約資料 — ${d.mother.name}`, ct ? `
+      <div style="font-size:.95rem;line-height:2">
+        <div>合約編號：<b>${esc(ct.contract_no)}</b>${ct.status === 'cancelled' ? ` <span class="badge gray">已退訂 ${esc(cd.cancel_date || '')}</span>` : ''}</div>
+        <div>簽約日：${esc(cd.sign_date || '—')}　經手人：${esc(cd.handler || '—')}</div>
+        <div>預產期：${esc(cd.due_date || '—')}　胎次：${esc(cd.parity_no || '—')}　胞胎：${esc(cd.baby_count || '—')}</div>
+        <div>飲食禁忌：${esc(cd.diet_ban || '—')}</div>
+        ${(ct.items || []).length ? `
+          <div class="table-wrap"><table class="data">
+            <thead><tr><th>銷售房型</th><th>天數</th><th>單價</th><th>小計</th></tr></thead>
+            <tbody>${ct.items.map(it => `<tr><td>${esc(it.name)}</td><td>${it.qty}</td><td>${Number(it.price).toLocaleString()}</td><td>${(Number(it.qty) * Number(it.price)).toLocaleString()}</td></tr>`).join('')}</tbody>
+          </table></div>
+          <div style="text-align:right;font-weight:700">合約總額：${Number(ct.total).toLocaleString()} 元</div>` : ''}
+        ${cd.note ? `<div>備註：${esc(cd.note)}</div>` : ''}
+        ${canAccess('#/customers') ? '<div class="row mt"><a class="btn small secondary" href="#/customers" data-close-modal>前往客戶管理</a></div>' : ''}
+      </div>` : '<div class="empty">此媽媽尚無合約資料（可至客戶管理建立）</div>',
+    body => body.querySelectorAll('[data-close-modal]').forEach(a => a.onclick = () => closeModal()));
+  });
 
   $('#rs-add-mother').onclick = () => {
     openModal('新增媽媽', motherForm(), body => {
