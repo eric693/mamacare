@@ -412,13 +412,30 @@ test('產婦結案：結案存檔→更新→房況旗標→解除結案', async
   const g2 = await req('GET', `/api/mothers/${mom.id}/closure`);
   assert.strictEqual(g2.data.closure.data.reason, '提前退住');
   assert.ok(g2.data.closure.edited_at);
-  // 房況卡片 closed 旗標
+  // 結案存檔即代表已退房：房況不再有該媽媽（顯示空房），媽媽狀態轉 checked_out
   const rs = await req('GET', '/api/room-status/mothers');
-  const occ = rs.data.rooms.map(r => r.occupant).find(o => o && o.mother_id === mom.id);
-  assert.ok(occ.closed > 0);
-  // 解除結案（admin）
-  assert.strictEqual((await req('DELETE', `/api/mother-closures/${mom.id}`)).status, 200);
+  assert.ok(!rs.data.rooms.some(r => r.occupant && r.occupant.mother_id === mom.id));
+  const mAfter = (await req('GET', '/api/mothers')).data.find(m => m.id === mom.id);
+  assert.strictEqual(mAfter.status, 'checked_out');
+  // 解除結案（admin）：結案時自動退房者一併恢復入住中
+  const del = await req('DELETE', `/api/mother-closures/${mom.id}`);
+  assert.strictEqual(del.status, 200);
+  assert.strictEqual(del.data.restored, true);
   assert.strictEqual((await req('GET', `/api/mothers/${mom.id}/closure`)).data.closure, null);
+  const mBack = (await req('GET', '/api/mothers')).data.find(m => m.id === mom.id);
+  assert.strictEqual(mBack.status, 'checked_in');
+  const rs2 = await req('GET', '/api/room-status/mothers');
+  assert.ok(rs2.data.rooms.some(r => r.occupant && r.occupant.mother_id === mom.id));
+});
+
+test('7日內入住／退房清單：在住媽媽依預退日列入 checkouts', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const r = await req('GET', '/api/room-status/mother-upcoming');
+  assert.strictEqual(r.status, 200);
+  assert.ok(Array.isArray(r.data.checkins) && Array.isArray(r.data.checkouts));
+  for (const row of [...r.data.checkins, ...r.data.checkouts]) {
+    for (const k of ['check_in', 'check_out', 'room_name', 'mother_name']) assert.ok(k in row, `缺欄位 ${k}`);
+  }
 });
 
 // ---- 醫師查房清單／寶寶報喜／病歷資料回歸測試 ----

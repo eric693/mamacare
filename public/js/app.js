@@ -6359,17 +6359,11 @@ async function viewMotherRooms() {
           <button class="btn small secondary" data-board-flt="due_out">應退房</button>
           <button class="btn small secondary" data-board-flt="due_in">今日入住</button>
           <button class="btn small secondary" data-board-flt="vacant">空房</button>
-          <button class="btn small secondary" data-board-flt="has_tasks">有待辦房務</button>
           <button class="btn small secondary" data-board-flt="has_needs">有護理需求</button>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
-          ${canAccess('#/mother-care-query') ? '<a class="btn small secondary" href="#/mother-care-query">媽媽照護紀錄查詢</a>' : ''}
-          ${canAccess('#/mother-needs') ? '<a class="btn small secondary" href="#/mother-needs">媽媽護理需求</a>' : ''}
           ${canAccess('#/rounds-list') ? '<a class="btn small secondary" href="#/rounds-list">醫師查房清單</a>' : ''}
-          ${canAccess('#/baby-announcements') ? '<a class="btn small secondary" href="#/baby-announcements">寶寶報喜</a>' : ''}
           ${canAccess('#/mother-intake-blank') ? '<a class="btn small secondary" href="#/mother-intake-blank">空白媽媽評估單</a>' : ''}
-          ${canAccess('#/medical-records') ? '<a class="btn small secondary" href="#/medical-records">病歷資料</a>' : ''}
-          ${canAccess('#/mother-rooms-print') ? '<a class="btn small secondary" href="#/mother-rooms-print">房況列印</a>' : ''}
           <small style="color:var(--muted)">${esc(data.date)}</small>
           <button class="btn small secondary" id="rs-refresh">重新整理</button>
         </div>
@@ -6399,6 +6393,60 @@ async function viewMotherRooms() {
       };
     });
   });
+}
+
+/* ---------- 7日內入住／7日內退房（媽媽房況分頁） ---------- */
+async function viewMotherUpcoming(kind) {
+  const isIn = kind === 'in';
+  const title = isIn ? '7日內入住' : '7日內退房';
+  const data = await api('/room-status/mother-upcoming');
+  const d = data.date;
+  const rows = isIn ? data.checkins : data.checkouts;
+  const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+  const badge = r => {
+    const key = isIn ? r.check_in : r.check_out;
+    if (key < d) return `<span class="badge red">逾期 ${dayDiff(key, d)} 天</span>`;
+    if (key === d) return isIn ? '<span class="badge teal">今日入住</span>' : '<span class="badge yellow">今日退房</span>';
+    return `<span class="badge gray">${dayDiff(d, key)} 天後</span>`;
+  };
+  const cols = isIn
+    ? ['入住日', '房號', '房型', '媽媽', '電話', '預退日', '合約天數', '狀態']
+    : ['預退日', '房號', '房型', '媽媽', '電話', '入住日', '已住天數', '狀態'];
+  const tr = r => {
+    const total = dayDiff(r.check_in, r.check_out);
+    const cells = isIn
+      ? [esc(r.check_in), esc(r.room_name), esc(r.room_type), esc(r.mother_name), esc(r.phone || ''), esc(r.check_out), `${total} 天`, badge(r)]
+      : [esc(r.check_out), esc(r.room_name), esc(r.room_type), esc(r.mother_name), esc(r.phone || ''), esc(r.check_in), `第 ${Math.max(1, dayDiff(r.check_in, d) + 1)} / ${total} 天`, badge(r)];
+    return `<tr data-kw="${esc(`${r.mother_name} ${r.room_name} ${r.phone || ''}`.toLowerCase())}">${cells.map((c, i) => `<td data-label="${cols[i]}">${c}</td>`).join('')}</tr>`;
+  };
+  main().innerHTML = `
+    <div class="page-title">${title} <small style="font-weight:400;color:var(--muted);font-size:.85rem">（${esc(d)} 起 7 日內，含逾期）</small></div>
+    <div class="card">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <input id="mu-kw" placeholder="搜尋姓名／房號／電話" style="max-width:240px">
+        <div class="row" style="gap:6px">
+          ${canAccess('#/rooms') ? '<a class="btn small secondary" href="#/rooms">訂房管理</a>' : ''}
+          <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        </div>
+      </div>
+      <div class="table-wrap mt">
+        <table class="data stack">
+          <thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+          <tbody id="mu-body">${rows.map(tr).join('') || `<tr><td colspan="${cols.length}"><div class="empty">未來 7 日內沒有排定${isIn ? '入住' : '退房'}</div></td></tr>`}</tbody>
+        </table>
+      </div>
+      <div style="color:var(--muted);font-size:.85rem;margin-top:6px" id="mu-count">共 ${rows.length} 筆</div>
+    </div>`;
+  $('#mu-kw').oninput = () => {
+    const kw = $('#mu-kw').value.trim().toLowerCase();
+    let n = 0;
+    main().querySelectorAll('#mu-body tr[data-kw]').forEach(trEl => {
+      const show = !kw || trEl.dataset.kw.includes(kw);
+      trEl.style.display = show ? '' : 'none';
+      if (show) n++;
+    });
+    $('#mu-count').textContent = `共 ${kw ? n : rows.length} 筆`;
+  };
 }
 
 /* ---------- 照護紀錄查詢（媽媽／寶寶；僅入住中） ---------- */
@@ -9087,11 +9135,16 @@ async function viewMotherGuidance() {
 async function viewMotherClosure() {
   const all = await api('/mothers');
   const mothers = all.filter(m => m.status === 'checked_in');
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  // 結案存檔即同步退房；已退房媽媽仍可經 ?m= 檢視／修改結案單
+  if (want && !mothers.some(m => m.id === want)) {
+    const extra = all.find(m => m.id === want);
+    if (extra) mothers.unshift(extra);
+  }
   if (!mothers.length) {
     main().innerHTML = '<div class="page-title">產婦結案</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
     return;
   }
-  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
   const { mother, closure, summary, options } = await api(`/mothers/${momId}/closure`);
   const d = (closure && closure.data) || {};
@@ -9176,7 +9229,7 @@ async function viewMotherClosure() {
     if (v('#mcl-reason') === '其他' && !v('#mcl-reason-other')) { err.textContent = '結案原因選「其他」時，補述必填'; return; }
     if (v('#mcl-dest') === '轉至醫療院所' && !v('#mcl-hospital')) { err.textContent = '去向選「轉至醫療院所」時，院所名稱必填'; return; }
     if (v('#mcl-dest') === '其他' && !v('#mcl-dest-other')) { err.textContent = '去向選「其他」時，補述必填'; return; }
-    if (!closure && !confirm(`確認為「${mother.name}」建立結案？結案後房況卡片會顯示已結案標記。`)) return;
+    if (!closure && !confirm(`確認為「${mother.name}」建立結案？結案存檔即代表已退房，媽媽房況將顯示空房。`)) return;
     try {
       await api(`/mothers/${momId}/closure`, { method: 'PUT', body: {
         close_date: v('#mcl-date'), close_time: v('#mcl-time'),
@@ -9191,7 +9244,7 @@ async function viewMotherClosure() {
 
   const reopen = $('#mcl-reopen');
   if (reopen) reopen.onclick = async () => {
-    if (!confirm('確定解除結案？結案單內容將刪除（會記入稽核軌跡）。')) return;
+    if (!confirm('確定解除結案？結案單內容將刪除（會記入稽核軌跡）；若退房是結案時自動產生的，將一併恢復為入住中。')) return;
     await api(`/mother-closures/${momId}`, { method: 'DELETE' });
     viewMotherClosure();
   };
@@ -12993,6 +13046,8 @@ const routes = {
   '#/mother-rooms': viewMotherRooms,
   '#/baby-rooms': viewBabyRooms,
   '#/mother-care-query': () => viewCareRecordQuery('mother'),
+  '#/mother-arrivals': () => viewMotherUpcoming('in'),
+  '#/mother-departures': () => viewMotherUpcoming('out'),
   '#/baby-care-query': () => viewCareRecordQuery('baby'),
   '#/nursing-needs': () => viewNursingNeeds('all'),
   '#/mother-needs': () => viewNursingNeeds('mother'),
@@ -13073,7 +13128,7 @@ const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
   '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
-  '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms',
+  '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms', '#/mother-arrivals': 'rooms', '#/mother-departures': 'rooms',
   '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family', '#/mother-needs': 'family', '#/baby-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': ['baby_care', 'mother_care'], '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
@@ -13143,6 +13198,12 @@ async function showApp() {
   const mods = currentUser.role === 'admin' ? null : (currentUser.modules || []);
   document.querySelectorAll('[data-perm]').forEach(el => {
     el.style.display = (!mods || mods.includes(el.getAttribute('data-perm'))) ? '' : 'none';
+  });
+  // 折疊群組底下的分頁全被隱藏時，連群組標題一起隱藏
+  document.querySelectorAll('[data-nav-group]').forEach(g => {
+    const hd = g.querySelector('.nav-group-hd');
+    if (hd.style.display !== 'none' &&
+        ![...g.querySelectorAll('[data-nav]')].some(a => a.style.display !== 'none')) hd.style.display = 'none';
   });
   // 隱藏底下沒有任何可見項目的分區標題
   document.querySelectorAll('[data-section]').forEach(sec => {

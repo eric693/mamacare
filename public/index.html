@@ -54,7 +54,16 @@
     <nav class="sidenav" id="sidenav">
       <div class="nav-section" data-section>日常作業</div>
       <a href="#/dashboard" data-nav>總覽</a>
-      <a href="#/mother-rooms" data-nav data-perm="rooms">媽媽房況</a>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd">媽媽房況<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/mother-rooms" data-nav data-perm="rooms">房況看板</a>
+          <a href="#/mother-care-query" data-nav data-perm="mother_care">媽媽照護紀錄查詢</a>
+          <a href="#/mother-needs" data-nav data-perm="family">媽媽護理需求</a>
+          <a href="#/mother-arrivals" data-nav data-perm="rooms">7日內入住</a>
+          <a href="#/mother-departures" data-nav data-perm="rooms">7日內退房</a>
+        </div>
+      </div>
       <a href="#/baby-rooms" data-nav data-perm="baby_care">寶寶房況</a>
       <!-- 隱藏（依需求）：寶寶照護、新生兒醫療；功能仍在，可由寶寶房況卡片或深連結進入
       <a href="#/baby-care" data-nav data-perm="baby_care">寶寶照護</a>

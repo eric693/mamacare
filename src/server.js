@@ -1500,15 +1500,34 @@ app.put('/api/mothers/:id/closure', requireStaff, (req, res) => {
     db.prepare(`INSERT INTO mother_closures (mother_id, nurse_id, close_date, close_time, data, note)
       VALUES (?,?,?,?,?,?)`).run(mother.id, req.session.user.id, date, time, json, note);
   }
-  logAudit(req, { action: cur ? 'update' : 'create', entity: 'mother_closures', entity_id: mother.id, summary: '產婦結案' });
+  // 儲存結案即代表已退房：同步退房入住中的訂房，媽媽房況改顯示空房
+  const bk = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status = 'checked_in'
+    ORDER BY check_in DESC LIMIT 1`).get(mother.id);
+  if (bk) {
+    db.prepare(`UPDATE bookings SET status = 'checked_out', actual_check_out = ? WHERE id = ?`).run(date, bk.id);
+    db.prepare(`UPDATE mothers SET status = 'checked_out' WHERE id = ?`).run(mother.id);
+    pushCheckoutSurvey(mother.id); // 退房時自動推滿意度問卷
+  }
+  logAudit(req, { action: cur ? 'update' : 'create', entity: 'mother_closures', entity_id: mother.id, summary: `產婦結案${bk ? '（同步退房）' : ''}` });
   res.json({ ok: true });
 });
 
-// 解除結案（管理員）
+// 解除結案（管理員）；若退房是結案時自動產生的（實際退房日＝結案日），一併恢復為入住中
 app.delete('/api/mother-closures/:motherId', requireAdmin, (req, res) => {
+  const cl = db.prepare('SELECT close_date FROM mother_closures WHERE mother_id = ?').get(req.params.motherId);
   db.prepare('DELETE FROM mother_closures WHERE mother_id = ?').run(req.params.motherId);
-  logAudit(req, { action: 'delete', entity: 'mother_closures', entity_id: req.params.motherId, summary: '解除產婦結案' });
-  res.json({ ok: true });
+  let restored = false;
+  if (cl) {
+    const bk = db.prepare(`SELECT id, actual_check_out FROM bookings
+      WHERE mother_id = ? AND status = 'checked_out' ORDER BY check_in DESC LIMIT 1`).get(req.params.motherId);
+    if (bk && bk.actual_check_out === cl.close_date) {
+      db.prepare(`UPDATE bookings SET status = 'checked_in', actual_check_out = '' WHERE id = ?`).run(bk.id);
+      db.prepare(`UPDATE mothers SET status = 'checked_in' WHERE id = ?`).run(req.params.motherId);
+      restored = true;
+    }
+  }
+  logAudit(req, { action: 'delete', entity: 'mother_closures', entity_id: req.params.motherId, summary: `解除產婦結案${restored ? '（恢復入住中）' : ''}` });
+  res.json({ ok: true, restored });
 });
 
 // ---------- 產科醫師查房清單（在住媽媽工作清單；醫師評估欄留白供手寫） ----------
@@ -6107,6 +6126,24 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     needs: list.filter(x => x.occupant && x.occupant.need_count > 0).length
   };
   res.json({ date: d, stats, rooms: list });
+});
+
+// 7日內入住／退房清單（媽媽房況分頁）：checkins＝7日內（含逾期未入住）預約、checkouts＝7日內（含逾期）應退房
+app.get('/api/room-status/mother-upcoming', requireStaff, (req, res) => {
+  const d = today();
+  const checkins = db.prepare(`
+    SELECT bk.check_in, bk.check_out, r.name AS room_name, r.room_type,
+           m.id AS mother_id, m.name AS mother_name, m.phone, m.due_date
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'reserved' AND bk.check_in <= date(?, '+7 day')
+    ORDER BY bk.check_in, r.name`).all(d);
+  const checkouts = db.prepare(`
+    SELECT bk.check_in, bk.check_out, r.name AS room_name, r.room_type,
+           m.id AS mother_id, m.name AS mother_name, m.phone
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'checked_in' AND bk.check_out <= date(?, '+7 day')
+    ORDER BY bk.check_out, r.name`).all(d);
+  res.json({ date: d, checkins, checkouts });
 });
 
 // 照護紀錄查詢（僅入住中）：kind=mother|baby，可依日期區間、媽媽姓名／房號關鍵字查詢
