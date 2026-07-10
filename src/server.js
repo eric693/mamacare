@@ -6408,12 +6408,15 @@ app.get('/api/nursing-reminders', requireStaff, (req, res) => {
   }
 
   // 3) 護理需求未完成：家屬「聯繫護理站」留言未讀（sender=family, read_by_staff=0），依寶寶彙整
+  //    僅列在住者（以有入住中訂房為準，與護理需求頁同一標準，兩邊件數才會一致）
   const nursing_needs = db.prepare(`SELECT fm.baby_id, b.name AS baby_name, m.name AS mother_name,
       (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id WHERE bk.mother_id = m.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1) AS room_name,
       COUNT(*) AS unread, MAX(fm.created_at) AS last_at,
       (SELECT x.body FROM family_messages x WHERE x.baby_id = fm.baby_id AND x.sender = 'family' AND x.read_by_staff = 0 ORDER BY x.id DESC LIMIT 1) AS last_body
     FROM family_messages fm JOIN babies b ON b.id = fm.baby_id JOIN mothers m ON m.id = b.mother_id
-    WHERE fm.sender = 'family' AND fm.read_by_staff = 0 GROUP BY fm.baby_id ORDER BY last_at DESC`).all();
+    WHERE fm.sender = 'family' AND fm.read_by_staff = 0
+      AND EXISTS (SELECT 1 FROM bookings bk2 WHERE bk2.mother_id = m.id AND bk2.status = 'checked_in')
+    GROUP BY fm.baby_id ORDER BY last_at DESC`).all();
 
   // 4) 媽媽護理紀錄未完成：在住媽媽當日尚未有任何護理紀錄（每天 9:30 後才提醒；當日 nurse 儲存即消失）
   const mm = nowLocal.getUTCMinutes();
@@ -6488,14 +6491,16 @@ app.post('/api/family-messages/msg/:id/read', requireStaff, (req, res) => {
 });
 
 // 護理需求總覽（依入住媽媽彙整；區分媽媽／寶寶需求＋勿擾時間，供護理需求頁使用）
+// 「在住」以有入住中訂房為準（與媽媽房況看板同一標準），避免 mothers.status 不同步時漏列
 app.get('/api/nursing-needs', requireStaff, (req, res) => {
   const d = today();
   const residents = db.prepare(`
     SELECT m.id AS mother_id, m.name AS mother_name, m.hk_dnd, m.hk_needs, m.hk_notes,
-           (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
-             WHERE bk.mother_id = m.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1) AS room_name
-    FROM mothers m WHERE m.status = 'checked_in'
-    ORDER BY room_name`).all();
+           r.name AS room_name
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'checked_in'
+    GROUP BY m.id
+    ORDER BY r.name`).all();
   const reqStmt = db.prepare(`
     SELECT fm.id, fm.baby_id, fm.body, fm.subject_type, fm.created_at, fm.sender_name, b.name AS baby_name
     FROM family_messages fm JOIN babies b ON b.id = fm.baby_id

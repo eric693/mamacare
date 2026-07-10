@@ -6553,6 +6553,24 @@ async function viewNursingNeeds(kind) {
   }).join('') || '<div class="empty">目前無入住中住客</div>';
   const pendingCount = data.residents.reduce((s, r) =>
     s + (kind !== 'baby' ? r.mother_requests.length : 0) + (kind !== 'mother' ? r.baby_requests.length : 0), 0);
+  // 待辦護理需求：家屬送出的未處理需求條列（跨住客、新到舊），處理完即從清單消失
+  const todos = data.residents.flatMap(r =>
+    [...(kind !== 'baby' ? r.mother_requests.map(m => ({ ...m, who: 'mother' })) : []),
+     ...(kind !== 'mother' ? r.baby_requests.map(m => ({ ...m, who: 'baby' })) : [])]
+      .map(m => ({ ...m, room_name: r.room_name, mother_name: r.mother_name })))
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  const todoLines = todos.map(m => `
+    <div class="row between" style="align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line,#eee)">
+      <div><small style="color:var(--muted)">${esc((m.created_at || '').slice(5, 16))}</small>
+        　<b>${esc(m.room_name || '未排房')}</b>　${esc(m.mother_name)}
+        <span class="badge ${m.who === 'mother' ? 'teal' : 'gray'}">${m.who === 'mother' ? '媽媽' : '寶寶'}</span>
+        ${m.who === 'baby' && m.baby_name ? `<b>${esc(m.baby_name)}</b>：` : ''}${esc(m.body)}
+        <small style="color:var(--muted)">（${esc(m.sender_name || '')}）</small></div>
+      <div class="row" style="gap:4px;flex-shrink:0">
+        <button class="btn small secondary" data-reply="${m.baby_id}">回覆</button>
+        <button class="btn small" data-done="${m.id}">完成</button>
+      </div>
+    </div>`).join('');
   main().innerHTML = `
     <div class="page-title">${title} <small style="font-weight:400;color:var(--muted);font-size:.85rem">來源：家屬入口留言</small></div>
     <div class="card">
@@ -6562,6 +6580,14 @@ async function viewNursingNeeds(kind) {
       </div>
       <p style="font-size:.8rem;color:var(--muted);margin:6px 0 10px">家屬於「家屬入口」送出留言後，會依媽媽／寶寶顯示在此；可設定勿擾時間、回覆或標記已處理。</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">${cards}</div>
+    </div>
+    <div class="card">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <h3 style="margin:0">待辦護理需求　<span class="badge ${todos.length ? 'red' : 'green'}">${todos.length} 件</span></h3>
+        <small style="color:var(--muted)">${esc(data.date)}</small>
+      </div>
+      <p style="font-size:.8rem;color:var(--muted);margin:6px 0 4px">家屬送出的護理需求依時間條列於此，按「完成」即從清單移除；清單每日隨最新留言更新。</p>
+      ${todoLines || '<div class="empty">目前沒有待辦護理需求</div>'}
     </div>`;
   const refresh = () => viewNursingNeeds(kind);
   $('#nn-refresh').onclick = refresh;
