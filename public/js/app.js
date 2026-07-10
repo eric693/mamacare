@@ -6024,7 +6024,7 @@ async function viewPrograms() {
       <td data-label="時間/地點">${esc(p.scheduled_at || '採預約')}${p.location ? `<br><small>${esc(p.location)}</small>` : ''}</td>
       <td data-label="費用">${fmtMoney(p.price)}</td>
       <td data-label="名額">${p.capacity > 0 ? p.capacity : '不限'}</td>
-      <td data-label="操作">${isAdmin ? `<button class="btn small secondary" data-edit="${p.id}">編輯</button>` : ''}</td>
+      <td data-label="操作">${isAdmin ? `<button class="btn small secondary" data-edit="${p.id}">編輯</button> ` : ''}<button class="btn small secondary" data-photos="${p.id}">照片</button></td>
     </tr>`).join('') : '<tr><td colspan="6"><div class="empty">尚未建立課程／服務</div></td></tr>';
   main().innerHTML = `
     <div class="page-title">課程與服務</div>
@@ -6062,10 +6062,49 @@ async function viewPrograms() {
     try { await api(`/signups/${b.dataset.cancel}/cancel`, { method: 'POST' }); viewPrograms(); } catch (e) { alert(e.message); }
   });
   main().querySelector('#pg-neworder').onclick = () => openSignupForm(progs.filter(p => p.active));
+  main().querySelectorAll('[data-photos]').forEach(b => b.onclick = () => openProgramPhotos(progs.find(p => p.id == b.dataset.photos)));
   if (isAdmin) {
     main().querySelector('#pg-new').onclick = () => openProgramForm(null, distinctCats(progs));
     main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openProgramForm(progs.find(p => p.id == b.dataset.edit), distinctCats(progs)));
   }
+}
+
+// 課程照片：上傳／檢視／刪除（檔案存 uploads/programs/年月日課程名稱/）
+async function openProgramPhotos(p) {
+  const photos = await api(`/programs/${p.id}/photos`);
+  openModal(`課程照片：${p.name}`, `
+    <div class="row" style="align-items:center;gap:8px;margin-bottom:10px">
+      <input type="file" id="pp-files" accept="image/*" multiple>
+      <button class="btn small" id="pp-upload">上傳</button>
+      <span class="error-msg" id="pp-err"></span>
+    </div>
+    <p style="font-size:.76rem;color:var(--muted);margin:0 0 10px">照片依「年月日課程名稱」資料夾歸檔於伺服器。</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px">
+      ${photos.length ? photos.map(ph => `
+        <div style="position:relative">
+          <a href="/uploads/${esc(ph.file)}" target="_blank"><img src="/uploads/${esc(ph.file)}" style="width:100%;height:110px;object-fit:cover;border-radius:8px;border:1px solid var(--border)"></a>
+          <button class="btn small danger" data-pp-del="${ph.id}" style="position:absolute;top:4px;right:4px;padding:2px 8px">刪除</button>
+          <div style="font-size:.7rem;color:var(--muted)">${esc((ph.created_at || '').slice(0, 16))}</div>
+        </div>`).join('') : '<div class="empty" style="grid-column:1/-1">尚無照片</div>'}
+    </div>`, body => {
+    body.querySelector('#pp-upload').onclick = async () => {
+      const files = body.querySelector('#pp-files').files;
+      if (!files.length) { body.querySelector('#pp-err').textContent = '請先選擇圖片檔'; return; }
+      const fd = new FormData();
+      [...files].forEach(f => fd.append('photos', f));
+      try {
+        const res = await fetch(`/api/programs/${p.id}/photos`, { method: 'POST', body: fd });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || '上傳失敗');
+        openProgramPhotos(p);
+      } catch (e) { body.querySelector('#pp-err').textContent = e.message; }
+    };
+    body.querySelectorAll('[data-pp-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('確定刪除此照片？')) return;
+      try { await api(`/program-photos/${b.dataset.ppDel}`, { method: 'DELETE' }); openProgramPhotos(p); }
+      catch (e) { alert(e.message); }
+    });
+  });
 }
 
 /* ---------- 課程行事曆（月／週檢視） ---------- */
@@ -6194,20 +6233,32 @@ async function viewProgramCalendar() {
     });
   });
 }
-function openProgramForm(p, cats, onSaved) {
+// 加購服務固定名稱清單（選「其他」自行輸入）
+const SERVICE_NAME_OPTIONS = ['泌乳', '產後修復', '寶寶攝影', '寶寶挑片', '身體SPA', '洗頭', '寶寶游泳', '洗澡回式'];
+async function openProgramForm(p, cats, onSaved) {
   const ed = p || {};
   const done = () => { closeModal(); (onSaved || viewPrograms)(); };
+  // 加購服務可指定媽媽（入住中名單）：儲存時自動為該媽媽建立此服務的報名
+  const mothers = (await api('/mothers')).filter(m => m.status === 'checked_in');
+  const edSvcPreset = SERVICE_NAME_OPTIONS.includes(ed.name || '');
   openModal(ed.id ? '編輯課程／服務' : '新增課程／服務', `
     <div class="form-grid">
       <div class="field"><label>類型</label><select id="pg-kind">
         <option value="course" ${ed.kind === 'service' ? '' : 'selected'}>課程／活動</option>
         <option value="service" ${ed.kind === 'service' ? 'selected' : ''}>加購服務</option></select></div>
-      <div class="field"><label>名稱 *</label><input id="pg-name" value="${esc(ed.name || '')}"></div>
-      <div class="field"><label>分類</label><input id="pg-cat" value="${esc(ed.category || '')}" list="pg-cat-list" placeholder="例如：產後服務">${dataListValues('pg-cat-list', cats)}</div>
+      <div class="field" id="pg-name-course-wrap"><label>名稱 *</label><input id="pg-name" value="${esc(ed.name || '')}"></div>
+      <div class="field" id="pg-name-svc-wrap" style="display:none"><label>名稱 *</label>
+        <select id="pg-name-svc">
+          ${SERVICE_NAME_OPTIONS.map(n => `<option ${ed.name === n ? 'selected' : ''}>${n}</option>`).join('')}
+          <option value="__other" ${ed.id && ed.kind === 'service' && !edSvcPreset ? 'selected' : ''}>其他（自行輸入）</option>
+        </select></div>
+      <div class="field" id="pg-name-other-wrap" style="display:none"><label>其他名稱 *</label><input id="pg-name-other" value="${esc(ed.kind === 'service' && !edSvcPreset ? (ed.name || '') : '')}"></div>
       <div class="field"><label>費用</label><input type="number" id="pg-price" min="0" value="${ed.price ?? 0}"></div>
       <div class="field"><label>名額（0=不限）</label><input type="number" id="pg-cap" min="0" value="${ed.capacity ?? 0}"></div>
       <div class="field"><label>時間（課程填，服務可空）</label><input id="pg-when" value="${esc(ed.scheduled_at || '')}" placeholder="2026-07-10 14:00"></div>
       <div class="field"><label>地點</label><input id="pg-loc" value="${esc(ed.location || '')}"></div>
+      <div class="field" id="pg-mom-wrap" style="display:none"><label>媽媽姓名<small>（入住中；選擇後自動建立報名）</small></label>
+        <select id="pg-mom"><option value="">不指定</option>${mothers.map(m => `<option value="${m.id}">${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
       <div class="field"><label><input type="checkbox" id="pg-active" ${ed.active === 0 ? '' : 'checked'}> 開放報名</label></div>
       <div class="field full"><label>說明</label><textarea id="pg-desc" rows="2">${esc(ed.description || '')}</textarea></div>
       <div class="full row"><button class="btn" id="pg-save">儲存</button>
@@ -6215,13 +6266,38 @@ function openProgramForm(p, cats, onSaved) {
         <span class="error-msg" id="pg-err"></span></div>
     </div>`, body => {
     const v = id => body.querySelector(id);
+    // 類型切換：課程＝自由輸入名稱；加購服務＝固定下拉＋媽媽姓名
+    const syncKind = () => {
+      const isSvc = v('#pg-kind').value === 'service';
+      v('#pg-name-course-wrap').style.display = isSvc ? 'none' : '';
+      v('#pg-name-svc-wrap').style.display = isSvc ? '' : 'none';
+      v('#pg-mom-wrap').style.display = isSvc ? '' : 'none';
+      syncOther();
+    };
+    const syncOther = () => {
+      const isSvc = v('#pg-kind').value === 'service';
+      v('#pg-name-other-wrap').style.display = isSvc && v('#pg-name-svc').value === '__other' ? '' : 'none';
+    };
+    v('#pg-kind').onchange = syncKind;
+    v('#pg-name-svc').onchange = syncOther;
+    syncKind();
     v('#pg-save').onclick = async () => {
-      const payload = { kind: v('#pg-kind').value, name: v('#pg-name').value.trim(), category: v('#pg-cat').value.trim(),
+      const isSvc = v('#pg-kind').value === 'service';
+      const name = isSvc
+        ? (v('#pg-name-svc').value === '__other' ? v('#pg-name-other').value.trim() : v('#pg-name-svc').value)
+        : v('#pg-name').value.trim();
+      if (!name) { v('#pg-err').textContent = '請填寫名稱'; return; }
+      const payload = { kind: v('#pg-kind').value, name,
         price: Number(v('#pg-price').value) || 0, capacity: Number(v('#pg-cap').value) || 0,
         scheduled_at: v('#pg-when').value.trim(), location: v('#pg-loc').value.trim(),
         description: v('#pg-desc').value, active: v('#pg-active').checked ? 1 : 0 };
-      try { if (ed.id) await api(`/programs/${ed.id}`, { method: 'PUT', body: payload });
-        else await api('/programs', { method: 'POST', body: payload });
+      try {
+        let progId = ed.id;
+        if (ed.id) await api(`/programs/${ed.id}`, { method: 'PUT', body: payload });
+        else progId = (await api('/programs', { method: 'POST', body: payload })).id;
+        // 加購服務有指定媽媽 → 自動建立該媽媽的報名（待確認）
+        const momId = isSvc ? Number(v('#pg-mom').value) : 0;
+        if (momId) await api('/signups', { method: 'POST', body: { mother_id: momId, program_id: progId, quantity: 1 } });
         done();
       } catch (e) { v('#pg-err').textContent = e.message; }
     };

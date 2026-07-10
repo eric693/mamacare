@@ -487,6 +487,29 @@ async function loadShop() {
   };
 }
 
+// 家屬入口輕量彈窗（報名視窗等用）
+function famModal(title, html, wire) {
+  const old = document.getElementById('fam-modal-overlay');
+  if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'fam-modal-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(28,43,41,.55);display:flex;align-items:center;justify-content:center;padding:12px';
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;max-height:92vh;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px 0">
+        <strong style="color:var(--primary-dark)">${esc(title)}</strong>
+        <button id="fam-modal-x" style="background:none;border:none;font-size:1.2rem;cursor:pointer;color:var(--muted)">✕</button>
+      </div>
+      <div style="padding:12px 18px 18px;overflow-y:auto">${html}</div>
+    </div>`;
+  document.body.appendChild(ov);
+  ov.querySelector('#fam-modal-x').onclick = () => ov.remove();
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  if (wire) wire(ov);
+  return ov;
+}
+
+let _famCalAnchor = null; // 課程行事曆目前顯示的月份
 async function loadPrograms() {
   let progs = [], signups = [];
   try {
@@ -498,15 +521,47 @@ async function loadPrograms() {
   }
   const KIND = { course: '課程', service: '服務' };
   const ST = { pending: '待確認', confirmed: '已確認', cancelled: '已取消' };
+  const isMom = ((family && family.relation) || '').trim() === '媽媽';
+  const pad = n => String(n).padStart(2, '0');
+  const fmtD = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const todayS = fmtD(new Date());
+  if (!_famCalAnchor) _famCalAnchor = todayS.slice(0, 7);
+  // 行事曆（月）：排定時段的課程，點擊跳出報名視窗
+  const [ay, am] = _famCalAnchor.split('-').map(Number);
+  const byDate = {};
+  progs.filter(p => /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at || ''))
+    .forEach(p => { const d = p.scheduled_at.slice(0, 10); (byDate[d] = byDate[d] || []).push(p); });
+  const first = new Date(ay, am - 1, 1);
+  const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7)); // 週一起
+  let calRows = '';
+  for (let w = 0; w < 6; w++) {
+    let tds = '';
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + w * 7 + i);
+      const key = fmtD(d);
+      const inMonth = d.getMonth() === am - 1;
+      const items = (byDate[key] || []).map(p =>
+        `<div class="fam-cal-item" data-cal-prog="${p.id}" title="${esc(p.name)}">${esc(p.scheduled_at.slice(11, 16))} ${esc(p.name.length > 6 ? p.name.slice(0, 6) + '…' : p.name)}</div>`).join('');
+      tds += `<td style="vertical-align:top;height:72px;min-width:76px;border:1px solid var(--border);padding:2px;${inMonth ? '' : 'opacity:.35;'}${key === todayS ? 'background:#eef6f0;' : ''}">
+        <div style="font-size:.75rem;color:var(--muted)">${d.getDate()}</div>${items}</td>`;
+    }
+    calRows += `<tr>${tds}</tr>`;
+  }
+  const suRows = signups.length ? signups.map(s => `
+    <tr>
+      <td data-label="日期"><small>${esc((s.created_at || '').slice(0, 16))}</small></td>
+      <td data-label="項目">${KIND[s.kind] || ''}｜${esc(s.program_name)}${s.scheduled_at ? `<br><small>${esc(s.scheduled_at)}</small>` : ''}</td>
+      <td data-label="數量">×${s.quantity}</td>
+      <td data-label="狀態"><span class="badge ${s.status === 'confirmed' ? 'green' : s.status === 'cancelled' ? 'red' : 'yellow'}">${ST[s.status] || s.status}</span></td>
+    </tr>`).join('') : '<tr><td colspan="4"><div class="empty">尚無報名紀錄</div></td></tr>';
   const cards = progs.length ? progs.map(p => {
     const full = p.seats_left === 0;
     return `
     <div class="card" style="margin:0">
       <div class="row" style="justify-content:space-between;align-items:flex-start">
         <div>
-          <span class="badge ${p.kind === 'course' ? 'teal' : 'gray'}">${KIND[p.kind]}</span>
+          <span class="badge teal">課程</span>
           <strong> ${esc(p.name)}</strong>
-          ${p.category ? `<div><small style="color:var(--muted)">${esc(p.category)}</small></div>` : ''}
           ${p.scheduled_at ? `<div><small>時間：${esc(p.scheduled_at)}</small></div>` : ''}
           ${p.location ? `<div><small>地點：${esc(p.location)}</small></div>` : ''}
           ${p.description ? `<div style="margin-top:4px;font-size:.85rem">${esc(p.description)}</div>` : ''}
@@ -514,43 +569,30 @@ async function loadPrograms() {
         </div>
         <div style="text-align:right;white-space:nowrap">
           <div><strong>${fmtMoney(p.price)}</strong></div>
-          <button class="btn small" data-signup="${p.id}" ${full ? 'disabled' : ''} style="margin-top:6px">報名</button>
+          <button class="btn small" data-signup="${p.id}" ${full || !isMom ? 'disabled' : ''} style="margin-top:6px">報名</button>
         </div>
       </div>
     </div>`;
-  }).join('') : '<div class="empty">目前沒有開放的課程／服務</div>';
-  // 課表：有排定時段的課程／服務，依日期分組（僅列今日起）
-  const nowD = new Date();
-  const todayS = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`;
-  const WD = ['日', '一', '二', '三', '四', '五', '六'];
-  const sched = progs.filter(p => p.scheduled_at && /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at) && p.scheduled_at.slice(0, 10) >= todayS)
-    .sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at));
-  const schedByDate = {};
-  sched.forEach(p => { const d = p.scheduled_at.slice(0, 10); (schedByDate[d] = schedByDate[d] || []).push(p); });
-  const schedHtml = sched.length ? Object.keys(schedByDate).sort().map(d => {
-    const wd = WD[new Date(d.replace(/-/g, '/')).getDay()];
-    return `<div style="margin-top:8px"><div style="font-weight:600;font-size:.85rem;color:var(--primary-dark)">${esc(d)}（${wd}）</div>
-      ${schedByDate[d].map(p => `<div style="display:flex;gap:8px;font-size:.85rem;padding:3px 0;border-bottom:1px dashed var(--border)">
-        <span style="min-width:44px;color:var(--muted)">${esc(p.scheduled_at.slice(11, 16) || '—')}</span>
-        <span><span class="badge ${p.kind === 'course' ? 'teal' : 'gray'}">${KIND[p.kind]}</span> ${esc(p.name)}${p.location ? `　<small style="color:var(--muted)">${esc(p.location)}</small>` : ''}</span>
-      </div>`).join('')}</div>`;
-  }).join('') : '<div class="empty">近期尚無排定課表</div>';
-  const suRows = signups.length ? signups.map(s => `
-    <tr>
-      <td data-label="日期"><small>${esc((s.created_at || '').slice(0, 16))}</small></td>
-      <td data-label="項目">${KIND[s.kind]}｜${esc(s.program_name)}${s.scheduled_at ? `<br><small>${esc(s.scheduled_at)}</small>` : ''}</td>
-      <td data-label="數量">×${s.quantity}</td>
-      <td data-label="狀態"><span class="badge ${s.status === 'confirmed' ? 'green' : s.status === 'cancelled' ? 'red' : 'yellow'}">${ST[s.status] || s.status}</span></td>
-    </tr>`).join('') : '<tr><td colspan="4"><div class="empty">尚無報名紀錄</div></td></tr>';
+  }).join('') : '<div class="empty">目前沒有開放報名的課程</div>';
   $('#panel').innerHTML = `
     <div class="card">
-      <h3>課表</h3>
-      <p style="font-size:.85rem;color:var(--muted)">近期已排定時段的課程／服務。</p>
-      <div>${schedHtml}</div>
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+        <h3 style="margin:0">課程行事曆</h3>
+        <div class="row" style="gap:6px">
+          <button class="btn small secondary" id="fc-prev">‹ 上月</button>
+          <strong style="align-self:center">${ay} 年 ${am} 月</strong>
+          <button class="btn small secondary" id="fc-next">下月 ›</button>
+        </div>
+      </div>
+      <p style="font-size:.82rem;color:var(--muted);margin:4px 0 8px">點擊行事曆上的課程即可報名${isMom ? '' : '（課程僅開放媽媽本人預約）'}。</p>
+      <div class="table-wrap"><table class="data" style="min-width:560px">
+        <thead><tr>${['一', '二', '三', '四', '五', '六', '日'].map(w => `<th style="text-align:center">週${w}</th>`).join('')}</tr></thead>
+        <tbody>${calRows}</tbody></table></div>
+      <style>.fam-cal-item{font-size:.7rem;background:#e5f2ef;color:var(--primary-dark);border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}</style>
     </div>
     <div class="card">
-      <h3>課程／服務</h3>
-      <p style="font-size:.85rem;color:var(--muted)">報名後由護理站確認，費用將列入您的帳單於現場結算。</p>
+      <h3>課程</h3>
+      <p style="font-size:.85rem;color:var(--muted)">課程僅開放媽媽本人預約；報名後由護理站確認，費用將列入您的帳單於現場結算。</p>
       <div style="display:grid;gap:10px;margin-top:10px">${cards}</div>
       <div class="error-msg" id="pg-err" style="margin-top:8px"></div>
       <div id="pg-ok" style="color:var(--ok)"></div>
@@ -561,15 +603,48 @@ async function loadPrograms() {
         <thead><tr><th>日期</th><th>項目</th><th>數量</th><th>狀態</th></tr></thead>
         <tbody>${suRows}</tbody></table></div>
     </div>`;
-  $('#panel').querySelectorAll('[data-signup]').forEach(b => b.onclick = async () => {
-    const prog = progs.find(p => p.id == b.dataset.signup);
-    if (!confirm(`確定報名「${prog.name}」（${fmtMoney(prog.price)}）？`)) return;
-    $('#pg-err').textContent = ''; $('#pg-ok').textContent = '';
+  const shiftMonth = n => {
+    const d = new Date(ay, am - 1 + n, 1);
+    _famCalAnchor = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+    loadPrograms();
+  };
+  $('#fc-prev').onclick = () => shiftMonth(-1);
+  $('#fc-next').onclick = () => shiftMonth(1);
+  // 報名視窗（行事曆點擊與列表按鈕共用）
+  const doSignup = async (prog, done) => {
     try {
       const r = await api('/family/signups', { method: 'POST', body: { program_id: prog.id, quantity: 1 } });
-      $('#pg-ok').textContent = r.message || '已送出報名';
-      loadPrograms();
-    } catch (e) { $('#pg-err').textContent = e.message; }
+      done(r.message || '已送出報名，將由護理站確認');
+    } catch (e) { done(null, e.message); }
+  };
+  const openSignupModal = (prog) => {
+    const full = prog.seats_left === 0;
+    famModal(prog.name, `
+      <div style="line-height:1.8;font-size:.92rem">
+        ${prog.scheduled_at ? `<div>時間：${esc(prog.scheduled_at)}</div>` : ''}
+        ${prog.location ? `<div>地點：${esc(prog.location)}</div>` : ''}
+        <div>費用：${fmtMoney(prog.price)}</div>
+        ${prog.seats_left !== null ? `<div>剩餘名額：${full ? '<span style="color:var(--danger)">已滿</span>' : prog.seats_left}</div>` : ''}
+        ${prog.description ? `<div style="margin-top:4px">${esc(prog.description)}</div>` : ''}
+      </div>
+      ${isMom
+        ? `<div class="row mt"><button class="btn" id="fm-signup" ${full ? 'disabled' : ''}>${full ? '名額已滿' : '報名'}</button>
+           <span class="error-msg" id="fm-err"></span><span style="color:var(--ok)" id="fm-ok"></span></div>`
+        : '<p style="color:var(--muted);font-size:.85rem;margin-top:10px">課程僅開放媽媽本人預約，請由媽媽的帳號報名。</p>'}`, ov => {
+      const btn = ov.querySelector('#fm-signup');
+      if (btn) btn.onclick = () => doSignup(prog, (ok, err) => {
+        if (err) { ov.querySelector('#fm-err').textContent = err; return; }
+        ov.remove(); alert(ok); loadPrograms();
+      });
+    });
+  };
+  $('#panel').querySelectorAll('[data-cal-prog]').forEach(el => el.onclick = () => {
+    const prog = progs.find(p => p.id == el.dataset.calProg);
+    if (prog) openSignupModal(prog);
+  });
+  $('#panel').querySelectorAll('[data-signup]').forEach(b => b.onclick = () => {
+    const prog = progs.find(p => p.id == b.dataset.signup);
+    if (prog) openSignupModal(prog);
   });
 }
 

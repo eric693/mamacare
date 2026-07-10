@@ -1275,6 +1275,18 @@ function init() {
   if (!stxCols.includes('dept')) db.exec("ALTER TABLE supply_txns ADD COLUMN dept TEXT DEFAULT ''");
   if (!stxCols.includes('purpose')) db.exec("ALTER TABLE supply_txns ADD COLUMN purpose TEXT DEFAULT ''");
 
+  // 課程／服務照片（檔案存 uploads/programs/年月日課程名稱/）
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS program_photos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      program_id INTEGER NOT NULL REFERENCES programs(id),
+      file TEXT NOT NULL,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_program_photos ON program_photos(program_id);
+  `);
+
   // 擴充寶寶照護紀錄：新增生命徵象（呼吸/心跳/血氧）、生長（身長/頭圍）、
   // 觀察（膚色/臍帶/溢吐奶/活動力/大便性狀）等型別，並加 value_text 存類別型觀察值
   const brSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='baby_records'").get() || {}).sql || '';

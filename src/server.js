@@ -3513,6 +3513,55 @@ app.delete('/api/programs/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM programs WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
+// 課程照片：存 uploads/programs/年月日課程名稱/（資料夾以課程排定日＋名稱建檔）
+function programPhotoDir(prog) {
+  const d = /^\d{4}-\d{2}-\d{2}/.test(prog.scheduled_at || '') ? prog.scheduled_at.slice(0, 10) : today();
+  const folder = (d.replace(/-/g, '') + prog.name).replace(/[\\/:*?"<>|\s]/g, '_').slice(0, 80);
+  return { rel: 'programs/' + folder, abs: path.join(UPLOAD_DIR, 'programs', folder) };
+}
+const programPhotoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const prog = db.prepare('SELECT * FROM programs WHERE id = ?').get(req.params.id);
+      if (!prog) return cb(new Error('找不到課程／服務'));
+      const dir = programPhotoDir(prog);
+      fs.mkdirSync(dir.abs, { recursive: true });
+      req._progPhotoRel = dir.rel;
+      cb(null, dir.abs);
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '.jpg').toLowerCase().slice(0, 10);
+      cb(null, Date.now() + '-' + crypto.randomBytes(4).toString('hex') + ext);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype))
+});
+app.post('/api/programs/:id/photos', requireStaff, programPhotoUpload.array('photos', 10), (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: '請選擇圖片檔（10MB 內）' });
+  const ins = db.prepare('INSERT INTO program_photos (program_id, file, created_by) VALUES (?,?,?)');
+  const saved = files.map(f => {
+    const rel = `${req._progPhotoRel}/${f.filename}`;
+    return { id: ins.run(req.params.id, rel, req.session.user.id).lastInsertRowid, file: rel };
+  });
+  logAudit(req, { action: 'create', entity: 'program_photos', entity_id: req.params.id, summary: `課程照片上傳 ${saved.length} 張` });
+  res.json({ ok: true, photos: saved });
+});
+app.get('/api/programs/:id/photos', requireStaff, (req, res) => {
+  res.json(db.prepare(`SELECT pp.*, u.name AS staff_name FROM program_photos pp
+    LEFT JOIN users u ON u.id = pp.created_by WHERE pp.program_id = ? ORDER BY pp.id DESC`).all(req.params.id));
+});
+app.delete('/api/program-photos/:id', requireStaff, (req, res) => {
+  const row = db.prepare('SELECT * FROM program_photos WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '找不到照片' });
+  db.prepare('DELETE FROM program_photos WHERE id = ?').run(row.id);
+  // 檔名經過清洗（僅 programs/資料夾/檔名），仍以 resolve 檢查防路徑穿越
+  const abs = path.resolve(UPLOAD_DIR, row.file);
+  if (abs.startsWith(path.resolve(UPLOAD_DIR, 'programs'))) fs.unlink(abs, () => {});
+  res.json({ ok: true });
+});
+
 // 已確認報名人數
 function programConfirmedCount(pid) {
   return db.prepare("SELECT COALESCE(SUM(quantity),0) c FROM program_signups WHERE program_id = ? AND status = 'confirmed'").get(pid).c;
@@ -3582,9 +3631,9 @@ app.post('/api/signups/:id/cancel', requireStaff, (req, res) => {
     .run(req.session.user.id, s.id);
   res.json({ ok: true });
 });
-// 家屬端：課程／服務瀏覽與報名
+// 家屬端：課程瀏覽與報名（僅開放課程；加購服務由護理站指定媽媽建立）
 app.get('/api/family/programs', requireFamily, (req, res) => {
-  const rows = db.prepare("SELECT * FROM programs WHERE active = 1 ORDER BY kind, scheduled_at, id DESC").all();
+  const rows = db.prepare("SELECT * FROM programs WHERE active = 1 AND kind = 'course' ORDER BY scheduled_at, id DESC").all();
   res.json(rows.map(p => ({
     id: p.id, kind: p.kind, name: p.name, category: p.category, price: p.price,
     scheduled_at: p.scheduled_at, location: p.location, description: p.description,
@@ -3595,8 +3644,14 @@ app.post('/api/family/signups', requireFamily, (req, res) => {
   const fam = req.session.family;
   const mid = familyMotherId(fam);
   if (!mid) return res.status(400).json({ error: '找不到寶寶資料' });
-  const bk = activeBookingForMother(mid);
+  // 只開放媽媽本人預約課程
+  if ((fam.relation || '').trim() !== '媽媽') {
+    return res.status(403).json({ error: '課程僅開放媽媽本人預約，請由媽媽的帳號報名' });
+  }
   const b = req.body || {};
+  const prog = db.prepare('SELECT kind FROM programs WHERE id = ?').get(Number(b.program_id) || 0);
+  if (prog && prog.kind !== 'course') return res.status(400).json({ error: '加購服務請洽護理站登記' });
+  const bk = activeBookingForMother(mid);
   try {
     const id = createSignup({ program_id: b.program_id, mother_id: mid, booking_id: bk ? bk.id : null,
       family_id: fam.id, placed_by: 'family', quantity: b.quantity, preferred_at: b.preferred_at, note: b.note });
