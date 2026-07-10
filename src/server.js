@@ -4887,6 +4887,9 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_check_in,
       (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_check_out,
+      (SELECT COALESCE(NULLIF(bk.actual_check_out,''), bk.check_out) FROM bookings bk
+        WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_actual_out,
       (SELECT bk.status FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_status,
       (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
@@ -4912,6 +4915,8 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
       gift_content: data.gift_content || '',
       expected_check_in: data.expected_check_in || r.booking_check_in || '',
       expected_check_out: data.expected_check_out || r.booking_check_out || '',
+      actual_check_in: r.booking_check_in || '',
+      actual_check_out: r.booking_actual_out || '',
       days: items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
       total, deposit: r.deposit_sum || 0, prepaid, balance: total - prepaid,
       cancel_date: data.cancel_date || '', cancel_reason: data.cancel_reason || '', cancel_by: data.cancel_by || '',
@@ -4953,12 +4958,19 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
       { key: 'handler', label: '經手人' }, { key: 'deposit', label: '訂金' },
       { key: 'total', label: '合約總額' }, { key: 'balance', label: '合約餘額' },
       { key: 'status_label', label: '狀態' }
+    ] : mode === 'transferred' ? [
+      // 已入住合約取最新 LOG：實際合約總額＝目前合約明細合計
+      { key: 'contract_no', label: '合約號碼' }, { key: 'name', label: '媽媽姓名' },
+      { key: 'phone', label: '媽媽手機' }, { key: 'birth_date', label: '媽媽生日' },
+      { key: 'due_date', label: '預產期' }, { key: 'actual_check_in', label: '實際入住日' },
+      { key: 'actual_check_out', label: '實際出住日' }, { key: 'days', label: '天數' },
+      { key: 'room_types', label: '房型' }, { key: 'gift_content', label: '贈品內容' },
+      { key: 'handler', label: '經手人' }, { key: 'total', label: '實際合約總額' }
     ] : [
       { key: 'contract_no', label: '合約號碼' }, { key: 'name', label: '媽媽姓名' },
       { key: 'id_no', label: '身分證號' }, { key: 'phone', label: '聯絡電話' },
       { key: 'due_date', label: '預產期' }, { key: 'sign_date', label: '簽約日期' },
-      ...(mode === 'cancelled' ? [{ key: 'cancel_date', label: '退訂日期' }, { key: 'cancel_reason', label: '退訂原因' }, { key: 'cancel_by', label: '退訂人' }] : []),
-      ...(mode === 'transferred' ? [{ key: 'checkin_date', label: '入住日期' }, { key: 'room_name', label: '房號' }] : []),
+      { key: 'cancel_date', label: '退訂日期' }, { key: 'cancel_reason', label: '退訂原因' }, { key: 'cancel_by', label: '退訂人' },
       { key: 'summary', label: '合約住宿摘要' }, { key: 'days', label: '天數' },
       { key: 'total', label: '合約總額' }, { key: 'handler', label: '經手人' }
     ];
