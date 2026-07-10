@@ -759,24 +759,29 @@ async function viewBabyCare() {
     const baby = babyById($('#bc-baby').value);
     if (!baby) { bar.innerHTML = ''; return; }
     const loc = baby.location || 'nursery';
-    const target = loc === 'nursery' ? 'rooming' : 'nursery';
+    // 快速切換：嬰兒室／親子同室／不在館內／住院中（住院中／不在館內會帶入收費帳務扣抵）
+    const MOVE_BTN = { nursery: '抱回嬰兒室', rooming: '抱去給媽媽（親子同室）', out: '不在館內', hospital: '住院中' };
     bar.innerHTML = `
       <span style="font-size:.85rem;color:var(--muted)">目前位置：</span>
       <span class="badge ${LOCATION_BADGE[loc]}">${LOCATION_LABEL[loc]}</span>
-      <button class="btn small" id="bc-move">${loc === 'nursery' ? '抱去給媽媽（轉親子同室）' : '抱回嬰兒室'}</button>
+      ${Object.keys(MOVE_BTN).filter(l => l !== loc).map(l =>
+        `<button class="btn small ${l === 'nursery' || l === 'rooming' ? '' : 'secondary'}" data-move="${l}">${MOVE_BTN[l]}</button>`).join('')}
       <button class="btn small secondary" id="bc-loc-log">位置異動紀錄</button>`;
-    $('#bc-move').onclick = async () => {
-      const note = prompt(`確認將「${baby.name}」移至「${LOCATION_LABEL[target]}」，可填備註（可留空）`, '');
-      if (note === null) return;
-      await api(`/babies/${baby.id}/location`, { method: 'PUT', body: { location: target, note } });
-      baby.location = target;
-      const msg = $('#bc-msg');
-      if (msg) {
-        msg.textContent = `已將 ${baby.name} 移至 ${LOCATION_LABEL[target]}`;
-        setTimeout(() => { const el = $('#bc-msg'); if (el) el.textContent = ''; }, 2500);
-      }
-      renderLoc();
-    };
+    bar.querySelectorAll('[data-move]').forEach(btn => {
+      btn.onclick = async () => {
+        const target = btn.dataset.move;
+        const note = prompt(`確認將「${baby.name}」移至「${LOCATION_LABEL[target]}」，可填備註（可留空）`, '');
+        if (note === null) return;
+        await api(`/babies/${baby.id}/location`, { method: 'PUT', body: { location: target, note } });
+        baby.location = target;
+        const msg = $('#bc-msg');
+        if (msg) {
+          msg.textContent = `已將 ${baby.name} 移至 ${LOCATION_LABEL[target]}`;
+          setTimeout(() => { const el = $('#bc-msg'); if (el) el.textContent = ''; }, 2500);
+        }
+        renderLoc();
+      };
+    });
     $('#bc-loc-log').onclick = () => showLocLogs(baby);
   };
 
@@ -2186,7 +2191,7 @@ async function viewBilling() {
             <tr class="${isOverdue(b) ? 'row-overdue' : ''}" data-filter="${esc(b.mother_name + ' ' + b.room_name)}" data-status="${b.balance > 0 ? 'unpaid' : 'paid'}">
               <td data-label="媽媽">${esc(b.mother_name)}　<span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span></td>
               <td data-label="房間 / 期間">${esc(b.room_name)} 房<br><small>${esc(b.check_in)} ~ ${esc(b.check_out)}</small></td>
-              <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶未入住 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
+              <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶不在館內 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
               <td data-label="已收">${fmtMoney(b.total_paid)}<br><small>含訂金 ${fmtMoney(b.deposit)}</small></td>
               <td data-label="未結餘額">${b.balance > 0
                 ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span><br><small>合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}</small>`
@@ -2250,7 +2255,7 @@ function printCharges(b) {
       <tbody>${rows}</tbody>
       <tfoot><tr><td colspan="4" style="text-align:right">加購消費合計</td><td style="text-align:right">${fmtMoney(b.charges_total)}</td><td></td></tr></tfoot>
     </table>
-    ${b.baby_deduct ? `<p style="font-size:13px;color:#555;margin-top:10px">另：寶寶未入住扣抵 ${b.baby_absent_days} 天 −${fmtMoney(b.baby_deduct)}（已反映於應收總額）</p>` : ''}
+    ${b.baby_deduct ? `<p style="font-size:13px;color:#555;margin-top:10px">另：寶寶不在館內扣抵 ${b.baby_absent_days} 天 −${fmtMoney(b.baby_deduct)}（已反映於應收總額）</p>` : ''}
     <div class="noprint" style="margin-top:24px;text-align:center">
       <button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button>
     </div>
@@ -2272,34 +2277,75 @@ async function openBillingDetail(bookingId) {
   const payRows = b.payments.length ? b.payments.map(p => `
     <tr>
       <td data-label="日期">${esc(p.paid_on)}</td>
+      <td data-label="款別"><span class="badge ${p.target === 'addon' ? 'purple' : 'teal'}">${p.target === 'addon' ? '加購款' : '合約款'}</span></td>
       <td data-label="方式">${esc(p.method)}${p.note ? `<br><small>${esc(p.note)}</small>` : ''}</td>
       <td data-label="金額">${fmtMoney(p.amount)}</td>
       <td data-label="經手">${esc(p.staff_name || '-')}</td>
       <td data-label="操作">${isAdmin ? `<button class="btn small danger" data-del-pay="${p.id}">刪除</button>` : ''}</td>
-    </tr>`).join('') : '<tr><td colspan="5"><div class="empty">尚無繳費紀錄</div></td></tr>';
+    </tr>`).join('') : '<tr><td colspan="6"><div class="empty">尚無繳費紀錄</div></td></tr>';
+
+  const absRows = (b.absences || []).length ? b.absences.map(a => `
+    <tr data-ab-row="${a.id}" data-start="${esc(a.start_date)}" data-end="${esc(a.end_date || '')}" data-note="${esc(a.note || '')}">
+      <td data-label="起始日">${esc(a.start_date)}</td>
+      <td data-label="結束日">${a.end_date ? esc(a.end_date) : '<span class="badge yellow">仍不在館內</span>'}</td>
+      <td data-label="天數">${a.days} 天</td>
+      <td data-label="備註"><small>${esc(a.note || '')}</small></td>
+      <td data-label="操作"><button class="btn small secondary" data-ab-edit="${a.id}">編輯</button> <button class="btn small danger" data-ab-del="${a.id}">刪除</button></td>
+    </tr>`).join('') : '<tr><td colspan="5"><div class="empty">尚無不在館內紀錄</div></td></tr>';
+  const deductRate = Number(SETTINGS.baby_absence_daily_deduct) || 0;
 
   openModal(`收費明細：${b.mother_name}（${b.room_name} 房）`, `
-    <div class="summary-grid" style="margin-bottom:14px">
-      <div class="item"><div class="v">${fmtMoney(b.total_due)}</div><div class="k">應收（合約＋加購${b.baby_deduct ? '−扣抵' : ''}）</div></div>
-      <div class="item"><div class="v">${fmtMoney(b.total_paid)}</div><div class="k">已收（含訂金 ${fmtMoney(b.deposit)}）</div></div>
-      <div class="item"><div class="v" style="${b.balance > 0 ? 'color:var(--danger)' : ''}">${fmtMoney(b.balance)}</div><div class="k">未結餘額${b.balance > 0 ? `（合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}）` : ''}</div></div>
-      <div class="item"><div class="v">${b.balance > 0 ? '未結清' : '已結清'}</div><div class="k">帳務狀態</div></div>
-    </div>
+    <div class="table-wrap"><table class="data" style="margin-bottom:12px">
+      <thead><tr><th>款別（分開開立發票）</th><th>應收</th><th>已收</th><th>未結</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>合約款${b.baby_deduct ? `<br><small>已扣寶寶不在館內 ${fmtMoney(b.baby_deduct)}</small>` : ''}</td>
+          <td>${fmtMoney(b.contract_due)}</td>
+          <td>${fmtMoney(b.paid_contract)}<br><small>含訂金 ${fmtMoney(b.deposit)}</small></td>
+          <td>${b.contract_balance > 0 ? `<strong style="color:var(--danger)">${fmtMoney(b.contract_balance)}</strong>`
+            : b.contract_balance < 0 ? `<strong style="color:var(--primary-dark)">${fmtMoney(b.contract_balance)}</strong><br><small>溢收（待退／折抵）</small>`
+            : '<span class="badge green">已結清</span>'}</td>
+        </tr>
+        <tr>
+          <td>加購款</td>
+          <td>${fmtMoney(b.addon_due)}</td>
+          <td>${fmtMoney(b.paid_addon)}</td>
+          <td>${b.addon_balance > 0 ? `<strong style="color:var(--danger)">${fmtMoney(b.addon_balance)}</strong>`
+            : b.addon_balance < 0 ? `<strong style="color:var(--primary-dark)">${fmtMoney(b.addon_balance)}</strong><br><small>溢收</small>`
+            : '<span class="badge green">已結清</span>'}</td>
+        </tr>
+        <tr style="border-top:2px solid #cdd">
+          <td><strong>合計</strong>　${b.balance > 0 ? '<span class="badge red">未結清</span>' : '<span class="badge green">已結清</span>'}</td>
+          <td><strong>${fmtMoney(b.total_due)}</strong></td>
+          <td><strong>${fmtMoney(b.total_paid)}</strong></td>
+          <td><strong style="${b.balance > 0 ? 'color:var(--danger)' : ''}">${fmtMoney(b.balance)}</strong></td>
+        </tr>
+      </tbody>
+    </table></div>
     <div class="row" style="margin-bottom:10px">
       <button class="btn small secondary" id="bd-refund">退費試算</button>
       <button class="btn small secondary" id="bd-receipt">開立收據</button>
       <button class="btn small secondary" id="bd-print-charges">列印加購明細</button>
     </div>
     <div class="card" style="background:#f7faf9;padding:10px 12px;margin-bottom:12px">
-      <div class="row" style="align-items:flex-end;gap:10px;flex-wrap:wrap">
-        <div class="field" style="max-width:170px;margin:0"><label>寶寶入住日</label><input type="date" id="bd-baby-in" value="${esc(b.baby_check_in || '')}" min="${esc(b.check_in || '')}"></div>
-        <button class="btn small" id="bd-baby-save">儲存</button>
-        <span style="font-size:.82rem;color:var(--muted)">媽媽入住 ${esc(b.check_in)}${b.baby_deduct
-          ? `・寶寶未入住 ${b.baby_absent_days} 天，扣抵 <strong style="color:var(--primary-dark)">${fmtMoney(b.baby_deduct)}</strong>`
-          : '・無扣抵（寶寶已隨媽媽入住或未設定）'}</span>
-        <span class="error-msg" id="bd-baby-err"></span>
+      <div style="font-weight:600;color:var(--primary-dark);margin-bottom:6px">寶寶不在館內紀錄</div>
+      <div class="table-wrap"><table class="data" style="font-size:.86rem">
+        <thead><tr><th>起始日</th><th>結束日（回館）</th><th>天數</th><th>備註</th><th></th></tr></thead>
+        <tbody>${absRows}</tbody>
+      </table></div>
+      <div class="row" style="align-items:flex-end;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <div class="field" style="max-width:160px;margin:0"><label>起始日</label><input type="date" id="ab-start"></div>
+        <div class="field" style="max-width:160px;margin:0"><label>結束日（可留空＝至今）</label><input type="date" id="ab-end"></div>
+        <div class="field" style="max-width:200px;margin:0"><label>備註</label><input id="ab-note"></div>
+        <button class="btn small" id="ab-add">新增</button>
+        <span class="error-msg" id="ab-err"></span>
       </div>
-      <p style="font-size:.76rem;color:var(--muted);margin:6px 0 0">媽媽已入住但寶寶尚未到院期間，每日自動扣抵（金額於系統設定調整，目前 ${fmtMoney((Number(SETTINGS.baby_absence_daily_deduct) || 0))}/日），扣抵已反映於上方應收。</p>
+      <p style="font-size:.76rem;color:var(--muted);margin:8px 0 0">
+        由寶寶照護「住院中／不在館內」位置紀錄自動帶入，可編輯日期或手動新增。
+        合計 <strong>${b.baby_absent_days} 天</strong> × ${fmtMoney(deductRate)}/日，
+        扣抵 <strong style="color:var(--primary-dark)">${fmtMoney(b.baby_deduct)}</strong>，已自動調整合約應收
+        （合約已先付全額時，合約未結會呈負數）。費率於系統設定調整。
+      </p>
     </div>
     <div id="bd-refund-box"></div>
     <h3 style="color:var(--primary-dark);font-size:1rem;margin:8px 0">加購消費</h3>
@@ -2309,10 +2355,13 @@ async function openBillingDetail(bookingId) {
     </table></div>
     <div class="form-grid" style="margin-top:10px">
       <div class="field">
-        <label>項目名稱</label>
-        <input id="cg-name" list="cg-presets" placeholder="例如：營養品">
-        <datalist id="cg-presets">${chargePresets().map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+        <label>項目</label>
+        <select id="cg-item">
+          ${chargePresets().map(p => `<option>${esc(p)}</option>`).join('')}
+          <option value="__other">其他（自行輸入）</option>
+        </select>
       </div>
+      <div class="field" id="cg-name-wrap" style="display:none"><label>其他項目名稱</label><input id="cg-name" placeholder="自行輸入項目"></div>
       <div class="field"><label>單價</label><input type="number" id="cg-price" inputmode="numeric" min="0"></div>
       <div class="field"><label>數量</label><input type="number" id="cg-qty" inputmode="numeric" min="1" value="1"></div>
       <div class="field"><label>日期</label><input type="date" id="cg-date" value="${todayStr()}"></div>
@@ -2324,10 +2373,14 @@ async function openBillingDetail(bookingId) {
     </div>
     <h3 style="color:var(--primary-dark);font-size:1rem;margin:14px 0 8px">繳費紀錄</h3>
     <div class="table-wrap"><table class="data stack">
-      <thead><tr><th>日期</th><th>方式</th><th>金額</th><th>經手</th><th></th></tr></thead>
+      <thead><tr><th>日期</th><th>款別</th><th>方式</th><th>金額</th><th>經手</th><th></th></tr></thead>
       <tbody>${payRows}</tbody>
     </table></div>
     <div class="form-grid" style="margin-top:10px">
+      <div class="field">
+        <label>款別</label>
+        <select id="py-target"><option value="contract">合約款</option><option value="addon">加購款</option></select>
+      </div>
       <div class="field"><label>金額</label><input type="number" id="py-amount" inputmode="numeric" min="1"></div>
       <div class="field">
         <label>繳費方式</label>
@@ -2355,12 +2408,17 @@ async function openBillingDetail(bookingId) {
         } catch (e) { body.querySelector('#py-err').textContent = e.message; }
       };
     }).catch(() => {});
+    // 加購項目下拉：選「其他」才顯示自行輸入欄
+    const itemSel = body.querySelector('#cg-item');
+    itemSel.onchange = () => {
+      body.querySelector('#cg-name-wrap').style.display = itemSel.value === '__other' ? '' : 'none';
+    };
     body.querySelector('#cg-save').onclick = async () => {
       try {
         await api(`/bookings/${b.id}/charges`, {
           method: 'POST',
           body: {
-            item_name: body.querySelector('#cg-name').value.trim(),
+            item_name: itemSel.value === '__other' ? body.querySelector('#cg-name').value.trim() : itemSel.value,
             unit_price: Number(body.querySelector('#cg-price').value),
             quantity: Number(body.querySelector('#cg-qty').value) || 1,
             charged_on: body.querySelector('#cg-date').value,
@@ -2380,7 +2438,8 @@ async function openBillingDetail(bookingId) {
             amount: Number(body.querySelector('#py-amount').value),
             method: body.querySelector('#py-method').value,
             paid_on: body.querySelector('#py-date').value,
-            note: body.querySelector('#py-note').value
+            note: body.querySelector('#py-note').value,
+            target: body.querySelector('#py-target').value
           }
         });
         openBillingDetail(b.id);
@@ -2388,6 +2447,52 @@ async function openBillingDetail(bookingId) {
         body.querySelector('#py-err').textContent = e.message;
       }
     };
+    // 寶寶不在館內紀錄：新增／編輯／刪除
+    body.querySelector('#ab-add').onclick = async () => {
+      try {
+        await api(`/bookings/${b.id}/absences`, {
+          method: 'POST',
+          body: {
+            start_date: body.querySelector('#ab-start').value,
+            end_date: body.querySelector('#ab-end').value,
+            note: body.querySelector('#ab-note').value
+          }
+        });
+        openBillingDetail(b.id);
+      } catch (e) { body.querySelector('#ab-err').textContent = e.message; }
+    };
+    body.querySelectorAll('[data-ab-edit]').forEach(btn => {
+      btn.onclick = () => {
+        const tr = body.querySelector(`[data-ab-row="${btn.dataset.abEdit}"]`);
+        tr.innerHTML = `
+          <td data-label="起始日"><input type="date" data-ab-s value="${esc(tr.dataset.start)}" style="padding:4px 6px"></td>
+          <td data-label="結束日"><input type="date" data-ab-e value="${esc(tr.dataset.end)}" style="padding:4px 6px"></td>
+          <td data-label="天數"></td>
+          <td data-label="備註"><input data-ab-n value="${esc(tr.dataset.note)}" style="padding:4px 6px"></td>
+          <td data-label="操作"><button class="btn small" data-ab-save>儲存</button> <button class="btn small secondary" data-ab-cancel>取消</button></td>`;
+        tr.querySelector('[data-ab-save]').onclick = async () => {
+          try {
+            await api(`/absences/${btn.dataset.abEdit}`, {
+              method: 'PUT',
+              body: {
+                start_date: tr.querySelector('[data-ab-s]').value,
+                end_date: tr.querySelector('[data-ab-e]').value,
+                note: tr.querySelector('[data-ab-n]').value
+              }
+            });
+            openBillingDetail(b.id);
+          } catch (e) { body.querySelector('#ab-err').textContent = e.message; }
+        };
+        tr.querySelector('[data-ab-cancel]').onclick = () => openBillingDetail(b.id);
+      };
+    });
+    body.querySelectorAll('[data-ab-del]').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('確定刪除這筆不在館內紀錄？扣抵金額將同步調整。')) return;
+        await api(`/absences/${btn.dataset.abDel}`, { method: 'DELETE' });
+        openBillingDetail(b.id);
+      };
+    });
     body.querySelectorAll('[data-del-charge]').forEach(btn => {
       btn.onclick = async () => {
         if (!confirm('確定刪除這筆消費？')) return;
@@ -2416,7 +2521,7 @@ async function openBillingDetail(bookingId) {
               <tr><td>已收總額</td><td style="text-align:right">${fmtMoney(q.paid_total)}</td></tr>
               <tr><td>應收：已使用 ${q.used_days} 天住宿費</td><td style="text-align:right">${fmtMoney(q.used_fee)}</td></tr>
               <tr><td>應收：加購消費</td><td style="text-align:right">${fmtMoney(q.charges_total)}</td></tr>
-              ${q.baby_deduct ? `<tr><td>扣抵：寶寶未入住 ${q.baby_absent_days} 天</td><td style="text-align:right;color:var(--primary-dark)">-${fmtMoney(q.baby_deduct)}</td></tr>` : ''}
+              ${q.baby_deduct ? `<tr><td>扣抵：寶寶不在館內 ${q.baby_absent_days} 天</td><td style="text-align:right;color:var(--primary-dark)">-${fmtMoney(q.baby_deduct)}</td></tr>` : ''}
               <tr><td>違約金（未使用 ${q.unused_days} 天 × ${q.penalty_pct}%）</td><td style="text-align:right">${fmtMoney(q.penalty)}</td></tr>
               <tr><td>作業手續費（${q.handling_pct}%）</td><td style="text-align:right">${fmtMoney(q.handling)}</td></tr>
               <tr style="border-top:2px solid #cdd"><td><strong>應退費用</strong></td><td style="text-align:right"><strong style="color:var(--primary-dark);font-size:1.1rem">${fmtMoney(q.refund)}</strong></td></tr>
@@ -2427,12 +2532,6 @@ async function openBillingDetail(bookingId) {
       refundBox.querySelector('#rf-date').onchange = e => drawRefund(e.target.value);
     };
     body.querySelector('#bd-refund').onclick = () => { if (refundBox.innerHTML) refundBox.innerHTML = ''; else drawRefund(); };
-    body.querySelector('#bd-baby-save').onclick = async () => {
-      try {
-        await api(`/bookings/${b.id}/baby-check-in`, { method: 'PUT', body: { baby_check_in: body.querySelector('#bd-baby-in').value } });
-        openBillingDetail(b.id);
-      } catch (e) { body.querySelector('#bd-baby-err').textContent = e.message; }
-    };
     body.querySelector('#bd-print-charges').onclick = () => printCharges(b);
     body.querySelector('#bd-receipt').onclick = () => {
       const due = b.balance > 0 ? b.balance : b.total_paid;
@@ -3636,7 +3735,7 @@ async function viewSettings() {
         <div class="field"><label>情緒評估</label><input id="st-mood" value="${esc(s.mood_options || '')}"></div>
         <div class="field"><label>衛教指導</label><input id="st-education" value="${esc(s.education_options || '')}"></div>
         <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>帳款</strong></div>
-        <div class="field"><label>寶寶未入住每日扣抵（元）</label><input type="number" id="st-baby-deduct" min="0" value="${esc(s.baby_absence_daily_deduct || '0')}"></div>
+        <div class="field"><label>寶寶不在館內每日扣抵（元）</label><input type="number" id="st-baby-deduct" min="0" value="${esc(s.baby_absence_daily_deduct || '0')}"></div>
         <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>房務清潔（逗號分隔）</strong></div>
         <div class="field full"><label>住客需求項目</label><input id="st-hk-needs" value="${esc(s.hk_need_options || '')}"></div>
         <div class="field full"><label>清潔常用任務</label><input id="st-hk-tasks" value="${esc(s.hk_task_presets || '')}"></div>

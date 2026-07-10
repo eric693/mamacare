@@ -1468,6 +1468,46 @@ function init() {
     if (!oCols.includes('coupon_code')) db.exec("ALTER TABLE orders ADD COLUMN coupon_code TEXT DEFAULT ''");
   }
 
+  // 繳費款別：合約款／加購款分開記帳（開立不同公司發票）
+  const payCols = db.prepare('PRAGMA table_info(payments)').all().map(c => c.name);
+  if (!payCols.includes('target')) {
+    db.exec("ALTER TABLE payments ADD COLUMN target TEXT NOT NULL DEFAULT 'contract'");
+  }
+
+  // 寶寶不在館內紀錄：由寶寶照護「住院中／不在館內」異動紀錄帶入，可手動增修；
+  // 天數 × 每日扣抵費率 自動調整合約應收。log 帶入列以 log_key 防重複；
+  // 刪除 log 帶入列改標記 removed，避免下次同步又重新帶入。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS baby_absences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL REFERENCES bookings(id),
+      start_date TEXT NOT NULL,
+      end_date TEXT DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'manual',
+      log_key TEXT DEFAULT '',
+      note TEXT DEFAULT '',
+      removed INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_baby_absences_booking ON baby_absences(booking_id);
+  `);
+  // 舊資料轉換：原「寶寶入住日」晚於媽媽入住日者，換算為一筆不在館內期間（冪等）
+  for (const bk of db.prepare(`SELECT id, check_in, baby_check_in FROM bookings
+    WHERE baby_check_in IS NOT NULL AND baby_check_in != '' AND baby_check_in > check_in`).all()) {
+    const key = `legacy:${bk.id}`;
+    const dup = db.prepare('SELECT id FROM baby_absences WHERE booking_id = ? AND log_key = ?').get(bk.id, key);
+    if (!dup) {
+      db.prepare(`INSERT INTO baby_absences (booking_id, start_date, end_date, source, log_key, note)
+        VALUES (?,?,?,?,?,?)`).run(bk.id, bk.check_in, bk.baby_check_in, 'legacy', key, '由原寶寶入住日轉入');
+    }
+  }
+  // 加購消費固定項目改版：仍為舊預設清單者更新為新清單（使用者自訂過則不動）
+  const cpRow = db.prepare("SELECT value FROM settings WHERE key = 'charge_presets'").get();
+  if (cpRow && cpRow.value === '月子餐加購,營養品,嬰兒用品,尿布加購,訪客餐') {
+    db.prepare("UPDATE settings SET value = ? WHERE key = 'charge_presets'")
+      .run('泌乳,產後修復,停車費,清潔費,月子餐加購,洗頭,身體SPA');
+  }
+
   // 房型主檔回填：既有部署由現有房間去重帶入（首次上線 room_types 為空時）
   if (db.prepare('SELECT COUNT(*) c FROM room_types').get().c === 0) {
     const rows = db.prepare(`SELECT room_type, MIN(price_per_day) price FROM rooms
@@ -1606,7 +1646,7 @@ const DEFAULT_SETTINGS = {
   lactation_options: '親餵順利,含乳姿勢需指導,泌乳量不足,塞奶,使用擠乳器,瓶餵',
   education_options: '母乳哺育,新生兒照護,傷口照護,營養衛教,產後運動,情緒支持,返家準備',
   payment_methods: '現金,匯款轉帳,信用卡',
-  charge_presets: '月子餐加購,營養品,嬰兒用品,尿布加購,訪客餐',
+  charge_presets: '泌乳,產後修復,停車費,清潔費,月子餐加購,洗頭,身體SPA',
   meal_choices: '一般餐,素食餐,不需供餐',
   line_channel_access_token: '',
   // 感染管制目標：手部衛生遵從率門檻（%），低於此值於月報標示

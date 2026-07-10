@@ -2613,33 +2613,83 @@ function pushCheckoutSurvey(motherId) {
 // 單筆訂房的帳務彙總：應收 = 合約總額 + 加購消費；已收 = 訂金 + 繳費；餘額 = 應收 - 已收
 const BILLING_SUMS = `
   COALESCE((SELECT SUM(ci.unit_price * ci.quantity) FROM charge_items ci WHERE ci.booking_id = bk.id), 0) AS charges_total,
-  COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.booking_id = bk.id), 0) AS payments_total`;
+  COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.booking_id = bk.id), 0) AS payments_total,
+  COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.booking_id = bk.id AND p.target = 'addon'), 0) AS payments_addon`;
 
 function babyDeductRate() {
   return Number(getSettings().baby_absence_daily_deduct) || 0;
 }
 
+// 單筆不在館內期間的計費天數：夾在 入住日～退房日（或 until）之間。
+// 未填結束日（仍不在館內）者計至今日（已退房計至退房日）；明確結束日（含未來日期）依填寫計算。
+function absenceRowDays(a, bk, until) {
+  let openCap = until
+    || (bk.status === 'checked_out' ? ((bk.actual_check_out || '').slice(0, 10) || bk.check_out) : today());
+  if (bk.check_out && openCap > bk.check_out) openCap = bk.check_out;
+  let hardCap = until || bk.check_out || openCap;
+  if (bk.check_out && hardCap > bk.check_out) hardCap = bk.check_out;
+  const s = (bk.check_in && a.start_date < bk.check_in) ? bk.check_in : a.start_date;
+  const e = a.end_date ? (a.end_date < hardCap ? a.end_date : hardCap) : openCap;
+  return Math.max(0, Math.round((new Date(e) - new Date(s)) / 86400000));
+}
+
+// 寶寶不在館內天數：加總各期間計費天數
+function babyAbsenceDays(bk, until) {
+  return db.prepare('SELECT start_date, end_date FROM baby_absences WHERE booking_id = ? AND removed = 0')
+    .all(bk.id).reduce((sum, a) => sum + absenceRowDays(a, bk, until), 0);
+}
+
+// 由寶寶照護位置異動紀錄同步「不在館內」期間（住院中／不在館內 → 回館為一段）
+// 以 log_key 冪等：已帶入（含已編輯、已移除）者不重複建立；log 帶入且未經手動編輯者自動補結束日
+function syncBabyAbsences(bk) {
+  const babies = db.prepare('SELECT id, name FROM babies WHERE mother_id = ?').all(bk.mother_id);
+  for (const baby of babies) {
+    const logs = db.prepare(`SELECT id, location, moved_at FROM baby_location_logs
+      WHERE baby_id = ? ORDER BY moved_at, id`).all(baby.id);
+    let start = null, startId = null;
+    const periods = [];
+    for (const l of logs) {
+      const away = l.location === 'hospital' || l.location === 'out';
+      if (away && !start) { start = l.moved_at.slice(0, 10); startId = l.id; }
+      else if (!away && start) { periods.push({ start, end: l.moved_at.slice(0, 10), key: startId }); start = null; startId = null; }
+    }
+    if (start) periods.push({ start, end: '', key: startId });
+    for (const p of periods) {
+      // 與訂房期間無重疊者略過
+      if (bk.check_out && p.start > bk.check_out) continue;
+      if (p.end && bk.check_in && p.end < bk.check_in) continue;
+      const key = `log:${baby.id}:${p.key}`;
+      const row = db.prepare('SELECT id, source, removed, end_date FROM baby_absences WHERE booking_id = ? AND log_key = ?').get(bk.id, key);
+      if (!row) {
+        db.prepare(`INSERT INTO baby_absences (booking_id, start_date, end_date, source, log_key, note)
+          VALUES (?,?,?,?,?,?)`).run(bk.id, p.start, p.end, 'log', key, `寶寶照護紀錄帶入（${baby.name}）`);
+      } else if (row.source === 'log' && !row.removed && !row.end_date && p.end) {
+        db.prepare('UPDATE baby_absences SET end_date = ? WHERE id = ?').run(p.end, row.id);
+      }
+    }
+  }
+}
+
 // rate 可由呼叫端帶入避免重複讀設定；未帶入時自動讀取
 function withBalance(row, rate) {
   if (rate === undefined) rate = babyDeductRate();
-  // 寶寶尚未入住扣抵：媽媽入住日 → 寶寶入住日 之間每日扣 rate（不超過總住宿天數）
-  let absentDays = 0;
-  if (rate > 0 && row.baby_check_in && row.check_in && row.baby_check_in > row.check_in) {
-    absentDays = Math.round((new Date(row.baby_check_in) - new Date(row.check_in)) / 86400000);
-    const totalDays = Math.round((new Date(row.check_out) - new Date(row.check_in)) / 86400000);
-    if (totalDays > 0) absentDays = Math.min(absentDays, totalDays);
-    absentDays = Math.max(0, absentDays);
-  }
+  // 寶寶不在館內扣抵：baby_absences 期間每日扣 rate，自動調整合約應收
+  const absentDays = babyAbsenceDays(row);
   row.baby_absent_days = absentDays;
   row.baby_deduct = absentDays * rate;
   row.total_due = row.total_amount + row.charges_total - row.baby_deduct;
   row.total_paid = row.deposit + row.payments_total;
   row.balance = row.total_due - row.total_paid;
-  // 未結餘款拆分：已收款（含訂金）先沖抵合約住宿費（已扣寶寶未入住扣抵），溢額再沖加購消費
+  // 合約款與加購款分開記帳（開立不同公司發票）：
+  // 訂金與「合約款」繳費沖抵合約應收；「加購款」繳費沖抵加購消費。
+  // 合約先付全額、之後又有扣抵時，合約餘額可為負數（溢收待退／待折抵）。
+  row.payments_addon = row.payments_addon || 0;
+  row.paid_contract = row.deposit + (row.payments_total - row.payments_addon);
+  row.paid_addon = row.payments_addon;
   row.contract_due = row.total_amount - row.baby_deduct;
   row.addon_due = row.charges_total;
-  row.contract_balance = Math.max(0, row.contract_due - row.total_paid);
-  row.addon_balance = row.balance - row.contract_balance; // 兩者相加恆等於 balance
+  row.contract_balance = row.contract_due - row.paid_contract;
+  row.addon_balance = row.addon_due - row.paid_addon; // 兩者相加恆等於 balance
   return row;
 }
 
@@ -2650,6 +2700,7 @@ app.get('/api/billing', requireStaff, (req, res) => {
     WHERE bk.status != 'cancelled'
     ORDER BY CASE bk.status WHEN 'checked_in' THEN 0 WHEN 'reserved' THEN 1 ELSE 2 END, bk.check_in`).all();
   const rate = babyDeductRate();
+  rows.forEach(r => syncBabyAbsences(r));
   res.json(rows.map(r => withBalance(r, rate)));
 });
 
@@ -2762,7 +2813,14 @@ app.get('/api/bookings/:id/billing', requireStaff, (req, res) => {
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.id = ?`).get(req.params.id);
   if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  syncBabyAbsences(bk);
   withBalance(bk);
+  // 不在館內紀錄：附上每列夾算後的天數（與扣抵計算一致）
+  bk.absences = db.prepare(`SELECT * FROM baby_absences WHERE booking_id = ? AND removed = 0
+    ORDER BY start_date, id`).all(bk.id).map(a => {
+    a.days = absenceRowDays(a, bk);
+    return a;
+  });
   bk.charges = db.prepare(`
     SELECT ci.*, u.name AS staff_name FROM charge_items ci
     LEFT JOIN users u ON u.id = ci.created_by
@@ -2802,15 +2860,59 @@ app.post('/api/bookings/:id/payments', requireStaff, (req, res) => {
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: '金額需大於 0' });
   const bk = db.prepare('SELECT id FROM bookings WHERE id = ?').get(req.params.id);
   if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  const target = p.target === 'addon' ? 'addon' : 'contract'; // 款別：合約款／加購款分開記帳
   const info = db.prepare(`INSERT INTO payments
-    (booking_id, amount, method, paid_on, note, received_by) VALUES (?,?,?,?,?,?)`).run(
-    bk.id, Math.round(amount), p.method || '現金', p.paid_on || today(), p.note || '', req.session.user.id);
+    (booking_id, amount, method, paid_on, note, received_by, target) VALUES (?,?,?,?,?,?,?)`).run(
+    bk.id, Math.round(amount), p.method || '現金', p.paid_on || today(), p.note || '', req.session.user.id, target);
   res.json({ id: info.lastInsertRowid });
 });
 
 app.delete('/api/payments/:id', requireAdmin, (req, res) => {
   const info = db.prepare('DELETE FROM payments WHERE id = ?').run(req.params.id);
   res.json({ ok: info.changes > 0 });
+});
+
+// ---------- 寶寶不在館內紀錄（扣抵合約應收） ----------
+function validAbsenceDates(start, end) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start || '')) return '起始日必填（YYYY-MM-DD）';
+  if (end && !/^\d{4}-\d{2}-\d{2}$/.test(end)) return '結束日格式錯誤';
+  if (end && end < start) return '結束日不可早於起始日';
+  return '';
+}
+
+app.post('/api/bookings/:id/absences', requireStaff, (req, res) => {
+  const a = req.body || {};
+  const err = validAbsenceDates(a.start_date, a.end_date);
+  if (err) return res.status(400).json({ error: err });
+  const bk = db.prepare('SELECT id FROM bookings WHERE id = ?').get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  const info = db.prepare(`INSERT INTO baby_absences (booking_id, start_date, end_date, source, note)
+    VALUES (?,?,?,?,?)`).run(bk.id, a.start_date, a.end_date || '', 'manual', a.note || '');
+  logAudit(req, { action: 'create', entity: 'baby_absences', entity_id: info.lastInsertRowid, summary: `不在館內 ${a.start_date}~${a.end_date || '至今'}` });
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/absences/:id', requireStaff, (req, res) => {
+  const a = req.body || {};
+  const err = validAbsenceDates(a.start_date, a.end_date);
+  if (err) return res.status(400).json({ error: err });
+  const row = db.prepare('SELECT id FROM baby_absences WHERE id = ? AND removed = 0').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '找不到紀錄' });
+  // 手動編輯後轉為 manual，之後不再被 log 同步覆寫結束日
+  db.prepare(`UPDATE baby_absences SET start_date = ?, end_date = ?, note = ?, source = 'manual'
+    WHERE id = ?`).run(a.start_date, a.end_date || '', a.note || '', row.id);
+  logAudit(req, { action: 'update', entity: 'baby_absences', entity_id: row.id, summary: `不在館內改為 ${a.start_date}~${a.end_date || '至今'}` });
+  res.json({ ok: true });
+});
+
+app.delete('/api/absences/:id', requireStaff, (req, res) => {
+  const row = db.prepare('SELECT id, log_key FROM baby_absences WHERE id = ? AND removed = 0').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '找不到紀錄' });
+  // log／legacy 帶入列（含編輯過的）標記移除，防同步以同一 log_key 重新帶入；純手動列直接刪除
+  if (row.log_key) db.prepare('UPDATE baby_absences SET removed = 1 WHERE id = ?').run(row.id);
+  else db.prepare('DELETE FROM baby_absences WHERE id = ?').run(row.id);
+  logAudit(req, { action: 'delete', entity: 'baby_absences', entity_id: row.id, summary: '刪除不在館內紀錄' });
+  res.json({ ok: true });
 });
 
 // ---------- 商城：商品與訂單 ----------
@@ -6511,13 +6613,10 @@ app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
   const penalty = Math.round(unusedDays * dailyRate * penaltyPct / 100); // 未使用期間違約金（上限）
   const handlingPct = Math.min(Math.max(parseFloat(s.refund_handling_fee_pct) || 0, 0), 100);
   const handling = Math.round(paid * handlingPct / 100);      // 作業手續費
-  // 寶寶未入住扣抵：媽媽入住→寶寶入住之間的未入住天數，落在「已使用期間」內者每日扣抵
+  // 寶寶不在館內扣抵：不在館內紀錄落在「已使用期間」內的天數，每日扣抵
   const rate = babyDeductRate();
-  let absentDays = 0;
-  if (rate > 0 && bk.baby_check_in && bk.baby_check_in > bk.check_in) {
-    absentDays = Math.min(Math.round((new Date(bk.baby_check_in) - new Date(bk.check_in)) / 86400000), totalDays);
-  }
-  const babyAbsentUsed = Math.max(0, Math.min(absentDays, usedDays));
+  syncBabyAbsences(bk);
+  const babyAbsentUsed = Math.max(0, Math.min(babyAbsenceDays(bk, leaveDate), usedDays));
   const babyDeduct = babyAbsentUsed * rate;                   // 已使用期間的寶寶未入住扣抵
   const deductible = Math.max(0, usedFee + charges + penalty + handling - babyDeduct); // 機構可收取合計
   const refund = Math.max(0, paid - deductible);
