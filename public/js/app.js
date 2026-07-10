@@ -11956,12 +11956,15 @@ function viewContractTransfersQuery() { return viewClientContractQuery('transfer
 /* ---------- 產後報表查詢（通用報表頁；?r=key） ---------- */
 const PP_LABELS = {
   pay_daily_sum: '產後每日收款統計表', pay_daily_detail: '產後每日收款明細表', revenue_month: '產後營收統計分析表',
-  supply_sales: '客房備品銷售明細表', retail_detail: '產品零售明細表', occupancy_detail: '住宿率明細表',
-  occupancy_month: '住宿率統計表', stay_days_month: '入住天數月統計表', checkin_info: '媽媽入住資訊查詢',
+  supply_sales: '商城商品銷售明細表', retail_detail: '加購項目收入明細表', occupancy_detail: '住宿率明細表',
+  occupancy_month: '住宿率統計表', stay_days_month: '媽媽入住天數查詢', baby_stay_days: '寶寶入住天數查詢',
+  checkin_info: '媽媽入住資訊查詢',
   cancel_stats: '退訂資料統計表', tour_conversion: '參觀成交率分析表', checkin_stats: '媽媽入住統計表',
   order_detail: '媽媽訂單明細查詢', cleaning10: '10日打掃明細表', baby_out: '寶寶不在館內明細查詢',
   early_checkout: '提前退房明細表', baby_detail: '寶寶資料明細表', ar_detail: '媽媽應收帳款明細表',
   room_card_usage: '住房卡使用明細表',
+  satisfy_stay_q: '入住期間滿意度查詢', satisfy_stay_stats: '入住期間滿意度統計',
+  satisfy_out_q: '出住滿意度查詢', satisfy_out_stats: '出住滿意度統計',
   discharged_care_q: '已出住照護資料查詢', bf_rate: '母乳哺育率報表',
   rooming_stats: '親子同室統計分析', infection_quality: '護理感控品質查詢',
   epds_q: '愛丁堡憂鬱量查詢', epds_stats: '愛丁堡憂鬱量統計', person_days: '入住人日數統計表',
@@ -11985,7 +11988,7 @@ async function viewPpReport() {
       <div class="sec-hd">${label}（資料查詢）</div>
       <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;justify-content:center">
         ${(() => {
-          const MONTHLY = ['epds_q', 'epds_stats', 'infection_quality', 'person_days', 'occupancy_month', 'stay_days_month'];
+          const MONTHLY = ['epds_q', 'epds_stats', 'infection_quality', 'person_days', 'occupancy_month', 'stay_days_month', 'satisfy_stay_stats', 'satisfy_out_stats'];
           return MONTHLY.includes(key) ? `<div class="field" style="margin:0"><label>查詢${['epds_q', 'epds_stats', 'infection_quality'].includes(key) ? '品管' : ''}月份</label>
             <div class="row" style="gap:6px;align-items:center">
               <input type="month" id="pp-from-m" value="${todayStr().slice(0, 7)}"> <span>to</span> <input type="month" id="pp-to-m" value="${todayStr().slice(0, 7)}">
@@ -12000,7 +12003,9 @@ async function viewPpReport() {
           const DF_OPTS = {
             checkin_info: [['created', '入住資料建檔日'], ['checkin', '入住日期']],
             order_detail: [['due', '預產期'], ['sign', '簽約日']],
-            ar_detail: [['due', '預產期'], ['sign', '簽約日'], ['checkin', '入住日'], ['checkout', '退房日']]
+            ar_detail: [['due', '預產期'], ['sign', '簽約日'], ['checkin', '入住日'], ['checkout', '退房日']],
+            supply_sales: [['pay', '以收款日期查詢'], ['checkin', '以入住日期查詢']],
+            retail_detail: [['pay', '以收款日期查詢'], ['checkin', '以入住日期查詢']]
           };
           return DF_OPTS[key] ? `<div class="field" style="margin:0"><label>日期欄位條件</label>
             <div class="row" style="gap:12px;padding-top:8px;flex-wrap:wrap">${DF_OPTS[key].map(([v, l], i) =>
@@ -12014,7 +12019,8 @@ async function viewPpReport() {
           <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
             <input id="pp-name" style="max-width:200px" placeholder="輸入已出住媽媽姓名">
           </div></div>` : ''}
-        ${['checkin_info', 'cancel_stats', 'early_checkout', 'baby_detail', 'epds_q', 'mom_rooming'].includes(key) ? `<div class="field" style="margin:0"><label>媽媽姓名</label><input id="pp-name"></div>` : ''}
+        ${['checkin_info', 'cancel_stats', 'early_checkout', 'baby_detail', 'epds_q', 'mom_rooming', 'supply_sales', 'retail_detail'].includes(key) ? `<div class="field" style="margin:0"><label>媽媽姓名</label><input id="pp-name"></div>` : ''}
+        ${['supply_sales', 'retail_detail'].includes(key) ? `<div class="field" style="margin:0"><label>特定商品或服務</label><input id="pp-item" placeholder="輸入品名關鍵字"></div>` : ''}
         <button class="btn" id="pp-go">送出查詢</button>
         <span class="error-msg" id="pp-err"></span>
       </div>
@@ -12044,6 +12050,8 @@ async function viewPpReport() {
     if (cat && cat.value) p.set('cat', cat.value);
     const nameEl = $('#pp-name');
     if (nameEl && nameEl.value.trim()) p.set('name', nameEl.value.trim());
+    const itemEl = $('#pp-item');
+    if (itemEl && itemEl.value.trim()) p.set('item', itemEl.value.trim());
     const kindEl = $('#pp-kind');
     if (kindEl && kindEl.value) p.set('kind', kindEl.value);
     const dfEl = main().querySelector('input[name="pp-df"]:checked');

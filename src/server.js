@@ -5097,6 +5097,48 @@ const ppMonths = (from, to) => {
 const ppOccupiedOn = date => db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings
   WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).get(date, date).c;
 
+// 滿意度報表：以媽媽發送（提交）日期認定；入住期間＝提交當日在訂房期間內
+const SATISFY_Q_COLS = [['d', '提交時間'], ['mother', '媽媽姓名'], ['survey', '問卷'], ['avg', '平均評分'], ['detail', '回覆內容']];
+const SATISFY_ST_COLS = [['month', '年-月'], ['survey', '問卷'], ['cnt', '回覆數'], ['avg', '平均評分']];
+function satisfyRows(f, t) {
+  return db.prepare(`SELECT sr.answers, sr.submitted_at, sr.mother_id, s.title, s.questions, m.name AS mother_name
+    FROM survey_responses sr JOIN surveys s ON s.id = sr.survey_id
+    LEFT JOIN mothers m ON m.id = sr.mother_id
+    WHERE substr(sr.submitted_at,1,10) BETWEEN ? AND ? ORDER BY sr.submitted_at DESC`).all(f, t)
+    .map(r => {
+      let qs = [], ans = {};
+      try { qs = JSON.parse(r.questions); } catch (e) { qs = []; }
+      try { ans = JSON.parse(r.answers); } catch (e) { ans = {}; }
+      const d = r.submitted_at.slice(0, 10);
+      const inStay = r.mother_id ? !!db.prepare(`SELECT 1 FROM bookings
+        WHERE mother_id = ? AND status IN ('reserved','checked_in','checked_out')
+          AND check_in <= ? AND check_out > ? LIMIT 1`).get(r.mother_id, d, d) : false;
+      const ratings = [], parts = [];
+      qs.forEach((q, i) => {
+        const a = ans[i];
+        if (a === undefined || a === null || a === '') return;
+        if (q.type === 'rating') { const n = Number(a); if (Number.isFinite(n)) ratings.push(n); }
+        parts.push(`${q.label}：${a}`);
+      });
+      return { d: r.submitted_at.slice(0, 16), month: d.slice(0, 7), mother: r.mother_name || '—',
+        survey: r.title, avg: ratings.length ? +(ratings.reduce((s, x) => s + x, 0) / ratings.length).toFixed(1) : '',
+        detail: parts.join('；').slice(0, 300), in_stay: inStay, _ratings: ratings };
+    });
+}
+// 統計以月為單位（月 × 問卷：回覆數、評分題平均）
+function satisfyStats(rows) {
+  const g = {};
+  for (const r of rows) {
+    const k = r.month + '|' + r.survey;
+    const o = g[k] = g[k] || { month: r.month, survey: r.survey, cnt: 0, sum: 0, n: 0 };
+    o.cnt++;
+    for (const x of r._ratings) { o.sum += x; o.n++; }
+  }
+  return Object.values(g)
+    .sort((a, b) => b.month.localeCompare(a.month) || a.survey.localeCompare(b.survey))
+    .map(o => ({ month: o.month, survey: o.survey, cnt: o.cnt, avg: o.n ? +(o.sum / o.n).toFixed(1) : '—' }));
+}
+
 const PP_REPORTS = {
   pay_daily_sum: { label: '產後每日收款統計表', columns: [
     ['d', '收款日'], ['cash', '現金'], ['remit', '匯款'], ['other_m', '其他(方式)'],
@@ -5159,30 +5201,40 @@ const PP_REPORTS = {
       checkins: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out')`).get(d).c,
       stay_amt: db.prepare(`SELECT COALESCE(SUM(total_amount),0) s FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out')`).get(d).s
     })) },
-  supply_sales: { label: '客房備品銷售明細表', columns: [
-    ['d', '日期'], ['mother', '媽媽姓名'], ['category', '備品類別'], ['item', '品名'],
-    ['qty', '數量'], ['price', '單價'], ['subtotal', '合計'], ['note', '備註'], ['by', '建檔人']],
+  // 商城商品銷售／加購項目收入：以收款日認定，支援 入住日期/收款日期/媽媽姓名/特定商品 搜尋
+  supply_sales: { label: '商城商品銷售明細表', columns: [
+    ['mother', '媽媽姓名'], ['category', '商品類別'], ['item', '商城商品明細'], ['qty', '數量'],
+    ['price', '單價'], ['subtotal', '金額'], ['d', '收款日期'], ['checkin', '入住日期'], ['by', '建檔人']],
     run: (f, t, q) => db.prepare(`SELECT substr(o.created_at,1,10) d, m.name mother,
       COALESCE(pr.category,'') category, oi.item_name item, oi.quantity qty, oi.unit_price price,
-      oi.quantity*oi.unit_price subtotal, o.note, u.name by
+      oi.quantity*oi.unit_price subtotal, u.name by,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS checkin
       FROM order_items oi JOIN orders o ON o.id = oi.order_id
       LEFT JOIN products pr ON pr.id = oi.product_id
       LEFT JOIN mothers m ON m.id = o.mother_id LEFT JOIN users u ON u.id = o.created_by
-      WHERE o.status='confirmed' AND substr(o.created_at,1,10) BETWEEN ? AND ?
-      ORDER BY o.created_at DESC`).all(f, t)
-      .filter(r => !q.cat || r.category === q.cat) },
-  retail_detail: { label: '產品零售明細表', columns: [
-    ['d', '銷售日期'], ['mother', '媽媽姓名'], ['item', '銷售品名'], ['qty', '數量'],
-    ['price', '單價'], ['subtotal', '合計'], ['method', '收款方式'], ['by', '建檔人']],
-    run: (f, t) => db.prepare(`SELECT substr(o.created_at,1,10) d, m.name mother, oi.item_name item,
-      oi.quantity qty, oi.unit_price price, oi.quantity*oi.unit_price subtotal, o.note, u.name by
-      FROM order_items oi JOIN orders o ON o.id = oi.order_id
-      LEFT JOIN mothers m ON m.id = o.mother_id LEFT JOIN users u ON u.id = o.created_by
-      WHERE o.placed_by='staff' AND o.status='confirmed' AND substr(o.created_at,1,10) BETWEEN ? AND ?
-      ORDER BY o.created_at DESC`).all(f, t).map(r => {
-      const mm = /收款 (\S+) \$/.exec(r.note || '');
-      return { ...r, method: mm ? mm[1] : '掛帳', note: undefined };
-    }) },
+      WHERE o.status='confirmed' ORDER BY o.created_at DESC`).all()
+      .filter(r => {
+        const dv = q.date_field === 'checkin' ? r.checkin : r.d;
+        return dv && dv >= f && dv <= t;
+      })
+      .filter(r => !q.cat || r.category === q.cat)
+      .filter(r => !q.name || (r.mother || '').includes(q.name))
+      .filter(r => !q.item || (r.item || '').includes(q.item)) },
+  retail_detail: { label: '加購項目收入明細表', columns: [
+    ['mother', '媽媽姓名'], ['item', '加購項目明細'], ['qty', '數量'],
+    ['price', '單價'], ['subtotal', '金額'], ['d', '收款日期'], ['checkin', '入住日期'], ['by', '經手人']],
+    run: (f, t, q) => db.prepare(`SELECT ci.charged_on d, m.name mother, ci.item_name item,
+      ci.unit_price price, ci.quantity qty, ci.unit_price*ci.quantity subtotal, u.name by, bk.check_in AS checkin
+      FROM charge_items ci JOIN bookings bk ON bk.id = ci.booking_id
+      JOIN mothers m ON m.id = bk.mother_id LEFT JOIN users u ON u.id = ci.created_by
+      ORDER BY ci.charged_on DESC, ci.id DESC`).all()
+      .filter(r => {
+        const dv = q.date_field === 'checkin' ? r.checkin : r.d;
+        return dv && dv >= f && dv <= t;
+      })
+      .filter(r => !q.name || (r.mother || '').includes(q.name))
+      .filter(r => !q.item || (r.item || '').includes(q.item)) },
   occupancy_detail: { label: '住宿率明細表', columns: [
     ['d', '查詢日期'], ['occupied', '已入住(間)'], ['not_in', '尚未入住(間)'], ['subtotal', '住房小計(間)'],
     ['rate', '單日住宿率'], ['cum_rate', '累積住宿率']],
@@ -5216,7 +5268,7 @@ const PP_REPORTS = {
           rate: ((occ + notIn) / (total * days.length) * 100).toFixed(2) + ' %' };
       });
     } },
-  stay_days_month: { label: '入住天數月統計表', columns: [
+  stay_days_month: { label: '媽媽入住天數查詢', columns: [
     ['month', '年-月'], ['moms', '媽媽住房人數'], ['babies', '寶寶住房人數'],
     ['mom_days', '媽媽入住總天數'], ['baby_days', '寶寶入住總天數'], ['avg_days', '平均入住天數'],
     ['rate', '住宿率'], ['checkouts', '退房人數'], ['cancels', '退訂人數'],
@@ -5359,6 +5411,29 @@ const PP_REPORTS = {
       }
       return out;
     } },
+  // 寶寶入住天數：訂房期間天數 − 寶寶不在館內天數（依 baby_absences）
+  baby_stay_days: { label: '寶寶入住天數查詢', columns: [
+    ['name', '媽媽姓名'], ['room', '房號'], ['stay', '入住期間'], ['days', '住宿天數'],
+    ['babies', '寶寶數'], ['absent', '不在館內天數'], ['baby_days', '寶寶入住天數']],
+    run: (f, t) => db.prepare(`SELECT bk.*, m.name, r.name AS room,
+      (SELECT COUNT(*) FROM babies b WHERE b.mother_id = m.id) AS babies
+      FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+      WHERE bk.status IN ('reserved','checked_in','checked_out') AND bk.check_in <= ? AND bk.check_out >= ?
+      ORDER BY bk.check_in DESC`).all(t, f).map(bk => {
+      const days = Math.round((new Date(bk.check_out) - new Date(bk.check_in)) / 86400000);
+      const absent = babyAbsenceDays(bk);
+      return { name: bk.name, room: bk.room, stay: `${bk.check_in} ~ ${bk.check_out}`,
+        days, babies: bk.babies, absent, baby_days: Math.max(0, days - absent) };
+    }) },
+  // 滿意度：入住期間＝提交當日仍在住（訂房期間內）；出住＝其餘（含退房後填寫）
+  satisfy_stay_q: { label: '入住期間滿意度查詢', columns: SATISFY_Q_COLS,
+    run: (f, t) => satisfyRows(f, t).filter(r => r.in_stay) },
+  satisfy_out_q: { label: '出住滿意度查詢', columns: SATISFY_Q_COLS,
+    run: (f, t) => satisfyRows(f, t).filter(r => !r.in_stay) },
+  satisfy_stay_stats: { label: '入住期間滿意度統計', columns: SATISFY_ST_COLS,
+    run: (f, t) => satisfyStats(satisfyRows(f, t).filter(r => r.in_stay)) },
+  satisfy_out_stats: { label: '出住滿意度統計', columns: SATISFY_ST_COLS,
+    run: (f, t) => satisfyStats(satisfyRows(f, t).filter(r => !r.in_stay)) },
   baby_out: { label: '寶寶不在館內明細查詢', columns: [
     ['mother', '媽媽姓名'], ['period', '入住期間'], ['baby', '寶寶'], ['baby_period', '住館期間'], ['reasons', '不在館內原因']],
     run: (f, t, q) => {
