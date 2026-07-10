@@ -2797,8 +2797,8 @@ app.post('/api/webhooks/ecpay', (req, res) => {
     const tx = db.transaction(() => {
       db.prepare("UPDATE payment_intents SET status='paid', trade_no=?, payment_type=?, paid_at=datetime('now','localtime'), raw=? WHERE id=?")
         .run(p.TradeNo || '', p.PaymentType || '', JSON.stringify(p).slice(0, 2000), intent.id);
-      db.prepare(`INSERT INTO payments (booking_id, amount, method, paid_on, note, received_by)
-        VALUES (?,?,?,?,?,?)`).run(intent.booking_id, intent.amount, '線上刷卡(ECPay)', today(), `綠界交易 ${p.TradeNo || ''}`, intent.created_by);
+      db.prepare(`INSERT INTO payments (booking_id, amount, method, paid_on, note, received_by, target, item)
+        VALUES (?,?,?,?,?,?,?,?)`).run(intent.booking_id, intent.amount, '線上刷卡(ECPay)', today(), `綠界交易 ${p.TradeNo || ''}`, intent.created_by, 'contract', '房費');
     });
     tx();
   } else if (String(p.RtnCode) !== '1') {
@@ -2860,10 +2860,12 @@ app.post('/api/bookings/:id/payments', requireStaff, (req, res) => {
   if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: '金額需大於 0' });
   const bk = db.prepare('SELECT id FROM bookings WHERE id = ?').get(req.params.id);
   if (!bk) return res.status(404).json({ error: '找不到訂房' });
-  const target = p.target === 'addon' ? 'addon' : 'contract'; // 款別：合約款／加購款分開記帳
+  // 項目決定款別：房費＝合約款，其餘（泌乳、產後修復…）＝加購款；未帶項目時沿用指定款別
+  const item = String(p.item || '').trim();
+  const target = item ? (item === '房費' ? 'contract' : 'addon') : (p.target === 'addon' ? 'addon' : 'contract');
   const info = db.prepare(`INSERT INTO payments
-    (booking_id, amount, method, paid_on, note, received_by, target) VALUES (?,?,?,?,?,?,?)`).run(
-    bk.id, Math.round(amount), p.method || '現金', p.paid_on || today(), p.note || '', req.session.user.id, target);
+    (booking_id, amount, method, paid_on, note, received_by, target, item) VALUES (?,?,?,?,?,?,?,?)`).run(
+    bk.id, Math.round(amount), p.method || '現金', p.paid_on || today(), p.note || '', req.session.user.id, target, item);
   res.json({ id: info.lastInsertRowid });
 });
 

@@ -1473,6 +1473,11 @@ function init() {
   if (!payCols.includes('target')) {
     db.exec("ALTER TABLE payments ADD COLUMN target TEXT NOT NULL DEFAULT 'contract'");
   }
+  // 繳費項目（房費／泌乳／產後修復…）：房費歸合約款，其餘歸加購款
+  if (!payCols.includes('item')) {
+    db.exec("ALTER TABLE payments ADD COLUMN item TEXT DEFAULT ''");
+    db.prepare("UPDATE payments SET item = '房費' WHERE target = 'contract'").run();
+  }
 
   // 寶寶不在館內紀錄：由寶寶照護「住院中／不在館內」異動紀錄帶入，可手動增修；
   // 天數 × 每日扣抵費率 自動調整合約應收。log 帶入列以 log_key 防重複；

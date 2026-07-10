@@ -2277,7 +2277,7 @@ async function openBillingDetail(bookingId) {
   const payRows = b.payments.length ? b.payments.map(p => `
     <tr>
       <td data-label="日期">${esc(p.paid_on)}</td>
-      <td data-label="款別"><span class="badge ${p.target === 'addon' ? 'purple' : 'teal'}">${p.target === 'addon' ? '加購款' : '合約款'}</span></td>
+      <td data-label="項目">${esc(p.item || (p.target === 'addon' ? '—' : '房費'))}<br><span class="badge ${p.target === 'addon' ? 'purple' : 'teal'}">${p.target === 'addon' ? '加購款' : '合約款'}</span></td>
       <td data-label="方式">${esc(p.method)}${p.note ? `<br><small>${esc(p.note)}</small>` : ''}</td>
       <td data-label="金額">${fmtMoney(p.amount)}</td>
       <td data-label="經手">${esc(p.staff_name || '-')}</td>
@@ -2373,14 +2373,19 @@ async function openBillingDetail(bookingId) {
     </div>
     <h3 style="color:var(--primary-dark);font-size:1rem;margin:14px 0 8px">繳費紀錄</h3>
     <div class="table-wrap"><table class="data stack">
-      <thead><tr><th>日期</th><th>款別</th><th>方式</th><th>金額</th><th>經手</th><th></th></tr></thead>
+      <thead><tr><th>日期</th><th>項目 / 款別</th><th>方式</th><th>金額</th><th>經手</th><th></th></tr></thead>
       <tbody>${payRows}</tbody>
     </table></div>
     <div class="form-grid" style="margin-top:10px">
       <div class="field">
-        <label>款別</label>
-        <select id="py-target"><option value="contract">合約款</option><option value="addon">加購款</option></select>
+        <label>項目<small>（房費＝合約款，其餘＝加購款）</small></label>
+        <select id="py-item">
+          <option>房費</option>
+          ${chargePresets().map(p => `<option>${esc(p)}</option>`).join('')}
+          <option value="__other">其他（自行輸入）</option>
+        </select>
       </div>
+      <div class="field" id="py-item-wrap" style="display:none"><label>其他項目名稱</label><input id="py-item-name" placeholder="自行輸入項目"></div>
       <div class="field"><label>金額</label><input type="number" id="py-amount" inputmode="numeric" min="1"></div>
       <div class="field">
         <label>繳費方式</label>
@@ -2430,7 +2435,14 @@ async function openBillingDetail(bookingId) {
         body.querySelector('#cg-err').textContent = e.message;
       }
     };
+    // 繳費項目下拉：選「其他」才顯示自行輸入欄
+    const pyItemSel = body.querySelector('#py-item');
+    pyItemSel.onchange = () => {
+      body.querySelector('#py-item-wrap').style.display = pyItemSel.value === '__other' ? '' : 'none';
+    };
     body.querySelector('#py-save').onclick = async () => {
+      const pyItem = pyItemSel.value === '__other' ? body.querySelector('#py-item-name').value.trim() : pyItemSel.value;
+      if (!pyItem) { body.querySelector('#py-err').textContent = '請輸入其他項目名稱'; return; }
       try {
         await api(`/bookings/${b.id}/payments`, {
           method: 'POST',
@@ -2439,7 +2451,7 @@ async function openBillingDetail(bookingId) {
             method: body.querySelector('#py-method').value,
             paid_on: body.querySelector('#py-date').value,
             note: body.querySelector('#py-note').value,
-            target: body.querySelector('#py-target').value
+            item: pyItem
           }
         });
         openBillingDetail(b.id);
