@@ -544,23 +544,63 @@ async function openVisitorForm(v, onSaved) {
   const mothers = await api('/mothers');
   const opts = mothers.filter(m => m.status !== 'checked_out' || m.id === ed.mother_id)
     .map(m => `<option value="${m.id}" ${ed.mother_id === m.id ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('');
-  openModal(ed.id ? '編輯訪客預約' : '新增訪客預約', `
+  // 與家屬端一致：人數連動姓名欄、選日期帶出可預約空檔（13~18 整點、各樓層每小時限 2 組）
+  const edNames = String(ed.visitor_name || '').split('、').map(s => s.trim()).filter(Boolean);
+  const edDate = (ed.visit_at || '').slice(0, 10);
+  const edTime = (ed.visit_at || '').slice(11, 16);
+  openModal(ed.id ? '編輯訪客預約' : '登記訪客', `
     <div class="form-grid">
       <div class="field"><label>媽媽 *</label><select id="vf-mother" ${ed.id ? 'disabled' : ''}><option value="">請選擇</option>${opts}</select></div>
-      <div class="field"><label>訪客姓名 *</label><input id="vf-name" value="${esc(ed.visitor_name || '')}"></div>
-      <div class="field"><label>關係</label><input id="vf-rel" value="${esc(ed.relation || '')}" placeholder="例如：先生、婆婆"></div>
-      <div class="field"><label>電話</label><input id="vf-phone" value="${esc(ed.phone || '')}"></div>
-      <div class="field"><label>人數</label><input type="number" id="vf-count" min="1" max="20" value="${ed.headcount ?? 1}"></div>
-      <div class="field"><label>探訪時間 *</label><input id="vf-when" value="${esc(ed.visit_at || '')}" placeholder="2026-07-10 14:00"></div>
+      <div class="field"><label>人數<small>（每組限 4 人）</small></label>
+        <select id="vf-count">${[1, 2, 3, 4].map(n => `<option ${n === Math.min(Math.max(edNames.length, ed.headcount || 1), 4) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <div class="full" id="vf-names"></div>
+      <div class="field"><label>與媽媽關係</label><input id="vf-rel" value="${esc(ed.relation || '')}" placeholder="例如：先生、婆婆"></div>
+      <div class="field"><label>聯絡電話</label><input id="vf-phone" value="${esc(ed.phone || '')}" inputmode="tel"></div>
+      <div class="field"><label>探訪日期 *</label><input type="date" id="vf-date" value="${esc(edDate)}"></div>
+      <div class="field"><label>探訪時間 *<small>（選媽媽與日期後帶出空檔）</small></label>
+        <select id="vf-time"><option value="">請先選擇媽媽與日期</option></select></div>
+      <div class="field full" id="vf-slot-msg" style="font-size:.84rem;color:var(--muted)"></div>
       <div class="field full"><label>備註</label><input id="vf-note" value="${esc(ed.note || '')}"></div>
-      <div class="full row"><button class="btn" id="vf-save">儲存</button><span class="error-msg" id="vf-err"></span></div>
+      <div class="full row"><button class="btn" id="vf-save">${ed.id ? '儲存' : '送出預約'}</button><span class="error-msg" id="vf-err"></span></div>
     </div>`, body => {
     const el = id => body.querySelector(id);
+    // 人數連動姓名欄
+    const renderNames = () => {
+      const n = Number(el('#vf-count').value) || 1;
+      el('#vf-names').innerHTML = `<div class="form-grid" style="margin:0">${Array.from({ length: n }, (_, i) => `
+        <div class="field"><label>訪客姓名 ${n > 1 ? i + 1 : ''} *</label><input data-vf-name value="${esc(edNames[i] || '')}"></div>`).join('')}</div>`;
+    };
+    el('#vf-count').onchange = renderNames;
+    renderNames();
+    // 選媽媽＋日期 → 帶出該樓層可預約空檔（護理站可代選已額滿時段以外的整點）
+    const loadSlots = async () => {
+      const mid = Number(el('#vf-mother').value) || ed.mother_id || 0;
+      const date = el('#vf-date').value;
+      const sel = el('#vf-time'), msg = el('#vf-slot-msg');
+      if (!mid || !date) { sel.innerHTML = '<option value="">請先選擇媽媽與日期</option>'; msg.textContent = ''; return; }
+      sel.innerHTML = '<option value="">載入空檔中…</option>';
+      try {
+        const r = await api(`/visitor-slots?mother_id=${mid}&date=${date}`);
+        const keepCur = ed.id && edDate === date && edTime && !r.slots.some(s => s.time === edTime);
+        sel.innerHTML = '<option value="">請選擇時段</option>'
+          + r.slots.map(s => `<option value="${s.time}" ${s.available || (ed.id && s.time === edTime) ? '' : 'disabled'} ${s.time === edTime && edDate === date ? 'selected' : ''}>${s.time}${s.available ? `（尚可預約 ${s.left} 組）` : '（已額滿）'}</option>`).join('')
+          + (keepCur ? `<option value="${esc(edTime)}" selected>${esc(edTime)}（原時間）</option>` : '');
+        msg.textContent = `該媽媽本週已預約 ${r.quota_used}／${r.quota_max} 次（週一至週日）${r.floor ? `・會客地點：${r.floor} 當層會客室` : ''}`;
+      } catch (e) { sel.innerHTML = '<option value="">載入失敗</option>'; msg.textContent = e.message; }
+    };
+    el('#vf-mother').onchange = loadSlots;
+    el('#vf-date').onchange = loadSlots;
+    if ((ed.mother_id || el('#vf-mother').value) && edDate) loadSlots();
     el('#vf-save').onclick = async () => {
+      el('#vf-err').textContent = '';
+      const names = [...body.querySelectorAll('[data-vf-name]')].map(i => i.value.trim());
+      if (names.some(x => !x)) { el('#vf-err').textContent = '請填寫每一位訪客姓名'; return; }
+      const date = el('#vf-date').value, time = el('#vf-time').value;
+      if (!date || !time) { el('#vf-err').textContent = '請選擇探訪日期與時段'; return; }
       const payload = {
-        visitor_name: el('#vf-name').value.trim(), relation: el('#vf-rel').value.trim(),
-        phone: el('#vf-phone').value.trim(), headcount: Number(el('#vf-count').value) || 1,
-        visit_at: el('#vf-when').value.trim(), note: el('#vf-note').value.trim()
+        visitor_name: names.join('、'), relation: el('#vf-rel').value.trim(),
+        phone: el('#vf-phone').value.trim(), headcount: names.length,
+        visit_at: `${date} ${time}`, note: el('#vf-note').value.trim()
       };
       if (!ed.id) payload.mother_id = Number(el('#vf-mother').value) || 0;
       try {

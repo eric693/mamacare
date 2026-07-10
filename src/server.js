@@ -3559,6 +3559,93 @@ app.get('/api/family/signups', requireFamily, (req, res) => {
 });
 
 // ---------- 家屬端：訪客預約（登記／查詢／取消，同一位媽媽的家屬共同可見） ----------
+// 探訪規則：整點時段 13~18 點、各樓層每小時限 2 組、每組限 4 人、
+// 每週（週一至週日）限預約 2 次、隔日預約須於前一日 19:00 前完成
+const VISIT_HOURS = ['13:00', '14:00', '15:00', '16:00', '17:00', '18:00'];
+const VISIT_WEEKLY_MAX = 2;
+const VISIT_FLOOR_HOURLY_MAX = 2;
+const VISIT_HEADCOUNT_MAX = 4;
+
+// 媽媽於指定日期所住樓層（取房號首碼；無訂房回空字串）
+function motherFloorOnDate(motherId, date) {
+  const bk = db.prepare(`SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.mother_id = ? AND bk.status IN ('reserved','checked_in') AND bk.check_in <= ? AND bk.check_out >= ?
+    ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1`).get(motherId, date, date);
+  return bk ? String(bk.name).trim().charAt(0) : '';
+}
+
+// 該日期所屬「週一～週日」區間
+function visitWeekRange(date) {
+  const d = new Date(date + 'T00:00:00Z');
+  const dow = (d.getUTCDay() + 6) % 7; // 週一=0
+  const mon = new Date(d.getTime() - dow * 86400000).toISOString().slice(0, 10);
+  const sun = new Date(d.getTime() + (6 - dow) * 86400000).toISOString().slice(0, 10);
+  return [mon, sun];
+}
+
+// 同樓層該日該整點已預約組數（排除已取消；excludeId 供改期用）
+function floorGroupsAt(floor, date, hhmm) {
+  if (!floor) return 0;
+  const rows = db.prepare(`SELECT mother_id FROM visitor_reservations
+    WHERE substr(visit_at,1,10) = ? AND substr(visit_at,12,5) = ? AND status != 'cancelled'`).all(date, hhmm);
+  return rows.filter(r => motherFloorOnDate(r.mother_id, date) === floor).length;
+}
+
+// 該媽媽於該週已預約次數（排除已取消）
+function motherWeeklyVisits(motherId, date) {
+  const [mon, sun] = visitWeekRange(date);
+  return db.prepare(`SELECT COUNT(*) c FROM visitor_reservations
+    WHERE mother_id = ? AND status != 'cancelled' AND substr(visit_at,1,10) BETWEEN ? AND ?`)
+    .get(motherId, mon, sun).c;
+}
+
+// 日期是否可受理預約：至少隔日，且隔日預約須於前一日 19:00 前完成
+function visitDateError(date) {
+  const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+  const todayD = now.toISOString().slice(0, 10);
+  const nowHM = now.toISOString().slice(11, 16);
+  const minDate = new Date(new Date(todayD + 'T00:00:00Z').getTime() + (nowHM >= '19:00' ? 2 : 1) * 86400000)
+    .toISOString().slice(0, 10);
+  if (date <= todayD) return '恕不接受當日（含過期）預約，請預約隔日以後';
+  if (date < minDate) return '隔日預約請於每日晚間 19:00 前完成，此時段已截止';
+  return '';
+}
+
+// 查詢某日可預約空檔（供家屬端日期選擇後帶出）
+app.get('/api/family/visitor-slots', requireFamily, (req, res) => {
+  const mid = familyMotherId(req.session.family);
+  if (!mid) return res.status(400).json({ error: '找不到寶寶資料' });
+  const date = String(req.query.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: '日期格式錯誤' });
+  const dateErr = visitDateError(date);
+  const quotaUsed = motherWeeklyVisits(mid, date);
+  const floor = motherFloorOnDate(mid, date);
+  const slots = VISIT_HOURS.map(t => {
+    const used = floorGroupsAt(floor, date, t);
+    return { time: t, available: !dateErr && quotaUsed < VISIT_WEEKLY_MAX && used < VISIT_FLOOR_HOURLY_MAX, left: Math.max(0, VISIT_FLOOR_HOURLY_MAX - used) };
+  });
+  res.json({
+    date, floor: floor ? `${floor}F` : '', slots,
+    quota_used: quotaUsed, quota_max: VISIT_WEEKLY_MAX,
+    closed_reason: dateErr || (quotaUsed >= VISIT_WEEKLY_MAX ? `本週（週一至週日）已預約 ${quotaUsed} 次，達每週 ${VISIT_WEEKLY_MAX} 次上限` : '')
+  });
+});
+
+// 員工端：查詢某媽媽某日可預約空檔（護理站代客登記用；顯示額滿與每週次數供參考）
+app.get('/api/visitor-slots', requireStaff, (req, res) => {
+  const mid = Number(req.query.mother_id) || 0;
+  const date = String(req.query.date || '').trim();
+  if (!mid) return res.status(400).json({ error: '請先選擇媽媽' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: '日期格式錯誤' });
+  const floor = motherFloorOnDate(mid, date);
+  const quotaUsed = motherWeeklyVisits(mid, date);
+  const slots = VISIT_HOURS.map(t => {
+    const used = floorGroupsAt(floor, date, t);
+    return { time: t, available: used < VISIT_FLOOR_HOURLY_MAX, left: Math.max(0, VISIT_FLOOR_HOURLY_MAX - used) };
+  });
+  res.json({ date, floor: floor ? `${floor}F` : '', slots, quota_used: quotaUsed, quota_max: VISIT_WEEKLY_MAX });
+});
+
 app.get('/api/family/visitor-reservations', requireFamily, (req, res) => {
   const mid = familyMotherId(req.session.family);
   if (!mid) return res.json([]);
@@ -3574,15 +3661,30 @@ app.post('/api/family/visitor-reservations', requireFamily, (req, res) => {
   const b = req.body || {};
   const name = String(b.visitor_name || '').trim();
   if (!name) return res.status(400).json({ error: '訪客姓名必填' });
-  if (!validVisitAt(b.visit_at)) return res.status(400).json({ error: '探訪時間格式應為 YYYY-MM-DD HH:MM' });
-  const headcount = Math.min(Math.max(parseInt(b.headcount, 10) || 1, 1), 20);
+  if (!b.agree) return res.status(400).json({ error: '請先詳細閱讀並同意訪客規範' });
+  if (!validVisitAt(b.visit_at) || !/ \d{2}:\d{2}$/.test(b.visit_at)) {
+    return res.status(400).json({ error: '探訪時間格式應為 YYYY-MM-DD HH:MM' });
+  }
+  const visitAt = b.visit_at.trim();
+  const [vDate, vTime] = [visitAt.slice(0, 10), visitAt.slice(11, 16)];
+  if (!VISIT_HOURS.includes(vTime)) return res.status(400).json({ error: `探訪時間請以整點預約（${VISIT_HOURS[0]}～${VISIT_HOURS[VISIT_HOURS.length - 1]}）` });
+  const dateErr = visitDateError(vDate);
+  if (dateErr) return res.status(400).json({ error: dateErr });
+  if (motherWeeklyVisits(mid, vDate) >= VISIT_WEEKLY_MAX) {
+    return res.status(400).json({ error: `每週（週一至週日）限預約 ${VISIT_WEEKLY_MAX} 次，本週已達上限` });
+  }
+  const floor = motherFloorOnDate(mid, vDate);
+  if (floorGroupsAt(floor, vDate, vTime) >= VISIT_FLOOR_HOURLY_MAX) {
+    return res.status(400).json({ error: '此時段該樓層已額滿（每小時限兩組），請改選其他時段' });
+  }
+  const headcount = Math.min(Math.max(parseInt(b.headcount, 10) || 1, 1), VISIT_HEADCOUNT_MAX);
   const info = db.prepare(`INSERT INTO visitor_reservations
     (mother_id, family_id, visitor_name, relation, phone, headcount, visit_at, note)
     VALUES (?,?,?,?,?,?,?,?)`).run(
-    mid, fam.id, name.slice(0, 50), String(b.relation || '').slice(0, 20),
-    String(b.phone || '').slice(0, 20), headcount, b.visit_at.trim(), String(b.note || '').slice(0, 200));
+    mid, fam.id, name.slice(0, 100), String(b.relation || '').slice(0, 20),
+    String(b.phone || '').slice(0, 20), headcount, visitAt, String(b.note || '').slice(0, 200));
   logAudit(req, { action: 'create', entity: 'visitor_reservation', entity_id: info.lastInsertRowid, summary: `家屬登記訪客:${fam.name}→${name}` });
-  res.json({ id: info.lastInsertRowid, message: '已送出訪客預約，探訪當日請至護理站報到' });
+  res.json({ id: info.lastInsertRowid, message: '已送出訪客預約，探訪當日請攜帶證件至 1 樓核實身分換證' });
 });
 
 app.post('/api/family/visitor-reservations/:id/cancel', requireFamily, (req, res) => {

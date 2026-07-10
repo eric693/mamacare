@@ -573,6 +573,43 @@ async function loadPrograms() {
   });
 }
 
+// 訪客規範全文（同意後才可填寫預約資料）
+const VISITOR_RULES_HTML = `
+  <h3 style="margin-top:0">訪客注意事項</h3>
+  <p>1. 探訪頻率：每週可預約二次。（週一至週日為一個週期）<br>
+  2. 訪客人數：每組限四人!!</p>
+  <p><strong>禁 12 歲以下訪客唷~</strong>如有親友帶小孩來請記得一定要提前預約，訪客 12 歲以下之孩童不能到媽咪的住房層，須提前預約 2F 多功能室唷~!!<br>
+  因為只有 1 間所以請爸拔媽咪提前預約唷~!<br>
+  訪客的小朋友是不能進入遊戲室的唷~遊戲室只 FOR 住客之大小寶們唷!</p>
+  <p>3. 探訪時間：13:00、14:00、15:00、16:00、17:00、18:00 每組限時一小時，最後探訪時間為 18:00~19:00，請以整點預約。（各樓層每小時限定兩組）<br>
+  4. 看寶寶的時間為 20~30 分鐘<br>
+  5. 休息時間：每日 12:00~13:00 為會客室消毒時間，不開放預約<br>
+  6. 會客地點：於住房當層會客室（不得跨樓層）<br>
+  7. 預約方式：請於每日晚間 19:00 前完成隔日預約，恕不接受當日預約</p>
+  <p>注意事項：請訪客來訪當天攜帶證件，於 1 樓核實身分後換證即可上 2 樓作訪客登記。</p>
+  <p>提醒您因應配合衛生主管機關要求，來訪者若為「確診者」、「確診者同住家人」一律禁止進入本機構。為了避免群聚感染，請全程配戴口罩，並嚴禁飲食；未配合防疫規範者，本機構有權利拒絕入內，並需回報相關主管機關，情節嚴重違反者，則需全面關閉會客室使用。</p>`;
+
+// 滿版訪客規範視窗；withAgree=true 時最下方顯示同意按鈕
+function showVisitorRules(withAgree, onAgree) {
+  const old = document.getElementById('vr-rules-overlay');
+  if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'vr-rules-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(28,43,41,.55);display:flex;align-items:center;justify-content:center;padding:12px';
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:92vh;display:flex;flex-direction:column">
+      <div style="padding:18px 20px 8px;overflow-y:auto;line-height:1.7;font-size:.92rem">${VISITOR_RULES_HTML}</div>
+      <div style="padding:12px 20px 16px;border-top:1px solid #e3ecea;text-align:center">
+        ${withAgree
+          ? '<button class="btn" id="vr-rules-agree" style="width:100%">我已詳細閱讀並同意以上訪客規範</button>'
+          : '<button class="btn secondary" id="vr-rules-close" style="width:100%">關閉</button>'}
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const btn = ov.querySelector(withAgree ? '#vr-rules-agree' : '#vr-rules-close');
+  btn.onclick = () => { ov.remove(); if (withAgree && onAgree) onAgree(); };
+}
+
 async function loadVisitors() {
   let rows = [];
   try { rows = await api('/family/visitor-reservations'); }
@@ -592,21 +629,34 @@ async function loadVisitors() {
       <td data-label="操作">${v.status === 'booked' ? `<button class="btn small secondary" data-vr-cancel="${v.id}">取消</button>` : ''}</td>
     </tr>`;
   }).join('') : '<tr><td colspan="5"><div class="empty">尚無訪客預約</div></td></tr>';
+  // 隔日預約須於前一日 19:00 前完成 → 日期最早可選：19:00 前為明日、之後為後天
+  const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+  const minDate = new Date(now.getTime() + (now.toISOString().slice(11, 16) >= '19:00' ? 2 : 1) * 86400000)
+    .toISOString().slice(0, 10);
   $('#panel').innerHTML = `
     <div class="card">
       <h3>登記訪客</h3>
       <div class="form-grid">
-        <div class="field"><label>訪客姓名 *</label><input id="vr-name"></div>
+        <div class="field"><label>人數<small>（每組限 4 人）</small></label>
+          <select id="vr-count"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
         <div class="field"><label>與媽媽關係</label><input id="vr-rel" placeholder="例如：先生、婆婆"></div>
+        <div class="full" id="vr-names"></div>
         <div class="field"><label>聯絡電話</label><input id="vr-phone" inputmode="tel"></div>
-        <div class="field"><label>人數</label><input type="number" id="vr-count" min="1" max="20" value="1"></div>
-        <div class="field"><label>探訪日期 *</label><input type="date" id="vr-date"></div>
-        <div class="field"><label>探訪時間 *</label><input type="time" id="vr-time" value="14:00"></div>
+        <div class="field"><label>探訪日期 *</label><input type="date" id="vr-date" min="${minDate}"></div>
+        <div class="field"><label>探訪時間 *<small>（選日期後帶出可預約空檔）</small></label>
+          <select id="vr-time" disabled><option value="">請先選擇探訪日期</option></select></div>
+        <div class="field full" id="vr-slot-msg" style="font-size:.84rem;color:var(--muted)"></div>
         <div class="field full"><label>備註</label><input id="vr-note"></div>
+        <div class="full row" style="align-items:center">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.9rem;font-weight:400">
+            <input type="checkbox" id="vr-2f" style="width:auto">預約 2F 多功能室（有 12 歲以下孩童）
+          </label>
+        </div>
         <div class="full row"><button class="btn" id="vr-submit">送出預約</button>
           <span class="error-msg" id="vr-err"></span><span style="color:var(--ok)" id="vr-ok"></span></div>
       </div>
-      <small style="color:var(--muted)">依機構感控原則：訪客請於公共區域會客、進入前量體溫戴口罩；額溫 37.5 度以上或有呼吸道症狀請改期。</small>
+      <small style="color:var(--muted)">我已詳細閱讀並同意
+        <a href="#" id="vr-rules-link" style="color:var(--primary-dark);text-decoration:underline">訪客規範</a>（點選查看訪客注意事項）</small>
     </div>
     <div class="card">
       <h3>訪客預約紀錄</h3>
@@ -614,15 +664,77 @@ async function loadVisitors() {
         <thead><tr><th>探訪時間</th><th>訪客</th><th>人數</th><th>狀態</th><th>操作</th></tr></thead>
         <tbody>${trs}</tbody></table></div>
     </div>`;
+
+  // 進入分頁先跳滿版規範視窗，同意後才可填寫（同一登入工作階段記住）
+  if (!sessionStorage.getItem('vrRulesAgreed')) {
+    showVisitorRules(true, () => sessionStorage.setItem('vrRulesAgreed', '1'));
+  }
+  $('#vr-rules-link').onclick = e => { e.preventDefault(); showVisitorRules(false); };
+
+  // 人數與訪客姓名連動：幾人就幾個姓名欄
+  const renderNames = () => {
+    const n = Number($('#vr-count').value) || 1;
+    $('#vr-names').innerHTML = `<div class="form-grid" style="margin:0">${Array.from({ length: n }, (_, i) => `
+      <div class="field"><label>訪客姓名 ${n > 1 ? i + 1 : ''} *</label><input data-vr-name></div>`).join('')}</div>`;
+  };
+  $('#vr-count').onchange = renderNames;
+  renderNames();
+
+  // 選日期後帶出可預約空檔
+  $('#vr-date').onchange = async () => {
+    const sel = $('#vr-time'), msg = $('#vr-slot-msg');
+    sel.disabled = true; sel.innerHTML = '<option value="">載入空檔中…</option>'; msg.textContent = '';
+    if (!$('#vr-date').value) return;
+    try {
+      const r = await api(`/family/visitor-slots?date=${$('#vr-date').value}`);
+      if (r.closed_reason) {
+        sel.innerHTML = '<option value="">此日期無法預約</option>';
+        msg.innerHTML = `<span style="color:var(--danger)">${esc(r.closed_reason)}</span>`;
+        return;
+      }
+      const open = r.slots.filter(s => s.available);
+      sel.innerHTML = open.length
+        ? '<option value="">請選擇時段</option>' + r.slots.map(s =>
+            `<option value="${s.time}" ${s.available ? '' : 'disabled'}>${s.time}${s.available ? `（尚可預約 ${s.left} 組）` : '（已額滿）'}</option>`).join('')
+        : '<option value="">此日各時段皆已額滿</option>';
+      sel.disabled = !open.length;
+      msg.textContent = `本週已預約 ${r.quota_used}／${r.quota_max} 次${r.floor ? `・會客地點：${r.floor} 當層會客室` : ''}・每組限時一小時，看寶寶約 20~30 分鐘`;
+    } catch (e) {
+      sel.innerHTML = '<option value="">載入失敗</option>';
+      msg.innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
+    }
+  };
+
+  // 勾選 2F 多功能室：跳警語且不能送出（12 歲以下孩童需人工確認）
+  $('#vr-2f').onchange = () => {
+    if ($('#vr-2f').checked) {
+      alert('2F 多功能室（12 歲以下孩童探訪）僅 1 間，無法線上預約，請直接與客服電話確認。');
+      $('#vr-err').textContent = '勾選 2F 多功能室者請電話向客服預約，無法線上送出';
+    } else {
+      $('#vr-err').textContent = '';
+    }
+  };
+
   $('#vr-submit').onclick = async () => {
     $('#vr-err').textContent = ''; $('#vr-ok').textContent = '';
+    if (!sessionStorage.getItem('vrRulesAgreed')) {
+      showVisitorRules(true, () => sessionStorage.setItem('vrRulesAgreed', '1'));
+      return;
+    }
+    if ($('#vr-2f').checked) {
+      alert('2F 多功能室（12 歲以下孩童探訪）僅 1 間，無法線上預約，請直接與客服電話確認。');
+      $('#vr-err').textContent = '勾選 2F 多功能室者請電話向客服預約，無法線上送出';
+      return;
+    }
+    const names = [...document.querySelectorAll('[data-vr-name]')].map(i => i.value.trim());
+    if (names.some(x => !x)) { $('#vr-err').textContent = '請填寫每一位訪客姓名'; return; }
     const date = $('#vr-date').value, time = $('#vr-time').value;
-    if (!date || !time) { $('#vr-err').textContent = '請選擇探訪日期與時間'; return; }
+    if (!date || !time) { $('#vr-err').textContent = '請選擇探訪日期與可預約時段'; return; }
     try {
       const r = await api('/family/visitor-reservations', { method: 'POST', body: {
-        visitor_name: $('#vr-name').value.trim(), relation: $('#vr-rel').value.trim(),
-        phone: $('#vr-phone').value.trim(), headcount: Number($('#vr-count').value) || 1,
-        visit_at: `${date} ${time}`, note: $('#vr-note').value.trim()
+        visitor_name: names.join('、'), relation: $('#vr-rel').value.trim(),
+        phone: $('#vr-phone').value.trim(), headcount: names.length,
+        visit_at: `${date} ${time}`, note: $('#vr-note').value.trim(), agree: true
       } });
       alert(r.message || '已送出訪客預約');
       loadVisitors();
