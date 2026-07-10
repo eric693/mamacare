@@ -265,6 +265,7 @@ function sweepOrphanUploads() {
     for (const r of db.prepare("SELECT photo FROM testimonials WHERE photo != ''").all()) referenced.add(path.basename(r.photo));
     for (const r of db.prepare("SELECT photo_file FROM mother_breast_photos WHERE photo_file != ''").all()) referenced.add(path.basename(r.photo_file));
     for (const r of db.prepare("SELECT filename FROM documents WHERE filename != ''").all()) referenced.add(path.basename(r.filename));
+    for (const r of db.prepare("SELECT file FROM meal_menu_files WHERE file != ''").all()) referenced.add(path.basename(r.file));
     const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 僅刪 1 天前，避開上傳途中
     let removed = 0;
     for (const f of fs.readdirSync(UPLOAD_DIR)) {
@@ -3565,7 +3566,8 @@ app.post('/api/members/:id/points', requireAdmin, (req, res) => {
 app.get('/api/meals', requireStaff, (req, res) => {
   const date = req.query.date || today();
   const mothers = db.prepare(`
-    SELECT m.id, m.name, m.diet_notes, r.name AS room_name
+    SELECT m.id, m.name, m.diet_notes, m.meal_diet, m.delivery_date, m.delivery_type,
+           r.name AS room_name, bk.check_in, bk.check_out
     FROM mothers m
     JOIN bookings bk ON bk.mother_id = m.id AND bk.status != 'cancelled'
       AND bk.check_in <= ? AND bk.check_out > ?
@@ -3765,6 +3767,60 @@ app.post('/api/meal-swaps/:id/handle', requireStaff, (req, res) => {
   if (!['approved', 'rejected'].includes(action)) return res.status(400).json({ error: '動作不正確' });
   db.prepare('UPDATE meal_swap_requests SET status = ?, handled_by = ?, handled_at = ?, staff_note = ? WHERE id = ?')
     .run(action, req.session.user.id, new Date().toLocaleString('sv-SE').slice(0, 19), String((req.body || {}).staff_note || '').slice(0, 200), cur.id);
+  // 核准（完成）時自動套入當日訂餐：餐別對應早／午／晚，
+  // 希望更換內容若是有效餐點選項則直接改選項，否則寫入該餐備註供廚房備餐
+  let applied = false;
+  if (action === 'approved') {
+    const mealType = { '早餐': 'breakfast', '午餐': 'lunch', '晚餐': 'dinner' }[String(cur.slot || '').trim()];
+    if (mealType) {
+      const choices = String(getSettings().meal_choices || '').split(',').map(s => s.trim()).filter(Boolean);
+      const swapNote = `換餐：${cur.to_choice || ''}${cur.reason ? `（${cur.reason}）` : ''}`.slice(0, 200);
+      const order = db.prepare('SELECT * FROM meal_orders WHERE mother_id = ? AND meal_date = ? AND meal_type = ?')
+        .get(cur.mother_id, cur.meal_date, mealType);
+      if (choices.includes(String(cur.to_choice || '').trim())) {
+        db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note, status)
+          VALUES (?,?,?,?,?,'preparing')
+          ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note`)
+          .run(cur.mother_id, cur.meal_date, mealType, cur.to_choice.trim(),
+            cur.reason ? `換餐（${cur.reason}）`.slice(0, 200) : '換餐');
+        applied = true;
+      } else if (order) {
+        db.prepare('UPDATE meal_orders SET note = ? WHERE id = ?')
+          .run([order.note, swapNote].filter(Boolean).join('；').slice(0, 200), order.id);
+        applied = true;
+      }
+    }
+    logAudit(req, { action: 'update', entity: 'meal_swap_requests', entity_id: cur.id,
+      summary: `換餐申請完成${applied ? '（已套入 ' + cur.meal_date + ' 訂餐）' : ''}` });
+  }
+  res.json({ ok: true, applied });
+});
+
+// ---------- 月子餐菜單檔案（週菜單 PDF／圖片上傳；菜單以周為單位、周日開始） ----------
+app.get('/api/meal-menu-files', requireStaff, (req, res) => {
+  res.json(db.prepare(`SELECT f.*, u.name AS uploaded_by_name FROM meal_menu_files f
+    LEFT JOIN users u ON u.id = f.uploaded_by
+    ORDER BY f.week_start DESC, f.id DESC LIMIT 100`).all());
+});
+app.post('/api/meal-menu-files', requireStaff, docUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
+  if (!/^(image\/|application\/pdf)/.test(req.file.mimetype)) {
+    removeUploadFile(req.file.filename);
+    return res.status(400).json({ error: '僅接受 PDF 或圖片檔（jpg/png）' });
+  }
+  const week = /^\d{4}-\d{2}-\d{2}$/.test(req.body.week_start || '') ? req.body.week_start : '';
+  const info = db.prepare(`INSERT INTO meal_menu_files (week_start, file, orig_name, note, uploaded_by)
+    VALUES (?,?,?,?,?)`).run(week, req.file.filename,
+    String(req.file.originalname || '').slice(0, 200), String(req.body.note || '').slice(0, 200), req.session.user.id);
+  logAudit(req, { action: 'create', entity: 'meal_menu_files', entity_id: info.lastInsertRowid, summary: `菜單上傳 ${week || ''}` });
+  res.json({ id: info.lastInsertRowid, file: req.file.filename });
+});
+app.delete('/api/meal-menu-files/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM meal_menu_files WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到檔案' });
+  db.prepare('DELETE FROM meal_menu_files WHERE id = ?').run(cur.id);
+  removeUploadFile(cur.file);
+  logAudit(req, { action: 'delete', entity: 'meal_menu_files', entity_id: cur.id, summary: '刪除菜單檔案' });
   res.json({ ok: true });
 });
 

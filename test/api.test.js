@@ -1099,8 +1099,15 @@ test('膳食：訂餐狀態/備註；月子餐換餐家屬申請→員工審核'
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
   const mine = (await req('GET', '/api/meal-swaps?status=pending')).data.find(x => x.to_choice === '素食');
   assert.ok(mine);
-  assert.strictEqual((await req('POST', `/api/meal-swaps/${mine.id}/handle`, { action: 'approved', staff_note: '已安排' })).status, 200);
+  // 先確保該媽當日午餐有訂餐；核准（完成）後自動套入當日訂餐
+  assert.strictEqual((await req('POST', '/api/meals', { mother_id: mine.mother_id, meal_date: d, meal_type: 'lunch', choice: 'A家', note: '少鹽' })).status, 200);
+  const h = await req('POST', `/api/meal-swaps/${mine.id}/handle`, { action: 'approved', staff_note: '已安排' });
+  assert.strictEqual(h.status, 200);
+  assert.strictEqual(h.data.applied, true, '核准後應自動套入當日訂餐');
   assert.strictEqual((await req('GET', '/api/meal-swaps')).data.find(x => x.id === mine.id).status, 'approved');
+  const o2 = (await req('GET', `/api/meals?date=${d}`)).data.orders.find(x => x.mother_id === mine.mother_id && x.meal_type === 'lunch');
+  assert.ok(o2.note.includes('換餐'), '訂餐備註應帶入換餐內容');
+  assert.ok(o2.choice === '素食' || o2.note.includes('素食'));
 });
 
 test('商城：商品 CSV 匯入(品名 upsert)', async () => {

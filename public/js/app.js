@@ -2439,10 +2439,13 @@ async function viewMeals() {
       </div>
       <p style="font-size:.85rem;color:var(--muted);margin-top:8px">
         選擇餐點後自動儲存；「未訂」表示當餐不需準備。飲食注意取自住客資料，會一併帶入備餐單。
+        供餐自入住日「午餐」開始、至出住日「早餐」止；月子餐菜單以周為單位（周日開始）。
       </p>
     </div>
+    <div class="card no-print" id="ml-swaps"></div>
     <div class="card no-print" id="ml-grid"><div class="empty">載入中</div></div>
     <div class="card" id="ml-kitchen"></div>
+    <div class="card no-print" id="ml-menu-files"></div>
     <div class="card no-print">
       <h3>區間對帳（各家月子餐請款）</h3>
       <div class="row" style="align-items:flex-end;gap:8px;margin-bottom:10px">
@@ -2454,8 +2457,45 @@ async function viewMeals() {
     </div>`;
 
   const refresh = async () => {
-    const data = await api(`/meals?date=${$('#ml-date').value}`);
+    const [data, swaps] = await Promise.all([
+      api(`/meals?date=${$('#ml-date').value}`), api('/meal-swaps?status=pending')
+    ]);
     const orderOf = (mid, mt) => data.orders.find(o => o.mother_id === mid && o.meal_type === mt);
+
+    // 換餐申請（家屬入口送出）：點「完成」自動套入該日訂餐
+    $('#ml-swaps').innerHTML = `
+      <h3>換餐申請　<span class="badge ${swaps.length ? 'red' : 'green'}">待處理 ${swaps.length}</span></h3>
+      <p style="font-size:.85rem;color:var(--muted);margin:6px 0 10px">媽咪（家屬入口）送出的換餐申請；點「完成」自動套入該日訂餐——希望更換內容若是有效餐點選項會直接改選項，否則寫入該餐備註帶入備餐單。</p>
+      ${swaps.length ? `<div class="table-wrap"><table class="data stack">
+        <thead><tr><th>用餐日</th><th>餐別</th><th>媽媽</th><th>目前餐點</th><th>希望更換</th><th>原因</th><th>申請人</th><th></th></tr></thead>
+        <tbody>${swaps.map(s => `
+          <tr>
+            <td data-label="用餐日">${esc(s.meal_date)}</td>
+            <td data-label="餐別">${esc(s.slot || '—')}</td>
+            <td data-label="媽媽">${esc(s.mother_name)}</td>
+            <td data-label="目前餐點">${esc(s.from_choice || '—')}</td>
+            <td data-label="希望更換"><b>${esc(s.to_choice || '—')}</b></td>
+            <td data-label="原因"><small>${esc(s.reason || '—')}</small></td>
+            <td data-label="申請人"><small>${esc(s.family_name || '—')}・${esc((s.created_at || '').slice(5, 16))}</small></td>
+            <td data-label="操作">
+              <button class="btn small" data-swap-ok="${s.id}">完成</button>
+              <button class="btn small secondary" data-swap-no="${s.id}">婉拒</button>
+            </td>
+          </tr>`).join('')}</tbody>
+      </table></div>` : '<div class="empty">目前沒有待處理的換餐申請</div>'}`;
+    $('#ml-swaps').querySelectorAll('[data-swap-ok]').forEach(b => b.onclick = async () => {
+      try {
+        const r = await api(`/meal-swaps/${b.dataset.swapOk}/handle`, { method: 'POST', body: { action: 'approved' } });
+        if (r && r.applied === false) alert('已完成申請，但該餐別無法自動套入（請手動調整訂餐）');
+        refresh();
+      } catch (e) { alert(e.message); }
+    });
+    $('#ml-swaps').querySelectorAll('[data-swap-no]').forEach(b => b.onclick = async () => {
+      const note = prompt('婉拒原因（會顯示給家屬）：', '');
+      if (note === null) return;
+      try { await api(`/meal-swaps/${b.dataset.swapNo}/handle`, { method: 'POST', body: { action: 'rejected', staff_note: note } }); refresh(); }
+      catch (e) { alert(e.message); }
+    });
 
     $('#ml-grid').innerHTML = `<h3>當日訂餐（在住 ${data.mothers.length} 位媽媽）</h3>` + (data.mothers.length ? `
       <div class="table-wrap"><table class="data stack">
@@ -2474,17 +2514,15 @@ async function viewMeals() {
                   ${mealChoices().map(c =>
                     `<option ${o && o.choice === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
                 </select>
-                ${o ? `<select data-mstatus="${m.id}:${mt}" style="margin-top:3px;font-size:.8rem">
-                  ${Object.entries(MEAL_STATUS).map(([k, v]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${v}</option>`).join('')}
-                </select>
-                <input data-mnote="${m.id}:${mt}" value="${esc(o.note || '')}" placeholder="備註" style="width:100%;margin-top:2px;font-size:.8rem">` : ''}
+                ${o ? `<input data-mnote="${m.id}:${mt}" value="${esc(o.note || '')}" placeholder="備註" style="width:100%;margin-top:2px;font-size:.8rem">` : ''}
               </td>`;
             }).join('')}
           </tr>`).join('')}</tbody>
       </table></div>` : '<div class="empty">該日無在住媽媽</div>');
 
-    // 備餐單以「月子餐廠商（訂餐選項）」為主，方便分別給各家叫餐：A家明細、B家明細…
-    // 廠商順序沿用系統設定，另把設定外但當日有訂的選項補在後面（不漏單）。
+    // 廚房備餐單（核餐單）：每家廠商一張表，逐房列早/午/晚份數、禁忌、生產、供餐期間、備註
+    const fmtMD = d => d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}` : '';
+    const dvCode = t => t === '自然產' ? 'N' : t === '剖腹產' ? 'C' : '';
     const presentChoices = [...new Set(data.orders
       .filter(o => o.choice && o.choice !== '不需供餐').map(o => o.choice))];
     const settingOrder = mealChoices().filter(c => c !== '不需供餐' && presentChoices.includes(c));
@@ -2492,26 +2530,51 @@ async function viewMeals() {
     const grandTotal = data.orders.filter(o => o.choice && o.choice !== '不需供餐').length;
 
     const sections = vendors.map(choice => {
-      const byMeal = Object.keys(MEAL_LABEL).map(mt => ({
-        mt,
-        items: data.mothers.map(m => ({ m, o: orderOf(m.id, mt) }))
-          .filter(x => x.o && x.o.choice === choice)
-      })).filter(x => x.items.length);
-      const total = byMeal.reduce((s, x) => s + x.items.length, 0);
-      const summary = byMeal.map(x => `${MEAL_LABEL[x.mt]} ${x.items.length}`).join('、');
-      const detail = byMeal.map(x => `
-        <div style="margin:4px 0 8px">
-          <div style="font-weight:600">${MEAL_LABEL[x.mt]}（${x.items.length} 份）</div>
-          <ul class="timeline" style="margin-top:2px">${x.items.map(({ m }) => `
-            <li>${esc(m.room_name)} 房　${esc(m.name)}${m.diet_notes ? `　<strong>注意：${esc(m.diet_notes)}</strong>` : ''}</li>`).join('')}</ul>
-        </div>`).join('');
+      const moms = data.mothers.map(m => {
+        const cnt = {}, notes = [];
+        for (const mt of Object.keys(MEAL_LABEL)) {
+          const o = orderOf(m.id, mt);
+          cnt[mt] = o && o.choice === choice ? 1 : 0;
+          if (cnt[mt] && o.note && !notes.includes(o.note)) notes.push(o.note);
+        }
+        return { m, cnt, notes, total: Object.values(cnt).reduce((s, x) => s + x, 0) };
+      }).filter(x => x.total > 0);
+      const tot = mt => moms.reduce((s, x) => s + x.cnt[mt], 0);
+      const total = moms.reduce((s, x) => s + x.total, 0);
       return `
-        <div class="card" style="margin:10px 0;padding:12px 14px">
-          <h4 style="margin:0 0 6px;color:var(--primary-dark)">${esc(choice)} 明細　<span style="font-weight:400;font-size:.9rem;color:var(--muted)">共 ${total} 份（${summary}）</span></h4>
-          ${detail}
+        <div style="margin:12px 0">
+          <h4 style="margin:0 0 6px;color:var(--primary-dark)">${esc(choice)} 核餐單（${esc(data.date)}）　<span style="font-weight:400;font-size:.9rem;color:var(--muted)">共 ${total} 份</span></h4>
+          <div class="table-wrap"><table class="data" style="min-width:760px">
+            <thead><tr><th style="width:40px">No</th><th style="width:60px">房號</th><th style="width:90px">姓名</th>
+              <th style="width:44px">早</th><th style="width:44px">午</th><th style="width:44px">晚</th>
+              <th>禁忌</th><th style="width:80px">生產</th><th style="width:150px">供餐期間</th><th>備註</th></tr></thead>
+            <tbody>
+              ${moms.map((x, i) => `
+                <tr>
+                  <td>${i + 1}</td>
+                  <td>${esc(x.m.room_name)}</td>
+                  <td>${esc(x.m.name)}</td>
+                  <td style="text-align:center">${x.cnt.breakfast}</td>
+                  <td style="text-align:center">${x.cnt.lunch}</td>
+                  <td style="text-align:center">${x.cnt.dinner}</td>
+                  <td><small>${esc(x.m.diet_notes || '')}</small></td>
+                  <td>${x.m.delivery_date ? `${fmtMD(x.m.delivery_date)}${dvCode(x.m.delivery_type)}` : ''}</td>
+                  <td><small>${fmtMD(x.m.check_in)}午 ~ ${fmtMD(x.m.check_out)}早</small></td>
+                  <td><small>${esc([x.m.meal_diet && x.m.meal_diet !== '一般' ? x.m.meal_diet : '', ...x.notes].filter(Boolean).join('、'))}</small></td>
+                </tr>`).join('')}
+              <tr style="font-weight:700;background:var(--primary-light)">
+                <td colspan="3">餐點小數</td>
+                <td style="text-align:center;background:#fff3b0">${tot('breakfast')}</td>
+                <td style="text-align:center;background:#fff3b0">${tot('lunch')}</td>
+                <td style="text-align:center;background:#fff3b0">${tot('dinner')}</td>
+                <td colspan="4"></td>
+              </tr>
+            </tbody>
+          </table></div>
         </div>`;
     }).join('');
-    $('#ml-kitchen').innerHTML = `<h3>廚房備餐單（${data.date}）　<span style="font-weight:400;font-size:.9rem;color:var(--muted)">合計 ${grandTotal} 份</span></h3>`
+    $('#ml-kitchen').innerHTML = `<h3>廚房備餐單（${esc(data.date)}）　<span style="font-weight:400;font-size:.9rem;color:var(--muted)">合計 ${grandTotal} 份</span></h3>
+      <small style="color:var(--muted)">供餐自入住日午餐起、至出住日早餐止。</small>`
       + (sections || '<div class="empty">當日尚無訂餐</div>');
 
     $('#ml-grid').querySelectorAll('[data-meal]').forEach(sel => {
@@ -2525,18 +2588,58 @@ async function viewMeals() {
         refresh();
       };
     });
-    // 訂餐狀態 / 備註（不改餐點選擇）
-    const patchStatus = async (mid, mt, body) => {
-      try { await api('/meals/status', { method: 'POST', body: { mother_id: Number(mid), meal_date: $('#ml-date').value, meal_type: mt, ...body } }); }
-      catch (e) { alert(e.message); }
-    };
-    $('#ml-grid').querySelectorAll('[data-mstatus]').forEach(sel => {
-      sel.onchange = () => { const [mid, mt] = sel.dataset.mstatus.split(':'); patchStatus(mid, mt, { status: sel.value }).then(refresh); };
-    });
+    // 訂餐備註（不改餐點選擇）
     $('#ml-grid').querySelectorAll('[data-mnote]').forEach(inp => {
-      inp.onchange = () => { const [mid, mt] = inp.dataset.mnote.split(':'); patchStatus(mid, mt, { note: inp.value }); };
+      inp.onchange = async () => {
+        const [mid, mt] = inp.dataset.mnote.split(':');
+        try { await api('/meals/status', { method: 'POST', body: { mother_id: Number(mid), meal_date: $('#ml-date').value, meal_type: mt, note: inp.value } }); }
+        catch (e) { alert(e.message); }
+      };
     });
   };
+
+  // 菜單上傳（週菜單 PDF／JPG；菜單以周為單位、周日開始）
+  const loadMenuFiles = async () => {
+    const files = await api('/meal-menu-files');
+    const now = new Date();
+    const sunday = new Date(now.getTime() - now.getTimezoneOffset() * 60000 - now.getDay() * 86400000).toISOString().slice(0, 10);
+    $('#ml-menu-files').innerHTML = `
+      <h3>菜單上傳 <small style="font-weight:400;color:var(--muted);font-size:.85rem">週菜單檔案（PDF 或 JPG）；以周為單位、周日開始</small></h3>
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;margin:8px 0">
+        <div class="field" style="max-width:180px;margin:0"><label>週起始日（周日）</label><input type="date" id="mf-week" value="${sunday}"></div>
+        <div class="field" style="margin:0"><label>檔案</label><input type="file" id="mf-file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/*"></div>
+        <button class="btn" id="mf-up">上傳菜單</button>
+        <span class="error-msg" id="mf-err"></span>
+      </div>
+      ${files.length ? `<div class="table-wrap"><table class="data stack">
+        <thead><tr><th>週起始</th><th>檔案</th><th>上傳時間</th><th>上傳人</th><th></th></tr></thead>
+        <tbody>${files.map(f => `
+          <tr>
+            <td data-label="週起始">${esc(f.week_start || '—')}</td>
+            <td data-label="檔案"><a href="/uploads/${esc(f.file)}" target="_blank">${esc(f.orig_name || f.file)}</a></td>
+            <td data-label="上傳時間"><small>${esc((f.created_at || '').slice(0, 16))}</small></td>
+            <td data-label="上傳人">${esc(f.uploaded_by_name || '—')}</td>
+            <td data-label="">${currentUser.role === 'admin' ? `<button class="btn small danger" data-mf-del="${f.id}">刪除</button>` : ''}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>` : '<div class="empty">尚未上傳菜單</div>'}`;
+    $('#mf-up').onclick = async () => {
+      const err = $('#mf-err');
+      err.textContent = '';
+      const f = $('#mf-file').files[0];
+      if (!f) { err.textContent = '請選擇 PDF 或 JPG 檔案'; return; }
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('week_start', $('#mf-week').value);
+      try { await api('/meal-menu-files', { method: 'POST', body: fd }); loadMenuFiles(); }
+      catch (e) { err.textContent = e.message; }
+    };
+    $('#ml-menu-files').querySelectorAll('[data-mf-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('確定刪除此菜單檔案？')) return;
+      await api(`/meal-menu-files/${b.dataset.mfDel}`, { method: 'DELETE' });
+      loadMenuFiles();
+    });
+  };
+  loadMenuFiles();
 
   $('#ml-date').onchange = refresh;
   $('#ml-print').onclick = () => window.print();
