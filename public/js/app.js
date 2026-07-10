@@ -7111,7 +7111,9 @@ async function viewMotherNursing() {
         </div>
         <div class="row no-print" style="gap:6px;flex-wrap:wrap">
           <button class="btn" data-guide="care">產婦衛教指導</button>
-          ${(babies || []).length ? `<a class="btn" href="#/breastfeeding?b=${babies[0].id}">母乳哺育評估</a>` : ''}
+          ${(babies || []).length
+            ? `<a class="btn" href="#/breastfeeding?b=${babies[0].id}">母乳哺育評估</a>`
+            : '<button class="btn" id="mna-bfa-none">母乳哺育評估</button>'}
           <button class="btn" data-scale="bf_awareness">母乳認知與支持系統評估</button>
         </div>
       </div>
@@ -7226,6 +7228,9 @@ async function viewMotherNursing() {
 
   $('#mna-mom').onchange = () => { location.hash = `#/mother-nursing?m=${$('#mna-mom').value}`; };
   $('#mna-print').onclick = () => window.print();
+  const bfaNone = $('#mna-bfa-none');
+  if (bfaNone) bfaNone.onclick = () =>
+    alert(`「${mother.name}」尚未登記寶寶。\n母乳哺育評估依寶寶進行，請先至「住客管理」新增寶寶後，再由此進入評估。`);
 
   const form = $('#mna-form');
   const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
