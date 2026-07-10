@@ -3716,32 +3716,75 @@ app.put('/api/mothers/:id/meal-diet', requireStaff, (req, res) => {
   res.json({ ok: info.changes > 0 });
 });
 
-// 家屬端：查看自己媽媽今日月子餐
+// 換餐最早可開始日：每日 14:00 前申請可自「次日」早餐起，之後自「後天」早餐起
+function mealSwapMinStart() {
+  const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+  const days = now.getUTCHours() < 14 ? 1 : 2;
+  return new Date(now.getTime() + days * 86400000).toISOString().slice(0, 10);
+}
+// 家屬端：查看自己媽媽月子餐（廠商當周菜單＋換餐資訊）
 app.get('/api/family/meal-plan', requireFamily, (req, res) => {
   const date = req.query.date || today();
   const mid = familyMotherId(req.session.family);
-  const m = mid ? db.prepare('SELECT id, name, delivery_date, meal_diet FROM mothers WHERE id = ?').get(mid) : null;
+  const m = mid ? db.prepare('SELECT id, name, delivery_date, meal_diet, diet_notes FROM mothers WHERE id = ?').get(mid) : null;
   if (!m) return res.json({ date, available: false });
-  const bk = db.prepare(`SELECT check_in FROM bookings WHERE mother_id = ? AND status != 'cancelled'
+  const bk = db.prepare(`SELECT check_in, check_out FROM bookings WHERE mother_id = ? AND status != 'cancelled'
     AND check_in <= ? AND check_out > ? ORDER BY check_in DESC`).get(mid, date, date);
   const cfg = mealConfig();
   const stage = motherStage({ ...m, check_in: bk ? bk.check_in : '' }, date, cfg.stages);
   const diet = m.meal_diet || (cfg.diets[0] || '一般');
   const menus = db.prepare('SELECT * FROM meal_menu WHERE menu_date = ?').all(date);
   const slots = cfg.slots.map(slot => ({ slot, menu: pickMenu(menus.filter(x => x.slot === slot), stage.name, diet) }));
-  res.json({ date, available: true, mother_name: m.name, postpartum_day: stage.day, stage: stage.name, diet, slots });
+  // 餐別（目前配合的月子餐廠商）＝最近一次訂餐選項
+  const curOrder = db.prepare(`SELECT choice FROM meal_orders WHERE mother_id = ? AND meal_date <= ?
+    AND choice != '' AND choice != '不需供餐' ORDER BY meal_date DESC, id DESC LIMIT 1`).get(mid, date);
+  // 飲食注意：客戶管理合約「飲食禁忌」＋住客資料飲食禁忌
+  const contract = getCustomerContract(mid);
+  const dietNotes = [...new Set([((contract || {}).data || {}).diet_ban, m.diet_notes].filter(Boolean))].join('、');
+  // 各廠商「當周」菜單檔案（周日開始）：取該廠商 week_start <= 查詢日的最新一份
+  const choices = String(getSettings().meal_choices || '').split(',').map(s => s.trim())
+    .filter(c => c && c !== '不需供餐');
+  const menuFiles = db.prepare(`SELECT id, week_start, vendor, file, orig_name FROM meal_menu_files
+    WHERE week_start <= ? ORDER BY week_start DESC, id DESC`).all(date);
+  const menu_files = choices.map(v => ({ vendor: v, file: menuFiles.find(f => f.vendor === v) || null }));
+  const generalFile = menuFiles.find(f => !f.vendor) || null; // 未標廠商的菜單
+  // 換餐限制：7 天內限一次（pending/approved 都算）
+  const lastSwap = db.prepare(`SELECT created_at FROM meal_swap_requests
+    WHERE mother_id = ? AND status IN ('pending','approved')
+    AND created_at >= datetime('now','localtime','-7 day') ORDER BY id DESC LIMIT 1`).get(mid);
+  res.json({ date, available: true, mother_name: m.name, postpartum_day: stage.day, stage: stage.name, diet, slots,
+    current_choice: curOrder ? curOrder.choice : '', diet_notes: dietNotes,
+    check_out: bk ? bk.check_out : '', choices, menu_files, general_menu_file: generalFile,
+    swap_min_start: mealSwapMinStart(), swap_locked: !!lastSwap,
+    swap_last_at: lastSwap ? lastSwap.created_at : '' });
 });
 
-// 月子餐「我要換餐」：家屬線上申請 / 查詢
+// 月子餐「我要換餐」：家屬線上申請（更換月子餐廠商，自開始日早餐起至出住日）/ 查詢
 app.post('/api/family/meal-swap', requireFamily, (req, res) => {
   const mid = familyMotherId(req.session.family);
   if (!mid) return res.status(400).json({ error: '找不到寶寶／媽媽資料' });
   const b = req.body || {};
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.meal_date || '')) return res.status(400).json({ error: '請選擇日期' });
-  if (!String(b.to_choice || '').trim() && !String(b.reason || '').trim()) return res.status(400).json({ error: '請填寫希望更換內容或原因' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.meal_date || '')) return res.status(400).json({ error: '請選擇換餐開始日期' });
+  const to = String(b.to_choice || '').trim();
+  const choices = String(getSettings().meal_choices || '').split(',').map(s => s.trim())
+    .filter(c => c && c !== '不需供餐');
+  if (!choices.includes(to)) return res.status(400).json({ error: '請選擇要更換的月子餐廠商' });
+  const minStart = mealSwapMinStart();
+  if (b.meal_date < minStart) {
+    return res.status(400).json({ error: `每日 14:00 前申請可自次日早餐起、之後自後天早餐起，最早可選 ${minStart}` });
+  }
+  const bkRow = db.prepare(`SELECT check_out FROM bookings WHERE mother_id = ? AND status IN ('checked_in','reserved')
+    AND check_out >= ? ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(mid, b.meal_date);
+  if (!bkRow) return res.status(400).json({ error: '該日已超出住宿期間' });
+  if (b.meal_date > bkRow.check_out) return res.status(400).json({ error: '換餐開始日不可晚於出住日' });
+  // 7 天內限換餐一次（送出過且未被婉拒者）
+  const recent = db.prepare(`SELECT 1 FROM meal_swap_requests
+    WHERE mother_id = ? AND status IN ('pending','approved')
+    AND created_at >= datetime('now','localtime','-7 day') LIMIT 1`).get(mid);
+  if (recent) return res.status(400).json({ error: '7 天內僅能申請換餐一次，如需再次調整請聯絡客服（聯絡護理站）' });
   const info = db.prepare(`INSERT INTO meal_swap_requests (mother_id, family_id, meal_date, slot, from_choice, to_choice, reason)
-    VALUES (?,?,?,?,?,?,?)`).run(mid, req.session.family.id, b.meal_date, String(b.slot || '').slice(0, 20),
-    String(b.from_choice || '').slice(0, 60), String(b.to_choice || '').slice(0, 60), String(b.reason || '').slice(0, 200));
+    VALUES (?,?,?,?,?,?,?)`).run(mid, req.session.family.id, b.meal_date, '早餐起',
+    String(b.from_choice || '').slice(0, 60), to.slice(0, 60), String(b.reason || '').slice(0, 200));
   res.json({ id: info.lastInsertRowid });
 });
 app.get('/api/family/meal-swap', requireFamily, (req, res) => {
@@ -3767,10 +3810,31 @@ app.post('/api/meal-swaps/:id/handle', requireStaff, (req, res) => {
   if (!['approved', 'rejected'].includes(action)) return res.status(400).json({ error: '動作不正確' });
   db.prepare('UPDATE meal_swap_requests SET status = ?, handled_by = ?, handled_at = ?, staff_note = ? WHERE id = ?')
     .run(action, req.session.user.id, new Date().toLocaleString('sv-SE').slice(0, 19), String((req.body || {}).staff_note || '').slice(0, 200), cur.id);
-  // 核准（完成）時自動套入當日訂餐：餐別對應早／午／晚，
-  // 希望更換內容若是有效餐點選項則直接改選項，否則寫入該餐備註供廚房備餐
+  // 核准（完成）時自動套入訂餐：
+  // slot=早餐起（換廠商）→ 自開始日早餐起至出住日早餐，逐日改為新廠商；
+  // 舊格式（早餐/午餐/晚餐單餐）→ 僅套該日該餐
   let applied = false;
   if (action === 'approved') {
+    if (String(cur.slot || '').trim() === '早餐起') {
+      const choices = String(getSettings().meal_choices || '').split(',').map(s => s.trim()).filter(Boolean);
+      const bkRow = db.prepare(`SELECT check_out FROM bookings WHERE mother_id = ? AND status IN ('checked_in','reserved')
+        AND check_out >= ? ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(cur.mother_id, cur.meal_date);
+      if (bkRow && choices.includes(String(cur.to_choice || '').trim())) {
+        const upsert = db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note, status)
+          VALUES (?,?,?,?,?,'preparing')
+          ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note`);
+        const note = `換餐${cur.reason ? `（${cur.reason}）` : ''}`.slice(0, 200);
+        let d = new Date(cur.meal_date);
+        const end = new Date(bkRow.check_out);
+        for (let i = 0; d <= end && i < 120; i++, d = new Date(d.getTime() + 86400000)) {
+          const ds = d.toISOString().slice(0, 10);
+          // 供餐至出住日早餐止：出住日僅早餐
+          const meals = ds === bkRow.check_out ? ['breakfast'] : ['breakfast', 'lunch', 'dinner'];
+          for (const mt of meals) upsert.run(cur.mother_id, ds, mt, cur.to_choice.trim(), note);
+        }
+        applied = true;
+      }
+    }
     const mealType = { '早餐': 'breakfast', '午餐': 'lunch', '晚餐': 'dinner' }[String(cur.slot || '').trim()];
     if (mealType) {
       const choices = String(getSettings().meal_choices || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -3809,10 +3873,11 @@ app.post('/api/meal-menu-files', requireStaff, docUpload.single('file'), (req, r
     return res.status(400).json({ error: '僅接受 PDF 或圖片檔（jpg/png）' });
   }
   const week = /^\d{4}-\d{2}-\d{2}$/.test(req.body.week_start || '') ? req.body.week_start : '';
-  const info = db.prepare(`INSERT INTO meal_menu_files (week_start, file, orig_name, note, uploaded_by)
-    VALUES (?,?,?,?,?)`).run(week, req.file.filename,
+  const vendor = String(req.body.vendor || '').trim().slice(0, 60);
+  const info = db.prepare(`INSERT INTO meal_menu_files (week_start, vendor, file, orig_name, note, uploaded_by)
+    VALUES (?,?,?,?,?,?)`).run(week, vendor, req.file.filename,
     String(req.file.originalname || '').slice(0, 200), String(req.body.note || '').slice(0, 200), req.session.user.id);
-  logAudit(req, { action: 'create', entity: 'meal_menu_files', entity_id: info.lastInsertRowid, summary: `菜單上傳 ${week || ''}` });
+  logAudit(req, { action: 'create', entity: 'meal_menu_files', entity_id: info.lastInsertRowid, summary: `菜單上傳 ${vendor} ${week || ''}` });
   res.json({ id: info.lastInsertRowid, file: req.file.filename });
 });
 app.delete('/api/meal-menu-files/:id', requireAdmin, (req, res) => {

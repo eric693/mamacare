@@ -1094,20 +1094,33 @@ test('膳食：訂餐狀態/備註；月子餐換餐家屬申請→員工審核'
   assert.strictEqual((await req('POST', '/api/meals/status', { mother_id: mom.id, meal_date: '2030-01-01', meal_type: 'dinner', status: 'served' })).status, 404);
   const saved = cookie; cookie = '';
   assert.strictEqual((await req('POST', '/api/family/login', { code: 'DEMO1234' }, false)).status, 200);
-  assert.strictEqual((await req('POST', '/api/family/meal-swap', { meal_date: d, slot: '午餐', to_choice: '素食', reason: '過敏' })).status, 200);
+  // 新版換餐：更換月子餐廠商（下拉有效選項）、自開始日早餐起，開始日受每日 14:00 規則限制
+  const plan = (await req('GET', '/api/family/meal-plan')).data;
+  assert.ok(Array.isArray(plan.choices) && plan.choices.includes('素食餐'), 'meal-plan 應回傳廠商清單');
+  assert.ok(plan.swap_min_start, '應回傳最早可換餐日');
+  assert.ok('menu_files' in plan, '應回傳各廠商當周菜單');
+  assert.strictEqual((await req('POST', '/api/family/meal-swap',
+    { meal_date: plan.swap_min_start, to_choice: '不存在廠商' })).status, 400);
+  assert.strictEqual((await req('POST', '/api/family/meal-swap',
+    { meal_date: '2020-01-01', to_choice: '素食餐' })).status, 400);
+  assert.strictEqual((await req('POST', '/api/family/meal-swap',
+    { meal_date: plan.swap_min_start, to_choice: '素食餐', reason: '過敏' })).status, 200);
+  // 7 天內限換餐一次
+  assert.strictEqual((await req('POST', '/api/family/meal-swap',
+    { meal_date: plan.swap_min_start, to_choice: '一般餐' })).status, 400);
   cookie = saved;
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
-  const mine = (await req('GET', '/api/meal-swaps?status=pending')).data.find(x => x.to_choice === '素食');
+  const mine = (await req('GET', '/api/meal-swaps?status=pending')).data.find(x => x.to_choice === '素食餐');
   assert.ok(mine);
-  // 先確保該媽當日午餐有訂餐；核准（完成）後自動套入當日訂餐
-  assert.strictEqual((await req('POST', '/api/meals', { mother_id: mine.mother_id, meal_date: d, meal_type: 'lunch', choice: 'A家', note: '少鹽' })).status, 200);
+  assert.strictEqual(mine.slot, '早餐起');
   const h = await req('POST', `/api/meal-swaps/${mine.id}/handle`, { action: 'approved', staff_note: '已安排' });
   assert.strictEqual(h.status, 200);
-  assert.strictEqual(h.data.applied, true, '核准後應自動套入當日訂餐');
+  assert.strictEqual(h.data.applied, true, '核准後應自開始日起自動套入訂餐');
   assert.strictEqual((await req('GET', '/api/meal-swaps')).data.find(x => x.id === mine.id).status, 'approved');
-  const o2 = (await req('GET', `/api/meals?date=${d}`)).data.orders.find(x => x.mother_id === mine.mother_id && x.meal_type === 'lunch');
-  assert.ok(o2.note.includes('換餐'), '訂餐備註應帶入換餐內容');
-  assert.ok(o2.choice === '素食' || o2.note.includes('素食'));
+  // 開始日三餐已改為新廠商
+  const o2 = (await req('GET', `/api/meals?date=${mine.meal_date}`)).data.orders.filter(x => x.mother_id === mine.mother_id);
+  assert.ok(o2.length >= 3, '開始日應有三餐訂餐');
+  assert.ok(o2.every(x => x.choice === '素食餐'), '訂餐應全部改為新廠商');
 });
 
 test('商城：商品 CSV 匯入(品名 upsert)', async () => {

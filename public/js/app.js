@@ -2606,15 +2606,19 @@ async function viewMeals() {
     $('#ml-menu-files').innerHTML = `
       <h3>菜單上傳 <small style="font-weight:400;color:var(--muted);font-size:.85rem">週菜單檔案（PDF 或 JPG）；以周為單位、周日開始</small></h3>
       <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;margin:8px 0">
+        <div class="field" style="max-width:160px;margin:0"><label>月子餐廠商</label>
+          <select id="mf-vendor">${mealChoices().filter(c => c !== '不需供餐').map(c => `<option>${esc(c)}</option>`).join('')}<option value="">（通用）</option></select></div>
         <div class="field" style="max-width:180px;margin:0"><label>週起始日（周日）</label><input type="date" id="mf-week" value="${sunday}"></div>
         <div class="field" style="margin:0"><label>檔案</label><input type="file" id="mf-file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/*"></div>
         <button class="btn" id="mf-up">上傳菜單</button>
         <span class="error-msg" id="mf-err"></span>
       </div>
+      <p style="font-size:.8rem;color:var(--muted);margin:0 0 8px">家屬入口的月子餐分頁會顯示各廠商「當周」菜單（依週起始日）。</p>
       ${files.length ? `<div class="table-wrap"><table class="data stack">
-        <thead><tr><th>週起始</th><th>檔案</th><th>上傳時間</th><th>上傳人</th><th></th></tr></thead>
+        <thead><tr><th>廠商</th><th>週起始</th><th>檔案</th><th>上傳時間</th><th>上傳人</th><th></th></tr></thead>
         <tbody>${files.map(f => `
           <tr>
+            <td data-label="廠商">${esc(f.vendor || '通用')}</td>
             <td data-label="週起始">${esc(f.week_start || '—')}</td>
             <td data-label="檔案"><a href="/uploads/${esc(f.file)}" target="_blank">${esc(f.orig_name || f.file)}</a></td>
             <td data-label="上傳時間"><small>${esc((f.created_at || '').slice(0, 16))}</small></td>
@@ -2630,6 +2634,7 @@ async function viewMeals() {
       const fd = new FormData();
       fd.append('file', f);
       fd.append('week_start', $('#mf-week').value);
+      fd.append('vendor', $('#mf-vendor').value);
       try { await api('/meal-menu-files', { method: 'POST', body: fd }); loadMenuFiles(); }
       catch (e) { err.textContent = e.message; }
     };

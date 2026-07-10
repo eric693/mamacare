@@ -1254,16 +1254,19 @@ function init() {
     staff_note TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   )`);
-  // 月子餐菜單檔案上傳（週菜單 PDF／圖片；菜單以周為單位、周日開始）
+  // 月子餐菜單檔案上傳（週菜單 PDF／圖片；菜單以周為單位、周日開始；vendor＝月子餐廠商）
   db.exec(`CREATE TABLE IF NOT EXISTS meal_menu_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     week_start TEXT NOT NULL DEFAULT '',
+    vendor TEXT DEFAULT '',
     file TEXT NOT NULL,
     orig_name TEXT DEFAULT '',
     note TEXT DEFAULT '',
     uploaded_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   )`);
+  const mmfCols = db.prepare('PRAGMA table_info(meal_menu_files)').all().map(c => c.name);
+  if (!mmfCols.includes('vendor')) db.exec("ALTER TABLE meal_menu_files ADD COLUMN vendor TEXT DEFAULT ''");
   // 備品進出：進貨廠商／領貨使用區域／有效日期
   const stxCols = db.prepare('PRAGMA table_info(supply_txns)').all().map(c => c.name);
   if (!stxCols.includes('vendor')) db.exec("ALTER TABLE supply_txns ADD COLUMN vendor TEXT DEFAULT ''");

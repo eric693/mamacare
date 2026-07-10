@@ -269,6 +269,7 @@ function setTab(tab) {
   activeTab = tab;
   ['report', 'rooming', 'timeline', 'photos', 'trends', 'meal', 'shop', 'programs', 'visitors', 'survey', 'messages'].forEach(t =>
     $(`#tab-${t}`).classList.toggle('active', t === tab));
+  if (tab !== 'meal') $('#report-date').removeAttribute('max'); // 月子餐分頁才限制日期至出住日
   if (tab === 'shop') { loadShop(); return; }
   if (tab === 'programs') { loadPrograms(); return; }
   if (tab === 'visitors') { loadVisitors(); return; }
@@ -331,45 +332,57 @@ async function loadConfinementMeal() {
   let swaps = [];
   try { swaps = await api('/family/meal-swap'); } catch (e) { swaps = []; }
   const SWST = { pending: ['待審核', 'yellow'], approved: ['已同意', 'green'], rejected: ['未同意', 'red'] };
-  const dish = (label, v) => v ? `<div><small style="color:var(--muted)">${label}</small> ${esc(v)}</div>` : '';
-  const cards = plan.slots.map(s => `
+  // 日期最多可看到出住日
+  if (plan.check_out) $('#report-date').max = plan.check_out;
+  // 各家月子餐當周菜單（廚房上傳的週菜單檔案；圖片直接顯示、PDF 開新頁）
+  const fileView = f => !f ? '<div class="empty">尚未公布當周菜單</div>'
+    : /\.pdf$/i.test(f.file)
+      ? `<a class="btn small" href="/uploads/${esc(f.file)}" target="_blank">檢視菜單（PDF）</a><small style="color:var(--muted)">　週起 ${esc(f.week_start || '')}</small>`
+      : `<a href="/uploads/${esc(f.file)}" target="_blank"><img src="/uploads/${esc(f.file)}" alt="菜單" style="max-width:100%;border-radius:8px"></a><div><small style="color:var(--muted)">週起 ${esc(f.week_start || '')}</small></div>`;
+  const menuCards = (plan.menu_files || []).map(x => `
     <div class="card" style="margin:0">
-      <h4 style="margin:0 0 6px;color:var(--primary-dark)">${esc(s.slot)}</h4>
-      ${s.menu ? (dish('主食', s.menu.staple) + dish('主菜', s.menu.main) + dish('藥膳湯品', s.menu.soup)
-        + dish('鮮蔬', s.menu.veggie) + dish('甜品', s.menu.dessert) + dish('飲品', s.menu.drink)
-        + (s.menu.note ? `<div><small style="color:var(--muted)">備註 ${esc(s.menu.note)}</small></div>` : ''))
-        : '<div class="empty">本餐尚未公布菜單</div>'}
-    </div>`).join('');
+      <h4 style="margin:0 0 6px;color:var(--primary-dark)">${esc(x.vendor)} 當周菜單${plan.current_choice === x.vendor ? '　<span class="badge green">目前配合</span>' : ''}</h4>
+      ${fileView(x.file)}
+    </div>`).join('')
+    + (plan.general_menu_file ? `
+    <div class="card" style="margin:0">
+      <h4 style="margin:0 0 6px;color:var(--primary-dark)">本中心菜單</h4>
+      ${fileView(plan.general_menu_file)}
+    </div>` : '');
+  const swapLocked = plan.swap_locked;
   $('#panel').innerHTML = `
     <div class="card">
       <h3>${esc(plan.mother_name)} 的月子餐</h3>
-      <p style="font-size:.85rem;color:var(--muted)">${esc(date)}　產後第 ${plan.postpartum_day ?? '-'} 天　餐期：${esc(plan.stage || '不分期')}　飲食：${esc(plan.diet)}</p>
+      <p style="font-size:.85rem;color:var(--muted)">${esc(date)}　產後第 ${plan.postpartum_day ?? '-'} 天　餐別：${esc(plan.current_choice || '尚未安排')}　飲食注意：${esc(plan.diet_notes || '無')}</p>
     </div>
-    <div style="display:grid;gap:10px;margin-top:4px">${cards}</div>
+    <div style="display:grid;gap:10px;margin-top:4px">${menuCards || '<div class="card" style="margin:0"><div class="empty">尚未公布菜單</div></div>'}</div>
     <div class="card" style="margin-top:10px">
       <h3>我要換餐</h3>
-      <p style="font-size:.85rem;color:var(--muted)">若當日餐點需要調整，可線上提出申請，由護理站／膳食部審核。</p>
-      <div class="field"><label>餐別</label><select id="sw-slot">${plan.slots.map(s => `<option>${esc(s.slot)}</option>`).join('')}</select></div>
-      <div class="field"><label>希望更換為</label><input id="sw-to" placeholder="例如：素食／不要麻油"></div>
+      <p style="font-size:.85rem;color:var(--muted)">若餐點需要調整，可線上申請更換月子餐廠商，由客服確認。換餐以「天」為單位，自開始日早餐起至出住日。每日 14:00 前申請可自次日早餐起，之後自後天早餐起；7 天內限換餐一次，需再調整請至「聯絡護理站」留言。</p>
+      ${swapLocked ? `<div class="empty" style="color:var(--warn)">7 天內已申請過換餐（${esc((plan.swap_last_at || '').slice(0, 16))}），如需調整請聯絡客服。</div>` : `
+      <div class="field"><label>換餐開始日期（早餐起）</label><input type="date" id="sw-date" value="${esc(plan.swap_min_start)}" min="${esc(plan.swap_min_start)}" ${plan.check_out ? `max="${esc(plan.check_out)}"` : ''}></div>
+      <div class="field"><label>希望更換為</label><select id="sw-to">${(plan.choices || []).map(c => `<option ${c === plan.current_choice ? 'disabled' : ''}>${esc(c)}${c === plan.current_choice ? '（目前配合）' : ''}</option>`).join('')}</select></div>
       <div class="field"><label>原因／備註</label><textarea id="sw-reason" rows="2" placeholder="例如：對某食材過敏"></textarea></div>
-      <div class="row"><button class="btn" id="sw-send">送出換餐申請</button><span class="error-msg" id="sw-err"></span><span id="sw-ok" style="color:var(--ok)"></span></div>
+      <div class="row"><button class="btn" id="sw-send">送出換餐申請</button><span class="error-msg" id="sw-err"></span><span id="sw-ok" style="color:var(--ok)"></span></div>`}
       <h4 style="margin:12px 0 4px">我的換餐申請</h4>
       ${swaps.length ? `<div class="table-wrap"><table class="data stack">
-        <thead><tr><th>日期</th><th>餐別</th><th>希望更換／原因</th><th>狀態</th></tr></thead>
+        <thead><tr><th>開始日</th><th>更換為</th><th>原因</th><th>狀態</th></tr></thead>
         <tbody>${swaps.map(s => `<tr>
-          <td data-label="日期"><small>${esc(s.meal_date)}</small></td>
-          <td data-label="餐別">${esc(s.slot || '-')}</td>
-          <td data-label="內容">${esc(s.to_choice || '')}${s.reason ? `<br><small style="color:var(--muted)">${esc(s.reason)}</small>` : ''}${s.staff_note ? `<br><small>護理站：${esc(s.staff_note)}</small>` : ''}</td>
+          <td data-label="開始日"><small>${esc(s.meal_date)}${s.slot === '早餐起' ? '（早餐起）' : s.slot ? `（${esc(s.slot)}）` : ''}</small></td>
+          <td data-label="更換為">${esc(s.to_choice || '')}</td>
+          <td data-label="原因"><small style="color:var(--muted)">${esc(s.reason || '—')}</small>${s.staff_note ? `<br><small>客服：${esc(s.staff_note)}</small>` : ''}</td>
           <td data-label="狀態"><span class="badge ${SWST[s.status] ? SWST[s.status][1] : 'gray'}">${SWST[s.status] ? SWST[s.status][0] : s.status}</span></td>
         </tr>`).join('')}</tbody></table></div>` : '<div class="empty">尚無換餐申請</div>'}
     </div>`;
-  $('#sw-send').onclick = async () => {
+  const send = $('#sw-send');
+  if (send) send.onclick = async () => {
     $('#sw-err').textContent = ''; $('#sw-ok').textContent = '';
-    const to = $('#sw-to').value.trim(), reason = $('#sw-reason').value.trim();
-    if (!to && !reason) { $('#sw-err').textContent = '請填寫希望更換內容或原因'; return; }
+    const to = $('#sw-to').value.replace('（目前配合）', ''), reason = $('#sw-reason').value.trim();
     try {
-      await api('/family/meal-swap', { method: 'POST', body: { meal_date: date, slot: $('#sw-slot').value, to_choice: to, reason } });
-      $('#sw-ok').textContent = '已送出，請待審核';
+      await api('/family/meal-swap', { method: 'POST', body: {
+        meal_date: $('#sw-date').value, to_choice: to, from_choice: plan.current_choice || '', reason
+      } });
+      $('#sw-ok').textContent = '已送出，請待客服確認';
       loadConfinementMeal();
     } catch (e) { $('#sw-err').textContent = e.message; }
   };
