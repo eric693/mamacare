@@ -10330,19 +10330,44 @@ async function viewCustomers() {
     const $q = id => $('#cust-extra').querySelector(id);
     const gv = id => { const el = $q(id); return el ? el.value.trim() : ''; };
 
+    const ctPayload = () => {
+      const babies = $('#cust-extra').querySelector('input[name="ctr-babies"]:checked');
+      return {
+        handler: gv('#ct-handler'), sign_date: gv('#ct-sign'), due_date: gv('#ct-due'),
+        expected_check_in: gv('#ct-expin'), expected_check_out: gv('#ct-expout'),
+        parity_no: gv('#ct-parity'), baby_count: babies ? babies.value : '',
+        delivery_mode: gv('#ct-delmode'), checkup_hospital: gv('#ct-ckhosp'), checkup_doctor: gv('#ct-ckdoc'),
+        birth_hospital: gv('#ct-bhosp'), birth_date: gv('#ct-bdate'), birth_mode: gv('#ct-bmode'),
+        butler: gv('#ct-butler'), diet_ban: gv('#ct-dietban'), note: gv('#ct-note')
+      };
+    };
     $q('#ct-save').onclick = async () => {
       const err = $q('#ct-err');
       err.textContent = '';
       if (!gv('#ct-sign') || !gv('#ct-due')) { err.textContent = '請填寫簽約日期與預產期'; return; }
-      const babies = $('#cust-extra').querySelector('input[name="ctr-babies"]:checked');
+      try { await cput(ctPayload()); } catch (e) { err.textContent = e.message; }
+    };
+    // 預計入住日改變 → 預計出住日自動帶入（入住日＋合約訂房總天數）
+    const expIn = $q('#ct-expin');
+    if (expIn) expIn.onchange = () => {
+      const days = Number(expIn.dataset.days) || 0;
+      if (!expIn.value || !days) return;
+      $q('#ct-expout').value = new Date(new Date(expIn.value + 'T00:00:00Z').getTime() + days * 86400000)
+        .toISOString().slice(0, 10);
+    };
+    // 寶寶報喜：實際生產醫院／日期／方式皆填寫後才可按下；存檔後開啟寶寶報喜單
+    const ctAnn = $q('#ct-announce');
+    if (ctAnn) ctAnn.onclick = async () => {
+      const err = $q('#ct-err');
+      err.textContent = '';
+      if (!gv('#ct-bhosp') || !gv('#ct-bdate') || !gv('#ct-bmode')) {
+        err.textContent = '請先填寫實際生產醫院、實際生產日期、實際生產方式，再按寶寶報喜';
+        alert('請先填寫實際生產醫院、實際生產日期、實際生產方式，再按寶寶報喜');
+        return;
+      }
       try {
-        await cput({
-          handler: gv('#ct-handler'), sign_date: gv('#ct-sign'), due_date: gv('#ct-due'),
-          parity_no: gv('#ct-parity'), baby_count: babies ? babies.value : '',
-          delivery_mode: gv('#ct-delmode'), checkup_hospital: gv('#ct-ckhosp'), checkup_doctor: gv('#ct-ckdoc'),
-          birth_hospital: gv('#ct-bhosp'), butler: gv('#ct-butler'),
-          diet_ban: gv('#ct-dietban'), note: gv('#ct-note')
-        });
+        await api(`/customers/${editId}/contract`, { method: 'PUT', body: ctPayload() });
+        location.hash = `#/baby-announcements?d=${gv('#ct-bdate')}`;
       } catch (e) { err.textContent = e.message; }
     };
     $q('#ct-fcsave').onclick = () => cput({
@@ -10378,12 +10403,40 @@ async function viewCustomers() {
       } catch (e) { err.textContent = e.message; }
     };
     $q('#ct-item-add').onclick = () => addItem(null);
-    $q('#ct-item-special').onclick = () => {
-      const p = prompt('特殊折扣訂房：請輸入折扣後每日單價（元）');
-      if (p == null) return;
-      const n = Number(p);
-      if (!(n >= 0)) { alert('單價需為數字'); return; }
-      addItem(n);
+    // 增加房型：跳出視窗，單價自動帶入房型定價、可手改後儲存
+    $q('#ct-item-modal').onclick = () => {
+      const typeSel = $q('#ct-item-type');
+      const opts = [...typeSel.options].map(o => `<option value="${esc(o.value)}" data-price="${o.dataset.price || 0}">${esc(o.textContent)}</option>`).join('');
+      openModal('增加房型', `
+        <div class="form-grid">
+          <div class="field"><label>銷售房型 <b class="req">*</b></label><select id="im-type">${opts}</select></div>
+          <div class="field"><label>訂房天數 <b class="req">*</b></label><input type="number" min="1" id="im-days"></div>
+          <div class="field"><label>單價（元/日，可手改）<b class="req">*</b></label><input type="number" min="0" id="im-price"></div>
+          <div class="field"><label>小計</label><input id="im-sub" readonly></div>
+          <div class="full row"><button class="btn" id="im-save">儲存</button><span class="error-msg" id="im-err"></span></div>
+        </div>`, body => {
+        const bv = id => body.querySelector(id);
+        const syncPrice = () => { bv('#im-price').value = bv('#im-type').selectedOptions[0].dataset.price || 0; syncSub(); };
+        const syncSub = () => {
+          const n = (Number(bv('#im-days').value) || 0) * (Number(bv('#im-price').value) || 0);
+          bv('#im-sub').value = n ? `$${n.toLocaleString()}` : '';
+        };
+        bv('#im-type').onchange = syncPrice;
+        bv('#im-days').oninput = syncSub;
+        bv('#im-price').oninput = syncSub;
+        syncPrice();
+        bv('#im-save').onclick = async () => {
+          const days = Number(bv('#im-days').value), price = Number(bv('#im-price').value);
+          if (!(days > 0)) { bv('#im-err').textContent = '請填寫訂房天數'; return; }
+          if (!(price >= 0)) { bv('#im-err').textContent = '單價需為 0 以上數字'; return; }
+          try {
+            await api(`/customers/${editId}/contract/items`, { method: 'POST',
+              body: { name: bv('#im-type').value, qty: days, price } });
+            closeModal();
+            await selectCustomer(editId);
+          } catch (e) { bv('#im-err').textContent = e.message; }
+        };
+      });
     };
     $('#cust-extra').querySelectorAll('[data-ctdel]').forEach(btn => {
       btn.onclick = async () => {
@@ -10411,6 +10464,16 @@ async function viewCustomers() {
     });
     $q('#ct-consult-save').onclick = () => cput({
       consult_date: gv('#ct-consult-date'), consult_note: gv('#ct-consult-note'), consult_by: currentUser.name
+    }).catch(e => alert(e.message));
+    // 商品禮券／現金折扣／贈品內容
+    $q('#ct-voucher-save').onclick = () => cput({
+      voucher_amount: gv('#ct-voucher'), voucher_by: currentUser.name
+    }).catch(e => alert(e.message));
+    $q('#ct-cashdisc-save').onclick = () => cput({
+      cash_discount: gv('#ct-cashdisc'), cash_discount_by: currentUser.name
+    }).catch(e => alert(e.message));
+    $q('#ct-gift-save').onclick = () => cput({
+      gift_content: gv('#ct-gift'), gift_by: currentUser.name
     }).catch(e => alert(e.message));
   }
 
@@ -10764,6 +10827,8 @@ async function viewCustomers() {
           <div class="field"><label>合約總額</label><input value="$${total.toLocaleString()}" readonly></div>
           <div class="field"><label>簽約日期 <b class="req">*</b></label><input type="date" id="ct-sign" value="${esc(cd.sign_date || todayStr())}"></div>
           <div class="field"><label>預產期 <b class="req">*</b></label><input type="date" id="ct-due" value="${esc(m.due_date || '')}"></div>
+          <div class="field"><label>預計入住日</label><input type="date" id="ct-expin" data-days="${ct ? ct.items.reduce((s, it) => s + (Number(it.qty) || 0), 0) : 0}" value="${esc(cd.expected_check_in || '')}"></div>
+          <div class="field"><label>預計出住日<small>（依訂房天數自動帶入，可改）</small></label><input type="date" id="ct-expout" value="${esc(cd.expected_check_out || '')}"></div>
           <div class="field"><label>生產胎次</label><select id="ct-parity"><option value="">--請選擇--</option>${parityOpts.map(o => `<option ${cd.parity_no === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
           <div class="field"><label>寶寶人數</label>
             <div class="row" style="gap:14px;padding-top:8px">${['單胞胎', '雙胞胎', '三胞胎'].map(o =>
@@ -10772,6 +10837,8 @@ async function viewCustomers() {
           <div class="field"><label>產檢醫院</label><input id="ct-ckhosp" maxlength="100" value="${esc(cd.checkup_hospital || p.hospital || '')}"></div>
           <div class="field"><label>產檢醫生</label><input id="ct-ckdoc" maxlength="50" value="${esc(cd.checkup_doctor || '')}"></div>
           <div class="field"><label>實際生產醫院</label><input id="ct-bhosp" maxlength="100" value="${esc(cd.birth_hospital || '')}"></div>
+          <div class="field"><label>實際生產日期</label><input type="date" id="ct-bdate" value="${esc(cd.birth_date || '')}"></div>
+          <div class="field"><label>實際生產方式</label><select id="ct-bmode"><option value="">--請選擇--</option>${deliveryTypes().map(o => `<option ${cd.birth_mode === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
           <div class="field"><label>媽媽手機</label><input value="${esc(m.phone || '')}" readonly></div>
           <div class="field"><label>聯絡電話（市話）</label><input value="${esc(p.tel || '')}" readonly></div>
           <div class="field"><label>E-MAIL</label><input value="${esc(p.email || '')}" readonly></div>
@@ -10784,6 +10851,7 @@ async function viewCustomers() {
           <div class="field"><label>入住日期</label><input value="${esc((d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved') || {}).check_in || '')}" readonly></div>
           <div class="full row" style="gap:10px;flex-wrap:wrap">
             <button class="btn danger" id="ct-save">${ct ? '資料修改' : '資料存檔（產生合約編號）'}</button>
+            ${ct ? '<button class="btn" id="ct-announce" title="實際生產醫院／日期／方式皆填寫後才可按下">寶寶報喜</button>' : ''}
             ${ct && ct.status !== 'cancelled' ? '<button class="btn secondary" id="ct-cancel">合約退訂</button>' : ''}
             ${ct && ct.status === 'cancelled' && currentUser.role === 'admin' ? '<button class="btn secondary" id="ct-restore">取消退訂（恢復有效）</button>' : ''}
             <span class="error-msg" id="ct-err"></span>
@@ -10812,7 +10880,7 @@ async function viewCustomers() {
             <select id="ct-item-type">${d.room_types.map(r => `<option value="${esc(r.name)}" data-price="${r.price || 0}">${esc(r.name)}（$${(r.price || 0).toLocaleString()}/日）</option>`).join('')}</select></div>
           <div class="field" style="margin:0;max-width:120px"><label>訂房天數</label><input type="number" min="1" id="ct-item-days"></div>
           <button class="btn danger" id="ct-item-add">確定新增</button>
-          <button class="btn" id="ct-item-special" style="background:#2fb6e8">特殊折扣訂房</button>
+          <button class="btn" id="ct-item-modal" style="background:#2fb6e8">增加房型（可改金額）</button>
           <span class="error-msg" id="ct-item-err"></span>
         </div>
         <div class="table-wrap" style="margin-top:8px">
@@ -10877,6 +10945,32 @@ async function viewCustomers() {
           <button class="btn danger" id="ct-consult-save">諮詢存檔</button>
         </div>
         <div class="field full" style="margin-top:8px"><label>諮詢備註</label><textarea id="ct-consult-note" maxlength="600" rows="3" placeholder="請填入諮詢備註">${esc(cd.consult_note || '')}</textarea></div>
+      </div>
+      <div class="card">
+        <div class="sec-hd">商品禮券</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0;max-width:150px"><label>金額</label><input type="number" min="0" id="ct-voucher" value="${esc(cd.voucher_amount || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.voucher_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" id="ct-voucher-save">禮券存檔</button>
+        </div>
+        <small style="color:var(--muted)">只能折抵商城商品，出住日後歸零。</small>
+      </div>
+      <div class="card">
+        <div class="sec-hd">現金折扣</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0;max-width:150px"><label>金額</label><input type="number" min="0" id="ct-cashdisc" value="${esc(cd.cash_discount || '')}"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.cash_discount_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" id="ct-cashdisc-save">折扣存檔</button>
+        </div>
+        <small style="color:var(--muted)">訂金仍為合約總額 10%（不扣折扣）。</small>
+      </div>
+      <div class="card">
+        <div class="sec-hd">贈品內容</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0;flex:1;min-width:220px"><label>內容</label><input id="ct-gift" maxlength="300" value="${esc(cd.gift_content || '')}" placeholder="請填入贈品內容"></div>
+          <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.gift_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn danger" id="ct-gift-save">贈品存檔</button>
+        </div>
       </div>
       <div class="card">
         <div class="row between no-print" style="flex-wrap:wrap;gap:8px">

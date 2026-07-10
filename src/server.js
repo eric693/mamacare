@@ -4536,14 +4536,28 @@ app.get('/api/customers/:motherId', requireStaff, (req, res) => {
 // ---------- 客戶合約資料（每媽媽一筆） ----------
 const CCT_FIELDS = [
   'handler', 'sign_date', 'parity_no', 'baby_count', 'checkup_hospital', 'checkup_doctor',
-  'birth_hospital', 'butler', 'diet_ban', 'note',
+  'birth_hospital', 'birth_date', 'birth_mode', 'butler', 'diet_ban', 'note',
+  'expected_check_in', 'expected_check_out',
   'fc_return_date', 'fc_no', 'fc_by',
   'room_card_given_date', 'room_card_no', 'room_card_given_by',
   'room_card_used_date', 'room_card_used_no', 'room_card_used_by',
   'share_card_given_date', 'share_card_no', 'share_card_given_by',
   'share_card_used_date', 'share_card_used_no', 'share_card_used_by',
-  'consult_date', 'consult_note', 'consult_by'
+  'consult_date', 'consult_note', 'consult_by',
+  'voucher_amount', 'voucher_by', 'cash_discount', 'cash_discount_by', 'gift_content', 'gift_by'
 ];
+// 稽核用欄位中文名（合約資料每次修改都記錄舊值→新值）
+const CCT_LABELS = {
+  handler: '經手人', sign_date: '簽約日期', parity_no: '生產胎次', baby_count: '寶寶人數',
+  checkup_hospital: '產檢醫院', checkup_doctor: '產檢醫生', birth_hospital: '實際生產醫院',
+  birth_date: '實際生產日期', birth_mode: '實際生產方式', butler: '小管家', diet_ban: '飲食禁忌', note: '合約備註',
+  expected_check_in: '預計入住日', expected_check_out: '預計出住日',
+  fc_return_date: '定型化契約簽回日', fc_no: '契約編號',
+  room_card_given_date: '住房卡贈送日', room_card_no: '住房卡號', room_card_used_date: '住房卡抵用日', room_card_used_no: '住房卡抵用卡號',
+  share_card_given_date: '分享卡贈送日', share_card_no: '分享卡號', share_card_used_date: '分享卡抵用日', share_card_used_no: '分享卡抵用卡號',
+  consult_date: '產前諮詢日', consult_note: '諮詢備註',
+  voucher_amount: '商品禮券金額', cash_discount: '現金折扣金額', gift_content: '贈品內容'
+};
 function getCustomerContract(motherId) {
   const c = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(motherId);
   if (!c) return null;
@@ -4576,7 +4590,15 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   const cur = ensureCustomerContract(mother.id, req.session.user.id);
   let data = {};
   try { data = JSON.parse(cur.data); } catch (e) { data = {}; }
-  for (const k of CCT_FIELDS) if (b[k] !== undefined) data[k] = String(b[k] ?? '').slice(0, 600);
+  // 每次修改儲存都記 LOG：逐欄記錄 舊值→新值
+  const changes = [];
+  for (const k of CCT_FIELDS) if (b[k] !== undefined) {
+    const nv = String(b[k] ?? '').slice(0, 600);
+    if (String(data[k] ?? '') !== nv && !k.endsWith('_by')) {
+      changes.push(`${CCT_LABELS[k] || k}：${String(data[k] ?? '') || '（空）'}→${nv || '（空）'}`);
+    }
+    data[k] = nv;
+  }
   db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
     .run(JSON.stringify(data).slice(0, 12000), mother.id);
   if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) {
@@ -4588,7 +4610,12 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   if (b.diet_ban !== undefined) {
     db.prepare('UPDATE mothers SET diet_notes = ? WHERE id = ?').run(String(b.diet_ban).slice(0, 500), mother.id);
   }
-  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id, summary: '客戶合約資料修改' });
+  // 實際生產日期同步媽媽主檔（寶寶報喜依此查詢）
+  if (/^\d{4}-\d{2}-\d{2}$/.test(b.birth_date || '')) {
+    db.prepare('UPDATE mothers SET delivery_date = ? WHERE id = ?').run(b.birth_date, mother.id);
+  }
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id,
+    summary: changes.length ? `客戶合約資料修改：${changes.join('；').slice(0, 900)}` : '客戶合約資料修改（無欄位變更）' });
   res.json({ ok: true, contract_no: cur.contract_no });
 });
 
