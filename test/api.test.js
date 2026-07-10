@@ -438,6 +438,43 @@ test('7日內入住／退房清單：在住媽媽依預退日列入 checkouts', 
   }
 });
 
+test('寶寶報喜資料儲存→媽媽房況與寶寶房況列入今日入住名單', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const TODAY = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const END = new Date(Date.now() - new Date().getTimezoneOffset() * 60000 + 10 * 86400000).toISOString().slice(0, 10);
+  const mom = await req('POST', '/api/mothers', { name: '報喜測試媽', phone: '0911000111' });
+  assert.strictEqual(mom.status, 200);
+  // 訂房（今日入住、預約中）；避開既有訂房衝突逐房嘗試
+  const rooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && !r.occupant).reverse();
+  let bk = null;
+  for (const r of rooms) {
+    const t = await req('POST', '/api/bookings', { mother_id: mom.data.id, room_id: r.id, check_in: TODAY, check_out: END });
+    if (t.status === 200) { bk = t.data; break; }
+  }
+  assert.ok(bk, '找不到可訂房間');
+  // 寶寶報喜資料儲存（登記寶寶出生資料）
+  const baby = await req('POST', '/api/babies', {
+    mother_id: mom.data.id, name: '報喜寶', gender: 'female', birth_date: TODAY, birth_weight_g: 3100
+  });
+  assert.strictEqual(baby.status, 200);
+  // 媽媽房況：今日入住統計＋該房列為今日應入住
+  const mrs = (await req('GET', '/api/room-status/mothers')).data;
+  assert.ok(mrs.stats.due_in >= 1, '媽媽房況今日入住統計應 >= 1');
+  assert.ok(mrs.rooms.some(r => r.next_booking && r.next_booking.mother_id === mom.data.id
+    && (r.state === 'due_in' || r.occupant)), '該房應列入今日入住');
+  // 寶寶房況：今日入住名單含報喜寶寶
+  const brs = (await req('GET', '/api/room-status/babies')).data;
+  assert.ok(brs.stats.due_in >= 1, '寶寶房況今日入住統計應 >= 1');
+  const row = (brs.due_in || []).find(b => b.id === baby.data.id);
+  assert.ok(row, '報喜寶寶應列入今日入住名單');
+  assert.strictEqual(row.arrive_date, TODAY);
+  assert.strictEqual(row.booking_status, 'reserved');
+  // 還原：取消訂房後即不再列入
+  assert.strictEqual((await req('PUT', `/api/bookings/${bk.id}/status`, { status: 'cancelled' })).status, 200);
+  const brs2 = (await req('GET', '/api/room-status/babies')).data;
+  assert.ok(!(brs2.due_in || []).some(b => b.id === baby.data.id));
+});
+
 // ---- 醫師查房清單／寶寶報喜／病歷資料回歸測試 ----
 test('查房清單/寶寶報喜/病歷資料：查詢與權限', async () => {
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });

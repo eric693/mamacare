@@ -6121,7 +6121,9 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     total: list.length,
     occupied: list.filter(x => x.state === 'occupied' || x.state === 'due_out').length,
     due_out: list.filter(x => x.state === 'due_out').length,
-    due_in: list.filter(x => x.state === 'due_in').length,
+    // 今日入住：空房今日應到（state=due_in）＋前一位尚未退房但下一筆今日應到的房
+    due_in: list.filter(x => x.state === 'due_in' ||
+      (x.occupant && x.next_booking && x.next_booking.check_in <= d)).length,
     vacant: list.filter(x => x.state === 'vacant' || x.state === 'reserved').length,
     needs: list.filter(x => x.occupant && x.occupant.need_count > 0).length
   };
@@ -6236,6 +6238,24 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
     delete b.last_assess_data;
   }
   const alerts = abnormalRecords(d, d); // 今日異常照護紀錄（門檻取自系統設定）
+  // 今日入住寶寶（寶寶報喜資料已儲存者）：
+  // 媽媽預約中 → 以寶寶預計入住日（未填則隨媽媽入住日）今日（含逾期）應到；
+  // 媽媽已入住但寶寶不在館內／住院中 → 以寶寶預計入住日今日（含逾期）應到
+  const dueIn = db.prepare(`
+    SELECT b.id, b.name, b.gender, b.birth_date, b.birth_weight_g, b.location,
+           m.id AS mother_id, m.name AS mother_name, r.name AS room_name,
+           bk.status AS booking_status,
+           COALESCE(NULLIF(bk.baby_check_in, ''), bk.check_in) AS arrive_date
+    FROM babies b
+    JOIN mothers m ON m.id = b.mother_id
+    JOIN bookings bk ON bk.mother_id = m.id
+    JOIN rooms r ON r.id = bk.room_id
+    WHERE (bk.status = 'reserved' AND bk.check_out > ?
+            AND COALESCE(NULLIF(bk.baby_check_in, ''), bk.check_in) <= ?)
+       OR (bk.status = 'checked_in' AND b.location IN ('out', 'hospital')
+            AND NULLIF(bk.baby_check_in, '') IS NOT NULL AND bk.baby_check_in <= ?)
+    GROUP BY b.id
+    ORDER BY arrive_date, r.name`).all(d, d, d);
   res.json({
     date: d,
     stats: {
@@ -6245,9 +6265,10 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
       isolation: rows.filter(b => b.location === 'isolation').length,
       out: rows.filter(b => b.location === 'out').length,
       hospital: rows.filter(b => b.location === 'hospital').length,
+      due_in: dueIn.length,
       alerts: alerts.length
     },
-    babies: rows, alerts
+    babies: rows, due_in: dueIn, alerts
   });
 });
 

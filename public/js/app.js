@@ -6290,6 +6290,9 @@ async function viewMotherRooms() {
     const states = [r.state];
     if (occ && occ.pending_tasks > 0) states.push('has_tasks');
     if (occ && occ.need_count > 0) states.push('has_needs');
+    // 前一位尚未退房、下一筆今日（含逾期）應入住：也列入「今日入住」名單
+    const nextDue = occ && next && next.check_in <= data.date;
+    if (nextDue) states.push('due_in');
     let body = '';
     if (occ) {
       const babyLine = (occ.babies || []).length
@@ -6322,7 +6325,7 @@ async function viewMotherRooms() {
       body = '<div class="rs-name" style="color:var(--muted)">目前空房，無排定預約</div>';
     }
     const nextLine = occ && next
-      ? `<div class="rs-next">下一筆：${esc(next.mother_name)}　${esc(next.check_in)} 入住</div>` : '';
+      ? `<div class="rs-next" ${nextDue ? 'style="color:var(--warn);font-weight:600"' : ''}>${nextDue ? '今日應入住' : '下一筆'}：${esc(next.mother_name)}　${esc(next.check_in)} 入住</div>` : '';
     const actions = [
       occ && canAccess('#/mother-nursing') ? `<a class="btn small" href="#/mother-nursing?m=${occ.mother_id}">媽媽護理</a>` : '',
       occ && canAccess('#/mother-intake') ? `<a class="btn small" href="#/mother-intake?m=${occ.mother_id}">入住評估表</a>` : '',
@@ -6716,10 +6719,22 @@ async function viewBabyRooms() {
       <td data-label="寶寶">${esc(a.baby_name)}</td>
       <td data-label="項目">${BABY_TYPE_LABEL[a.record_type] || a.record_type}</td>
       <td data-label="數值" style="color:var(--danger);font-weight:600">${esc(alertDetail(a))}</td></tr>`).join('');
+  const dueInRows = (data.due_in || []).map(b => `
+    <tr>
+      <td data-label="預計入住">${esc(b.arrive_date)}${b.arrive_date < data.date ? ' <span class="badge red">逾期</span>' : ''}</td>
+      <td data-label="房號">${esc(b.room_name || '—')}</td>
+      <td data-label="寶寶">${esc(b.name)}</td>
+      <td data-label="性別">${b.gender === 'male' ? '<span style="color:#3b78c2">男</span>' : b.gender === 'female' ? '<span style="color:var(--accent)">女</span>' : '—'}</td>
+      <td data-label="媽媽">${esc(b.mother_name)}</td>
+      <td data-label="出生日期">${esc(b.birth_date || '—')}</td>
+      <td data-label="出生體重">${b.birth_weight_g ? `${b.birth_weight_g} g` : '—'}</td>
+      <td data-label="狀態">${b.booking_status === 'reserved' ? '隨媽媽入住' : `媽媽已在住（寶寶${LOCATION_LABEL[b.location] || '—'}）`}</td>
+    </tr>`).join('');
   main().innerHTML = `
     <div class="page-title">寶寶房況</div>
     <div class="stat-grid">
       <div class="stat"><div class="num">${st.total}</div><div class="label">在住寶寶</div></div>
+      <div class="stat"><div class="num" style="color:${st.due_in ? 'var(--warn)' : 'var(--primary)'}">${st.due_in || 0}</div><div class="label">今日入住</div></div>
       <div class="stat"><div class="num">${st.nursery}</div><div class="label">嬰兒室</div></div>
       <div class="stat"><div class="num">${st.rooming}</div><div class="label">親子同室</div></div>
       <div class="stat"><div class="num" style="color:${st.isolation ? 'var(--warn)' : 'var(--primary)'}">${st.isolation}</div><div class="label">隔離室</div></div>
@@ -6728,6 +6743,13 @@ async function viewBabyRooms() {
       <div class="stat"><div class="num" style="color:${st.alerts ? 'var(--danger)' : 'var(--primary)'}">${st.alerts}</div><div class="label">今日異常紀錄</div></div>
     </div>
     <div id="nr-banner"></div>
+    ${dueInRows ? `
+    <div class="card">
+      <h3>今日入住寶寶 <span class="badge yellow">${(data.due_in || []).length}</span></h3>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>預計入住</th><th>房號</th><th>寶寶</th><th>性別</th><th>媽媽</th><th>出生日期</th><th>出生體重</th><th>狀態</th></tr></thead>
+        <tbody>${dueInRows}</tbody></table></div>
+    </div>` : ''}
     ${data.alerts.length ? `
     <div class="card">
       <h3>今日異常照護紀錄</h3>
