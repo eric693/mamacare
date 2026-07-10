@@ -10503,6 +10503,16 @@ async function viewCustomers() {
         catch (e) { alert(e.message); }
       };
     });
+    // 取消預約參觀：記錄取消時間／原因／取消人，列入取消預約明細表
+    $('#cust-extra').querySelectorAll('[data-trcancel]').forEach(btn => {
+      btn.onclick = async () => {
+        const reason = prompt('取消這筆預約參觀？請填寫取消原因（必填）', '');
+        if (reason === null) return;
+        if (!reason.trim()) { alert('請填寫取消原因'); return; }
+        try { await api(`/tours/${btn.dataset.trcancel}/cancel`, { method: 'POST', body: { reason } }); selectCustomer(editId); }
+        catch (e) { alert(e.message); }
+      };
+    });
     // 排房：房間下拉載入＋自動計價＋新增訂房＋狀態切換
     const bkRoom = $q('#bk-room');
     if (bkRoom) {
@@ -10631,7 +10641,8 @@ async function viewCustomers() {
               <td data-label="備註"><small>${esc(t.note || '—')}</small></td>
               <td data-label="操作" class="no-print">
                 ${t.status === 'scheduled' ? `<button class="btn small" data-trst="${t.id}|visited">已參觀</button>
-                  <button class="btn small secondary" data-trst="${t.id}|lost">未成交</button>` : ''}
+                  <button class="btn small secondary" data-trst="${t.id}|lost">未成交</button>
+                  <button class="btn small danger" data-trcancel="${t.id}">取消</button>` : ''}
                 ${t.status === 'visited' ? `<button class="btn small secondary" data-trst="${t.id}|lost">未成交</button>` : ''}
               </td></tr>`;
           }).join('')}</tbody></table></div>` : '<div class="empty">尚無參觀紀錄（新增參觀時以電話自動關聯本客戶）</div>'}
