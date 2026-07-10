@@ -77,10 +77,10 @@
       <a href="#/infection" data-nav data-perm="infection">感染管制</a>
       <div class="nav-section" data-section>營運管理</div>
       <a href="#/residents" data-nav data-perm="residents">住客管理</a>
+      <!-- 隱藏（2026-07-10 依需求）：房務與訂房、房況時間軸，功能仍在、路由可直達
       <a href="#/rooms" data-nav data-perm="rooms">房務與訂房</a>
-      <a href="#/bed-planning" data-nav data-perm="rooms">排床</a>
+      <a href="#/room-timeline" data-nav data-perm="rooms">房況時間軸</a> -->
       <a href="#/housekeeping" data-nav data-perm="housekeeping">房務清潔</a>
-      <a href="#/room-timeline" data-nav data-perm="rooms">房況時間軸</a>
       <div class="nav-group" data-nav-group>
         <button type="button" class="nav-group-hd" data-perm="rooms">房間資料管理<span class="chev">▾</span></button>
         <div class="nav-group-body">
@@ -91,9 +91,10 @@
         </div>
       </div>
       <a href="#/billing" data-nav data-perm="billing">收費帳務</a>
+      <!-- 隱藏（2026-07-10 依需求）：應收帳齡、耗材庫存，功能仍在、路由可直達
       <a href="#/aging" data-nav data-perm="billing">應收帳齡</a>
+      <a href="#/supplies" data-nav data-perm="supplies">耗材庫存</a> -->
       <a href="#/shop" data-nav data-perm="shop">商城商品</a>
-      <a href="#/supplies" data-nav data-perm="supplies">耗材庫存</a>
       <div class="nav-group" data-nav-group>
         <button type="button" class="nav-group-hd" data-perm="supplies">備品庫存管理<span class="chev">▾</span></button>
         <div class="nav-group-body">
@@ -108,12 +109,18 @@
       <a href="#/programs" data-nav data-perm="programs">課程與服務</a>
       <!-- <a href="#/members" data-nav data-perm="members">會員</a>
       <a href="#/invoices" data-nav data-perm="invoices">電子發票</a> -->
-      <a href="#/contracts" data-nav data-perm="contracts">合約簽署</a>
       <a href="#/meals" data-nav data-perm="meals">膳食管理</a>
       <!-- 隱藏（2026-07-05 依需求）：月子餐／LINE FB 客訊／名人推薦／優惠券，功能仍在、路由可直達
       <a href="#/meal-plan" data-nav data-perm="meals">月子餐</a> -->
-      <a href="#/customers" data-nav data-perm="tours">客戶管理</a>
-      <a href="#/tours" data-nav data-perm="tours">參觀預約</a>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd">客戶管理<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/customers" data-nav data-perm="tours">客戶管理</a>
+          <a href="#/bed-planning" data-nav data-perm="rooms">排床</a>
+          <a href="#/contracts" data-nav data-perm="contracts">合約簽署</a>
+          <a href="#/tours" data-nav data-perm="tours">參觀預約</a>
+        </div>
+      </div>
       <div class="nav-group" data-nav-group>
         <button type="button" class="nav-group-hd" data-perm="tours">預約參觀管理<span class="chev">▾</span></button>
         <div class="nav-group-body">
