@@ -10341,7 +10341,7 @@ async function viewCustomers() {
 
   // ----- 分頁：潛在客戶／預約參觀／合約資料／排房資料／膳食資訊／入住資訊／消費及收款 -----
   const CTABS = [['lead', '潛在客戶'], ['tours', '預約參觀'], ['contracts', '合約資料'], ['rooms', '排房資料'],
-    ['meals', '膳食資訊'], ['stay', '入住資訊'], ['pay', '消費及收款']];
+    ['meals', '膳食資訊'], ['pay', '入住前收款紀錄']];
   const BK_ST = { reserved: ['已預約', 'teal'], checked_in: ['入住中', 'green'], checked_out: ['已退住', 'gray'], cancelled: ['取消', 'gray'] };
   const CT_ST = { pending: ['待簽', 'yellow'], signed: ['已簽', 'green'], void: ['作廢', 'gray'] };
 
@@ -10636,38 +10636,7 @@ async function viewCustomers() {
         } catch (e) { body.querySelector('#ml-err').textContent = e.message; }
       };
     });
-    // 消費：載入商品清單（需 shop 權限，無權限則顯示提示）
-    const prodSel = $q('#py-prod');
-    if (prodSel) {
-      try {
-        const products = (await api('/products')).filter(p => p.active);
-        prodSel.innerHTML = '<option value="">--請選擇--</option>' + products.map(p =>
-          `<option value="${p.id}" data-price="${p.price}">${esc(p.name)}（$${p.price}${p.track_stock ? `｜庫存 ${p.stock}` : ''}）</option>`).join('');
-      } catch (e) { prodSel.innerHTML = '<option value="">（需商城權限）</option>'; }
-      const recalc = () => {
-        const o = prodSel.selectedOptions[0];
-        const pr = o ? Number(o.dataset.price || 0) : 0;
-        const q = Math.max(1, Number($q('#py-qty').value) || 1);
-        $q('#py-total').value = pr ? `$${(pr * q).toLocaleString()}` : '';
-      };
-      prodSel.onchange = recalc;
-      $q('#py-qty').oninput = recalc;
-      $q('#py-sale-add').onclick = async () => {
-        const err = $q('#py-sale-err');
-        err.textContent = '';
-        if (!prodSel.value) { err.textContent = '請選擇銷售品名'; return; }
-        try {
-          const o = await api('/orders', { method: 'POST', body: {
-            mother_id: editId,
-            items: [{ product_id: Number(prodSel.value), quantity: Math.max(1, Number($q('#py-qty').value) || 1) }],
-            note: `客戶管理消費 ${$q('#py-date').value}${$q('#py-snote').value.trim() ? `｜${$q('#py-snote').value.trim()}` : ''}`
-          } });
-          await api(`/orders/${o.id}/confirm`, { method: 'POST' });
-          selectCustomer(editId);
-        } catch (e) { err.textContent = e.message; }
-      };
-    }
-    // 收款新增（掛進行中／預約訂房）
+    // 入住前收款新增（掛進行中／預約訂房；收款項目寫入款別）
     const payBtn = $q('#py-pay-add');
     if (payBtn) payBtn.onclick = async () => {
       const err = $q('#py-pay-err');
@@ -10676,11 +10645,12 @@ async function viewCustomers() {
       if (!(amount > 0)) { err.textContent = '請填寫收款金額'; return; }
       const bk = d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved');
       if (!bk) { err.textContent = '無進行中／預約訂房，無法登錄收款'; return; }
-      const note = [$q('#py-pitem').value, $q('#py-pnote').value.trim(),
+      const note = [$q('#py-pnote').value.trim(),
         $q('#py-pref').value.trim() ? `憑證:${$q('#py-pref').value.trim()}` : ''].filter(Boolean).join('｜');
       try {
         await api(`/bookings/${bk.id}/payments`, { method: 'POST', body: {
-          amount, method: $q('#py-pmethod').value, paid_on: $q('#py-pdate').value || todayStr(), note
+          amount, method: $q('#py-pmethod').value, paid_on: $q('#py-pdate').value || todayStr(), note,
+          item: $q('#py-pitem').value
         } });
         selectCustomer(editId);
       } catch (e) { err.textContent = e.message; }
@@ -11033,50 +11003,6 @@ async function viewCustomers() {
           }).join('')}</tbody></table></div>` : '<div class="empty">尚無排房資料</div>'}
       </div>
     </div>
-    <div class="cpanel" data-tab="stay">
-      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
-        <span>入住資訊：<b>${esc(m.name)}</b>　｜　電話：${esc(m.phone || '—')}</span>
-      </div>
-      <div class="card">
-        <div class="sec-hd">入住摘要</div>
-        <div class="row" style="gap:8px 18px;flex-wrap:wrap;font-size:.95rem;line-height:1.9">
-          <span><b>目前狀態：</b><span class="badge ${CUST_STATUS[m.status] ? CUST_STATUS[m.status][1] : 'gray'}">${CUST_STATUS[m.status] ? CUST_STATUS[m.status][0] : m.status}</span></span>
-          ${cur ? `
-          <span><b>房號：</b>${esc(cur.room_name)}（${esc(cur.room_type)}）</span>
-          <span><b>期間：</b>${esc(cur.check_in)} ~ ${esc(cur.check_out)}</span>
-          ${stayDay != null ? `<span><b>住到第：</b>${stayDay} / ${stayTotal} 天</span>` : `<span><b>合約天數：</b>${stayTotal} 天</span>`}` : '<span style="color:var(--muted)">無進行中／預約訂房</span>'}
-          ${m.due_date ? `<span><b>預產期：</b>${esc(m.due_date)}</span>` : ''}
-          ${m.delivery_date ? `<span><b>生產日：</b><span style="color:var(--danger)">${esc(m.delivery_date)}</span></span>` : ''}
-          ${m.delivery_type ? `<span><b>生產方式：</b>${esc(m.delivery_type)}</span>` : ''}
-          <span><b>膳食：</b>${esc(m.meal_diet || '一般')}${m.diet_notes ? `・${esc(m.diet_notes)}` : ''}</span>
-          ${m.hk_dnd ? `<span><b>勿擾：</b>${esc(m.hk_dnd)}</span>` : ''}
-          ${m.hk_needs ? `<span><b>房務需求：</b>${esc(m.hk_needs)}</span>` : ''}
-          ${m.medical_notes ? `<span style="color:var(--danger)"><b>醫療注意：</b>${esc(m.medical_notes)}</span>` : ''}
-        </div>
-      </div>
-      <div class="card">
-        <div class="sec-hd">寶寶資料（${d.babies.length} 位）</div>
-        ${d.babies.length ? `<div class="table-wrap"><table class="data stack">
-          <thead><tr><th>寶寶</th><th>性別</th><th>出生日期</th><th>出生體重</th><th>位置</th></tr></thead>
-          <tbody>${d.babies.map(b => `
-            <tr><td data-label="寶寶">${esc(b.name)}</td>
-              <td data-label="性別">${b.gender === 'male' ? '<span style="color:#3b78c2">男</span>' : b.gender === 'female' ? '<span style="color:var(--accent)">女</span>' : '—'}</td>
-              <td data-label="出生日期">${esc(b.birth_date || '—')}</td>
-              <td data-label="出生體重">${b.birth_weight_g ? `${b.birth_weight_g} g` : '—'}</td>
-              <td data-label="位置"><span class="badge ${LOCATION_BADGE[b.location] || 'gray'}">${LOCATION_LABEL[b.location] || '—'}</span></td></tr>`).join('')}</tbody>
-        </table></div>` : '<div class="empty">尚未登記寶寶（住客管理可新增）</div>'}
-      </div>
-      <div class="card no-print">
-        <div class="sec-hd">入住作業快速連結</div>
-        <div class="row" style="gap:6px;flex-wrap:wrap">
-          ${canAccess('#/mother-rooms') ? `<a class="btn small" href="#/mother-rooms">媽媽房況</a>` : ''}
-          ${canAccess('#/mother-intake') ? `<a class="btn small" href="#/mother-intake?m=${m.id}">入住評估表</a>` : ''}
-          ${canAccess('#/mother-nursing') ? `<a class="btn small" href="#/mother-nursing?m=${m.id}">媽媽護理</a>` : ''}
-          ${canAccess('#/mother-handover') ? `<a class="btn small" href="#/mother-handover?m=${m.id}">產婦交班單</a>` : ''}
-          ${canAccess('#/residents') ? `<a class="btn small secondary" href="#/residents">住客管理（寶寶建檔）</a>` : ''}
-        </div>
-      </div>
-    </div>
     <div class="cpanel" data-tab="contracts">
       ${(() => {
         const ct = d.contract, cd = (ct && ct.data) || {};
@@ -11298,7 +11224,8 @@ async function viewCustomers() {
           </table>
         </div>
         <div class="row no-print" style="gap:6px;margin-top:8px">
-          ${canAccess('#/meal-plan') ? '<a class="btn small" href="#/meal-plan">月子餐（菜單管理）</a>' : ''}
+          ${canAccess('#/meals') ? '<a class="btn small" href="#/meals">膳食管理</a>' : ''}
+          ${canAccess('#/meal-plan') ? '<a class="btn small secondary" href="#/meal-plan">月子餐（菜單管理）</a>' : ''}
           <a class="btn small secondary" href="#/mother-handover?m=${m.id}">修改飲食禁忌（產婦交班單）</a>
         </div>
       </div>
@@ -11306,7 +11233,7 @@ async function viewCustomers() {
     <div class="cpanel" data-tab="pay">
       <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
         <div class="row" style="flex-wrap:wrap;gap:8px 24px">
-          <span>消費及收款資料：<b>${esc(m.name)}</b></span>
+          <span>入住前收款紀錄：<b>${esc(m.name)}</b></span>
           <span>電話：${esc(m.phone || '—')}</span>
           <span>合約編號：${d.contract ? esc(d.contract.contract_no) : '—'}</span>
         </div>
@@ -11319,21 +11246,6 @@ async function viewCustomers() {
         const receivable = contractTotal + chargeSum;
         const balance = receivable - paidSum;
         return `
-      <div class="card">
-        <div class="sec-hd">入住後消費紀錄（新增）</div>
-        <div class="form-grid">
-          <div class="field"><label>銷售日期</label><input type="date" id="py-date" value="${todayStr()}"></div>
-          <div class="field"><label>銷售品名 <b class="req">*</b></label><select id="py-prod"><option value="">--請選擇--</option></select></div>
-          <div class="field"><label>銷售數量</label><input type="number" min="1" id="py-qty" value="1"></div>
-          <div class="field"><label>售價（合計）</label><input id="py-total" readonly></div>
-          <div class="field full"><label>銷售備註</label><input id="py-snote" maxlength="200"></div>
-          <div class="full row" style="gap:10px">
-            <button class="btn danger" id="py-sale-add">資料新增</button>
-            <span class="error-msg" id="py-sale-err"></span>
-          </div>
-        </div>
-        <small style="color:var(--muted)">新增後自動確認入帳（扣庫存＋寫入進行中訂房加購明細）。</small>
-      </div>
       <div class="card">
         <div class="sec-hd">收款紀錄（新增）</div>
         <div class="form-grid">
