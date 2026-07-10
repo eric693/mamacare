@@ -10182,10 +10182,6 @@ async function viewCustomers() {
           <button class="btn" id="cq-go">送出查詢</button>
           <button class="btn secondary" id="cq-clear">清空重查</button>
           <a class="btn small secondary" href="#/tour-calendar">預約參觀行事曆</a>
-          <a class="btn small secondary" href="#/tour-visit-blank">列印空白預約參觀單</a>
-          <a class="btn small secondary" href="#/booking-blank">列印空白訂房確認單</a>
-          <a class="btn small secondary" href="#/tours">參觀預約</a>
-          ${canAccess('#/retail') ? '<a class="btn small secondary" href="#/retail">產品零售</a>' : ''}
           <span class="error-msg" id="cq-err"></span>
         </div>
       </div>
