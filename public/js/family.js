@@ -511,9 +511,12 @@ function famModal(title, html, wire) {
 
 let _famCalAnchor = null; // 課程行事曆目前顯示的月份
 async function loadPrograms() {
-  let progs = [], signups = [];
+  let progs = [], signups = [], visits = [];
   try {
-    [progs, signups] = await Promise.all([api('/family/programs'), api('/family/signups')]);
+    [progs, signups, visits] = await Promise.all([
+      api('/family/programs'), api('/family/signups'),
+      api('/family/visitor-reservations').catch(() => [])
+    ]);
   } catch (e) {
     if (e.status === 401) { showLogin(); return; }
     $('#panel').innerHTML = `<div class="card"><div class="error-msg">${esc(e.message)}</div></div>`;
@@ -526,11 +529,24 @@ async function loadPrograms() {
   const fmtD = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const todayS = fmtD(new Date());
   if (!_famCalAnchor) _famCalAnchor = todayS.slice(0, 7);
-  // 行事曆（月）：排定時段的課程，點擊跳出報名視窗
+  // 行事曆（月）事件：1.可報名課程（點擊報名） 2.自己預約的服務 3.自己預約的訪客
   const [ay, am] = _famCalAnchor.split('-').map(Number);
   const byDate = {};
-  progs.filter(p => /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at || ''))
-    .forEach(p => { const d = p.scheduled_at.slice(0, 10); (byDate[d] = byDate[d] || []).push(p); });
+  const pushEv = (d, html) => { (byDate[d] = byDate[d] || []).push(html); };
+  const short = (s, n = 6) => s.length > n ? s.slice(0, n) + '…' : s;
+  progs.filter(p => /^\d{4}-\d{2}-\d{2}/.test(p.scheduled_at || '')).forEach(p =>
+    pushEv(p.scheduled_at.slice(0, 10),
+      `<div class="fam-cal-item fc-course" data-cal-prog="${p.id}" title="課程：${esc(p.name)}">${esc(p.scheduled_at.slice(11, 16))} ${esc(short(p.name))}</div>`));
+  signups.filter(s => s.kind === 'service' && s.status !== 'cancelled').forEach(s => {
+    const when = /^\d{4}-\d{2}-\d{2}/.test(s.scheduled_at || '') ? s.scheduled_at
+      : /^\d{4}-\d{2}-\d{2}/.test(s.preferred_at || '') ? s.preferred_at : '';
+    if (!when) return;
+    pushEv(when.slice(0, 10),
+      `<div class="fam-cal-item fc-service" data-cal-signup="${s.id}" title="服務：${esc(s.program_name)}">${esc(when.slice(11, 16))} ${esc(short(s.program_name))}</div>`);
+  });
+  visits.filter(v => v.status !== 'cancelled' && /^\d{4}-\d{2}-\d{2}/.test(v.visit_at || '')).forEach(v =>
+    pushEv(v.visit_at.slice(0, 10),
+      `<div class="fam-cal-item fc-visit" data-cal-visit="${v.id}" title="訪客：${esc(v.visitor_name)}">${esc(v.visit_at.slice(11, 16))} 訪客 ${esc(short(v.visitor_name, 4))}</div>`));
   const first = new Date(ay, am - 1, 1);
   const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7)); // 週一起
   let calRows = '';
@@ -540,10 +556,8 @@ async function loadPrograms() {
       const d = new Date(start); d.setDate(start.getDate() + w * 7 + i);
       const key = fmtD(d);
       const inMonth = d.getMonth() === am - 1;
-      const items = (byDate[key] || []).map(p =>
-        `<div class="fam-cal-item" data-cal-prog="${p.id}" title="${esc(p.name)}">${esc(p.scheduled_at.slice(11, 16))} ${esc(p.name.length > 6 ? p.name.slice(0, 6) + '…' : p.name)}</div>`).join('');
       tds += `<td style="vertical-align:top;height:72px;min-width:76px;border:1px solid var(--border);padding:2px;${inMonth ? '' : 'opacity:.35;'}${key === todayS ? 'background:#eef6f0;' : ''}">
-        <div style="font-size:.75rem;color:var(--muted)">${d.getDate()}</div>${items}</td>`;
+        <div style="font-size:.75rem;color:var(--muted)">${d.getDate()}</div>${(byDate[key] || []).join('')}</td>`;
     }
     calRows += `<tr>${tds}</tr>`;
   }
@@ -584,11 +598,21 @@ async function loadPrograms() {
           <button class="btn small secondary" id="fc-next">下月 ›</button>
         </div>
       </div>
-      <p style="font-size:.82rem;color:var(--muted);margin:4px 0 8px">點擊行事曆上的課程即可報名${isMom ? '' : '（課程僅開放媽媽本人預約）'}。</p>
+      <p style="font-size:.82rem;color:var(--muted);margin:4px 0 8px">
+        <span class="fc-dot" style="background:#2a9d8f"></span>課程（點擊報名${isMom ? '' : '；僅開放媽媽本人'}）
+        <span class="fc-dot" style="background:#8a94a6"></span>我預約的服務
+        <span class="fc-dot" style="background:#7b5ea7"></span>我預約的訪客
+      </p>
       <div class="table-wrap"><table class="data" style="min-width:560px">
         <thead><tr>${['一', '二', '三', '四', '五', '六', '日'].map(w => `<th style="text-align:center">週${w}</th>`).join('')}</tr></thead>
         <tbody>${calRows}</tbody></table></div>
-      <style>.fam-cal-item{font-size:.7rem;background:#e5f2ef;color:var(--primary-dark);border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}</style>
+      <style>
+        .fam-cal-item{font-size:.7rem;border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+        .fc-course{background:#e5f2ef;color:#1d6f66}
+        .fc-service{background:#eceef2;color:#4a5468}
+        .fc-visit{background:#efe9f6;color:#5c4585}
+        .fc-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
+      </style>
     </div>
     <div class="card">
       <h3>課程</h3>
@@ -645,6 +669,31 @@ async function loadPrograms() {
   $('#panel').querySelectorAll('[data-signup]').forEach(b => b.onclick = () => {
     const prog = progs.find(p => p.id == b.dataset.signup);
     if (prog) openSignupModal(prog);
+  });
+  // 行事曆上自己預約的服務／訪客：點擊顯示明細（唯讀）
+  $('#panel').querySelectorAll('[data-cal-signup]').forEach(el => el.onclick = () => {
+    const s = signups.find(x => x.id == el.dataset.calSignup);
+    if (!s) return;
+    famModal(`服務：${s.program_name}`, `
+      <div style="line-height:1.8;font-size:.92rem">
+        ${s.scheduled_at ? `<div>時間：${esc(s.scheduled_at)}</div>` : s.preferred_at ? `<div>偏好時段：${esc(s.preferred_at)}</div>` : ''}
+        <div>數量：×${s.quantity}</div>
+        <div>狀態：${ST[s.status] || s.status}</div>
+        ${s.note ? `<div>備註：${esc(s.note)}</div>` : ''}
+      </div>`);
+  });
+  $('#panel').querySelectorAll('[data-cal-visit]').forEach(el => el.onclick = () => {
+    const v = visits.find(x => x.id == el.dataset.calVisit);
+    if (!v) return;
+    famModal('訪客預約', `
+      <div style="line-height:1.8;font-size:.92rem">
+        <div>探訪時間：${esc(v.visit_at)}</div>
+        <div>訪客：${esc(v.visitor_name)}${v.relation ? `（${esc(v.relation)}）` : ''}</div>
+        <div>人數：${v.headcount}</div>
+        <div>狀態：${v.status === 'arrived' ? '已報到' : '已預約'}</div>
+        ${v.note ? `<div>備註：${esc(v.note)}</div>` : ''}
+      </div>
+      <p style="font-size:.8rem;color:var(--muted);margin-top:8px">如需取消請至「訪客預約」分頁操作。</p>`);
   });
 }
 

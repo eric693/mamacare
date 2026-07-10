@@ -3660,9 +3660,12 @@ app.post('/api/family/signups', requireFamily, (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.get('/api/family/signups', requireFamily, (req, res) => {
+  // 同一位媽媽的報名（含護理站指定的加購服務）家屬共同可見
+  const mid = familyMotherId(req.session.family);
   res.json(db.prepare(`SELECT s.*, p.name AS program_name, p.kind, p.scheduled_at
     FROM program_signups s JOIN programs p ON p.id = s.program_id
-    WHERE s.family_id = ? ORDER BY s.created_at DESC`).all(req.session.family.id));
+    WHERE s.family_id = ? OR (s.mother_id IS NOT NULL AND s.mother_id = ?)
+    ORDER BY s.created_at DESC`).all(req.session.family.id, mid || -1));
 });
 
 // ---------- 家屬端：訪客預約（登記／查詢／取消，同一位媽媽的家屬共同可見） ----------
