@@ -6553,7 +6553,7 @@ app.get('/api/room-calendar', requireStaff, (req, res) => {
   const end = new Date(new Date(start).getTime() + days * 86400000).toISOString().slice(0, 10);
   const rooms = db.prepare('SELECT id, name, room_type, price_per_day FROM rooms WHERE active=1 ORDER BY name').all();
   const bookings = db.prepare(`
-    SELECT bk.id, bk.room_id, bk.check_in, bk.check_out, bk.status, m.name AS mother_name
+    SELECT bk.id, bk.room_id, bk.mother_id, bk.check_in, bk.check_out, bk.status, m.name AS mother_name
     FROM bookings bk JOIN mothers m ON m.id=bk.mother_id
     WHERE bk.status != 'cancelled' AND bk.check_in < ? AND bk.check_out > ?
     ORDER BY bk.check_in`).all(end, start);

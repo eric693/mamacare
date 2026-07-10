@@ -10312,8 +10312,11 @@ async function viewCustomers() {
   }
 
   function renderTabs(d) {
+    // 防呆：已存合約但尚無排房紀錄 → 排房資料頁籤變色提醒
+    const needRooms = d && d.contract && d.contract.status !== 'cancelled' && !d.bookings.some(b => b.status !== 'cancelled');
     $('#cust-tabs').innerHTML = CTABS.map(([k, l]) =>
-      `<button data-tab="${k}" ${!d && k !== 'lead' ? 'disabled title="請先查詢並選擇客戶"' : ''}>${l}</button>`).join('');
+      `<button data-tab="${k}" ${!d && k !== 'lead' ? 'disabled title="請先查詢並選擇客戶"' : ''}
+        ${k === 'rooms' && needRooms ? 'style="background:var(--danger);color:#fff" title="已有合約但尚未排房，請儘速排房"' : ''}>${l}${k === 'rooms' && needRooms ? ' ⚠' : ''}</button>`).join('');
     $('#cust-tabs').querySelectorAll('button:not([disabled])').forEach(b => b.onclick = () => showTab(b.dataset.tab));
     renderLogs(d);
     $('#cust-extra').innerHTML = d ? panelsHTML(d) : '';
@@ -10576,38 +10579,138 @@ async function viewCustomers() {
         catch (e) { alert(e.message); }
       };
     });
-    // 排房：房間下拉載入＋自動計價＋新增訂房＋狀態切換
-    const bkRoom = $q('#bk-room');
-    if (bkRoom) {
+    // 排房：合約帶入預定房型／天數，選房號後依序接續建立訂房；可「增加房號」拆多段
+    const bkRows = $q('#bk-rows');
+    if (bkRows) {
       let roomList = [];
-      try { roomList = await api('/rooms'); } catch (e) { roomList = []; }
-      bkRoom.innerHTML = '<option value="">--請選擇--</option>' + roomList.filter(r => r.active).map(r =>
-        `<option value="${r.id}" data-price="${r.price_per_day || 0}">${esc(r.name)}（${esc(r.room_type)}｜$${(r.price_per_day || 0).toLocaleString()}/日）${r.occupant ? `｜在住至 ${esc(r.occupied_until || '')}` : ''}</option>`).join('');
-      const calcTotal = () => {
-        const o = bkRoom.selectedOptions[0];
-        const price = o ? Number(o.dataset.price || 0) : 0;
-        const ci = $q('#bk-in').value, co = $q('#bk-out').value;
-        if (!price || !ci || !co || co <= ci) return;
-        if (d.contract && d.contract.total > 0) { $q('#bk-total').value = d.contract.total; return; }
-        const days = Math.round((new Date(co) - new Date(ci)) / 86400000);
-        $q('#bk-total').value = price * days;
+      try { roomList = (await api('/rooms')).filter(r => r.active); } catch (e) { roomList = []; }
+      const roomOpt = r => `<option value="${r.id}">${esc(r.name)}（${esc(r.room_type)}｜$${(r.price_per_day || 0).toLocaleString()}/日）${r.occupant ? `｜在住至 ${esc(r.occupied_until || '')}` : ''}</option>`;
+      const roomOpts = type => {
+        const match = roomList.filter(r => r.room_type === type);
+        const rest = roomList.filter(r => r.room_type !== type);
+        return '<option value="">--請選擇--</option>'
+          + (match.length ? `<optgroup label="同房型">${match.map(roomOpt).join('')}</optgroup>` : '')
+          + (rest.length ? `<optgroup label="其他房型（升等／降等）">${rest.map(roomOpt).join('')}</optgroup>` : '');
       };
-      bkRoom.onchange = calcTotal;
-      $q('#bk-in').onchange = calcTotal;
-      $q('#bk-out').onchange = calcTotal;
+      bkRows.querySelectorAll('[data-bk-row]').forEach(tr => {
+        tr.querySelector('[data-bk-room]').innerHTML = roomOpts(tr.dataset.type);
+      });
+      $q('#bk-addrow').onclick = () => {
+        const types = [...new Set(d.contract.items.map(i => i.name))];
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-bk-row', '');
+        tr.dataset.type = types[0] || '';
+        tr.innerHTML = `
+          <td data-label="預定房型"><select data-bk-type>${types.map(t => `<option>${esc(t)}</option>`).join('')}</select></td>
+          <td data-label="預定天數">—</td>
+          <td data-label="房號"><select data-bk-room style="min-width:170px"></select></td>
+          <td data-label="天數"><input type="number" min="1" data-bk-days style="max-width:90px"></td>
+          <td><button class="btn small danger" data-bk-del title="移除">✕</button></td>`;
+        bkRows.appendChild(tr);
+        const typeSel = tr.querySelector('[data-bk-type]');
+        const roomSel = tr.querySelector('[data-bk-room]');
+        roomSel.innerHTML = roomOpts(tr.dataset.type);
+        typeSel.onchange = () => { tr.dataset.type = typeSel.value; roomSel.innerHTML = roomOpts(typeSel.value); };
+        tr.querySelector('[data-bk-del]').onclick = () => tr.remove();
+      };
       $q('#bk-add').onclick = async () => {
         const err = $q('#bk-err');
         err.textContent = '';
-        if (!bkRoom.value || !$q('#bk-in').value || !$q('#bk-out').value) { err.textContent = '請選擇房間與入退房日期'; return; }
+        const start = $q('#bk-in').value;
+        if (!start) { err.textContent = '請填寫入住日（可於合約資料設定預計入住日自動帶入）'; return; }
+        const rows = [...bkRows.querySelectorAll('[data-bk-row]')].map(tr => ({
+          type: tr.dataset.type,
+          room_id: Number(tr.querySelector('[data-bk-room]').value) || 0,
+          days: Number(tr.querySelector('[data-bk-days]').value) || 0
+        }));
+        const picked = rows.filter(r => r.room_id || r.days);
+        if (!picked.length) { err.textContent = '請至少選擇一列的房號與天數'; return; }
+        if (picked.some(r => !r.room_id)) { err.textContent = '請選擇每一列的房號'; return; }
+        if (picked.some(r => !(r.days > 0))) { err.textContent = '請填寫每一列的天數'; return; }
+        let cursor = start;
+        let dep = Number($q('#bk-dep').value) || 0;
         try {
-          await api('/bookings', { method: 'POST', body: {
-            mother_id: editId, room_id: Number(bkRoom.value),
-            check_in: $q('#bk-in').value, check_out: $q('#bk-out').value,
-            deposit: Number($q('#bk-dep').value) || 0, total_amount: Number($q('#bk-total').value) || 0
-          } });
+          for (const r of picked) {
+            const end = new Date(new Date(cursor + 'T00:00:00Z').getTime() + r.days * 86400000).toISOString().slice(0, 10);
+            const it = d.contract.items.find(i => i.name === r.type);
+            const room = roomList.find(x => x.id === r.room_id);
+            const price = it ? (it.price || 0) : ((room && room.price_per_day) || 0);
+            await api('/bookings', { method: 'POST', body: {
+              mother_id: editId, room_id: r.room_id, check_in: cursor, check_out: end,
+              deposit: dep, total_amount: price * r.days
+            } });
+            dep = 0; // 訂金僅記於第一段
+            cursor = end;
+          }
           selectCustomer(editId);
-        } catch (e) { err.textContent = e.message; }
+        } catch (e) {
+          err.textContent = e.message;
+          selectCustomer(editId); // 部分成功時重載，讓已建立的段落顯示於排房紀錄
+        }
       };
+    }
+    // 內嵌床表：預定床表（本客戶標示升等／降等／特殊需求）／實際入住床表
+    const bcCard = $q('#bk-bedchart-card');
+    if (bcCard) {
+      let bcTab = 'planned';
+      const drawChart = async () => {
+        const startD = $q('#bc2-start').value || todayStr();
+        let cal;
+        try { cal = await api(`/room-calendar?start=${startD}&days=30`); }
+        catch (e) { $q('#bc2-chart').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+        const days = [];
+        for (let i = 0; i < cal.days; i++) days.push(new Date(new Date(cal.start).getTime() + i * 86400000).toISOString().slice(0, 10));
+        const td = todayStr();
+        const ctItems = (d.contract && d.contract.items) || [];
+        const basePrice = ctItems.length ? Math.max(...ctItems.map(i => Number(i.price) || 0)) : 0;
+        // 本客戶的訂房標示：升＝升等、降＝降等、特＝特殊需求（媽媽有房務需求）
+        const markFor = bk => {
+          if (bk.mother_id !== Number(editId)) return '';
+          const marks = [];
+          const room = cal.rooms.find(r => r.id === bk.room_id);
+          if (room && basePrice && !ctItems.some(i => i.name === room.room_type)) {
+            marks.push((room.price_per_day || 0) > basePrice ? '升' : '降');
+          }
+          if (((d.mother && d.mother.hk_needs) || '').trim()) marks.push('特');
+          return marks.length ? `〔${marks.join('')}〕` : '';
+        };
+        const headCells = days.map(dd => {
+          const wd = '日一二三四五六'[new Date(dd).getDay()];
+          return `<th style="min-width:30px;padding:2px;font-weight:${dd === td ? '700' : '400'};${dd === td ? 'color:var(--primary-dark)' : ''}">${dd.slice(8)}<br><small>${wd}</small></th>`;
+        }).join('');
+        const rowsHtml = cal.rooms.map(r => {
+          const cells = days.map(dd => {
+            const bk = cal.bookings.find(b => b.room_id === r.id && b.check_in <= dd && b.check_out > dd);
+            if (bk) {
+              const isStart = bk.check_in === dd || dd === cal.start;
+              if (bcTab === 'actual' && bk.status !== 'checked_in') {
+                return `<td title="${esc(bk.mother_name)} 已預約未入住" style="background:repeating-linear-gradient(45deg,#fff,#fff 4px,#fdeec2 4px,#fdeec2 8px);padding:2px;font-size:10px;color:#b9911f;white-space:nowrap;overflow:hidden;max-width:0">${isStart ? '約' : ''}</td>`;
+              }
+              const mine = bk.mother_id === Number(editId);
+              const color = bk.status === 'checked_in' ? '#cdeae4' : '#fdeec2';
+              const mk = bcTab === 'planned' ? markFor(bk) : '';
+              return `<td title="${esc(bk.mother_name)}（${esc(bk.check_in)}~${esc(bk.check_out)}・${STATUS_LABEL[bk.status]}）${mk}" style="background:${color};padding:2px;font-size:11px;white-space:nowrap;overflow:hidden;max-width:0;${mine ? 'outline:2px solid var(--primary-dark);outline-offset:-2px;' : ''}">${isStart ? esc(mk + bk.mother_name.slice(0, 4)) : ''}</td>`;
+            }
+            return '<td style="padding:2px;border:1px solid #eef2f1"></td>';
+          }).join('');
+          return `<tr><th style="text-align:left;white-space:nowrap;padding:2px 6px;position:sticky;left:0;background:#fff">${esc(r.name)}<br><small style="color:var(--muted)">${esc(r.room_type)}</small></th>${cells}</tr>`;
+        }).join('');
+        $q('#bc2-legend').innerHTML = bcTab === 'planned'
+          ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span>　〔升〕升等　〔降〕降等　〔特〕特殊需求　粗框＝本客戶'
+          : '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span>　斜線格＝已預約尚未入住';
+        $q('#bc2-chart').innerHTML = `
+          <div class="row between"><h3 style="margin:0;font-size:.95rem">${bcTab === 'planned' ? '預定床表' : '實際入住床表'}（${esc(cal.start)} 起 30 天）</h3></div>
+          <div class="table-wrap" style="overflow-x:auto;margin-top:6px"><table style="border-collapse:collapse;font-size:12px">
+            <thead><tr><th style="position:sticky;left:0;background:#eef5f4;padding:2px 6px">房號</th>${headCells}</tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table></div>`;
+        $q('#bc2-tab-planned').className = `btn small ${bcTab === 'planned' ? '' : 'secondary'}`;
+        $q('#bc2-tab-actual').className = `btn small ${bcTab === 'actual' ? '' : 'secondary'}`;
+      };
+      $q('#bc2-start').onchange = drawChart;
+      $q('#bc2-tab-planned').onclick = () => { bcTab = 'planned'; drawChart(); };
+      $q('#bc2-tab-actual').onclick = () => { bcTab = 'actual'; drawChart(); };
+      drawChart();
     }
     const BKST_TW = { checked_in: '辦理入住', checked_out: '退房', cancelled: '取消訂房' };
     $('#cust-extra').querySelectorAll('[data-bkst]').forEach(btn => {
@@ -10715,21 +10818,54 @@ async function viewCustomers() {
       <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
         <span>排房資料：<b>${esc(m.name)}</b>${d.contract ? `　｜　合約編號：${esc(d.contract.contract_no)}` : ''}</span>
       </div>
-      ${canAccess('#/rooms') ? `
-      <div class="card no-print">
+      ${canAccess('#/rooms') ? (() => {
+        const bct = d.contract, bcd = (bct && bct.data) || {};
+        // 防呆：新增訂房只能從合約資料進去（需先有合約＋銷售房型明細）
+        if (!bct || bct.status === 'cancelled' || !bct.items.length) {
+          return `<div class="card no-print">
+            <div class="sec-hd">新增訂房（排房）</div>
+            <div class="empty">新增訂房請從「合約資料」進入：先儲存合約資料並新增銷售房型明細，本頁會自動帶入預定入住日、銷售房型與天數。</div>
+          </div>`;
+        }
+        return `<div class="card no-print">
         <div class="sec-hd">新增訂房（排房）</div>
-        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
-          <div class="field" style="margin:0;min-width:220px"><label>房間 <b class="req">*</b></label>
-            <select id="bk-room"><option value="">載入中…</option></select></div>
-          <div class="field" style="margin:0"><label>入住日 <b class="req">*</b></label><input type="date" id="bk-in"></div>
-          <div class="field" style="margin:0"><label>退房日 <b class="req">*</b></label><input type="date" id="bk-out"></div>
-          <div class="field" style="margin:0;max-width:110px"><label>訂金</label><input type="number" min="0" id="bk-dep" value="0"></div>
-          <div class="field" style="margin:0;max-width:130px"><label>總額<small>（自動算可改）</small></label><input type="number" min="0" id="bk-total"></div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+          <div class="field" style="margin:0"><label>入住日 <b class="req">*</b><small>（合約預計入住日帶入）</small></label>
+            <input type="date" id="bk-in" value="${esc(bcd.expected_check_in || '')}"></div>
+          <div class="field" style="margin:0;max-width:130px"><label>訂金<small>（10%合約總額）</small></label>
+            <input type="number" min="0" id="bk-dep" value="${Math.round((bct.total || 0) * 0.1)}"></div>
+        </div>
+        <div class="table-wrap"><table class="data" id="bk-rows-table">
+          <thead><tr><th>預定房型</th><th>預定天數</th><th>房號 <b class="req">*</b></th><th>天數 <b class="req">*</b></th><th></th></tr></thead>
+          <tbody id="bk-rows">${bct.items.map(it => `
+            <tr data-bk-row data-type="${esc(it.name)}">
+              <td data-label="預定房型">${esc(it.name)}<br><small>$${(it.price || 0).toLocaleString()}/日</small></td>
+              <td data-label="預定天數">${it.qty} 天</td>
+              <td data-label="房號"><select data-bk-room style="min-width:170px"><option value="">載入中…</option></select></td>
+              <td data-label="天數"><input type="number" min="1" data-bk-days value="${it.qty}" style="max-width:90px"></td>
+              <td></td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <button class="btn small secondary" id="bk-addrow">增加房號</button>
           <button class="btn danger" id="bk-add">確定排房</button>
           <span class="error-msg" id="bk-err"></span>
         </div>
-        <small style="color:var(--muted)">合約有銷售房型明細時，總額預設帶合約總額；否則依房價×天數自動計算。期間衝突會被擋下。</small>
-      </div>` : ''}
+        <small style="color:var(--muted)">預定房型與天數由合約銷售房型明細自動帶入；多列時依序接續排房（前一列退房日＝下一列入住日）。金額依合約單價×天數計；期間衝突會被擋下。</small>
+      </div>`;
+      })() : ''}
+      <div class="card" id="bk-bedchart-card">
+        <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <div class="field" style="max-width:170px;margin:0"><label>起始日</label>
+            <input type="date" id="bc2-start" value="${esc((d.contract && d.contract.data && d.contract.data.expected_check_in) || todayStr())}"></div>
+          <div class="row" style="gap:4px">
+            <button class="btn small" id="bc2-tab-planned">預定床表</button>
+            <button class="btn small secondary" id="bc2-tab-actual">實際入住床表</button>
+          </div>
+          <span style="font-size:.8rem;color:var(--muted)" id="bc2-legend"></span>
+        </div>
+        <div id="bc2-chart" style="margin-top:8px"><div class="empty">載入床表中…</div></div>
+      </div>
       <div class="card">
         <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
           <div class="sec-hd" style="flex:1;min-width:200px">排房紀錄（${d.bookings.length} 筆）</div>

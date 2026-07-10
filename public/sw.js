@@ -1,6 +1,6 @@
 /* MamaCare 服務工作者：快取靜態外殼，支援「加到主畫面」與離線檢視。
    API 與上傳檔不快取（一律走網路，確保資料即時與權限正確）。 */
-const CACHE = 'mamacare-v28';
+const CACHE = 'mamacare-v29';
 const ASSETS = [
   '/family.html', '/index.html',
   '/css/style.css', '/js/api.js', '/js/family.js', '/js/app.js',
