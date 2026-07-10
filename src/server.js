@@ -3425,6 +3425,58 @@ app.get('/api/supplies/:id/txns', requireStaff, (req, res) => {
     LEFT JOIN users u ON u.id = st.created_by WHERE st.supply_id = ? ORDER BY st.id DESC LIMIT 100`).all(req.params.id));
 });
 
+// 備品領取出庫（批次）：一個領取單位一次可領多品項；
+// 用途「販售」時領出數量匯入商城同名商品庫存，商城無此品項則整批禁止領用
+const SUPPLY_DEPTS = ['清潔', '客服', '護理'];
+const SUPPLY_PURPOSES = ['販售', '住房', '護理', '贈送', '尿布', '其他'];
+app.post('/api/supply-txns/out-batch', requireStaff, (req, res) => {
+  const b = req.body || {};
+  if (!SUPPLY_DEPTS.includes(b.dept)) return res.status(400).json({ error: '請選擇領取單位（清潔／客服／護理）' });
+  if (!SUPPLY_PURPOSES.includes(b.purpose)) return res.status(400).json({ error: '請選擇領取用途' });
+  const items = Array.isArray(b.items) ? b.items : [];
+  if (!items.length) return res.status(400).json({ error: '請至少選擇一項備品' });
+  // 逐項檢查：品項存在、數量正確、庫存足夠、同品項不重複
+  const seen = new Set();
+  const rows = [];
+  for (const it of items) {
+    const cur = db.prepare('SELECT * FROM supplies WHERE id = ?').get(Number(it.supply_id) || 0);
+    if (!cur) return res.status(400).json({ error: '有品項不存在，請重新選擇' });
+    if (seen.has(cur.id)) return res.status(400).json({ error: `「${cur.name}」重複選取，請合併數量` });
+    seen.add(cur.id);
+    const qty = Math.round(Number(it.quantity));
+    if (!(qty > 0)) return res.status(400).json({ error: `「${cur.name}」數量不正確` });
+    if (cur.stock < qty) return res.status(400).json({ error: `「${cur.name}」庫存不足（剩 ${cur.stock}）` });
+    rows.push({ cur, qty });
+  }
+  // 販售：每一品項須有商城同名商品，否則禁止領用
+  let productOf = {};
+  if (b.purpose === '販售') {
+    const missing = [];
+    for (const { cur } of rows) {
+      const p = db.prepare('SELECT * FROM products WHERE name = ? ORDER BY active DESC, id DESC').get(cur.name);
+      if (!p) missing.push(cur.name);
+      else productOf[cur.id] = p;
+    }
+    if (missing.length) {
+      return res.status(400).json({ error: `禁止領用：商城尚無商品「${missing.join('、')}」，請先於商城建立同名商品再領用（販售）` });
+    }
+  }
+  const note = String(b.note || '').slice(0, 200);
+  const tx = db.transaction(() => {
+    for (const { cur, qty } of rows) {
+      const balance = cur.stock - qty;
+      db.prepare('UPDATE supplies SET stock = ? WHERE id = ?').run(balance, cur.id);
+      db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, note, created_by, dept, purpose)
+        VALUES (?,?,?,?,?,?,?,?)`).run(cur.id, 'out', qty, balance, note, req.session.user.id, b.dept, b.purpose);
+      const p = productOf[cur.id];
+      if (p) db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?').run(qty, p.id); // 販售：匯入商城庫存
+    }
+  });
+  tx();
+  logAudit(req, { action: 'create', entity: 'supply_txns', summary: `領取出庫（${b.dept}／${b.purpose}）${rows.map(r => `${r.cur.name}×${r.qty}`).join('、')}` });
+  res.json({ ok: true, count: rows.length });
+});
+
 // ---------- 課程／服務與報名 ----------
 app.get('/api/programs', requireStaff, (req, res) => {
   res.json(db.prepare('SELECT * FROM programs ORDER BY active DESC, kind, scheduled_at, id DESC').all());

@@ -1267,11 +1267,13 @@ function init() {
   )`);
   const mmfCols = db.prepare('PRAGMA table_info(meal_menu_files)').all().map(c => c.name);
   if (!mmfCols.includes('vendor')) db.exec("ALTER TABLE meal_menu_files ADD COLUMN vendor TEXT DEFAULT ''");
-  // 備品進出：進貨廠商／領貨使用區域／有效日期
+  // 備品進出：進貨廠商／領貨使用區域／有效日期／領取單位／領取用途
   const stxCols = db.prepare('PRAGMA table_info(supply_txns)').all().map(c => c.name);
   if (!stxCols.includes('vendor')) db.exec("ALTER TABLE supply_txns ADD COLUMN vendor TEXT DEFAULT ''");
   if (!stxCols.includes('area')) db.exec("ALTER TABLE supply_txns ADD COLUMN area TEXT DEFAULT ''");
   if (!stxCols.includes('expiry_date')) db.exec("ALTER TABLE supply_txns ADD COLUMN expiry_date TEXT DEFAULT ''");
+  if (!stxCols.includes('dept')) db.exec("ALTER TABLE supply_txns ADD COLUMN dept TEXT DEFAULT ''");
+  if (!stxCols.includes('purpose')) db.exec("ALTER TABLE supply_txns ADD COLUMN purpose TEXT DEFAULT ''");
 
   // 擴充寶寶照護紀錄：新增生命徵象（呼吸/心跳/血氧）、生長（身長/頭圍）、
   // 觀察（膚色/臍帶/溢吐奶/活動力/大便性狀）等型別，並加 value_text 存類別型觀察值

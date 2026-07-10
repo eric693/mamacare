@@ -5635,8 +5635,10 @@ function viewSupplyIn() {
 }
 function viewSupplyOut() {
   return supplyFlowPage({ type: 'out', pfx: 'sout', title: '備品領取出庫', dateLabel: '領貨日期', colDate: '領貨日期',
-    extraKey: 'area', extraLabel: '使用區域', extraKwLabel: '領貨使用區域', qtyLabel: '領取數量', stockLabel: '目前庫存量' });
+    extraKey: 'dept', extraLabel: '領取單位', extraKwLabel: '領取單位', qtyLabel: '領取數量', stockLabel: '目前庫存量' });
 }
+const SUPPLY_DEPTS = ['清潔', '客服', '護理'];
+const SUPPLY_PURPOSES = ['販售', '住房', '護理', '贈送', '尿布', '其他'];
 async function supplyFlowPage(cfg) {
   const { type, pfx, title, dateLabel, extraKey, extraLabel, qtyLabel, stockLabel } = cfg;
   const extraKwLabel = cfg.extraKwLabel || extraLabel;
@@ -5669,19 +5671,23 @@ async function supplyFlowPage(cfg) {
       <div class="sec-hd">${title}（查詢結果）</div>
       <div class="table-wrap" id="${pfx}-result"></div>
     </div>`;
+  // 出庫顯示 領取單位/領取用途；入庫顯示 進貨廠商/有效日期
+  const midCols = type === 'out'
+    ? [['領取單位', t => t.dept || t.area || '—'], ['領取用途', t => t.purpose || '—']]
+    : [['進貨廠商', t => t.vendor || '—'], ['有效日期', t => t.expiry_date || '—']];
   const render = (rows) => {
     $(`#${pfx}-result`).innerHTML = `<table class="data stack">
-      <thead><tr><th>筆數</th><th>${cfg.colDate}</th><th>${extraLabel}</th><th>產品編號</th><th>產品名稱</th><th>${qtyLabel}</th><th>單位</th><th>有效日期</th><th>${stockLabel}</th><th>備註</th></tr></thead>
+      <thead><tr><th>筆數</th><th>${cfg.colDate}</th><th>${midCols[0][0]}</th><th>產品編號</th><th>產品名稱</th><th>${qtyLabel}</th><th>單位</th><th>${midCols[1][0]}</th><th>${stockLabel}</th><th>備註</th></tr></thead>
       <tbody>${rows.map((t, i) => `
         <tr>
           <td data-label="筆數">${i + 1}</td>
           <td data-label="日期">${esc((t.created_at || '').slice(0, 10))}</td>
-          <td data-label="${extraLabel}">${esc(t[extraKey] || '—')}</td>
+          <td data-label="${midCols[0][0]}">${esc(midCols[0][1](t))}</td>
           <td data-label="產品編號">${esc(t.supply_code || '—')}</td>
           <td data-label="產品名稱">${esc(t.supply_name)}</td>
           <td data-label="${qtyLabel}">${t.quantity}</td>
           <td data-label="單位">${esc(t.supply_unit || '')}</td>
-          <td data-label="有效日期">${esc(t.expiry_date || '—')}</td>
+          <td data-label="${midCols[1][0]}">${esc(midCols[1][1](t))}</td>
           <td data-label="${stockLabel}">${(smap[t.supply_id] || {}).stock ?? '—'}</td>
           <td data-label="備註">${esc(t.note || '—')}</td>
         </tr>`).join('') || '<tr><td colspan="10"><div class="empty">您輸入的條件，查無資料 …</div></td></tr>'}</tbody></table>`;
@@ -5702,10 +5708,11 @@ async function supplyFlowPage(cfg) {
   $(`#${pfx}-go`).onclick = go;
   go();
   if (!canWrite) return;
-  $(`#${pfx}-add`).onclick = () => openModal(`${title} 資料新增`, `
-    <div class="field"><label>備品品項 <b class="req">*</b></label>
-      <select id="${pfx}-item"><option value="">請選擇</option>${active.map(s => `<option value="${s.id}">${esc((s.code ? s.code + '｜' : '') + s.name)}（庫存 ${s.stock}${esc(s.unit || '')}）</option>`).join('')}</select></div>
-    <div class="field"><label>${extraLabel}</label><input id="${pfx}-extra"></div>
+  const itemOpts = `<option value="">請選擇</option>${active.map(s =>
+    `<option value="${s.id}">${esc((s.code ? s.code + '｜' : '') + s.name)}（庫存 ${s.stock}${esc(s.unit || '')}）</option>`).join('')}`;
+  // 入庫：單品項（無進貨廠商欄）；出庫：領取單位＋多品項＋領取用途
+  const openIn = () => openModal(`${title} 資料新增`, `
+    <div class="field"><label>備品品項 <b class="req">*</b></label><select id="${pfx}-item">${itemOpts}</select></div>
     <div class="field"><label>${qtyLabel} <b class="req">*</b></label><input type="number" min="1" id="${pfx}-qty"></div>
     <div class="field"><label>有效日期</label><input type="date" id="${pfx}-exp"></div>
     <div class="field"><label>備註</label><input id="${pfx}-note"></div>
@@ -5714,14 +5721,68 @@ async function supplyFlowPage(cfg) {
       const id = body.querySelector(`#${pfx}-item`).value, qty = body.querySelector(`#${pfx}-qty`).value;
       if (!id) { body.querySelector(`#${pfx}-err`).textContent = '請選擇備品品項'; return; }
       if (!(Number(qty) > 0)) { body.querySelector(`#${pfx}-err`).textContent = '請輸入正確數量'; return; }
-      const payload = { txn_type: type, quantity: qty, expiry_date: body.querySelector(`#${pfx}-exp`).value,
-        note: body.querySelector(`#${pfx}-note`).value.trim(), [extraKey]: body.querySelector(`#${pfx}-extra`).value.trim() };
       try {
-        await api(`/supplies/${id}/txns`, { method: 'POST', body: payload });
+        await api(`/supplies/${id}/txns`, { method: 'POST', body: { txn_type: 'in', quantity: qty,
+          expiry_date: body.querySelector(`#${pfx}-exp`).value, note: body.querySelector(`#${pfx}-note`).value.trim() } });
         closeModal(); supplyFlowPage(cfg);
       } catch (e) { body.querySelector(`#${pfx}-err`).textContent = e.message; }
     };
   });
+  const openOut = () => openModal(`${title} 資料新增`, `
+    <div class="field"><label>領取單位 <b class="req">*</b></label>
+      <select id="${pfx}-dept"><option value="">請選擇</option>${SUPPLY_DEPTS.map(d => `<option>${d}</option>`).join('')}</select></div>
+    <div id="${pfx}-rows"></div>
+    <div class="row" style="margin:6px 0"><button class="btn small secondary" id="${pfx}-addrow">增加品項</button>
+      <small style="color:var(--muted)">一個單位可一次領取多個品項</small></div>
+    <div class="field"><label>領取用途 <b class="req">*</b></label>
+      <select id="${pfx}-purpose"><option value="">請選擇</option>${SUPPLY_PURPOSES.map(p => `<option>${p}</option>`).join('')}</select></div>
+    <p id="${pfx}-sale-hint" style="display:none;font-size:.78rem;color:var(--muted);margin:4px 0">用途「販售」：領出數量將自動匯入商城<strong>同名商品</strong>庫存；商城無此品項時將禁止領用。</p>
+    <div class="field"><label>備註</label><input id="${pfx}-note"></div>
+    <div class="row mt"><button class="btn" id="${pfx}-save">存檔</button><span class="error-msg" id="${pfx}-err"></span></div>`, body => {
+    const rowsBox = body.querySelector(`#${pfx}-rows`);
+    const addRow = () => {
+      const div = document.createElement('div');
+      div.className = 'row';
+      div.style.cssText = 'gap:8px;align-items:flex-end;margin-bottom:6px';
+      div.innerHTML = `
+        <div class="field" style="flex:1;margin:0"><label>備品品項 <b class="req">*</b></label><select data-out-item>${itemOpts}</select></div>
+        <div class="field" style="max-width:110px;margin:0"><label>${qtyLabel} <b class="req">*</b></label><input type="number" min="1" data-out-qty></div>
+        <button class="btn small danger" data-out-del title="移除">✕</button>`;
+      div.querySelector('[data-out-del]').onclick = () => {
+        if (rowsBox.children.length > 1) div.remove();
+      };
+      rowsBox.appendChild(div);
+    };
+    addRow();
+    body.querySelector(`#${pfx}-addrow`).onclick = addRow;
+    const purposeSel = body.querySelector(`#${pfx}-purpose`);
+    purposeSel.onchange = () => {
+      body.querySelector(`#${pfx}-sale-hint`).style.display = purposeSel.value === '販售' ? '' : 'none';
+    };
+    body.querySelector(`#${pfx}-save`).onclick = async () => {
+      const err = body.querySelector(`#${pfx}-err`);
+      err.textContent = '';
+      const dept = body.querySelector(`#${pfx}-dept`).value;
+      if (!dept) { err.textContent = '請選擇領取單位'; return; }
+      const items = [...rowsBox.children].map(div => ({
+        supply_id: Number(div.querySelector('[data-out-item]').value) || 0,
+        quantity: Number(div.querySelector('[data-out-qty]').value) || 0
+      }));
+      if (items.some(it => !it.supply_id)) { err.textContent = '請選擇每一列的備品品項'; return; }
+      if (items.some(it => !(it.quantity > 0))) { err.textContent = '請輸入每一列的正確數量'; return; }
+      if (!purposeSel.value) { err.textContent = '請選擇領取用途'; return; }
+      try {
+        await api('/supply-txns/out-batch', { method: 'POST', body: {
+          dept, purpose: purposeSel.value, note: body.querySelector(`#${pfx}-note`).value.trim(), items
+        } });
+        closeModal(); supplyFlowPage(cfg);
+      } catch (e) {
+        err.textContent = e.message;
+        if (e.message.startsWith('禁止領用')) alert(e.message); // 販售但商城無此品項：跳出警告
+      }
+    };
+  });
+  $(`#${pfx}-add`).onclick = type === 'out' ? openOut : openIn;
 }
 
 // 4. 備品進出明細表
