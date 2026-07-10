@@ -11815,7 +11815,7 @@ async function viewContractTransfers() {
 
 /* ---------- 後台：客戶及簽約資料（簽約中/退訂/轉住房 三查詢頁共用） ---------- */
 const CCQ_CONF = {
-  signed: { title: '客戶簽約資料', note: '** 此頁面查詢不含客戶退訂及已轉入住房之合約資料 **',
+  signed: { title: '客戶簽約資料', note: '',
     dates: [['due', '以預產期查詢'], ['sign', '以簽約日期查詢']] },
   cancelled: { title: '客戶退訂資料', note: '',
     dates: [['due', '以預產期查詢'], ['sign', '以簽約日期查詢'], ['cancel', '以退訂日期查詢']] },
@@ -11848,6 +11848,12 @@ async function viewClientContractQuery(mode) {
             ${[['contract', '合約編號'], ['idno', '身分證號'], ['phone', '連絡電話']].map(([k, l], i) =>
               `<label class="bna-chk"><input type="radio" name="ccq-kt" value="${k}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}
           </div></div>
+        ${mode === 'signed' ? `<div class="field full">
+          <div class="row" style="gap:16px;flex-wrap:wrap">
+            <span style="font-size:.88rem;color:var(--muted)">查詢區間所有合約（含已退訂／出住／入住中）；排除條件（點選代表排除）：</span>
+            <label class="bna-chk"><input type="checkbox" id="ccq-ex-cancel"> 已退訂</label>
+            <label class="bna-chk"><input type="checkbox" id="ccq-ex-checkin"> 已入住</label>
+          </div></div>` : ''}
         <div class="full row" style="gap:10px;justify-content:center">
           <button class="btn" id="ccq-go">送出查詢</button>
           <span class="error-msg" id="ccq-err"></span>
@@ -11870,6 +11876,9 @@ async function viewClientContractQuery(mode) {
     p.set('date_field', main().querySelector('input[name="ccq-df"]:checked').value);
     if (v('#ccq-name')) p.set('name', v('#ccq-name'));
     if (v('#ccq-kw')) { p.set('keyword', v('#ccq-kw')); p.set('keyword_type', main().querySelector('input[name="ccq-kt"]:checked').value); }
+    const exC = $('#ccq-ex-cancel'), exI = $('#ccq-ex-checkin');
+    if (exC && exC.checked) p.set('exclude_cancelled', '1');
+    if (exI && exI.checked) p.set('exclude_checkedin', '1');
     return p;
   };
 
@@ -11885,10 +11894,33 @@ async function viewClientContractQuery(mode) {
         parts.push(`<span style="color:var(--danger)">(簽約)${esc(r.sign_date || '—')}</span>`);
         if (mode === 'cancelled') parts.push(`<span style="color:var(--danger)">(退訂)${esc(r.cancel_date || '—')}</span>`);
         if (mode === 'transferred') parts.push(`<span style="color:var(--primary-dark)">(入住)${esc(r.checkin_date || '—')}</span>`);
-        if (mode === 'signed') parts.push(`<span style="color:var(--primary-dark)">(預住)${esc(r.checkin_date || '')}</span>`);
         return parts.join('<br>');
       };
-      $('#ccq-result').innerHTML = rows.length ? `
+      const stBadge = r => {
+        const c = { '已退訂': 'red', '已入住': 'green', '已出住': 'gray', '已排房': 'teal', '簽約中': 'yellow' }[r.status_label] || 'gray';
+        return `<span class="badge ${c}">${esc(r.status_label || '—')}</span>`;
+      };
+      $('#ccq-result').innerHTML = rows.length ? (mode === 'signed' ? `
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>筆數</th><th>媽媽姓名<br>身分證號</th><th>預產期</th><th>簽約日期</th><th>預定入住日</th><th>狀態</th><th>聯絡電話</th><th>合約住宿摘要</th><th>天數</th><th>合約總額<br>合約餘額</th><th>合約號碼<br>經手人</th></tr></thead>
+          <tbody>${rows.map((r, i) => `
+            <tr data-filter="${esc(r.name)} ${esc(r.contract_no)}">
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="媽媽姓名">${esc(r.name)}<br><small>${esc(r.id_no || '—')}</small></td>
+              <td data-label="預產期"><span style="color:#3b78c2">${esc(r.due_date || '—')}</span></td>
+              <td data-label="簽約日期"><span style="color:var(--danger)">${esc(r.sign_date || '—')}</span></td>
+              <td data-label="預定入住日"><span style="color:var(--primary-dark)">${esc(r.expected_check_in || '—')}</span></td>
+              <td data-label="狀態">${stBadge(r)}</td>
+              <td data-label="聯絡電話">${esc(r.phone || '—')}</td>
+              <td data-label="合約住宿摘要"><small>${esc(r.summary || '—')}</small></td>
+              <td data-label="天數">${r.days || 0}</td>
+              <td data-label="合約總額/餘額">$${(r.total || 0).toLocaleString()}<br><small style="color:${(r.balance || 0) > 0 ? 'var(--danger)' : 'var(--primary-dark)'}">餘 $${(r.balance || 0).toLocaleString()}</small></td>
+              <td data-label="合約號碼/經手人"><a href="#/customers?m=${r.mother_id}">${esc(r.contract_no)}</a><br><small>${esc(r.handler || '—')}</small></td>
+            </tr>`).join('')}
+            <tr style="background:#fbeaea"><td colspan="8" style="text-align:right">合計：</td>
+              <td>${sumDays}</td><td>$${sumTotal.toLocaleString()}</td><td></td></tr>
+          </tbody>
+        </table></div>` : `
         <div class="table-wrap"><table class="data stack">
           <thead><tr><th>筆數</th><th>媽媽姓名<br>身分證號</th><th>日期</th><th>聯絡電話</th><th>合約住宿摘要</th>
             ${mode === 'cancelled' ? '<th>原合約金額</th><th>退訂原因<br>退訂人</th>' : '<th>天數</th><th>合約總額</th>'}
@@ -11910,7 +11942,7 @@ async function viewClientContractQuery(mode) {
             <tr style="background:#fbeaea"><td colspan="5" style="text-align:right">合計：</td>
               ${mode === 'cancelled' ? `<td>$${sumTotal.toLocaleString()}</td><td></td>` : `<td>${sumDays}</td><td>$${sumTotal.toLocaleString()}</td>`}<td></td></tr>
           </tbody>
-        </table></div>` : '<div class="empty">搜尋結果無資料…</div>';
+        </table></div>`) : '<div class="empty">搜尋結果無資料…</div>';
     } catch (e) { err.textContent = e.message; }
   };
   $('#ccq-go').onclick = run;

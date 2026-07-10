@@ -4882,34 +4882,55 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
   const kwType = String(req.query.keyword_type || 'contract');
   const all = db.prepare(`
     SELECT cc.contract_no, cc.status, cc.items, cc.data, cc.updated_at,
-      m.id AS mother_id, m.name, m.id_no, m.phone, m.due_date, m.status AS mother_status,
+      m.id AS mother_id, m.name, m.id_no, m.phone, m.birth_date, m.due_date, m.status AS mother_status,
       (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_check_out,
       (SELECT bk.status FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS booking_status,
       (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
         WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
-        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT COALESCE(SUM(bk.deposit),0) FROM bookings bk WHERE bk.mother_id = m.id AND bk.status != 'cancelled') AS deposit_sum,
+      (SELECT COALESCE(SUM(p.amount),0) FROM payments p JOIN bookings bk ON bk.id = p.booking_id
+        WHERE bk.mother_id = m.id AND bk.status != 'cancelled' AND p.target = 'contract' AND p.paid_on < bk.check_in) AS prepaid_pay
     FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
     ORDER BY cc.id DESC LIMIT 500`).all();
   let rows = all.map(r => {
     let items = [], data = {};
     try { items = JSON.parse(r.items); } catch (e) { items = []; }
     try { data = JSON.parse(r.data); } catch (e) { data = {}; }
+    const total = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+    // 合約餘額＝合約總額 − 入住前繳款（訂金＋入住日前登錄的合約款繳費；已入住者僅計入住前的 LOG）
+    const prepaid = (r.deposit_sum || 0) + (r.prepaid_pay || 0);
     return {
       mother_id: r.mother_id, contract_no: r.contract_no, name: r.name, id_no: r.id_no || '',
-      phone: r.phone || '', due_date: r.due_date || '', sign_date: data.sign_date || '',
+      phone: r.phone || '', birth_date: r.birth_date || '', due_date: r.due_date || '', sign_date: data.sign_date || '',
       handler: data.handler || '', summary: items.map(it => `${it.name}×${it.qty}天`).join('、'),
+      room_types: [...new Set(items.map(it => it.name))].join('、'),
+      gift_content: data.gift_content || '',
+      expected_check_in: data.expected_check_in || r.booking_check_in || '',
+      expected_check_out: data.expected_check_out || r.booking_check_out || '',
       days: items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
-      total: items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0),
+      total, deposit: r.deposit_sum || 0, prepaid, balance: total - prepaid,
       cancel_date: data.cancel_date || '', cancel_reason: data.cancel_reason || '', cancel_by: data.cancel_by || '',
       checkin_date: r.booking_check_in || '', booking_status: r.booking_status || '', room_name: r.room_name || '',
-      cancelled: r.status === 'cancelled'
+      cancelled: r.status === 'cancelled',
+      status_label: r.status === 'cancelled' ? '已退訂'
+        : r.booking_status === 'checked_in' ? '已入住'
+        : r.booking_status === 'checked_out' ? '已出住'
+        : r.booking_status === 'reserved' ? '已排房' : '簽約中'
     };
   });
+  // signed 模式＝區間內所有合約（含已退訂/出住/入住中），可用排除條件過濾
   rows = rows.filter(r => mode === 'cancelled' ? r.cancelled
     : mode === 'transferred' ? (!r.cancelled && r.booking_status)
-    : (!r.cancelled && !r.booking_status));
+    : true);
+  if (mode === 'signed') {
+    if (req.query.exclude_cancelled === '1') rows = rows.filter(r => !r.cancelled);
+    if (req.query.exclude_checkedin === '1') rows = rows.filter(r => !['checked_in', 'checked_out'].includes(r.booking_status));
+  }
   // 日期區間（欄位依 mode：預產期/簽約日/退訂日/入住日）
   const DF = { due: 'due_date', sign: 'sign_date', cancel: 'cancel_date', checkin: 'checkin_date' };
   const df = DF[dateField] || (mode === 'transferred' ? 'checkin_date' : 'due_date');
@@ -4923,7 +4944,16 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
   }
   if (req.query.format === 'xlsx') {
     const LABEL = { signed: '客戶簽約資料', cancelled: '客戶退訂資料', transferred: '合約轉住房資料' };
-    const cols = [
+    const cols = mode === 'signed' ? [
+      { key: 'contract_no', label: '合約號碼' }, { key: 'name', label: '媽媽姓名' },
+      { key: 'phone', label: '媽媽手機' }, { key: 'birth_date', label: '媽媽生日' },
+      { key: 'due_date', label: '預產期' }, { key: 'expected_check_in', label: '預定入住日' },
+      { key: 'expected_check_out', label: '預定出住日' }, { key: 'days', label: '天數' },
+      { key: 'room_types', label: '房型' }, { key: 'gift_content', label: '贈品內容' },
+      { key: 'handler', label: '經手人' }, { key: 'deposit', label: '訂金' },
+      { key: 'total', label: '合約總額' }, { key: 'balance', label: '合約餘額' },
+      { key: 'status_label', label: '狀態' }
+    ] : [
       { key: 'contract_no', label: '合約號碼' }, { key: 'name', label: '媽媽姓名' },
       { key: 'id_no', label: '身分證號' }, { key: 'phone', label: '聯絡電話' },
       { key: 'due_date', label: '預產期' }, { key: 'sign_date', label: '簽約日期' },
