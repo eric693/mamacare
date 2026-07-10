@@ -4734,15 +4734,34 @@ app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, r
   res.json({ ok: true });
 });
 
-// 合約金額增加／減少查詢：由 LOG 判讀「第一次合約金額 vs 最新合約金額」
-// 第一次金額＝最早一筆金額異動 LOG 的變動前值（同日內的初始建檔視為第一次，取當日最後值）
+// 合約金額增加／減少查詢：由 LOG 判讀「第一次合約金額（舊）vs 最新合約金額（新／實際）」
+// 第一次金額＝簽約首日建檔完成的金額（首日多筆異動取當日最後值）
+// 篩選：未入住（預定入住日/簽約日/預產期）／已入住（實際入住日/簽約日），?format=xlsx 匯出
 app.get('/api/contract-amount-changes', requireStaff, (req, res) => {
   const dir = req.query.dir === 'down' ? 'down' : 'up';
-  const rows = [];
-  for (const c of db.prepare(`SELECT cc.*, m.name AS mother_name, m.phone FROM customer_contracts cc
-    JOIN mothers m ON m.id = cc.mother_id WHERE cc.status != 'cancelled'`).all()) {
-    let items = [];
+  const stay = req.query.stay === 'in' ? 'in' : 'not_in';
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
+  const dateField = String(req.query.date_field || 'checkin');
+  const name = String(req.query.name || '').trim();
+  const kw = String(req.query.keyword || '').trim();
+  const kwType = String(req.query.keyword_type || 'contract');
+  let rows = [];
+  for (const c of db.prepare(`SELECT cc.*, m.name AS mother_name, m.id_no, m.phone, m.birth_date AS mother_birth, m.due_date,
+      (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS bk_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS bk_out,
+      (SELECT COALESCE(NULLIF(bk.actual_check_out,''), bk.check_out) FROM bookings bk
+        WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS bk_actual_out,
+      (SELECT bk.status FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS bk_status
+    FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
+    WHERE cc.status != 'cancelled'`).all()) {
+    let items = [], data = {};
     try { items = JSON.parse(c.items); } catch (e) { items = []; }
+    try { data = JSON.parse(c.data); } catch (e) { data = {}; }
     const latest = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
     const logs = db.prepare(`SELECT summary, created_at FROM audit_logs
       WHERE entity = 'customer_contracts' AND entity_id = ? AND summary LIKE '%（金額 %→%）%'
@@ -4752,19 +4771,62 @@ app.get('/api/contract-amount-changes', requireStaff, (req, res) => {
       return mch ? { from: Number(mch[1]), to: Number(mch[2]), at: l.created_at } : null;
     }).filter(Boolean);
     if (!parsed.length) continue;
-    // 簽約當日的建檔（首日多筆新增）視為第一次合約金額：取首日最後一筆的 to
     const firstDay = parsed[0].at.slice(0, 10);
     const firstDayLogs = parsed.filter(p => p.at.slice(0, 10) === firstDay);
     const first = firstDayLogs[firstDayLogs.length - 1].to;
     const diff = latest - first;
     if (dir === 'up' ? diff <= 0 : diff >= 0) continue;
-    const last = parsed[parsed.length - 1];
-    rows.push({ mother_id: c.mother_id, mother_name: c.mother_name, phone: c.phone,
-      contract_no: c.contract_no, first_amount: first, latest_amount: latest, diff,
-      first_date: firstDay, last_change_at: last.at });
+    rows.push({
+      mother_id: c.mother_id, mother_name: c.mother_name, id_no: c.id_no || '', phone: c.phone || '',
+      birth_date: c.mother_birth || '', due_date: c.due_date || '', contract_no: c.contract_no,
+      sign_date: data.sign_date || '', handler: data.handler || '', gift_content: data.gift_content || '',
+      room_types: [...new Set(items.map(it => it.name))].join('、'),
+      days: items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
+      expected_check_in: data.expected_check_in || c.bk_in || '',
+      expected_check_out: data.expected_check_out || c.bk_out || '',
+      actual_check_in: c.bk_in || '', actual_check_out: c.bk_actual_out || '',
+      checked_in: ['checked_in', 'checked_out'].includes(c.bk_status || ''),
+      first_amount: first, latest_amount: latest, diff,
+      first_date: firstDay, last_change_at: parsed[parsed.length - 1].at
+    });
+  }
+  // 篩選（只能擇一）：未入住／已入住
+  rows = rows.filter(r => stay === 'in' ? r.checked_in : !r.checked_in);
+  // 日期欄位：未入住＝預定入住日/簽約日/預產期；已入住＝實際入住日/簽約日
+  const df = stay === 'in'
+    ? (dateField === 'sign' ? 'sign_date' : 'actual_check_in')
+    : (dateField === 'sign' ? 'sign_date' : dateField === 'due' ? 'due_date' : 'expected_check_in');
+  if (from) rows = rows.filter(r => r[df] && r[df] >= from);
+  if (to) rows = rows.filter(r => r[df] && r[df] <= to);
+  if (name) rows = rows.filter(r => r.mother_name.includes(name));
+  if (kw) {
+    if (kwType === 'idno') rows = rows.filter(r => r.id_no.includes(kw));
+    else if (kwType === 'phone') rows = rows.filter(r => r.phone.includes(kw));
+    else rows = rows.filter(r => r.contract_no.includes(kw));
   }
   rows.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
-  res.json({ dir, rows });
+  if (req.query.format === 'xlsx') {
+    const label = `合約金額${dir === 'down' ? '減少' : '增加'}查詢`;
+    const cols = [
+      { key: 'contract_no', label: '合約號碼' }, { key: 'mother_name', label: '媽媽姓名' },
+      { key: 'phone', label: '媽媽手機' }, { key: 'birth_date', label: '媽媽生日' },
+      { key: 'due_date', label: '預產期' },
+      ...(stay === 'in'
+        ? [{ key: 'actual_check_in', label: '實際入住日' }, { key: 'actual_check_out', label: '實際出住日' }]
+        : [{ key: 'expected_check_in', label: '預定入住日' }, { key: 'expected_check_out', label: '預定出住日' }]),
+      { key: 'days', label: '天數' }, { key: 'room_types', label: '房型' },
+      { key: 'gift_content', label: '贈品內容' }, { key: 'handler', label: '經手人' },
+      { key: 'first_amount', label: '舊合約總額' },
+      { key: 'latest_amount', label: stay === 'in' ? '實際合約總額' : '新合約總額' },
+      { key: 'diff', label: '差異總額' }
+    ];
+    const buf = buildWorkbook(label, cols, rows);
+    const fname = encodeURIComponent(`${label}-${today()}.xlsx`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="contract-amount-${dir}.xlsx"; filename*=UTF-8''${fname}`);
+    return res.send(buf);
+  }
+  res.json({ dir, stay, rows });
 });
 
 // ---------- 後台：公佈欄及交辦事項 ----------

@@ -13108,31 +13108,102 @@ async function viewTourLost() {
 
 // 合約金額增加／減少查詢（由合約明細異動 LOG 判讀第一次 vs 最新合約金額）
 async function viewContractAmountChanges(dir) {
-  const { rows } = await api(`/contract-amount-changes?dir=${dir}`);
   const label = dir === 'down' ? '減少' : '增加';
+  const title = `合約金額${label}查詢`;
+  const monthStart = todayStr().slice(0, 8) + '01';
+  const dEnd = new Date(todayStr().slice(0, 7) + '-01');
+  dEnd.setMonth(dEnd.getMonth() + 1); dEnd.setDate(0);
+  // 日期欄位條件依住房篩選連動：未入住＝預定入住日/簽約日/預產期；已入住＝實際入住日/簽約日
+  const DF_BY_STAY = {
+    not_in: [['checkin', '以入住日期查詢'], ['sign', '以簽約日期查詢'], ['due', '以預產期查詢']],
+    in: [['checkin', '以入住日期查詢'], ['sign', '以簽約日期查詢']]
+  };
   main().innerHTML = `
-    <div class="page-title">合約金額${label}查詢</div>
+    <div class="page-title">${title}</div>
+    <div class="card no-print">
+      <div class="sec-hd">${title}（資料查詢）</div>
+      <div class="form-grid">
+        <div class="field"><label>查詢日期區間</label>
+          <div class="row" style="gap:6px;align-items:center">
+            <input type="date" id="ca-from" value="${monthStart}"> <span>to</span> <input type="date" id="ca-to" value="${dEnd.toISOString().slice(0, 10)}">
+          </div></div>
+        <div class="field"><label>篩選條件（只能擇一）</label>
+          <div class="row" style="gap:12px;padding-top:8px;flex-wrap:wrap">
+            <label class="bna-chk"><input type="radio" name="ca-stay" value="not_in" checked> 未入住</label>
+            <label class="bna-chk"><input type="radio" name="ca-stay" value="in"> 已入住</label>
+          </div></div>
+        <div class="field full"><label>日期欄位條件</label>
+          <div class="row" style="gap:12px;padding-top:6px;flex-wrap:wrap" id="ca-df-box"></div></div>
+        <div class="field"><label>媽媽姓名</label><input id="ca-name"></div>
+        <div class="field"><label>其他關鍵字查詢</label>
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+            <input id="ca-kw" style="max-width:180px">
+            ${[['contract', '合約編號'], ['idno', '身分證號'], ['phone', '連絡電話']].map(([k, l], i) =>
+              `<label class="bna-chk"><input type="radio" name="ca-kt" value="${k}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}
+          </div></div>
+        <div class="full row" style="gap:10px;justify-content:center">
+          <button class="btn" id="ca-go">送出查詢</button>
+          <span class="error-msg" id="ca-err"></span>
+        </div>
+      </div>
+    </div>
     <div class="card">
-      <div class="sec-hd">合約金額${label}查詢（最新合約金額 ${dir === 'down' ? '<' : '>'} 第一次合約金額）</div>
-      ${filterBar({ placeholder: '搜尋媽媽 / 合約編號…' })}
-      <div class="table-wrap"><table class="data stack">
-        <thead><tr><th>筆數</th><th>媽媽</th><th>合約編號</th><th>第一次合約金額<br><small>（簽約日）</small></th><th>最新合約金額</th><th>${label}金額</th><th>最後異動</th><th></th></tr></thead>
-        <tbody>${rows.map((r, i) => `
-          <tr data-filter="${esc(r.mother_name + ' ' + (r.contract_no || ''))}">
-            <td data-label="筆數">${i + 1}</td>
-            <td data-label="媽媽">${esc(r.mother_name)}<br><small>${esc(r.phone || '')}</small></td>
-            <td data-label="合約編號">${esc(r.contract_no || '—')}</td>
-            <td data-label="第一次合約金額">${fmtMoney(r.first_amount)}<br><small>${esc(r.first_date)}</small></td>
-            <td data-label="最新合約金額">${fmtMoney(r.latest_amount)}</td>
-            <td data-label="${label}金額"><strong style="color:${dir === 'down' ? 'var(--danger)' : 'var(--primary-dark)'}">${r.diff > 0 ? '+' : ''}${fmtMoney(r.diff).replace('NT$ -', '−NT$ ')}</strong></td>
-            <td data-label="最後異動"><small>${esc((r.last_change_at || '').slice(0, 16))}</small></td>
-            <td data-label=""><button class="btn small secondary" data-open="${r.mother_id}">客戶管理</button></td>
-          </tr>`).join('') || `<tr><td colspan="8"><div class="empty">目前沒有合約金額${label}的客戶</div></td></tr>`}</tbody>
-      </table></div>
-      <small style="color:var(--muted)">依合約明細異動 LOG 判讀：第一次合約金額＝簽約首日建檔完成的金額；之後的新增／刪除明細造成${label}者列於本表。</small>
+      <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" style="flex:1;min-width:200px">${title}（查詢結果）</div>
+        <a class="btn small" id="ca-xlsx" href="javascript:void 0" style="background:#2fb6e8">匯出Excel</a>
+      </div>
+      <div id="ca-result"><div class="empty">請設定條件後送出查詢</div></div>
     </div>`;
-  wireFilter(main());
-  main().querySelectorAll('[data-open]').forEach(b => b.onclick = () => { location.hash = `#/customers?m=${b.dataset.open}`; });
+  const stayVal = () => main().querySelector('input[name="ca-stay"]:checked').value;
+  const renderDf = () => {
+    $('#ca-df-box').innerHTML = DF_BY_STAY[stayVal()].map(([v, l], i) =>
+      `<label class="bna-chk"><input type="radio" name="ca-df" value="${v}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('');
+  };
+  main().querySelectorAll('input[name="ca-stay"]').forEach(r => r.onchange = renderDf);
+  renderDf();
+  const qs = () => {
+    const p = new URLSearchParams({ dir, stay: stayVal() });
+    const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+    if (v('#ca-from')) p.set('from', v('#ca-from'));
+    if (v('#ca-to')) p.set('to', v('#ca-to'));
+    p.set('date_field', main().querySelector('input[name="ca-df"]:checked').value);
+    if (v('#ca-name')) p.set('name', v('#ca-name'));
+    if (v('#ca-kw')) { p.set('keyword', v('#ca-kw')); p.set('keyword_type', main().querySelector('input[name="ca-kt"]:checked').value); }
+    return p;
+  };
+  const run = async () => {
+    $('#ca-err').textContent = '';
+    try {
+      const { rows, stay } = await api(`/contract-amount-changes?${qs()}`);
+      const isIn = stay === 'in';
+      const sumDiff = rows.reduce((s, r) => s + (r.diff || 0), 0);
+      $('#ca-result').innerHTML = rows.length ? `
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>筆數</th><th>媽媽姓名<br>手機／生日</th><th>預產期</th><th>${isIn ? '實際' : '預定'}入住日<br>${isIn ? '實際' : '預定'}出住日</th><th>天數</th><th>房型<br>贈品內容</th><th>舊合約總額</th><th>${isIn ? '實際' : '新'}合約總額</th><th>差異總額</th><th>合約號碼<br>經手人</th></tr></thead>
+          <tbody>${rows.map((r, i) => `
+            <tr>
+              <td data-label="筆數">${i + 1}</td>
+              <td data-label="媽媽姓名">${esc(r.mother_name)}<br><small>${esc(r.phone || '—')}／${esc(r.birth_date || '—')}</small></td>
+              <td data-label="預產期">${esc(r.due_date || '—')}</td>
+              <td data-label="入住/出住"><small>${esc((isIn ? r.actual_check_in : r.expected_check_in) || '—')}<br>${esc((isIn ? r.actual_check_out : r.expected_check_out) || '—')}</small></td>
+              <td data-label="天數">${r.days || 0}</td>
+              <td data-label="房型/贈品"><small>${esc(r.room_types || '—')}${r.gift_content ? `<br>${esc(r.gift_content)}` : ''}</small></td>
+              <td data-label="舊合約總額">$${(r.first_amount || 0).toLocaleString()}<br><small>${esc(r.first_date)}</small></td>
+              <td data-label="${isIn ? '實際' : '新'}合約總額">$${(r.latest_amount || 0).toLocaleString()}</td>
+              <td data-label="差異總額"><strong style="color:${dir === 'down' ? 'var(--danger)' : 'var(--primary-dark)'}">${r.diff > 0 ? '+' : '−'}$${Math.abs(r.diff || 0).toLocaleString()}</strong></td>
+              <td data-label="合約號碼/經手人"><a href="#/customers?m=${r.mother_id}">${esc(r.contract_no)}</a><br><small>${esc(r.handler || '—')}</small></td>
+            </tr>`).join('')}
+            <tr style="background:#fbeaea"><td colspan="8" style="text-align:right">差異合計：</td>
+              <td><strong>${sumDiff > 0 ? '+' : '−'}$${Math.abs(sumDiff).toLocaleString()}</strong></td><td></td></tr>
+          </tbody>
+        </table></div>
+        <small style="color:var(--muted)">舊合約總額＝簽約首日建檔完成金額（依合約明細異動 LOG）；${isIn ? '實際' : '新'}合約總額＝最新合約明細合計。</small>`
+        : '<div class="empty">搜尋結果無資料…</div>';
+    } catch (e) { $('#ca-err').textContent = e.message; }
+  };
+  $('#ca-go').onclick = run;
+  $('#ca-xlsx').onclick = () => { location.href = `/api/contract-amount-changes?${qs()}&format=xlsx`; };
+  run();
 }
 
 // 4. 預約參觀時段設定
