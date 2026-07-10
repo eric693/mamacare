@@ -11240,10 +11240,9 @@ async function viewCustomers() {
       ${(() => {
         const curBk = d.bookings.find(b => b.status === 'checked_in') || d.bookings.find(b => b.status === 'reserved') || null;
         const contractTotal = d.contract ? d.contract.total : 0;
-        const chargeSum = d.charges.reduce((s, c) => s + (c.unit_price || 0) * c.quantity, 0);
-        const paidSum = d.payments.reduce((s, p) => s + (p.amount || 0), 0);
-        const receivable = contractTotal + chargeSum;
-        const balance = receivable - paidSum;
+        // 只計合約款（排除加購款如商城零售），與收費帳務分款一致
+        const contractPays = d.payments.filter(p => p.target !== 'addon');
+        const paidSum = contractPays.reduce((s, p) => s + (p.amount || 0), 0);
         return `
       <div class="card">
         <div class="sec-hd">收款紀錄（新增）</div>
@@ -11269,7 +11268,7 @@ async function viewCustomers() {
               <td data-label="摘要">合約金額</td>
               <td data-label="金額">$${contractTotal.toLocaleString()}</td>
               <td data-label="建檔人">${d.contract && d.contract.data.handler ? esc(d.contract.data.handler) : '—'}</td></tr>
-            ${d.payments.map(p => `
+            ${contractPays.map(p => `
             <tr><td data-label="日期">${esc(p.paid_on)}</td>
               <td data-label="摘要">入住前繳款${p.item ? `（${esc(p.item)}）` : ''}｜${esc(p.method || '—')}${p.note ? `<br><small>${esc(p.note)}</small>` : ''}</td>
               <td data-label="金額" style="color:var(--primary-dark)">−$${(p.amount || 0).toLocaleString()}</td>
@@ -11509,7 +11508,8 @@ async function viewRetail() {
         const bk = (mom.bookings || []).find(b => b.status === 'checked_in');
         if (bk) {
           await api(`/bookings/${bk.id}/payments`, { method: 'POST', body: {
-            amount, method, paid_on: v('#rt-date') || todayStr(), note: `產品零售 訂單#${o.id}`
+            amount, method, paid_on: v('#rt-date') || todayStr(), note: `產品零售 訂單#${o.id}`,
+            item: '商城零售', target: 'addon' // 零售收款沖抵加購款（訂單確認已入加購明細）
           } });
         } else {
           alert('已建立零售訂單，但該客戶無進行中訂房，收款請至「收費帳務」另行登錄。');

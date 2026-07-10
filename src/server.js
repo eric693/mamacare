@@ -1608,7 +1608,8 @@ app.get('/api/baby-announcements', requireStaff, (req, res) => {
       m.id AS mother_id, m.name AS mother_name, m.delivery_type,
       (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS mother_check_in,
-      (SELECT bk.baby_check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
+      (SELECT COALESCE(NULLIF(bk.baby_check_in,''), bk.check_in) FROM bookings bk
+        WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS baby_check_in,
       (SELECT r.value_num FROM baby_records r WHERE r.baby_id = b.id AND r.record_type = 'jaundice'
         AND r.value_num IS NOT NULL ORDER BY r.recorded_at DESC LIMIT 1) AS jaundice
@@ -2707,10 +2708,12 @@ app.get('/api/billing', requireStaff, (req, res) => {
 // 應收帳款帳齡：以退房日為到期基準，逾期分齡（在住者為未到期）
 app.get('/api/billing/aging', requireStaff, (req, res) => {
   const d = today();
-  const rows = db.prepare(`
+  const agingRows = db.prepare(`
     SELECT bk.*, m.name AS mother_name, m.phone, r.name AS room_name, ${BILLING_SUMS}
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
-    WHERE bk.status != 'cancelled'`).all().map(r => withBalance(r, babyDeductRate())).filter(b => b.balance > 0);
+    WHERE bk.status != 'cancelled'`).all();
+  agingRows.forEach(r => syncBabyAbsences(r)); // 同步寶寶不在館內紀錄，餘額與收費帳務一致
+  const rows = agingRows.map(r => withBalance(r, babyDeductRate())).filter(b => b.balance > 0);
   const buckets = { current: 0, d30: 0, d60: 0, d60p: 0 };
   for (const b of rows) {
     const overdueDays = b.status === 'checked_out' && b.check_out < d
@@ -5145,21 +5148,22 @@ const PP_REPORTS = {
     ['deposit', '訂金'], ['stay', '入住款項'], ['final', '尾款'], ['other_i', '其他(項目)'],
     ['income', '收入小計'], ['retail', '產品零售'], ['grand', '全部合計']],
     run: (f, t) => {
-      const pays = db.prepare(`SELECT paid_on, amount, method, note FROM payments
+      const pays = db.prepare(`SELECT paid_on, amount, method, note, item FROM payments
         WHERE paid_on BETWEEN ? AND ? ORDER BY paid_on`).all(f, t);
       const byDay = {};
       for (const p of pays) {
         const r = byDay[p.paid_on] = byDay[p.paid_on] || { d: p.paid_on, cash: 0, remit: 0, other_m: 0,
           deposit: 0, stay: 0, final: 0, other_i: 0, income: 0, retail: 0, grand: 0 };
-        const isRetail = (p.note || '').includes('產品零售');
+        // 項目優先看 item 欄位（收款項目），舊資料回落備註判讀
+        const it = (p.item || '').trim(), n = p.note || '';
+        const isRetail = it === '商城零售' || n.includes('產品零售');
         const m = (p.method || '').includes('現金') ? 'cash' : /匯|轉帳/.test(p.method || '') ? 'remit' : 'other_m';
         r[m] += p.amount;
         if (isRetail) r.retail += p.amount;
         else {
-          const n = p.note || '';
-          if (n.startsWith('訂金')) r.deposit += p.amount;
-          else if (n.startsWith('房費') || n.includes('入住')) r.stay += p.amount;
-          else if (n.startsWith('尾款')) r.final += p.amount;
+          if (it === '訂金' || n.startsWith('訂金')) r.deposit += p.amount;
+          else if (it === '房費' || n.startsWith('房費') || n.includes('入住')) r.stay += p.amount;
+          else if (it === '尾款' || n.startsWith('尾款')) r.final += p.amount;
           else r.other_i += p.amount;
           r.income += p.amount;
         }
