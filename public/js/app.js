@@ -96,7 +96,8 @@ function filterBar(opts = {}) {
 }
 function wireFilter(scope) {
   scope.querySelectorAll('.flt-bar').forEach(bar => {
-    const table = bar.parentElement.querySelector('table');
+    // 篩選對象：同卡片內的表格列，或卡片格容器（.flt-zone 內的 [data-filter] 元素）
+    const table = bar.parentElement.querySelector('table') || bar.parentElement.querySelector('.flt-zone');
     if (!table) return;
     const search = bar.querySelector('.flt-search');
     const count = bar.querySelector('.flt-count');
@@ -105,7 +106,7 @@ function wireFilter(scope) {
     const apply = () => {
       const q = search ? search.value.trim().toLowerCase() : '';
       let shown = 0, total = 0;
-      table.querySelectorAll('tr[data-filter]').forEach(tr => {
+      table.querySelectorAll('[data-filter]').forEach(tr => {
         total++;
         const okText = !q || (tr.dataset.filter || '').toLowerCase().includes(q);
         const okStatus = !status || tr.dataset.status === status;
@@ -1413,6 +1414,43 @@ function readMotherForm(body) {
 
 async function viewResidents() {
   const [mothers, babies] = await Promise.all([api('/mothers'), api('/babies')]);
+  // 呈現比照「媽媽房況」看板：卡片式（左側色條依狀態），保留搜尋與狀態篩選
+  const MOM_STATE_CLS = { checked_in: 'occupied', reserved: 'reserved', checked_out: '' };
+  const motherCards = mothers.map(m => `
+    <div class="room-card ${MOM_STATE_CLS[m.status] || ''}" data-filter="${esc(m.name + ' ' + (m.phone || '') + ' ' + (m.room_name || ''))}" data-status="${m.status}">
+      <div class="row between" style="align-items:flex-start">
+        <div><span class="rs-room">${esc(m.room_name || '未排房')}</span>${m.room_name ? '<small style="color:var(--muted)">　房</small>' : ''}</div>
+        <span class="badge ${STATUS_BADGE[m.status]}">${STATUS_LABEL[m.status]}</span>
+      </div>
+      <div class="rs-name">${esc(m.name)}<small style="color:var(--muted);font-weight:400">　${esc(m.phone || '')}</small></div>
+      <div class="rs-kv">
+        ${m.stay_range ? `<span>住期：${esc(m.stay_range)}</span>` : ''}
+        ${m.due_date ? `<span>預產期：${esc(m.due_date)}</span>` : ''}
+        ${m.delivery_type || m.delivery_date ? `<span>生產：${esc(m.delivery_type || '—')}${m.delivery_date ? `（${esc(m.delivery_date)}）` : ''}</span>` : ''}
+        <span>寶寶：${m.baby_count > 0 ? `${m.baby_count} 位` : '<span style="color:var(--muted)">尚未登記</span>'}</span>
+        ${m.diet_notes ? `<span>飲食禁忌：${esc(m.diet_notes)}</span>` : ''}
+        ${m.medical_notes ? `<span style="color:var(--danger)">醫療注意：${esc(m.medical_notes)}</span>` : ''}
+      </div>
+      <div class="row" style="gap:6px;margin-top:10px">
+        <button class="btn small secondary" data-edit-mother="${m.id}">編輯</button>
+      </div>
+    </div>`).join('');
+  const babyCards = babies.map(b => `
+    <div class="room-card ${b.mother_status === 'checked_in' ? 'occupied' : ''}" data-filter="${esc(b.name + ' ' + b.mother_name + ' ' + (b.notes || ''))}">
+      <div class="row between" style="align-items:flex-start">
+        <div><span class="rs-room">${esc(b.name)}</span>　${b.gender === 'male' ? '<span style="color:#3b78c2">♂ 男</span>' : b.gender === 'female' ? '<span style="color:var(--accent)">♀ 女</span>' : '<small style="color:var(--muted)">性別未填</small>'}</div>
+        ${b.mother_status ? `<span class="badge ${STATUS_BADGE[b.mother_status] || 'gray'}">${STATUS_LABEL[b.mother_status] || ''}</span>` : ''}
+      </div>
+      <div class="rs-name" style="font-weight:400"><small style="color:var(--muted)">媽媽</small>　${esc(b.mother_name)}</div>
+      <div class="rs-kv">
+        <span>出生日期：${esc(b.birth_date || '—')}</span>
+        <span>出生體重：${b.birth_weight_g ? `${b.birth_weight_g} g` : '—'}</span>
+        ${b.notes ? `<span>備註：${esc(b.notes)}</span>` : ''}
+      </div>
+      <div class="row" style="gap:6px;margin-top:10px">
+        <button class="btn small secondary" data-edit-baby="${b.id}">編輯</button>
+      </div>
+    </div>`).join('');
   main().innerHTML = `
     <div class="page-title">住客管理</div>
     <div class="card">
@@ -1421,20 +1459,7 @@ async function viewResidents() {
         <button class="btn small" id="rs-add-mother">新增媽媽</button>
       </div>
       ${filterBar({ placeholder: '搜尋姓名 / 電話 / 房間…', statuses: [{ val: '', label: '全部' }, { val: 'reserved', label: '預約' }, { val: 'checked_in', label: '入住中' }, { val: 'checked_out', label: '已退房' }] })}
-      <div class="table-wrap">
-        <table class="data stack">
-          <thead><tr><th>姓名</th><th>電話</th><th>房間</th><th>寶寶數</th><th>狀態</th><th></th></tr></thead>
-          <tbody>${mothers.map(m => `
-            <tr data-filter="${esc(m.name + ' ' + (m.phone || '') + ' ' + (m.room_name || ''))}" data-status="${m.status}">
-              <td data-label="姓名">${esc(m.name)}</td>
-              <td data-label="電話">${esc(m.phone)}</td>
-              <td data-label="房間">${esc(m.room_name || '-')}</td>
-              <td data-label="寶寶數">${m.baby_count}</td>
-              <td data-label="狀態"><span class="badge ${STATUS_BADGE[m.status]}">${STATUS_LABEL[m.status]}</span></td>
-              <td data-label="操作"><button class="btn small secondary" data-edit-mother="${m.id}">編輯</button></td>
-            </tr>`).join('')}</tbody>
-        </table>
-      </div>
+      <div class="board-grid flt-zone">${motherCards || '<div class="empty">尚無媽媽資料</div>'}</div>
     </div>
     <div class="card">
       <div class="row between">
@@ -1442,21 +1467,7 @@ async function viewResidents() {
         <button class="btn small" id="rs-add-baby">新增寶寶</button>
       </div>
       ${filterBar({ placeholder: '搜尋寶寶 / 媽媽…', search: true })}
-      <div class="table-wrap">
-        <table class="data stack">
-          <thead><tr><th>姓名</th><th>性別</th><th>出生日期</th><th>出生體重</th><th>媽媽</th><th>備註</th><th></th></tr></thead>
-          <tbody>${babies.map(b => `
-            <tr data-filter="${esc(b.name + ' ' + b.mother_name + ' ' + (b.notes || ''))}">
-              <td data-label="姓名">${esc(b.name)}</td>
-              <td data-label="性別">${b.gender === 'male' ? '男' : b.gender === 'female' ? '女' : '-'}</td>
-              <td data-label="出生日期">${esc(b.birth_date || '-')}</td>
-              <td data-label="出生體重">${b.birth_weight_g ? b.birth_weight_g + ' g' : '-'}</td>
-              <td data-label="媽媽">${esc(b.mother_name)}</td>
-              <td data-label="備註">${esc(b.notes || '-')}</td>
-              <td data-label="操作"><button class="btn small secondary" data-edit-baby="${b.id}">編輯</button></td>
-            </tr>`).join('')}</tbody>
-        </table>
-      </div>
+      <div class="board-grid flt-zone">${babyCards || '<div class="empty">尚無寶寶資料</div>'}</div>
     </div>`;
   wireFilter(main());
 

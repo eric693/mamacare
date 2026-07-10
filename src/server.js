@@ -467,7 +467,10 @@ app.get('/api/mothers', requireStaff, (req, res) => {
       (SELECT COUNT(*) FROM babies b WHERE b.mother_id = m.id) AS baby_count,
       (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
         WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
-        ORDER BY bk.check_in DESC LIMIT 1) AS room_name
+        ORDER BY bk.check_in DESC LIMIT 1) AS room_name,
+      (SELECT bk.check_in || ' ~ ' || bk.check_out FROM bookings bk
+        WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in')
+        ORDER BY bk.check_in DESC LIMIT 1) AS stay_range
     FROM mothers m ORDER BY m.status = 'checked_in' DESC, m.id DESC`).all();
   res.json(rows);
 });
