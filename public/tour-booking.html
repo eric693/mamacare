@@ -233,7 +233,7 @@
     $('#vf-resend').onclick = () => { show('p-info'); setMsg('#li-msg', '請確認資料後再按一次「儲存」重新發送驗證碼'); };
 
     // ---------- 步驟三：行事曆＋時段 ----------
-    const curMonth = () => new Date().toISOString().slice(0, 7);
+    const curMonth = () => { const t = new Date(); return new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 7); };
     let month = '';
     let monthDays = [];
     const shiftMonth = d => {

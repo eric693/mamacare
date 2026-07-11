@@ -635,9 +635,10 @@ test('客戶簽約資料查詢：三模式／日期欄位／退訂與恢復／Ex
   assert.strictEqual(tf.status, 200);
   const row = tf.data.rows.find(r => r.name === '測試潛客甲');
   assert.ok(row && row.checkin_date && row.days > 0);
-  // signed 模式不含已排房者
+  // signed 模式＝查全部合約（含已排房/入住），以狀態欄標示；排除條件可過濾
   const sg = await req('GET', '/api/client-contracts?mode=signed');
-  assert.ok(!sg.data.rows.some(r => r.name === '測試潛客甲'));
+  const sgRow = sg.data.rows.find(r => r.name === '測試潛客甲');
+  assert.ok(sgRow && ['已排房', '已入住', '已出住'].includes(sgRow.status_label));
   // 日期欄位過濾：以簽約日 2026-07-05 查 7 月命中、6 月不命中
   const hit = await req('GET', '/api/client-contracts?mode=transferred&date_field=sign&from=2026-07-01&to=2026-07-31');
   assert.ok(hit.data.rows.some(r => r.name === '測試潛客甲'));
@@ -665,8 +666,8 @@ test('產後報表：清單／各報表可產出／收款統計分類／Excel', 
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
   const list = await req('GET', '/api/pp-reports');
   assert.strictEqual(list.status, 200);
-  assert.strictEqual(list.data.length, 28);
-  // 全部 19 張報表都能無錯產出（寬日期範圍掃 seed 資料）
+  assert.strictEqual(list.data.length, 33);
+  // 全部報表都能無錯產出（寬日期範圍掃 seed 資料）
   for (const r of list.data) {
     const g = await req('GET', `/api/pp-reports/${r.key}?from=2020-01-01&to=2030-12-31`);
     assert.strictEqual(g.status, 200, `${r.key} 失敗`);
