@@ -1122,6 +1122,27 @@ function init() {
     // 照護人員身分證字號（寶寶評估單等中衛欄位自動帶入用）
     db.exec("ALTER TABLE users ADD COLUMN id_no TEXT DEFAULT ''");
   }
+  if (!userCols.includes('service_scope')) {
+    // 外部協力廠商帳號：限定只能閱覽／新增此名稱的加購服務（空字串＝一般員工不受限）
+    db.exec("ALTER TABLE users ADD COLUMN service_scope TEXT DEFAULT ''");
+  }
+  const hkCols = db.prepare('PRAGMA table_info(housekeeping_logs)').all().map(c => c.name);
+  if (!hkCols.includes('kind')) {
+    // 房務任務種類：clean 清潔／repair 設備報修（故障類別存 task 欄）
+    db.exec("ALTER TABLE housekeeping_logs ADD COLUMN kind TEXT NOT NULL DEFAULT 'clean'");
+  }
+  if (!hkCols.includes('location')) {
+    // 公共地點標籤（如 2樓嬰兒室；有指定房間時留空）
+    db.exec("ALTER TABLE housekeeping_logs ADD COLUMN location TEXT DEFAULT ''");
+  }
+  db.exec(`CREATE TABLE IF NOT EXISTS housekeeping_progress (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES housekeeping_logs(id),
+    body TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_hk_progress_task ON housekeeping_progress(task_id, created_at);`);
   const famCols = db.prepare('PRAGMA table_info(family_members)').all().map(c => c.name);
   if (!famCols.includes('line_user_id')) {
     db.exec("ALTER TABLE family_members ADD COLUMN line_user_id TEXT NOT NULL DEFAULT ''");
@@ -1243,6 +1264,8 @@ function init() {
   if (!supCols.includes('price')) db.exec('ALTER TABLE supplies ADD COLUMN price INTEGER NOT NULL DEFAULT 0');
   if (!supCols.includes('has_expiry')) db.exec('ALTER TABLE supplies ADD COLUMN has_expiry INTEGER NOT NULL DEFAULT 0');
   if (!supCols.includes('front_sellable')) db.exec('ALTER TABLE supplies ADD COLUMN front_sellable INTEGER NOT NULL DEFAULT 0');
+  // 開放前台銷售時自動建檔的商城商品連結（只建一次，之後商品由商城模組維護）
+  if (!supCols.includes('product_id')) db.exec('ALTER TABLE supplies ADD COLUMN product_id INTEGER REFERENCES products(id)');
   // 膳食訂餐狀態：備餐中／已出餐／取消（未訂＝無此筆）
   const moCols = db.prepare('PRAGMA table_info(meal_orders)').all().map(c => c.name);
   if (!moCols.includes('status')) db.exec("ALTER TABLE meal_orders ADD COLUMN status TEXT NOT NULL DEFAULT 'preparing'");
