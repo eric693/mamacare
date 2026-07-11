@@ -8,32 +8,125 @@
   <link rel="stylesheet" href="/css/style.css">
   <style>
     body { background: var(--bg); }
-    .tb-wrap { max-width: 520px; margin: 0 auto; padding: 24px 16px 48px; }
-    .tb-hero { text-align: center; padding: 28px 8px 12px; }
-    .tb-hero h1 { color: var(--primary-dark); font-size: 1.6rem; margin: 0 0 4px; }
-    .tb-hero p { color: var(--muted); margin: 0; }
-    .tb-card { background: #fff; border-radius: 14px; box-shadow: var(--shadow); padding: 20px; }
+    .tb-wrap { max-width: 520px; margin: 0 auto; padding: 16px 14px 48px; }
+    .tb-hero { text-align: center; padding: 20px 8px 10px; }
+    .tb-hero h1 { color: var(--primary-dark); font-size: 1.45rem; margin: 0 0 4px; }
+    .tb-hero p { color: var(--muted); margin: 0; font-size: .92rem; }
+    .tb-card { background: #fff; border-radius: 14px; box-shadow: var(--shadow); padding: 18px; }
     .tb-card label { display: block; font-size: .9rem; color: var(--primary-dark); margin: 12px 0 4px; }
-    .tb-card input, .tb-card textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 1rem; box-sizing: border-box; }
+    .tb-card input, .tb-card select, .tb-card textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 1rem; box-sizing: border-box; background: #fff; }
     .tb-row { display: flex; gap: 10px; }
     .tb-row > div { flex: 1; }
     .tb-btn { width: 100%; margin-top: 18px; padding: 12px; font-size: 1.05rem; background: var(--primary); color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    .tb-btn.sec { background: #fff; color: var(--primary-dark); border: 1px solid var(--border); }
     .tb-btn:disabled { opacity: .6; }
     .tb-msg { margin-top: 12px; text-align: center; font-size: .95rem; }
     .tb-ok { color: var(--primary-dark); }
     .tb-err { color: var(--danger); }
-    .tb-done { text-align: center; padding: 20px; }
+    .tb-done { text-align: center; padding: 20px 6px; }
     .tb-done .chk { font-size: 3rem; }
     .req { color: var(--danger); }
+    /* 步驟指示 */
+    .tb-steps { display: flex; justify-content: center; gap: 6px; margin: 10px 0 14px; }
+    .tb-step { font-size: .78rem; color: var(--muted); padding: 4px 10px; border-radius: 999px; background: #eee; }
+    .tb-step.on { background: var(--primary); color: #fff; }
+    /* 行事曆 */
+    .cal-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .cal-hd b { font-size: 1.05rem; color: var(--primary-dark); }
+    .cal-nav { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 6px 14px; font-size: 1rem; cursor: pointer; }
+    .cal { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    .cal th { font-size: .78rem; color: var(--muted); padding: 4px 0; font-weight: 400; }
+    .cal td { text-align: center; padding: 2px; }
+    .cal .d { width: 40px; height: 40px; line-height: 40px; margin: 0 auto; border-radius: 50%; font-size: .95rem; color: #bbb; }
+    .cal .d.open { background: #fdeef4; color: var(--primary-dark); cursor: pointer; font-weight: 600; }
+    .cal .d.sel { background: var(--primary); color: #fff; }
+    .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+    .slot { padding: 10px 0; text-align: center; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: .95rem; background: #fff; }
+    .slot small { display: block; color: var(--muted); font-size: .72rem; }
+    .slot.sel { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .slot.sel small { color: #ffd9e5; }
+    .slot.full { color: #ccc; cursor: not-allowed; background: #f6f6f6; }
+    .hide { display: none; }
   </style>
 </head>
 <body>
   <div class="tb-wrap">
     <div class="tb-hero">
       <h1 id="tb-title">預約參觀</h1>
-      <p>留下您的資料，我們會盡快與您聯繫確認時間</p>
+      <p id="tb-sub">填寫資料並選擇時段，送出後將盡快為您確認</p>
     </div>
-    <div class="tb-card" id="tb-card">
+    <div class="tb-steps hide" id="tb-steps">
+      <span class="tb-step on" data-st="1">1 填寫資料</span>
+      <span class="tb-step" data-st="2">2 驗證手機</span>
+      <span class="tb-step" data-st="3">3 選擇時段</span>
+    </div>
+
+    <!-- 步驟一：媽咪資料（LINE 流程） -->
+    <div class="tb-card hide" id="p-info">
+      <label>媽咪姓名 <span class="req">*</span></label>
+      <input id="li-name" maxlength="60" placeholder="您的稱呼">
+      <label>連絡電話 <span class="req">*</span></label>
+      <input id="li-phone" maxlength="15" inputmode="tel" placeholder="0912345678">
+      <div class="tb-row">
+        <div>
+          <label>胎次</label>
+          <select id="li-parity">
+            <option value="1">第1胎</option><option value="2">第2胎</option>
+            <option value="3">第3胎</option><option value="4以上">第4胎以上</option>
+          </select>
+        </div>
+        <div>
+          <label>預產期 <span class="req">*</span></label>
+          <input type="date" id="li-due">
+        </div>
+      </div>
+      <button class="tb-btn" id="li-save">儲存</button>
+      <div class="tb-msg" id="li-msg"></div>
+    </div>
+
+    <!-- 步驟二：驗證手機（驗證碼推播至 LINE 聊天室） -->
+    <div class="tb-card hide" id="p-verify">
+      <p style="color:var(--muted);font-size:.92rem;margin:4px 0 0">
+        驗證碼已發送至您的 LINE 聊天室，請切回官方帳號對話查看，並於 10 分鐘內輸入完成驗證。
+      </p>
+      <label>驗證碼（6 碼）</label>
+      <input id="vf-code" maxlength="6" inputmode="numeric" placeholder="請輸入 6 位數驗證碼" style="letter-spacing:6px;text-align:center;font-size:1.2rem">
+      <button class="tb-btn" id="vf-go">驗證</button>
+      <button class="tb-btn sec" id="vf-resend">重新發送驗證碼</button>
+      <div class="tb-msg" id="vf-msg"></div>
+    </div>
+
+    <!-- 步驟三：行事曆選時段 -->
+    <div class="tb-card hide" id="p-cal">
+      <div class="cal-hd">
+        <button class="cal-nav" id="cal-prev">‹</button>
+        <b id="cal-title"></b>
+        <button class="cal-nav" id="cal-next">›</button>
+      </div>
+      <table class="cal">
+        <thead><tr><th>日</th><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th></tr></thead>
+        <tbody id="cal-body"></tbody>
+      </table>
+      <div id="slot-wrap" class="hide">
+        <label style="margin-top:14px">可預約時段（<span id="slot-date"></span>）</label>
+        <div class="slots" id="slot-list"></div>
+      </div>
+      <button class="tb-btn" id="bk-go" disabled>送出預約</button>
+      <div class="tb-msg" id="bk-msg"></div>
+    </div>
+
+    <!-- 完成 -->
+    <div class="tb-card hide" id="p-done">
+      <div class="tb-done">
+        <div class="chk">✓</div>
+        <h2 style="color:var(--primary-dark)">預約參觀安排中</h2>
+        <p style="color:var(--muted)">親愛的媽咪，您好！<br>我們已收到您的預約參觀申請。<br>客服正在安排中，請稍等片刻～<br>確認後將以 LINE 訊息通知您！</p>
+        <p id="done-info" style="font-weight:600;color:var(--primary-dark)"></p>
+      </div>
+    </div>
+
+    <!-- 一般網頁流程（非 LINE 開啟時的簡易表單） -->
+    <div class="tb-card hide" id="p-plain">
       <label>姓名 <span class="req">*</span></label>
       <input id="tb-name" maxlength="60" placeholder="您的稱呼">
       <label>聯絡電話 <span class="req">*</span></label>
@@ -56,35 +149,179 @@
       <div class="tb-msg" id="tb-msg"></div>
     </div>
   </div>
+
   <script>
     const $ = s => document.querySelector(s);
-    // 帶入機構名稱
-    fetch('/api/public/center').then(r => r.json()).then(d => {
-      if (d.center_name) { $('#tb-title').textContent = d.center_name + ' 預約參觀'; document.title = d.center_name + ' 預約參觀'; }
-    }).catch(() => {});
-    // 參觀日不早於今天
-    const t = new Date(); const iso = new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-    $('#tb-date').min = iso;
-    $('#tb-submit').onclick = async () => {
-      const msg = $('#tb-msg'); msg.textContent = ''; msg.className = 'tb-msg';
+    const show = id => {
+      ['p-info', 'p-verify', 'p-cal', 'p-done', 'p-plain'].forEach(p => $('#' + p).classList.toggle('hide', p !== id));
+      const stepOf = { 'p-info': 1, 'p-verify': 2, 'p-cal': 3 };
+      $('#tb-steps').classList.toggle('hide', !stepOf[id]);
+      if (stepOf[id]) document.querySelectorAll('.tb-step').forEach(el =>
+        el.classList.toggle('on', Number(el.dataset.st) <= stepOf[id]));
+    };
+    const post = async (url, body) => {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || '發生錯誤，請稍後再試');
+      return d;
+    };
+    const setMsg = (id, text, err) => { const el = $(id); el.textContent = text || ''; el.className = 'tb-msg ' + (err ? 'tb-err' : 'tb-ok'); };
+
+    let CONFIG = { center_name: '', liff_id: '', line_enabled: false };
+    let lineUserId = '';
+    let sessionToken = '';
+    let pick = { date: '', time: '' };
+
+    // ---------- 啟動：取得設定 → 嘗試取得 LINE 身分（LIFF 或 ?lu= 連結參數） ----------
+    (async () => {
+      try { CONFIG = await (await fetch('/api/public/tour-config')).json(); } catch (e) {}
+      if (CONFIG.center_name) { $('#tb-title').textContent = CONFIG.center_name + ' 預約參觀'; document.title = CONFIG.center_name + ' 預約參觀'; }
+      const lu = new URLSearchParams(location.search).get('lu') || '';
+      if (/^U[0-9a-f]{32}$/i.test(lu)) lineUserId = lu;
+      if (!lineUserId && CONFIG.liff_id) {
+        try {
+          await new Promise((ok, no) => {
+            const s = document.createElement('script');
+            s.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
+            s.onload = ok; s.onerror = no; document.head.appendChild(s);
+          });
+          await liff.init({ liffId: CONFIG.liff_id });
+          if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+          lineUserId = (await liff.getProfile()).userId || '';
+        } catch (e) { /* LIFF 失敗 → 走一般表單 */ }
+      }
+      if (lineUserId && CONFIG.line_enabled) show('p-info');
+      else { show('p-plain'); initPlain(); }
+    })();
+
+    // ---------- 步驟一：儲存資料 → 發送驗證碼 ----------
+    $('#li-save').onclick = async () => {
+      setMsg('#li-msg', '');
       const body = {
-        name: $('#tb-name').value.trim(), phone: $('#tb-phone').value.trim(),
-        date: $('#tb-date').value, time: $('#tb-time').value,
-        due_date: $('#tb-due').value, note: $('#tb-note').value.trim()
+        line_user_id: lineUserId,
+        name: $('#li-name').value.trim(),
+        phone: $('#li-phone').value.trim(),
+        parity: $('#li-parity').value,
+        due_date: $('#li-due').value
       };
-      if (!body.name || !body.phone) { msg.textContent = '請填寫姓名與電話'; msg.classList.add('tb-err'); return; }
-      if (!body.date) { msg.textContent = '請選擇希望參觀日期'; msg.classList.add('tb-err'); return; }
-      $('#tb-submit').disabled = true;
+      if (!body.name) return setMsg('#li-msg', '請填寫媽咪姓名', 1);
+      if (!/^09\d{8}$/.test(body.phone.replace(/[-\s]/g, ''))) return setMsg('#li-msg', '請填寫正確的手機號碼（09 開頭共 10 碼）', 1);
+      if (!body.due_date) return setMsg('#li-msg', '請選擇預產期', 1);
+      $('#li-save').disabled = true;
       try {
-        const r = await fetch('/api/public/tours', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.error || '送出失敗');
-        $('#tb-card').innerHTML = '<div class="tb-done"><div class="chk">✅</div><h2>預約已送出！</h2><p style="color:var(--muted)">感謝您的預約，我們會盡快與您聯繫確認參觀時間。</p></div>';
+        const d = await post('/api/public/line-tours/register', body);
+        sessionToken = d.token;
+        show('p-verify');
+        setMsg('#vf-msg', '驗證碼已發送，請至 LINE 聊天室查看');
+      } catch (e) { setMsg('#li-msg', e.message, 1); }
+      $('#li-save').disabled = false;
+    };
+
+    // ---------- 步驟二：驗證手機 ----------
+    $('#vf-go').onclick = async () => {
+      setMsg('#vf-msg', '');
+      const code = $('#vf-code').value.trim();
+      if (!/^\d{6}$/.test(code)) return setMsg('#vf-msg', '請輸入 6 位數驗證碼', 1);
+      $('#vf-go').disabled = true;
+      try {
+        await post('/api/public/line-tours/verify', { token: sessionToken, code });
+        show('p-cal');
+        loadMonth(curMonth());
+      } catch (e) { setMsg('#vf-msg', e.message, 1); }
+      $('#vf-go').disabled = false;
+    };
+    $('#vf-resend').onclick = () => { show('p-info'); setMsg('#li-msg', '請確認資料後再按一次「儲存」重新發送驗證碼'); };
+
+    // ---------- 步驟三：行事曆＋時段 ----------
+    const curMonth = () => new Date().toISOString().slice(0, 7);
+    let month = '';
+    let monthDays = [];
+    const shiftMonth = d => {
+      const [y, m] = month.split('-').map(Number);
+      const nd = new Date(y, m - 1 + d, 1);
+      const nm = `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, '0')}`;
+      if (nm < curMonth()) return;
+      loadMonth(nm);
+    };
+    $('#cal-prev').onclick = () => shiftMonth(-1);
+    $('#cal-next').onclick = () => shiftMonth(1);
+
+    async function loadMonth(m) {
+      month = m;
+      const d = await (await fetch(`/api/public/tour-availability?month=${m}`)).json();
+      monthDays = d.days || [];
+      const [y, mo] = m.split('-').map(Number);
+      $('#cal-title').textContent = `${y}年${mo}月`;
+      const startDow = new Date(y, mo - 1, 1).getDay();
+      let html = '<tr>';
+      for (let i = 0; i < startDow; i++) html += '<td></td>';
+      monthDays.forEach((day, idx) => {
+        const dnum = idx + 1;
+        const open = !day.closed && day.slots.some(s => s.left > 0);
+        html += `<td><div class="d ${open ? 'open' : ''} ${pick.date === day.date ? 'sel' : ''}" ${open ? `data-date="${day.date}"` : ''}>${dnum}</div></td>`;
+        if ((startDow + dnum) % 7 === 0 && dnum !== monthDays.length) html += '</tr><tr>';
+      });
+      html += '</tr>';
+      $('#cal-body').innerHTML = html;
+      document.querySelectorAll('#cal-body .d[data-date]').forEach(el => el.onclick = () => pickDate(el.dataset.date));
+      if (!pick.date || !monthDays.some(x => x.date === pick.date)) { $('#slot-wrap').classList.add('hide'); }
+    }
+
+    function pickDate(ds) {
+      pick = { date: ds, time: '' };
+      $('#bk-go').disabled = true;
+      document.querySelectorAll('#cal-body .d').forEach(el => el.classList.toggle('sel', el.dataset.date === ds));
+      const day = monthDays.find(x => x.date === ds);
+      $('#slot-date').textContent = ds;
+      $('#slot-list').innerHTML = day.slots.map(s =>
+        `<div class="slot ${s.left > 0 ? '' : 'full'}" ${s.left > 0 ? `data-time="${s.time}"` : ''}>${s.time}<small>${s.left > 0 ? `尚餘 ${s.left} 組` : '已額滿'}</small></div>`).join('');
+      $('#slot-wrap').classList.remove('hide');
+      document.querySelectorAll('#slot-list .slot[data-time]').forEach(el => el.onclick = () => {
+        pick.time = el.dataset.time;
+        document.querySelectorAll('#slot-list .slot').forEach(x => x.classList.toggle('sel', x === el));
+        $('#bk-go').disabled = false;
+      });
+    }
+
+    $('#bk-go').onclick = async () => {
+      setMsg('#bk-msg', '');
+      if (!pick.date || !pick.time) return setMsg('#bk-msg', '請選擇參觀日期與時段', 1);
+      $('#bk-go').disabled = true;
+      try {
+        const d = await post('/api/public/line-tours/book', { token: sessionToken, date: pick.date, time: pick.time });
+        $('#done-info').textContent = `預約時段：${d.tour_at}`;
+        $('#tb-sub').textContent = '';
+        show('p-done');
       } catch (e) {
-        msg.textContent = e.message; msg.classList.add('tb-err');
-        $('#tb-submit').disabled = false;
+        setMsg('#bk-msg', e.message, 1);
+        $('#bk-go').disabled = false;
+        loadMonth(month); // 額滿等情況重新載入剩餘名額
       }
     };
+
+    // ---------- 一般網頁簡易表單（原有流程） ----------
+    function initPlain() {
+      const t = new Date(); const iso = new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      $('#tb-date').min = iso;
+      $('#tb-submit').onclick = async () => {
+        setMsg('#tb-msg', '');
+        const body = {
+          name: $('#tb-name').value.trim(), phone: $('#tb-phone').value.trim(),
+          date: $('#tb-date').value, time: $('#tb-time').value,
+          due_date: $('#tb-due').value, note: $('#tb-note').value.trim()
+        };
+        if (!body.name || !body.phone) return setMsg('#tb-msg', '請填寫姓名與電話', 1);
+        if (!body.date) return setMsg('#tb-msg', '請選擇希望參觀日期', 1);
+        $('#tb-submit').disabled = true;
+        try {
+          await post('/api/public/tours', body);
+          $('#p-plain').innerHTML = '<div class="tb-done"><div class="chk">✓</div><h2 style="color:var(--primary-dark)">預約已送出！</h2><p style="color:var(--muted)">感謝您的預約，我們會盡快與您聯繫確認參觀時間。</p></div>';
+        } catch (e) {
+          setMsg('#tb-msg', e.message, 1);
+          $('#tb-submit').disabled = false;
+        }
+      };
+    }
   </script>
 </body>
 </html>

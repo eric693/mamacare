@@ -3136,11 +3136,15 @@ async function viewTours() {
               <td data-label="電話">${esc(t.phone || '-')}</td>
               <td data-label="預產期">${esc(t.due_date || '-')}</td>
               <td data-label="來源">${esc(t.source || '-')}</td>
-              <td data-label="狀態"><span class="badge ${TOUR_STATUS_BADGE[t.status]}">${TOUR_STATUS_LABEL[t.status]}</span></td>
+              <td data-label="狀態">${t.confirm_status === 'pending' && t.status === 'scheduled'
+                ? '<span class="badge yellow">LINE 待確認</span>'
+                : `<span class="badge ${TOUR_STATUS_BADGE[t.status]}">${TOUR_STATUS_LABEL[t.status]}</span>`}</td>
               <td data-label="最近跟進">${t.last_log
                 ? `${esc(t.last_log.length > 24 ? t.last_log.slice(0, 24) + '…' : t.last_log)}<br><small>${esc((t.last_log_at || '').slice(0, 16))}</small>`
                 : (t.note ? esc(t.note.length > 24 ? t.note.slice(0, 24) + '…' : t.note) : '<span style="color:var(--muted)">-</span>')}${t.follow_up_date && ['scheduled', 'visited'].includes(t.status) ? `<br><small style="color:${t.follow_up_date < todayStr() ? 'var(--danger)' : 'var(--primary-dark)'}">跟進 ${esc(t.follow_up_date)}</small>` : ''}</td>
               <td data-label="操作">
+                ${t.confirm_status === 'pending' && t.status === 'scheduled'
+                  ? `<button class="btn small" data-tconfirm="${t.id}">確認預約</button>` : ''}
                 ${t.status === 'scheduled'
                   ? `<button class="btn small" data-tst="visited" data-id="${t.id}">已參觀</button>` : ''}
                 ${t.status === 'visited'
@@ -3191,6 +3195,18 @@ async function viewTours() {
 
   main().querySelectorAll('[data-log-tour]').forEach(btn => {
     btn.onclick = () => openTourLog(tours.find(x => String(x.id) === btn.dataset.logTour));
+  });
+
+  // LINE 待確認預約：確認後自動推播「已安排」訊息給客戶
+  main().querySelectorAll('[data-tconfirm]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('確認此 LINE 預約？系統將自動發送確認訊息給客戶。')) return;
+      try {
+        const r = await api(`/tours/${btn.dataset.tconfirm}/confirm`, { method: 'POST', body: {} });
+        alert(r.notified ? '已確認，並已發送 LINE 通知給客戶。' : '已確認（未發送 LINE 通知）。');
+      } catch (e) { alert(e.message); }
+      viewTours();
+    };
   });
 
   main().querySelectorAll('[data-tst]').forEach(btn => {
@@ -3855,6 +3871,7 @@ async function viewSettings() {
         <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>LINE／Facebook 雙向客訊（CRM）</strong>
           <p class="sig-hint" style="color:#6b7c79;margin:4px 0">設定後可在「LINE／FB 客訊」收發訊息。LINE Webhook 指向 <code>/api/webhooks/line</code>、FB 指向 <code>/api/webhooks/facebook</code>。</p></div>
         <div class="field"><label>LINE Channel Secret（驗簽）</label><input id="st-line-secret" value="${esc(s.line_channel_secret)}" placeholder="收訊驗簽用"></div>
+        <div class="field"><label>LINE LIFF ID（官賴預約參觀頁）</label><input id="st-line-liff" value="${esc(s.line_liff_id || '')}" placeholder="例 1234567890-abcdefgh；LIFF Endpoint 設為 /tour-booking.html"></div>
         <div class="field"><label>FB 粉專 Access Token</label><input id="st-fb-token" value="${esc(s.fb_page_access_token)}"></div>
         <div class="field"><label>FB App Secret（驗簽）</label><input id="st-fb-secret" value="${esc(s.fb_app_secret)}"></div>
         <div class="field"><label>FB Webhook Verify Token（自訂）</label><input id="st-fb-verify" value="${esc(s.fb_verify_token)}"></div>
@@ -3955,6 +3972,7 @@ async function viewSettings() {
           line_staff_alert_id: $('#st-line-alert').value.trim(),
           survey_on_checkout: $('#st-survey-co').value,
           line_channel_secret: $('#st-line-secret').value.trim(),
+          line_liff_id: $('#st-line-liff').value.trim(),
           fb_page_access_token: $('#st-fb-token').value.trim(),
           fb_app_secret: $('#st-fb-secret').value.trim(),
           fb_verify_token: $('#st-fb-verify').value.trim(),
@@ -10229,6 +10247,7 @@ async function viewCustomers() {
       </div>
       <div id="cq-result" style="margin-top:8px"><div class="empty">請輸入條件查詢（姓名／電話／預產期／合約編號擇一）</div></div>
     </div>
+    <div id="cq-pending"></div>
     <div id="cust-banner"></div>
     <div class="ctabs no-print" id="cust-tabs"></div>
     <div id="tab-lead"><div id="cust-form-wrap"></div><div id="cust-logs"></div></div>
@@ -11283,6 +11302,54 @@ async function viewCustomers() {
     </div>`;
   }
 
+  // ----- 待確認預約（用戶自 LINE 官賴送出，員工確認後自動推播「已安排」訊息） -----
+  async function loadPending() {
+    const box = $('#cq-pending');
+    if (!box) return;
+    let rows = [];
+    try { rows = await api('/tours?pending=1'); } catch (e) { return; }
+    if (!rows.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `
+      <div class="card" style="border:2px solid var(--danger)">
+        <div class="sec-hd" style="background:var(--danger)">待確認預約（LINE）<span class="badge yellow" style="margin-left:8px">${rows.length} 筆</span></div>
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>送單時間</th><th>媽咪姓名</th><th>連絡電話</th><th>預產期</th><th>胎次</th><th>預約參觀時段</th><th>操作</th></tr></thead>
+          <tbody>${rows.map(t => `
+            <tr>
+              <td data-label="送單時間">${esc((t.created_at || '').slice(0, 16))}</td>
+              <td data-label="媽咪姓名">${t.mother_id ? `<a href="#/customers?m=${t.mother_id}" title="開啟客戶資料">${esc(t.name)}</a>` : esc(t.name)}</td>
+              <td data-label="連絡電話">${esc(t.phone || '—')}</td>
+              <td data-label="預產期">${esc(t.due_date || '—')}</td>
+              <td data-label="胎次">${t.parity ? `第${esc(t.parity)}胎` : '—'}</td>
+              <td data-label="預約參觀時段"><b>${esc(t.tour_at)}</b></td>
+              <td data-label="操作">
+                <button class="btn small" data-pd-ok="${t.id}">確認</button>
+                <button class="btn small secondary danger" data-pd-no="${t.id}">取消</button>
+              </td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        <small style="color:var(--muted)">點「確認」後系統自動發送「預約已確認」LINE 訊息給客戶；點「取消」需填原因（不另行通知）。</small>
+      </div>`;
+    box.querySelectorAll('[data-pd-ok]').forEach(b => b.onclick = async () => {
+      const t = rows.find(x => String(x.id) === b.dataset.pdOk);
+      if (!confirm(`確認 ${t.name} 於 ${t.tour_at} 的參觀預約？\n系統將自動發送確認訊息給客戶。`)) return;
+      try {
+        const r = await api(`/tours/${t.id}/confirm`, { method: 'POST', body: {} });
+        alert(r.notified ? '已確認，並已發送 LINE 通知給客戶。' : '已確認（未發送 LINE 通知：客戶未綁定或 LINE 未設定）。');
+      } catch (e) { alert(e.message); }
+      loadPending();
+    });
+    box.querySelectorAll('[data-pd-no]').forEach(b => b.onclick = async () => {
+      const reason = prompt('請輸入取消原因：');
+      if (reason === null) return;
+      if (!reason.trim()) { alert('請填寫取消原因'); return; }
+      try { await api(`/tours/${b.dataset.pdNo}/cancel`, { method: 'POST', body: { reason: reason.trim() } }); }
+      catch (e) { alert(e.message); }
+      loadPending();
+    });
+  }
+  loadPending();
+
   // ----- 查詢 -----
   const doSearch = async () => {
     const err = $('#cq-err');
@@ -11342,7 +11409,8 @@ async function viewTourCalendar() {
   for (let d = 1; d <= daysIn; d++) {
     const ds = `${month}-${String(d).padStart(2, '0')}`;
     const items = (byDay[ds] || []).map(t => {
-      const st = TOUR_STATUS_TW[t.status] || [t.status, 'gray'];
+      const st = (t.confirm_status === 'pending' && t.status === 'scheduled')
+        ? ['待確認', 'yellow'] : TOUR_STATUS_TW[t.status] || [t.status, 'gray'];
       return `<div class="tc-item"><small>${esc(t.tour_at.slice(11, 16))}</small> ${esc(t.name)} <span class="badge ${st[1]}" style="font-weight:400">${st[0]}</span></div>`;
     }).join('');
     cells += `<td class="${ds === todayStr() ? 'tc-today' : ''}"><div class="tc-day">${d}日</div>${items}</td>`;

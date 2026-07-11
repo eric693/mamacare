@@ -1195,6 +1195,24 @@ function init() {
       SELECT m.id FROM mothers m WHERE m.phone = tours.phone AND m.phone != '' ORDER BY m.id DESC LIMIT 1
     ) WHERE phone != ''`);
   }
+  // LINE 官方帳號預約參觀：綁定 LINE 用戶、待確認狀態（pending=用戶自 LINE 送出待員工確認）
+  if (!tourCols.includes('line_user_id')) db.exec("ALTER TABLE tours ADD COLUMN line_user_id TEXT DEFAULT ''");
+  if (!tourCols.includes('confirm_status')) db.exec("ALTER TABLE tours ADD COLUMN confirm_status TEXT DEFAULT ''"); // ''/pending/confirmed
+  // LINE 預約參觀流程暫存：填資料 → 發驗證碼（推播至 LINE）→ 驗證 → 選時段送出
+  db.exec(`CREATE TABLE IF NOT EXISTS line_tour_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    line_user_id TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    parity TEXT DEFAULT '',
+    due_date TEXT DEFAULT '',
+    code TEXT DEFAULT '',
+    verified INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  )`);
   // 預約參觀時段設定：指定日期時段／不開放參觀日
   db.exec(`CREATE TABLE IF NOT EXISTS tour_slots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1668,6 +1686,7 @@ const DEFAULT_SETTINGS = {
   charge_presets: '泌乳,產後修復,停車費,清潔費,月子餐加購,洗頭,身體SPA',
   meal_choices: '一般餐,素食餐,不需供餐',
   line_channel_access_token: '',
+  line_liff_id: '',                  // LINE LIFF ID（官賴選單開啟預約參觀頁用；空=改用帶參數連結）
   // 感染管制目標：手部衛生遵從率門檻（%），低於此值於月報標示
   hand_hygiene_target: '85',
   // 電子發票／收據（MIG 3.2）— 實際上傳大平台需加值中心 API

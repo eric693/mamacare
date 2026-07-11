@@ -70,7 +70,8 @@ function bodySummary(body) {
 
 // 自動記錄所有寫入型 API（POST/PUT/PATCH/DELETE），登入/登出/簽署另行語意化記錄
 const AUDIT_SKIP = new Set(['/api/login', '/api/logout', '/api/family/login', '/api/family/logout',
-  '/api/webhooks/line', '/api/webhooks/facebook', '/api/webhooks/ecpay', '/api/public/tours']);
+  '/api/webhooks/line', '/api/webhooks/facebook', '/api/webhooks/ecpay', '/api/public/tours',
+  '/api/public/line-tours/register', '/api/public/line-tours/verify', '/api/public/line-tours/book']);
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') return next();
   if (AUDIT_SKIP.has(req.originalUrl.split('?')[0])) return next();
@@ -4247,6 +4248,8 @@ app.get('/api/tours', requireStaff, (req, res) => {
   if (phone) { cond.push('t.phone LIKE ?'); args.push('%' + phone + '%'); }
   if (status) { cond.push('t.status = ?'); args.push(status); }
   if (req.query.only_cancelled === '1') cond.push("t.cancel_at != ''");
+  // LINE 待確認預約（用戶自官賴送出、員工尚未確認）
+  if (req.query.pending === '1') cond.push("t.confirm_status = 'pending' AND t.status = 'scheduled'");
   // 排除條件（潛在客戶查詢）：未參觀＝已取消；未成交＝status lost（含取消）
   if (req.query.exclude_cancelled === '1') cond.push("(t.cancel_at IS NULL OR t.cancel_at = '')");
   if (req.query.exclude_lost === '1') cond.push("t.status != 'lost'");
@@ -4400,7 +4403,53 @@ app.post('/api/tours/:id/cancel', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
+// 員工確認 LINE 待確認預約：改為 confirmed 並自動推播「已安排」訊息給用戶
+app.post('/api/tours/:id/confirm', requireStaff, async (req, res) => {
+  const t = db.prepare('SELECT * FROM tours WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: '找不到參觀預約' });
+  if (t.confirm_status !== 'pending') return res.status(400).json({ error: '此預約非待確認狀態' });
+  db.prepare("UPDATE tours SET confirm_status = 'confirmed' WHERE id = ?").run(t.id);
+  addTourLog(t.id, '確認 LINE 預約參觀', req.session.user.id);
+  let notified = false;
+  const s = getSettings();
+  const token = (s.line_channel_access_token || '').trim();
+  if (token && t.line_user_id) {
+    const r = await notify.pushMessages(token, t.line_user_id, [tourFlexMessage({
+      title: '預約參觀已確認',
+      intro: '親愛的媽咪，您好！\n您的參觀時間已安排完成，\n我們期待您的到來！\n如需更改時間，請直接於此對話告知我們。',
+      fields: [['參觀日期', t.tour_at.slice(0, 10)], ['參觀時段', t.tour_at.slice(11, 16)],
+        ['預產期', t.due_date || '—'], ['胎次', t.parity ? `第${t.parity}胎` : '—']],
+      centerName: s.center_name || ''
+    })]);
+    notified = !!r.ok;
+  }
+  res.json({ ok: true, notified });
+});
+
 // ---------- 預約參觀時段設定：指定日期時段／不開放參觀日 ----------
+// 某日的開放時段：指定日期設定（取最新一筆）優先，否則用一般開放參觀時間；回傳各時段剩餘名額
+function tourDaySlots(ds, s) {
+  const ov = db.prepare('SELECT * FROM tour_slots WHERE slot_date = ? ORDER BY id DESC LIMIT 1').get(ds);
+  if (ov && ov.closed) return { closed: true, slots: [] };
+  const toMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+  const from = toMin((ov && ov.open_from) || s.tour_open_from || '11:00');
+  const to = toMin((ov && ov.open_to) || s.tour_open_to || '19:00');
+  const step = Math.max(5, Number((ov && ov.slot_minutes) || s.tour_slot_minutes) || 60);
+  const cap = Math.max(1, Number((ov && ov.capacity) || s.tour_visit_limit) || 1);
+  if (from == null || to == null || from >= to) return { closed: true, slots: [] };
+  // 該日已被預約的時段數（含待確認，避免超收；lost＝已取消不計）
+  const booked = {};
+  db.prepare(`SELECT replace(substr(tour_at, 12, 5), 'T', '') AS tm, COUNT(*) c FROM tours
+    WHERE date(replace(tour_at, 'T', ' ')) = ? AND status != 'lost' GROUP BY tm`).all(ds)
+    .forEach(r => { booked[r.tm] = r.c; });
+  const slots = [];
+  for (let m = from; m + step <= to; m += step) {
+    const tm = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    slots.push({ time: tm, left: Math.max(0, cap - (booked[tm] || 0)) });
+  }
+  return { closed: false, slots };
+}
+
 app.get('/api/tour-slots', requireStaff, (req, res) => {
   const from = String(req.query.from || '');
   const to = String(req.query.to || '');
@@ -5827,7 +5876,7 @@ app.put('/api/customers/:motherId', requireStaff, (req, res) => {
 // 預約參觀行事曆：某月 tours（依日期分組由前端排版）
 app.get('/api/tour-calendar', requireStaff, (req, res) => {
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month || '') ? req.query.month : today().slice(0, 7);
-  const rows = db.prepare(`SELECT id, name, phone, tour_at, status, note FROM tours
+  const rows = db.prepare(`SELECT id, name, phone, tour_at, status, confirm_status, note FROM tours
     WHERE tour_at LIKE ? ORDER BY tour_at`).all(`${month}%`);
   res.json({ month, rows });
 });
@@ -8181,12 +8230,25 @@ app.post('/api/webhooks/line', (req, res) => {
   res.status(200).end(); // 先回 200，避免 LINE 重送
   const token = (s.line_channel_access_token || '').trim();
   const events = (req.body && req.body.events) || [];
+  const base = (s.public_base_url || '').replace(/\/$/, '') || `https://${req.headers.host || ''}`;
   (async () => {
     for (const ev of events) {
       try {
-        if (ev.type === 'message' && ev.message && ev.message.type === 'text' && ev.source && ev.source.userId) {
-          const profile = token ? await notify.lineProfile(token, ev.source.userId) : {};
-          crmInbound('line', ev.source.userId, ev.message.text || '', profile);
+        const userId = ev.source && ev.source.userId;
+        if (!userId) continue;
+        const text = (ev.type === 'message' && ev.message && ev.message.type === 'text') ? (ev.message.text || '') : null;
+        // 官賴選單「預約參觀」：postback（action=tour_booking）或關鍵字 → 回傳預約頁連結，不進客訊收件匣
+        const wantBooking = (ev.type === 'postback' && /(^|&)action=tour_booking(&|$)/.test((ev.postback || {}).data || ''))
+          || (text != null && text.trim() === '預約參觀');
+        if (wantBooking) {
+          const liffId = (s.line_liff_id || '').trim();
+          const link = liffId ? `https://liff.line.me/${liffId}` : `${base}/tour-booking.html?lu=${encodeURIComponent(userId)}`;
+          if (token) await notify.pushText(token, userId, `親愛的媽咪，您好！\n請點選以下連結預約參觀：\n${link}`);
+          continue;
+        }
+        if (text != null) {
+          const profile = token ? await notify.lineProfile(token, userId) : {};
+          crmInbound('line', userId, text, profile);
         }
       } catch (e) { /* 單一事件失敗不影響其他 */ }
     }
@@ -8316,6 +8378,159 @@ app.post('/api/public/tours', (req, res) => {
     }
   } catch (e) { /* 通知失敗不影響預約 */ }
   res.json({ ok: true });
+});
+
+// ---------- LINE 官賴預約參觀（用戶端三步驟：建檔 → LINE 驗證碼 → 選時段送出） ----------
+// Flex 卡片（確認中／已確認共用版型）
+function tourFlexMessage({ title, intro, fields, centerName }) {
+  return {
+    type: 'flex', altText: title,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box', layout: 'vertical', backgroundColor: '#d6336c', paddingAll: 'lg',
+        contents: [
+          { type: 'text', text: centerName ? `${centerName}` : '產後護理之家', size: 'xs', color: '#ffd9e5' },
+          { type: 'text', text: title, weight: 'bold', size: 'lg', color: '#ffffff', margin: 'sm' }
+        ]
+      },
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'md',
+        contents: [
+          { type: 'text', text: intro, wrap: true, size: 'sm', color: '#555555' },
+          { type: 'separator' },
+          ...fields.map(([k, v]) => ({
+            type: 'box', layout: 'baseline', spacing: 'md',
+            contents: [
+              { type: 'text', text: k, size: 'sm', color: '#999999', flex: 2 },
+              { type: 'text', text: String(v || '—'), size: 'sm', color: '#333333', flex: 4, wrap: true }
+            ]
+          }))
+        ]
+      }
+    }
+  };
+}
+
+// 預約頁設定（公開）：機構名稱／LIFF ID／LINE 是否已串接
+app.get('/api/public/tour-config', (req, res) => {
+  const s = getSettings();
+  res.json({
+    center_name: s.center_name || '',
+    liff_id: (s.line_liff_id || '').trim(),
+    line_enabled: !!(s.line_channel_access_token || '').trim()
+  });
+});
+
+// 可預約時段（公開）：以「一般開放參觀時間」＋指定日期設定（含不開放日）計算，扣除已預約量
+app.get('/api/public/tour-availability', (req, res) => {
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month || '') ? req.query.month : today().slice(0, 7);
+  const s = getSettings();
+  const [y, m] = month.split('-').map(Number);
+  const daysIn = new Date(y, m, 0).getDate();
+  const todayStr = today();
+  const days = [];
+  for (let d = 1; d <= daysIn; d++) {
+    const ds = `${month}-${String(d).padStart(2, '0')}`;
+    if (ds < todayStr) { days.push({ date: ds, closed: true, slots: [] }); continue; }
+    const r = tourDaySlots(ds, s);
+    // 當日已過的時段不可再約
+    if (ds === todayStr) {
+      const now = new Date().toTimeString().slice(0, 5);
+      r.slots = r.slots.filter(x => x.time > now);
+    }
+    days.push({ date: ds, closed: r.closed, slots: r.slots });
+  }
+  res.json({ month, days });
+});
+
+const LINE_UID_RE = /^U[0-9a-f]{32}$/i;
+function lineTourSession(token) {
+  if (!token || typeof token !== 'string') return null;
+  db.prepare("DELETE FROM line_tour_sessions WHERE expires_at < datetime('now','localtime')").run();
+  return db.prepare('SELECT * FROM line_tour_sessions WHERE token = ?').get(token) || null;
+}
+
+// 步驟一：儲存媽咪資料並發送驗證碼（推播至用戶 LINE 聊天室）
+app.post('/api/public/line-tours/register', async (req, res) => {
+  const b = req.body || {};
+  const s = getSettings();
+  const chToken = (s.line_channel_access_token || '').trim();
+  if (!chToken) return res.status(400).json({ error: '機構尚未完成 LINE 串接設定' });
+  const lineUserId = String(b.line_user_id || '').trim();
+  if (!LINE_UID_RE.test(lineUserId)) return res.status(400).json({ error: '無法取得您的 LINE 身分，請由官方帳號選單重新開啟' });
+  const name = String(b.name || '').trim().slice(0, 60);
+  const phone = String(b.phone || '').replace(/[-\s]/g, '');
+  const parity = ['1', '2', '3', '4以上'].includes(b.parity) ? b.parity : '';
+  const due = /^\d{4}-\d{2}-\d{2}$/.test(String(b.due_date || '')) ? b.due_date : '';
+  if (!name) return res.status(400).json({ error: '請填寫媽咪姓名' });
+  if (!/^09\d{8}$/.test(phone)) return res.status(400).json({ error: '請填寫正確的手機號碼（09 開頭共 10 碼）' });
+  if (!due) return res.status(400).json({ error: '請選擇預產期' });
+  // 防濫發：同一用戶 10 分鐘內最多 3 次驗證碼
+  const recent = db.prepare(`SELECT COUNT(*) c FROM line_tour_sessions
+    WHERE line_user_id = ? AND created_at > datetime('now','localtime','-10 minutes')`).get(lineUserId).c;
+  if (recent >= 3) return res.status(429).json({ error: '驗證碼發送過於頻繁，請稍後再試' });
+  const code = String(crypto.randomInt(100000, 1000000));
+  const token = crypto.randomBytes(24).toString('hex');
+  const r = await notify.pushMessages(chToken, lineUserId, [{
+    type: 'text', text: `【${s.center_name || '預約參觀'}】您的手機驗證碼為 ${code}，請於 10 分鐘內回到預約頁面輸入完成驗證。`
+  }]);
+  if (!r.ok) return res.status(400).json({ error: '驗證碼發送失敗，請確認已加入官方帳號好友後再試' });
+  db.prepare(`INSERT INTO line_tour_sessions (token, line_user_id, name, phone, parity, due_date, code, expires_at)
+    VALUES (?,?,?,?,?,?,?, datetime('now','localtime','+10 minutes'))`)
+    .run(token, lineUserId, name, phone, parity, due, code);
+  res.json({ ok: true, token });
+});
+
+// 步驟二：核對驗證碼
+app.post('/api/public/line-tours/verify', (req, res) => {
+  const b = req.body || {};
+  const ses = lineTourSession(b.token);
+  if (!ses) return res.status(400).json({ error: '驗證已逾時，請重新填寫資料' });
+  if (ses.attempts >= 5) return res.status(429).json({ error: '錯誤次數過多，請重新填寫資料取得新驗證碼' });
+  if (String(b.code || '').trim() !== ses.code) {
+    db.prepare('UPDATE line_tour_sessions SET attempts = attempts + 1 WHERE id = ?').run(ses.id);
+    return res.status(400).json({ error: '驗證碼不正確，請重新輸入' });
+  }
+  db.prepare('UPDATE line_tour_sessions SET verified = 1 WHERE id = ?').run(ses.id);
+  res.json({ ok: true });
+});
+
+// 步驟三：選定時段送出預約 → 自動建潛在客戶檔＋待確認預約＋推播「安排中」訊息
+app.post('/api/public/line-tours/book', async (req, res) => {
+  const b = req.body || {};
+  const ses = lineTourSession(b.token);
+  if (!ses) return res.status(400).json({ error: '預約逾時，請重新填寫資料' });
+  if (!ses.verified) return res.status(400).json({ error: '請先完成手機驗證' });
+  const date = String(b.date || ''), time = String(b.time || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: '請選擇參觀時段' });
+  if (date < today()) return res.status(400).json({ error: '參觀日期不可早於今天' });
+  const s = getSettings();
+  const day = tourDaySlots(date, s);
+  const slot = day.closed ? null : day.slots.find(x => x.time === time);
+  if (!slot || slot.left <= 0) return res.status(400).json({ error: '此時段已額滿或未開放，請重新選擇' });
+  const tourAt = `${date} ${time}`;
+  const link = tourCustomerLink({ name: ses.name, phone: ses.phone, due_date: ses.due_date, parity: ses.parity, source: 'LINE預約' }, null);
+  const info = db.prepare(`INSERT INTO tours
+    (name, phone, due_date, tour_at, source, status, note, parity, mother_id, line_user_id, confirm_status)
+    VALUES (?,?,?,?, 'LINE預約', 'scheduled', '', ?, ?, ?, 'pending')`)
+    .run(ses.name, ses.phone, ses.due_date, tourAt, ses.parity, link.motherId, ses.line_user_id);
+  addTourLog(info.lastInsertRowid, '用戶自 LINE 官方帳號送出預約參觀，待員工確認', null);
+  db.prepare('DELETE FROM line_tour_sessions WHERE id = ?').run(ses.id);
+  const chToken = (s.line_channel_access_token || '').trim();
+  // 推播「預約參觀安排中」給用戶（合約書指定訊息）
+  notify.pushMessages(chToken, ses.line_user_id, [tourFlexMessage({
+    title: '預約參觀安排中',
+    intro: '親愛的媽咪，您好！\n我們已收到您的預約參觀申請。\n客服正在安排中，請稍等片刻～\n我們將會儘快與您聯繫，確認您的參觀時間！',
+    fields: [['預約日期', date], ['預約時段', time], ['預產期', ses.due_date || '—'], ['胎次', ses.parity ? `第${ses.parity}胎` : '—']],
+    centerName: s.center_name || ''
+  })]).catch(() => {});
+  // 通知值班人員有新的待確認預約
+  if (chToken && s.line_staff_alert_id) {
+    notify.pushText(chToken, s.line_staff_alert_id,
+      `新 LINE 預約參觀（待確認）\n${ses.name}（${ses.phone}）\n希望參觀：${tourAt}\n預產期：${ses.due_date || '—'}／胎次：${ses.parity ? `第${ses.parity}胎` : '—'}\n請至客戶管理「待確認預約」確認。`).catch(() => {});
+  }
+  res.json({ ok: true, tour_at: tourAt });
 });
 app.get('/api/testimonials', requireStaff, ah(async (req, res) => {
   res.json(await dal.all('SELECT * FROM testimonials ORDER BY active DESC, sort, id DESC'));

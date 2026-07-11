@@ -75,6 +75,23 @@ async function sendReport(report, familyMembers, settings) {
   return results;
 }
 
+/* 推播任意訊息陣列（含 Flex）給單一 LINE 目標。token、to 任一為空則略過。 */
+async function pushMessages(token, to, messages) {
+  if (!token || !to || !messages || !messages.length) return { ok: false, skipped: true };
+  try {
+    const res = await fetch(LINE_PUSH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ to, messages: messages.slice(0, 5) })
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`LINE API ${res.status}: ${body.slice(0, 200)}`);
+    }
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
 /* 推播任意文字給單一 LINE 目標（userId / group / room）。token、to 任一為空則略過。 */
 async function pushText(token, to, text) {
   if (!token || !to) return { ok: false, skipped: true };
@@ -107,4 +124,4 @@ async function fbSend(pageToken, psid, text) {
   }
 }
 
-module.exports = { sendReport, reportText, pushLine, pushText, lineProfile, fbSend };
+module.exports = { sendReport, reportText, pushLine, pushText, pushMessages, lineProfile, fbSend };
