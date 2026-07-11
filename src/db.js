@@ -1687,6 +1687,7 @@ const DEFAULT_SETTINGS = {
   meal_choices: '一般餐,素食餐,不需供餐',
   line_channel_access_token: '',
   line_liff_id: '',                  // LINE LIFF ID（官賴選單開啟預約參觀頁用；空=改用帶參數連結）
+  family_daily_push_time: '10:00',   // 每日自動推播前一日寶寶日報＋成長趨勢給已綁定 LINE 家屬（HH:MM；留空停用）
   // 感染管制目標：手部衛生遵從率門檻（%），低於此值於月報標示
   hand_hygiene_target: '85',
   // 電子發票／收據（MIG 3.2）— 實際上傳大平台需加值中心 API

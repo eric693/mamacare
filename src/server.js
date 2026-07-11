@@ -2221,6 +2221,79 @@ app.get('/api/babies/:id/trends', requireStaff, (req, res) => {
   res.json(buildTrends(req.params.id));
 });
 
+// ---------- 每日自動推播：前一日寶寶日報＋成長趨勢（LINE 已綁定且在住的家屬） ----------
+function trendsBrief(babyId) {
+  try {
+    const t = buildTrends(babyId);
+    const parts = [];
+    if (t.weight.length) {
+      const last = t.weight[t.weight.length - 1];
+      const prev = t.weight.length > 1 ? t.weight[t.weight.length - 2] : null;
+      const diff = prev ? last.value - prev.value : null;
+      parts.push(`體重 ${last.value} g${diff != null ? `（較前次 ${diff >= 0 ? '+' : ''}${diff} g）` : ''}`);
+    }
+    if (t.jaundice.length) parts.push(`黃疸 ${t.jaundice[t.jaundice.length - 1].value} mg/dL`);
+    if (t.feeds.length) {
+      const recent = t.feeds.slice(-7);
+      const avg = Math.round(recent.reduce((s, x) => s + x.count, 0) / recent.length * 10) / 10;
+      parts.push(`近${recent.length}日平均餵食 ${avg} 次/日`);
+    }
+    return parts.length ? `成長趨勢：${parts.join('、')}` : '';
+  } catch (e) { return ''; }
+}
+
+async function runDailyFamilyPush() {
+  const s = getSettings();
+  const token = (s.line_channel_access_token || '').trim();
+  if (!token) return;
+  const base = (s.public_base_url || '').replace(/\/$/, '');
+  const yesterday = new Date(Date.now() - 86400000).toLocaleString('sv-SE').slice(0, 10);
+  const fams = db.prepare(`
+    SELECT f.id, f.baby_id, f.line_user_id, f.access_code
+    FROM family_members f
+    JOIN babies b ON b.id = f.baby_id
+    JOIN mothers m ON m.id = b.mother_id
+    WHERE f.active = 1 AND f.line_user_id != '' AND m.status = 'checked_in'`).all();
+  const byBaby = new Map();
+  for (const f of fams) {
+    if (!byBaby.has(f.baby_id)) byBaby.set(f.baby_id, []);
+    byBaby.get(f.baby_id).push(f);
+  }
+  const insLog = db.prepare("INSERT INTO push_logs (baby_id, report_date, channel, sent_by) VALUES (?,?, 'line_auto', NULL)");
+  for (const [babyId, members] of byBaby) {
+    try {
+      // 同一寶寶同一日僅自動發送一次（重啟／補跑不重複）
+      if (db.prepare("SELECT 1 FROM push_logs WHERE baby_id = ? AND report_date = ? AND channel = 'line_auto'").get(babyId, yesterday)) continue;
+      const report = buildDailyReport(babyId, yesterday);
+      if (!report || !report.records.length) continue; // 前一日無照護紀錄則不發
+      const brief = trendsBrief(babyId);
+      let sent = 0;
+      for (const f of members) {
+        const text = [notify.reportText(report, s.center_name || ''), brief,
+          base ? `家屬入口：${base}/family.html?code=${f.access_code}` : ''].filter(Boolean).join('\n');
+        const r = await notify.pushText(token, f.line_user_id, text);
+        if (r.ok) sent++;
+      }
+      if (sent) insLog.run(babyId, yesterday);
+    } catch (e) { /* 單一寶寶失敗不影響其他 */ }
+  }
+}
+
+// 每 30 秒檢查一次；到達設定時間（預設 10:00）即發送，重啟晚於該時間會自動補發（push_logs 防重複）
+if (process.env.NODE_ENV !== 'test') {
+  let lastFamilyPushDay = '';
+  setInterval(() => {
+    const t = (getSettings().family_daily_push_time || '').trim();
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) return;
+    const now = new Date();
+    const day = now.toLocaleString('sv-SE').slice(0, 10);
+    if (now.toTimeString().slice(0, 5) >= t && lastFamilyPushDay !== day) {
+      lastFamilyPushDay = day;
+      runDailyFamilyPush().catch(() => {});
+    }
+  }, 30 * 1000);
+}
+
 // ---------- 媽媽照護紀錄 ----------
 app.get('/api/mothers/:id/records', requireStaff, (req, res) => {
   const date = req.query.date || today();
@@ -8245,6 +8318,37 @@ app.post('/api/webhooks/line', (req, res) => {
           const link = liffId ? `https://liff.line.me/${liffId}` : `${base}/tour-booking.html?lu=${encodeURIComponent(userId)}`;
           if (token) await notify.pushText(token, userId, `親愛的媽咪，您好！\n請點選以下連結預約參觀：\n${link}`);
           continue;
+        }
+        // 官賴選單「產後服務」：已綁定家屬 → 家屬入口連結；未綁定 → 指引輸入通行碼
+        const wantPortal = (ev.type === 'postback' && /(^|&)action=family_portal(&|$)/.test((ev.postback || {}).data || ''))
+          || (text != null && text.trim() === '產後服務');
+        if (wantPortal) {
+          const fams = db.prepare(`SELECT f.access_code, b.name AS baby_name FROM family_members f
+            JOIN babies b ON b.id = f.baby_id WHERE f.line_user_id = ? AND f.active = 1`).all(userId);
+          if (!token) continue;
+          if (fams.length) {
+            const links = fams.map(f => `${f.baby_name}：${base}/family.html?code=${f.access_code}`);
+            await notify.pushText(token, userId,
+              `親愛的家屬，您好！\n請點選以下連結進入家屬入口網頁，查看寶寶日報、照片與成長趨勢：\n${links.join('\n')}`);
+          } else {
+            await notify.pushText(token, userId,
+              '您好！此功能於寶寶入住建檔（寶寶報喜）後開通。\n請直接於此輸入您的 8 碼家屬通行碼完成綁定（通行碼請向護理站索取）。');
+          }
+          continue;
+        }
+        // 家屬通行碼綁定：輸入 8 碼通行碼即綁定 LINE，之後每日自動收寶寶日報
+        if (text != null && /^[A-Z0-9]{8}$/i.test(text.trim())) {
+          const fam = db.prepare(`SELECT f.*, b.name AS baby_name FROM family_members f
+            JOIN babies b ON b.id = f.baby_id WHERE f.access_code = ? AND f.active = 1`).get(text.trim().toUpperCase());
+          if (fam) {
+            db.prepare('UPDATE family_members SET line_user_id = ? WHERE id = ?').run(userId, fam.id);
+            if (token) {
+              await notify.pushText(token, userId,
+                `綁定成功！您已綁定 ${fam.baby_name} 的家屬帳號（${fam.name}）。\n每日將自動傳送前一日的寶寶日報與成長趨勢。\n家屬入口：${base}/family.html?code=${fam.access_code}`);
+            }
+            continue;
+          }
+          // 查無此通行碼 → 當一般訊息進客訊收件匣
         }
         if (text != null) {
           const profile = token ? await notify.lineProfile(token, userId) : {};

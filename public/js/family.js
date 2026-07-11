@@ -986,10 +986,19 @@ function openCleaningRequest() {
     if (r.family) {
       family = r.family;
       showApp();
-    } else {
-      showLogin();
+      return;
     }
-  } catch (e) {
-    showLogin();
+  } catch (e) { /* 未登入 → 續走通行碼流程 */ }
+  // LINE 官賴「產後服務」連結帶通行碼 → 自動登入（成功後移除網址參數）
+  const urlCode = new URLSearchParams(location.search).get('code');
+  if (urlCode) {
+    try {
+      const r = await api('/family/login', { method: 'POST', body: { code: urlCode } });
+      history.replaceState(null, '', location.pathname);
+      family = r.family;
+      showApp();
+      return;
+    } catch (e) { history.replaceState(null, '', location.pathname); }
   }
+  showLogin();
 })();

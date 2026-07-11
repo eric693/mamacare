@@ -3872,6 +3872,7 @@ async function viewSettings() {
           <p class="sig-hint" style="color:#6b7c79;margin:4px 0">設定後可在「LINE／FB 客訊」收發訊息。LINE Webhook 指向 <code>/api/webhooks/line</code>、FB 指向 <code>/api/webhooks/facebook</code>。</p></div>
         <div class="field"><label>LINE Channel Secret（驗簽）</label><input id="st-line-secret" value="${esc(s.line_channel_secret)}" placeholder="收訊驗簽用"></div>
         <div class="field"><label>LINE LIFF ID（官賴預約參觀頁）</label><input id="st-line-liff" value="${esc(s.line_liff_id || '')}" placeholder="例 1234567890-abcdefgh；LIFF Endpoint 設為 /tour-booking.html"></div>
+        <div class="field"><label>家屬日報自動推播時間（前一日摘要＋成長趨勢）</label><input id="st-fam-push" value="${esc(s.family_daily_push_time || '')}" placeholder="例 10:00；留空停用"></div>
         <div class="field"><label>FB 粉專 Access Token</label><input id="st-fb-token" value="${esc(s.fb_page_access_token)}"></div>
         <div class="field"><label>FB App Secret（驗簽）</label><input id="st-fb-secret" value="${esc(s.fb_app_secret)}"></div>
         <div class="field"><label>FB Webhook Verify Token（自訂）</label><input id="st-fb-verify" value="${esc(s.fb_verify_token)}"></div>
@@ -3973,6 +3974,7 @@ async function viewSettings() {
           survey_on_checkout: $('#st-survey-co').value,
           line_channel_secret: $('#st-line-secret').value.trim(),
           line_liff_id: $('#st-line-liff').value.trim(),
+          family_daily_push_time: $('#st-fam-push').value.trim(),
           fb_page_access_token: $('#st-fb-token').value.trim(),
           fb_app_secret: $('#st-fb-secret').value.trim(),
           fb_verify_token: $('#st-fb-verify').value.trim(),
