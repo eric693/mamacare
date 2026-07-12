@@ -10778,8 +10778,9 @@ async function viewCustomers() {
   }
 
   // ----- 分頁：潛在客戶／預約參觀／合約資料／排房資料／膳食資訊／入住資訊／消費及收款 -----
+  // 膳食資訊分頁已移除；膳食一律由「膳食管理」頁統一入口處理
   const CTABS = [['lead', '潛在客戶'], ['tours', '預約參觀'], ['contracts', '合約資料'], ['rooms', '排房資料'],
-    ['meals', '膳食資訊'], ['pay', '入住前收款紀錄']];
+    ['pay', '入住前收款紀錄']];
   const BK_ST = { reserved: ['已預約', 'teal'], checked_in: ['入住中', 'green'], checked_out: ['已退住', 'gray'], cancelled: ['取消', 'gray'] };
   const CT_ST = { pending: ['待簽', 'yellow'], signed: ['已簽', 'green'], void: ['作廢', 'gray'] };
 
@@ -11127,23 +11128,9 @@ async function viewCustomers() {
     });
   }
 
-  // ----- 膳食資訊／消費及收款分頁 wiring -----
+  // ----- 消費及收款分頁 wiring（膳食一律由膳食管理頁處理，此分頁已移除）-----
   async function wirePanels(d) {
     const $q = sel => $('#cust-extra').querySelector(sel);
-    // 膳食：修改膳食總類（modal 下拉）
-    const mlBtn = $q('#ml-diet');
-    if (mlBtn) mlBtn.onclick = () => openModal('修改膳食總類', `
-      <div class="field"><label>膳食總類</label><select id="ml-sel">${d.meals.diets.map(x =>
-        `<option ${x === d.meals.diet ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
-      <div class="row mt"><button class="btn" id="ml-save">存檔</button><span class="error-msg" id="ml-err"></span></div>`, body => {
-      body.querySelector('#ml-save').onclick = async () => {
-        try {
-          await api(`/mothers/${editId}/meal-diet`, { method: 'PUT', body: { meal_diet: body.querySelector('#ml-sel').value } });
-          closeModal();
-          selectCustomer(editId);
-        } catch (e) { body.querySelector('#ml-err').textContent = e.message; }
-      };
-    });
     // 入住前收款新增（掛進行中／預約訂房；收款項目寫入款別）
     const payBtn = $q('#py-pay-add');
     if (payBtn) payBtn.onclick = async () => {
@@ -11732,42 +11719,6 @@ async function viewCustomers() {
         }).join('')}</ul>` : '<div class="empty">尚無修改紀錄</div>'}
       </div>`;
       })()}
-    </div>
-    <div class="cpanel" data-tab="meals">
-      <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
-        <span>排餐及膳食資料：<b>${esc(m.name)}</b></span>
-      </div>
-      <div class="card">
-        <div class="sec-hd">排餐與膳食資料</div>
-        <div class="table-wrap">
-          <table class="data stack">
-            <thead><tr><th>合約編號</th><th>預產期</th><th>膳食總類</th><th>飲食備註／禁忌</th><th class="no-print">排餐</th></tr></thead>
-            <tbody><tr>
-              <td data-label="合約編號">${d.contract ? esc(d.contract.contract_no) : '—'}</td>
-              <td data-label="預產期">${m.due_date ? `（預產）${esc(m.due_date)}` : '—'}${m.delivery_date ? `<br><span style="color:var(--danger)">（生產）${esc(m.delivery_date)}</span>` : ''}</td>
-              <td data-label="膳食總類"><b>${esc(d.meals.diet || '（未設定）')}</b></td>
-              <td data-label="飲食備註／禁忌"><small>${esc(d.meals.diet_notes || '—')}</small></td>
-              <td data-label="排餐" class="no-print">
-                ${canAccess('#/meal-plan') ? '<button class="btn small danger" id="ml-diet">修改膳食總類</button>' : '<small style="color:var(--muted)">需膳食權限</small>'}
-              </td>
-            </tr></tbody>
-          </table>
-        </div>
-        <div class="sec-hd" style="margin-top:10px">未來 7 天供餐預覽（依產後階段與膳食總類自動挑菜單）</div>
-        <div class="table-wrap">
-          <table class="data stack">
-            <thead><tr><th>日期</th>${d.meals.slots.map(s => `<th>${esc(s)}</th>`).join('')}</tr></thead>
-            <tbody>${d.meals.week.map(w => `
-              <tr><td data-label="日期">${esc(w.date.slice(5))}${w.day ? `<br><small>第${w.day}天${w.stage ? `・${esc(w.stage)}` : ''}</small>` : ''}</td>
-                ${d.meals.slots.map(s => `<td data-label="${esc(s)}"><small>${esc(w.slots[s] || '—')}</small></td>`).join('')}</tr>`).join('')}</tbody>
-          </table>
-        </div>
-        <div class="row no-print" style="gap:6px;margin-top:8px">
-          ${canAccess('#/meals') ? '<a class="btn small" href="#/meals">膳食管理</a>' : ''}
-          ${canAccess('#/meal-plan') ? '<a class="btn small secondary" href="#/meal-plan">月子餐（菜單管理）</a>' : ''}
-          <a class="btn small secondary" href="#/mother-handover?m=${m.id}">修改飲食禁忌（產婦交班單）</a>
-        </div>
-      </div>
     </div>
     <div class="cpanel" data-tab="pay">
       <div class="card" style="background:var(--danger);color:#fff;padding:10px 16px">
