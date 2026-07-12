@@ -2662,24 +2662,26 @@ app.put('/api/bookings/:id', requireStaff, (req, res) => {
   const total = b.total_amount !== undefined ? Number(b.total_amount) || 0 : bk.total_amount;
   db.prepare('UPDATE bookings SET room_id = ?, check_in = ?, check_out = ?, total_amount = ? WHERE id = ?')
     .run(roomId, checkIn, checkOut, total, bk.id);
-  // 入住日改期：報喜自動帶入的「入住日訂餐」與「請備房」任務跟著搬到新日期
+  // 入住日改期：報喜自動帶入的「住期訂餐」重新鋪滿新住期、「請備房」任務名稱與備註跟著更新
   if (checkIn !== bk.check_in || checkOut !== bk.check_out) {
-    if (checkIn !== bk.check_in) {
-      const moved = db.prepare(`SELECT * FROM meal_orders WHERE mother_id = ? AND meal_date = ?`).all(bk.mother_id, bk.check_in);
-      const upMeal = db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note, status)
-        VALUES (?,?,?,?,?,?)
-        ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note`);
-      for (const o of moved) upMeal.run(bk.mother_id, checkIn, o.meal_type, o.choice, o.note || '', o.status || 'preparing');
-      if (moved.length) db.prepare('DELETE FROM meal_orders WHERE mother_id = ? AND meal_date = ?').run(bk.mother_id, bk.check_in);
+    // 訂餐：以舊住期任一筆餐別為準，清掉舊住期、依新住期重鋪（入住日午餐～出住日早餐）
+    const seed = db.prepare(`SELECT choice, note FROM meal_orders WHERE mother_id = ? AND meal_date >= ? AND meal_date <= ?
+      ORDER BY meal_date, meal_type LIMIT 1`).get(bk.mother_id, bk.check_in, bk.check_out);
+    if (seed) {
+      db.prepare('DELETE FROM meal_orders WHERE mother_id = ? AND meal_date >= ? AND meal_date <= ?')
+        .run(bk.mother_id, bk.check_in, bk.check_out);
+      seedStayMeals(bk.mother_id, checkIn, checkOut, seed.choice, seed.note || '');
     }
     const roomName = (db.prepare('SELECT name FROM rooms WHERE id = ?').get(roomId) || {}).name || '';
     const oldRoomName = (db.prepare('SELECT name FROM rooms WHERE id = ?').get(bk.room_id) || {}).name || '';
+    const newMmdd = String(checkIn).slice(5).replace('-', ''); // 新入住日 MMdd
     for (const t of db.prepare(`SELECT id, task, note FROM housekeeping_logs
-      WHERE mother_id = ? AND status = 'pending' AND task LIKE '%請備房'`).all(bk.mother_id)) {
+      WHERE mother_id = ? AND status = 'pending' AND task LIKE '%請備房%'`).all(bk.mother_id)) {
       let note = String(t.note || '').split(bk.check_in).join(checkIn).split(bk.check_out).join(checkOut);
       if (oldRoomName && roomName && oldRoomName !== roomName) note = note.split(`${oldRoomName}房`).join(`${roomName}房`);
-      db.prepare('UPDATE housekeeping_logs SET room_id = ?, task = ?, scheduled_for = ?, note = ? WHERE id = ?')
-        .run(roomId, `${roomName}請備房`, checkIn, note, t.id);
+      // 任務名帶新入住日 MMdd、備註日期同步；排定日維持報喜儲存日不動
+      db.prepare('UPDATE housekeeping_logs SET room_id = ?, task = ?, note = ? WHERE id = ?')
+        .run(roomId, `${roomName}請備房${newMmdd}`, note, t.id);
     }
   }
   logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id, summary: `入住前調整：房間#${roomId} ${checkIn}~${checkOut}` });
@@ -4106,7 +4108,28 @@ app.post('/api/meals', requireStaff, (req, res) => {
     VALUES (?,?,?,?,?,?)
     ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note, status = excluded.status`)
     .run(o.mother_id, o.meal_date, o.meal_type, o.choice, o.note || '', status);
-  res.json({ ok: true });
+  // 自動帶入未來日期：同餐別往後鋪到「出住日早餐」為止（僅更新餐點，不覆蓋既有備註）
+  let filled = 0;
+  if (o.propagate) {
+    const bk = db.prepare(`SELECT check_in, check_out FROM bookings
+      WHERE mother_id = ? AND status != 'cancelled' AND check_in <= ? AND check_out >= ?
+      ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(o.mother_id, o.meal_date, o.meal_date);
+    if (bk) {
+      const up = db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note, status)
+        VALUES (?,?,?,?, '', 'preparing')
+        ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice`);
+      const endD = new Date(bk.check_out + 'T00:00:00Z');
+      let dd = new Date(o.meal_date + 'T00:00:00Z');
+      dd = new Date(dd.getTime() + 86400000);   // 從隔天開始
+      for (let i = 0; dd <= endD && i < 400; i++, dd = new Date(dd.getTime() + 86400000)) {
+        const ds = dd.toISOString().slice(0, 10);
+        if (ds === bk.check_out && o.meal_type !== 'breakfast') continue;   // 出住日僅供早餐
+        up.run(o.mother_id, ds, o.meal_type, o.choice);
+        filled++;
+      }
+    }
+  }
+  res.json({ ok: true, filled });
 });
 
 // 僅更新訂餐狀態／備註（不改餐點選擇）
@@ -4878,6 +4901,20 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   res.json({ ok: true, contract_no: cur.contract_no });
 });
 
+// 報喜訂餐鋪床：自入住日午餐起至出住日早餐止，逐日鋪入餐別（入住日略過早餐、出住日僅早餐）
+function seedStayMeals(motherId, checkIn, checkOut, choice, note) {
+  const upMeal = db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note`);
+  let dd = new Date(checkIn + 'T00:00:00Z');
+  const endD = new Date(checkOut + 'T00:00:00Z');
+  for (let i = 0; dd <= endD && i < 200; i++, dd = new Date(dd.getTime() + 86400000)) {
+    const ds = dd.toISOString().slice(0, 10);
+    const meals = ds === checkIn ? ['lunch', 'dinner'] : ds === checkOut ? ['breakfast'] : ['breakfast', 'lunch', 'dinner'];
+    for (const mt of meals) upMeal.run(motherId, ds, mt, choice, note || '');
+  }
+}
+
 // 寶寶報喜：儲存入住通知單資料；建立寶寶資料（依胎數）、同步媽媽生產資訊
 // 儲存後資料轉入：實際入住床表／住客管理／膳食管理／媽媽房況／寶寶房況
 app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
@@ -4938,31 +4975,30 @@ app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
     FROM bookings bk JOIN rooms r ON r.id = bk.room_id
     WHERE bk.mother_id = ? AND bk.status IN ('reserved','checked_in')
     ORDER BY bk.check_in DESC LIMIT 1`).get(m.id);
+  let hkTaskName = '';
   if (annBk) {
-    // 房務任務：(房號)請備房；重複報喜不重複建立（同任務名且待處理者跳過）
-    const taskName = `${annBk.room_name}請備房`;
+    // 房務任務：(房號)請備房+MMdd(入住日)；建立於報喜儲存日；重複報喜不重複建立（同任務名且待處理者跳過）
+    const mmdd = String(annBk.check_in || '').slice(5).replace('-', ''); // 入住日 MMdd，例如 0720
+    hkTaskName = `${annBk.room_name}請備房${mmdd}`;
     const dupTask = db.prepare(`SELECT 1 FROM housekeeping_logs
-      WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`).get(m.id, taskName);
+      WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`).get(m.id, hkTaskName);
     if (!dupTask) {
       db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
-        VALUES (?,?,?,?,?,?)`).run(annBk.room_id, m.id, taskName, annBk.check_in,
+        VALUES (?,?,?,?,?,?)`).run(annBk.room_id, m.id, hkTaskName, today(),
         `媽咪 ${m.name}／${annBk.room_name}房／入住 ${annBk.check_in}／出住 ${annBk.check_out}／哺乳衣 ${ann.announce_bra || '—'}`,
         req.session.user.id);
     }
-    // 膳食管理：入住日當日訂餐自動套入餐別；備註帶禁忌／禁忌食材
+    // 膳食管理：自入住日午餐起至出住日早餐止，逐日自動帶入餐別（未來每一天都有訂餐，不再顯示未訂）
     if (ann.announce_meal && ann.announce_meal !== '不需供餐') {
       const mealNote = [ann.announce_diet_type, ann.announce_taboos ? `禁忌：${ann.announce_taboos}` : '']
         .filter(Boolean).join('　');
-      const upMeal = db.prepare(`INSERT INTO meal_orders (mother_id, meal_date, meal_type, choice, note)
-        VALUES (?,?,?,?,?)
-        ON CONFLICT(mother_id, meal_date, meal_type) DO UPDATE SET choice = excluded.choice, note = excluded.note`);
-      for (const mt of ['breakfast', 'lunch', 'dinner']) upMeal.run(m.id, annBk.check_in, mt, ann.announce_meal, mealNote);
+      seedStayMeals(m.id, annBk.check_in, annBk.check_out, ann.announce_meal, mealNote);
     }
   }
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: m.id,
     summary: `寶寶報喜：生產日 ${b.birth_date}、${babiesIn.length} 胎、餐別 ${ann.announce_meal || '—'}、車號 ${ann.announce_car_no || '—'}` });
   res.json({ ok: true, created_babies: Math.max(0, babiesIn.length - existingBefore),
-    hk_task: annBk ? `${annBk.room_name}請備房` : '', meal_date: annBk ? annBk.check_in : '' });
+    hk_task: hkTaskName, meal_date: annBk ? annBk.check_in : '', meal_end: annBk ? annBk.check_out : '' });
 });
 
 // 合約明細：新增銷售房型（qty=訂房天數；price 未帶則取該房型每日房價）
@@ -7297,6 +7333,8 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
              AND diaper_kind = '濕' AND date(recorded_at) = ?) AS diaper_wet,
            (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'diaper'
              AND diaper_kind = '便' AND date(recorded_at) = ?) AS diaper_stool,
+           (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'bath'
+             AND date(recorded_at) = ?) AS bath_done,
            (SELECT value_num FROM baby_records WHERE baby_id = b.id AND record_type = 'temperature'
              ORDER BY recorded_at DESC LIMIT 1) AS last_temp,
            (SELECT recorded_at FROM baby_records WHERE baby_id = b.id AND record_type = 'temperature'
@@ -7314,7 +7352,7 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
              ORDER BY bk.check_in DESC LIMIT 1) AS check_out
     FROM babies b JOIN mothers m ON m.id = b.mother_id
     WHERE m.status = 'checked_in'
-    ORDER BY b.location, m.name, b.name`).all(d, d, d);
+    ORDER BY b.location, m.name, b.name`).all(d, d, d, d);
   for (const b of rows) {
     b.age_days = b.birth_date ? Math.round((new Date(d) - new Date(b.birth_date)) / 86400000) : null;
     // 最近一次寶寶護理評估的臍帶狀態（房況卡片顯示用）
