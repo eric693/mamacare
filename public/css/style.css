@@ -552,10 +552,8 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 .badge.purple { background: #f3e5f5; color: #8e24aa; }
 .bbc { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06); }
 .bbc.alert { outline: 2px solid var(--danger); }
-.bbc-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; color: #fff; font-weight: 700; font-size: 1.05rem; }
-.bbc-head.male { background: #5ec8f2; }
-.bbc-head.female { background: #f291b2; }
-.bbc-head.none { background: #9aa5a4; }
+/* 性別不以顏色區別：標題統一用主色，性別以「之子／之女」文字呈現 */
+.bbc-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; color: #fff; font-weight: 700; font-size: 1.05rem; background: var(--primary); }
 .bbc-head small { font-weight: 500; font-size: 0.82rem; opacity: 0.95; }
 .bbc-body { padding: 10px 14px; }
 .bbc-body.loc-nursery { background: #fff; }
