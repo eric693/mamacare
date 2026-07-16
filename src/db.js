@@ -1623,6 +1623,16 @@ function init() {
 
   ensureSettings();
   ensureContractTemplate();
+  // 托嬰：既有資料庫於啟動時補建「托嬰」房型＋托嬰室
+  // （全新資料庫略過，交由 --seed 於示範房建立後補建，避免搶走示範房 id 順序）
+  if (db.prepare('SELECT COUNT(*) c FROM rooms').get().c > 0) {
+    if (!db.prepare("SELECT 1 FROM room_types WHERE name = '托嬰'").get()) {
+      db.prepare("INSERT INTO room_types (name, price, sort, active) VALUES ('托嬰', 0, 99, 1)").run();
+    }
+    if (!db.prepare("SELECT 1 FROM rooms WHERE room_type = '托嬰'").get()) {
+      db.prepare("INSERT INTO rooms (name, room_type, price_per_day, notes, active, sort) VALUES ('托嬰室', '托嬰', 0, '媽媽退房後寶寶續留館托嬰', 1, 99)").run();
+    }
+  }
 }
 
 // 預設定型化合約範本（參考衛福部產後護理機構定型化契約應記載事項精神，可於系統內自由編修）
@@ -2082,16 +2092,6 @@ function seed() {
     120000, '3', 0, 120000, 'issued', adminId, '第一期款收據');
 
   return true;
-  // 托嬰：既有資料庫於啟動時補建「托嬰」房型＋托嬰室
-  // （全新資料庫略過，交由 --seed 於示範房建立後補建，避免搶走示範房 id 順序）
-  if (db.prepare('SELECT COUNT(*) c FROM rooms').get().c > 0) {
-    if (!db.prepare("SELECT 1 FROM room_types WHERE name = '托嬰'").get()) {
-      db.prepare("INSERT INTO room_types (name, price, sort, active) VALUES ('托嬰', 0, 99, 1)").run();
-    }
-    if (!db.prepare("SELECT 1 FROM rooms WHERE room_type = '托嬰'").get()) {
-      db.prepare("INSERT INTO rooms (name, room_type, price_per_day, notes, active, sort) VALUES ('托嬰室', '托嬰', 0, '媽媽退房後寶寶續留館托嬰', 1, 99)").run();
-    }
-  }
 }
 
 init();
