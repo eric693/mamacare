@@ -4877,6 +4877,12 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
     }
     data[k] = nv;
   }
+  // 各區塊存檔時間戳：供合約資料頁顯示「儲存明細」，並帶入訂房確認單（合約）
+  const stampAt = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19).replace('T', ' ');
+  if (b.voucher_amount !== undefined) data.voucher_at = stampAt;
+  if (b.cash_discount !== undefined) data.cash_discount_at = stampAt;
+  if (b.gift_content !== undefined) data.gift_at = stampAt;
+  if (b.consult_date !== undefined || b.consult_note !== undefined) data.consult_at = stampAt;
   db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
     .run(JSON.stringify(data).slice(0, 12000), mother.id);
   if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) {
@@ -6309,8 +6315,12 @@ function contractContext(bookingId) {
   const days = Math.max(0, Math.round(
     (new Date(bk.check_out) - new Date(bk.check_in)) / 86400000));
   const balance = Math.max(0, (bk.total_amount || 0) - (bk.deposit || 0));
+  // 合約資料（客戶管理→合約資料）已存檔的優惠明細：帶入訂房確認單
+  let cd = {};
+  try { cd = JSON.parse((db.prepare('SELECT data FROM customer_contracts WHERE mother_id = ?').get(bk.mother_id) || {}).data || '{}'); }
+  catch (e) { cd = {}; }
   return {
-    bk,
+    bk, cd,
     map: {
       center_name: getSettings().center_name || '',
       mother_name: bk.mother_name || '',
@@ -6323,9 +6333,30 @@ function contractContext(bookingId) {
       total_amount: money(bk.total_amount),
       deposit: money(bk.deposit),
       balance: money(balance),
-      today: today()
+      today: today(),
+      // 合約資料頁存檔的優惠明細（範本可用 {{voucher_amount}} 等自行排版）
+      voucher_amount: money(Number(cd.voucher_amount) || 0),
+      cash_discount: money(Number(cd.cash_discount) || 0),
+      gift_content: cd.gift_content || '',
+      voucher_by: cd.voucher_by || '',
+      cash_discount_by: cd.cash_discount_by || '',
+      gift_by: cd.gift_by || ''
     }
   };
+}
+
+// 優惠明細區塊：合約資料頁已存檔的禮券／折扣／贈品，附存檔人與存檔時間
+function discountBlock(cd) {
+  const line = (label, val, by, at, note) => val
+    ? `${label}：${val}${by ? `（存檔人：${by}${at ? `・${at}` : ''}）` : ''}${note ? `\n　　${note}` : ''}`
+    : '';
+  const rows = [
+    line('商品禮券', Number(cd.voucher_amount) ? money(Number(cd.voucher_amount)) : '', cd.voucher_by, cd.voucher_at, '只能折抵商城商品，出住日後歸零。'),
+    line('現金折扣', Number(cd.cash_discount) ? money(Number(cd.cash_discount)) : '', cd.cash_discount_by, cd.cash_discount_at, '訂金仍為合約總額 10%（不扣折扣）。'),
+    line('贈品內容', cd.gift_content || '', cd.gift_by, cd.gift_at, '')
+  ].filter(Boolean);
+  if (!rows.length) return '';
+  return `\n\n── 優惠與贈品明細（合約資料存檔帶入）──\n${rows.join('\n')}\n`;
 }
 function renderTemplate(body, map) {
   return String(body || '').replace(/\{\{(\w+)\}\}/g, (m, k) =>
@@ -6384,7 +6415,11 @@ app.post('/api/bookings/:id/contracts', requireStaff, (req, res) => {
   if (!tpl) return res.status(400).json({ error: '請選擇合約範本' });
   const title = (req.body || {}).title || tpl.name;
   const handler = ((req.body || {}).handler || '').trim();
-  const body = renderTemplate(tpl.body, ctx.map);
+  let body = renderTemplate(tpl.body, ctx.map);
+  // 範本未自行放入優惠欄位時，自動附上合約資料頁存檔的優惠明細（避免重複附加）
+  if (!/\{\{(voucher_amount|cash_discount|gift_content)\}\}/.test(tpl.body || '')) {
+    body += discountBlock(ctx.cd || {});
+  }
   const info = db.prepare(`INSERT INTO contracts
     (booking_id, template_id, title, body, sign_token, created_by, handler)
     VALUES (?,?,?,?,?,?,?)`).run(

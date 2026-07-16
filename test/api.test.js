@@ -1888,3 +1888,31 @@ test('寶寶報喜：房務任務名(房號+請備房+MMdd)、備註含哺乳衣
   const bfast = (await req('GET', `/api/meals?date=${bk.check_in}`)).data.orders.find(o => o.mother_id === mom.id && o.meal_type === 'breakfast');
   assert.ok(!bfast, '入住日不供早餐');
 });
+
+test('合約資料：存檔蓋時間戳，優惠明細帶入訂房確認單（合約）', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mom = (await req('GET', '/api/mothers')).data.find(m => m.status === 'checked_in');
+  // 禮券／折扣／贈品存檔 → 應蓋上 _at 時間戳
+  const r = await req('PUT', `/api/customers/${mom.id}/contract`, {
+    voucher_amount: '1000', voucher_by: '王主任',
+    cash_discount: '0', cash_discount_by: '王主任',
+    gift_content: '身體spa *1', gift_by: '王主任'
+  });
+  assert.strictEqual(r.status, 200);
+  const cust = (await req('GET', `/api/customers/${mom.id}`)).data;
+  const cd = cust.contract.data;
+  assert.ok(cd.voucher_at, '禮券應有存檔時間');
+  assert.ok(cd.cash_discount_at, '折扣應有存檔時間');
+  assert.ok(cd.gift_at, '贈品應有存檔時間');
+  assert.strictEqual(cd.voucher_by, '王主任');
+  // 產生合約 → 內文應帶入優惠明細
+  const bk = cust.bookings.find(b => b.status === 'checked_in');
+  const tpls = (await req('GET', '/api/contract-templates')).data;
+  const tpl = tpls.find(t => t.active) || tpls[0];
+  const made = await req('POST', `/api/bookings/${bk.id}/contracts`, { template_id: tpl.id, handler: '王主任' });
+  assert.strictEqual(made.status, 200);
+  const doc = (await req('GET', `/api/contracts/${made.data.id}`)).data;
+  assert.ok(doc.body.includes('優惠與贈品明細'), '合約內文應含優惠明細區塊');
+  assert.ok(doc.body.includes('身體spa *1'), '合約內文應含贈品內容');
+  assert.ok(doc.body.includes('王主任'), '合約內文應含存檔人');
+});

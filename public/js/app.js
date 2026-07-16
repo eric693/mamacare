@@ -10643,6 +10643,19 @@ const CUST_OPT = {
 };
 const CUST_STATUS = { reserved: ['潛客/預約', 'teal'], checked_in: ['在住', 'green'], checked_out: ['已退住', 'gray'] };
 
+// 合約資料：各區塊存檔後於下方顯示「儲存明細」（值／存檔人／存檔時間）
+// 有存檔人或存檔時間即視為已存檔（金額 0 也算有效存檔值）
+function ctSavedRow(label, val, by, at) {
+  const saved = !!(by || at);
+  return `<div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border);border-left:3px solid ${saved ? 'var(--ok)' : 'var(--border)'};border-radius:6px;font-size:.85rem;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline">
+    <b style="color:var(--muted);font-weight:600">儲存明細</b>
+    ${saved ? `<span>${esc(label)}：<b>${esc(val)}</b></span>
+      <span style="color:var(--muted)">存檔人：${esc(by || '—')}</span>
+      <span style="color:var(--muted)">存檔時間：${esc(at || '—')}</span>`
+    : '<span style="color:var(--muted)">尚未存檔</span>'}
+  </div>`;
+}
+
 async function viewCustomers() {
   const deepId = Number((location.hash.split('?m=')[1] || '').split('&')[0]) || null;
   const sel = (id, opts, val) => `<select id="${id}"><option value="">--請選擇--</option>${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
@@ -11652,6 +11665,7 @@ async function viewCustomers() {
           <button class="btn danger" id="ct-voucher-save">禮券存檔</button>
         </div>
         <small style="color:var(--muted)">只能折抵商城商品，出住日後歸零。</small>
+        ${ctSavedRow('商品禮券', `$${Number(cd.voucher_amount || 0).toLocaleString()}`, cd.voucher_by, cd.voucher_at)}
       </div>
       <div class="card">
         <div class="sec-hd">現金折扣</div>
@@ -11661,6 +11675,7 @@ async function viewCustomers() {
           <button class="btn danger" id="ct-cashdisc-save">折扣存檔</button>
         </div>
         <small style="color:var(--muted)">訂金仍為合約總額 10%（不扣折扣）。</small>
+        ${ctSavedRow('現金折扣', `$${Number(cd.cash_discount || 0).toLocaleString()}`, cd.cash_discount_by, cd.cash_discount_at)}
       </div>
       <div class="card">
         <div class="sec-hd">贈品內容</div>
@@ -11669,6 +11684,7 @@ async function viewCustomers() {
           <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.gift_by || '')}" readonly style="max-width:120px"></div>
           <button class="btn danger" id="ct-gift-save">贈品存檔</button>
         </div>
+        ${ctSavedRow('贈品內容', cd.gift_content || '（無）', cd.gift_by, cd.gift_at)}
       </div>
       <div class="card no-print">
         <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
@@ -11676,6 +11692,7 @@ async function viewCustomers() {
           <button class="btn secondary" id="ct-print-paper" ${ct ? '' : 'disabled title="請先存檔產生合約編號"'}>列印紙本合約</button>
           <span class="error-msg" id="ct-err2"></span>
         </div>
+        ${ctSavedRow('合約編號', ct ? ct.contract_no : '', ct ? (cd.handler || '—') : '', ct ? ct.updated_at : '')}
       </div>
       <div class="card">
         <div class="sec-hd">產前諮詢</div>
@@ -11685,6 +11702,7 @@ async function viewCustomers() {
           <button class="btn danger" id="ct-consult-save">諮詢存檔</button>
         </div>
         <div class="field full" style="margin-top:8px"><label>諮詢備註</label><textarea id="ct-consult-note" maxlength="600" rows="3" placeholder="請填入諮詢備註">${esc(cd.consult_note || '')}</textarea></div>
+        ${ctSavedRow('產前諮詢', cd.consult_date || '（未填日期）', cd.consult_by, cd.consult_at)}
       </div>
       <div class="card">
         <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
