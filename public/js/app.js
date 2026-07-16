@@ -11320,7 +11320,11 @@ async function viewCustomers() {
         try {
           for (const r of picked) {
             const end = new Date(new Date(cursor + 'T00:00:00Z').getTime() + r.days * 86400000).toISOString().slice(0, 10);
-            // 已排房列：未變更即跳過（防呆不重複排房）；有變更則更新原訂房（連動床表／訂餐／房務）
+            // 金額依合約「預定房型」單價計（升等／降等不改價，僅床表標示）；加開列無預定房型則取實際房價
+            const it = d.contract.items.find(i => i.name === (r.planned_type || r.type));
+            const room = roomList.find(x => x.id === r.room_id);
+            const price = it ? (it.price || 0) : ((room && room.price_per_day) || 0);
+            // 已排房列：未變更即跳過（防呆不重複排房）；有變更則更新原訂房並重算應收（連動床表／訂餐／房務／收費帳務）
             if (r.booking_id) {
               const bk0 = (d.bookings || []).find(b => b.id === r.booking_id) || {};
               if (r.room_id === r.orig_room && r.days === r.orig_days && cursor === bk0.check_in) {
@@ -11329,16 +11333,12 @@ async function viewCustomers() {
                 continue;
               }
               await api(`/bookings/${r.booking_id}`, { method: 'PUT', body: {
-                room_id: r.room_id, check_in: cursor, check_out: end
+                room_id: r.room_id, check_in: cursor, check_out: end, total_amount: price * r.days
               } });
               dep = 0;
               cursor = end;
               continue;
             }
-            // 金額仍依合約「預定房型」單價計（升等／降等不改價，僅床表標示）；加開列無預定房型則取實際房價
-            const it = d.contract.items.find(i => i.name === (r.planned_type || r.type));
-            const room = roomList.find(x => x.id === r.room_id);
-            const price = it ? (it.price || 0) : ((room && room.price_per_day) || 0);
             await api('/bookings', { method: 'POST', body: {
               mother_id: editId, room_id: r.room_id, check_in: cursor, check_out: end,
               deposit: dep, total_amount: price * r.days, notes: note
