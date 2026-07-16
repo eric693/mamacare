@@ -11250,6 +11250,33 @@ async function viewCustomers() {
         updateWarn(tr);
       };
       bkRows.querySelectorAll('[data-bk-row]').forEach(wireRow);
+      // 防呆：已排房的合約列自動帶出已安排房號／天數（可更改）；確定排房時未變更者跳過、變更者更新原訂房
+      {
+        const dayCount = b => Math.max(1, Math.round((new Date(b.check_out) - new Date(b.check_in)) / 86400000));
+        const activeBks = (d.bookings || [])
+          .filter(b => b.status === 'reserved' || b.status === 'checked_in')
+          .sort((a, b) => (a.check_in < b.check_in ? -1 : 1));
+        const trs = [...bkRows.querySelectorAll('[data-bk-row]')];
+        trs.forEach((tr, i) => {
+          const bk = activeBks[i];
+          if (!bk) return;
+          const room = roomList.find(r => r.id === bk.room_id);
+          if (room && tr.dataset.type !== room.room_type) {
+            tr.dataset.type = room.room_type;
+            const typeSel = tr.querySelector('[data-bk-type]');
+            if (typeSel) typeSel.value = room.room_type;
+            tr.querySelector('[data-bk-room]').innerHTML = roomOpts(room.room_type);
+            updateWarn(tr);
+          }
+          tr.querySelector('[data-bk-room]').value = String(bk.room_id);
+          tr.querySelector('[data-bk-days]').value = dayCount(bk);
+          tr.dataset.bookingId = String(bk.id);
+          tr.dataset.origRoom = String(bk.room_id);
+          tr.dataset.origDays = String(dayCount(bk));
+          const tag = tr.querySelector('td:last-child');
+          if (tag) tag.innerHTML = `<span class="badge green" title="已有訂房 ${esc(bk.check_in)}~${esc(bk.check_out)}，未變更不會重複排房">已排房</span>`;
+        });
+      }
       $q('#bk-addrow').onclick = () => {
         const tr = document.createElement('tr');
         tr.setAttribute('data-bk-row', '');
@@ -11274,7 +11301,10 @@ async function viewCustomers() {
           type: tr.dataset.type,
           planned_type: tr.dataset.plannedType || '',
           room_id: Number(tr.querySelector('[data-bk-room]').value) || 0,
-          days: Number(tr.querySelector('[data-bk-days]').value) || 0
+          days: Number(tr.querySelector('[data-bk-days]').value) || 0,
+          booking_id: Number(tr.dataset.bookingId) || 0,
+          orig_room: Number(tr.dataset.origRoom) || 0,
+          orig_days: Number(tr.dataset.origDays) || 0
         }));
         const picked = rows.filter(r => r.room_id || r.days);
         if (!picked.length) { err.textContent = '請至少選擇一列的房號與天數'; return; }
@@ -11290,6 +11320,21 @@ async function viewCustomers() {
         try {
           for (const r of picked) {
             const end = new Date(new Date(cursor + 'T00:00:00Z').getTime() + r.days * 86400000).toISOString().slice(0, 10);
+            // 已排房列：未變更即跳過（防呆不重複排房）；有變更則更新原訂房（連動床表／訂餐／房務）
+            if (r.booking_id) {
+              const bk0 = (d.bookings || []).find(b => b.id === r.booking_id) || {};
+              if (r.room_id === r.orig_room && r.days === r.orig_days && cursor === bk0.check_in) {
+                dep = 0;
+                cursor = bk0.check_out || end;
+                continue;
+              }
+              await api(`/bookings/${r.booking_id}`, { method: 'PUT', body: {
+                room_id: r.room_id, check_in: cursor, check_out: end
+              } });
+              dep = 0;
+              cursor = end;
+              continue;
+            }
             // 金額仍依合約「預定房型」單價計（升等／降等不改價，僅床表標示）；加開列無預定房型則取實際房價
             const it = d.contract.items.find(i => i.name === (r.planned_type || r.type));
             const room = roomList.find(x => x.id === r.room_id);
