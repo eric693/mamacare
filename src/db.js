@@ -64,7 +64,7 @@ function init() {
     birth_date TEXT DEFAULT '',
     birth_weight_g INTEGER,
     notes TEXT DEFAULT '',
-    location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
+    location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out','hospital','daycare')),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
 
@@ -94,7 +94,7 @@ function init() {
     value_num REAL,
     photo_file TEXT DEFAULT '',
     note TEXT DEFAULT '',
-    location TEXT DEFAULT '' CHECK (location IN ('','nursery','rooming','isolation','out','hospital')),
+    location TEXT DEFAULT '' CHECK (location IN ('','nursery','rooming','isolation','out','hospital','daycare')),
     recorded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_baby_records_baby ON baby_records(baby_id, recorded_at);
@@ -104,7 +104,7 @@ function init() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     baby_id INTEGER NOT NULL REFERENCES babies(id),
     nurse_id INTEGER REFERENCES users(id),
-    location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
+    location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out','hospital','daycare')),
     note TEXT DEFAULT '',
     moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
@@ -1450,7 +1450,7 @@ function init() {
         birth_date TEXT DEFAULT '',
         birth_weight_g INTEGER,
         notes TEXT DEFAULT '',
-        location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
+        location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out','hospital','daycare')),
         created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
       )`);
       db.exec(`INSERT INTO babies_new (id, mother_id, name, gender, birth_date, birth_weight_g, notes, location, created_at)
@@ -1467,7 +1467,7 @@ function init() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         baby_id INTEGER NOT NULL REFERENCES babies(id),
         nurse_id INTEGER REFERENCES users(id),
-        location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out','hospital')),
+        location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out','hospital','daycare')),
         note TEXT DEFAULT '',
         moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
       )`);
@@ -1479,6 +1479,51 @@ function init() {
     });
     db.pragma('foreign_keys = OFF'); tx(); db.pragma('foreign_keys = ON');
   }
+
+  // 寶寶位置狀態再擴充：新增「托嬰(daycare)」（媽媽退房後寶寶續留館）；放寬 CHECK 需重建表
+  const babyDc = (db.prepare("SELECT sql FROM sqlite_master WHERE name='babies'").get() || {}).sql || '';
+  if (!babyDc.includes("'daycare'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE babies_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        name TEXT NOT NULL,
+        gender TEXT DEFAULT '' CHECK (gender IN ('','male','female')),
+        birth_date TEXT DEFAULT '',
+        birth_weight_g INTEGER,
+        notes TEXT DEFAULT '',
+        location TEXT NOT NULL DEFAULT 'nursery' CHECK (location IN ('nursery','rooming','isolation','out','hospital','daycare')),
+        cord_off_at TEXT DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )`);
+      db.exec(`INSERT INTO babies_new (id, mother_id, name, gender, birth_date, birth_weight_g, notes, location, cord_off_at, created_at)
+        SELECT id, mother_id, name, gender, birth_date, birth_weight_g, notes, location,
+               COALESCE(cord_off_at,''), created_at FROM babies`);
+      db.exec('DROP TABLE babies');
+      db.exec('ALTER TABLE babies_new RENAME TO babies');
+    });
+    db.pragma('foreign_keys = OFF'); tx(); db.pragma('foreign_keys = ON');
+  }
+  const bllDc = (db.prepare("SELECT sql FROM sqlite_master WHERE name='baby_location_logs'").get() || {}).sql || '';
+  if (!bllDc.includes("'daycare'")) {
+    const tx = db.transaction(() => {
+      db.exec(`CREATE TABLE baby_location_logs_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        baby_id INTEGER NOT NULL REFERENCES babies(id),
+        nurse_id INTEGER REFERENCES users(id),
+        location TEXT NOT NULL CHECK (location IN ('nursery','rooming','isolation','out','hospital','daycare')),
+        note TEXT DEFAULT '',
+        moved_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      )`);
+      db.exec(`INSERT INTO baby_location_logs_new (id, baby_id, nurse_id, location, note, moved_at)
+        SELECT id, baby_id, nurse_id, location, note, moved_at FROM baby_location_logs`);
+      db.exec('DROP TABLE baby_location_logs');
+      db.exec('ALTER TABLE baby_location_logs_new RENAME TO baby_location_logs');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_baby_location_logs_baby ON baby_location_logs(baby_id, moved_at)');
+    });
+    db.pragma('foreign_keys = OFF'); tx(); db.pragma('foreign_keys = ON');
+  }
+
 
   // 照護紀錄可編輯：最後修改者／時間（明細變更另由 audit_logs 留軌跡）。須在上述重建之後執行
   for (const t of ['baby_records', 'mother_records']) {
@@ -2043,6 +2088,13 @@ init();
 
 if (process.argv.includes('--seed')) {
   const created = seed();
+  // 托嬰：房型設定新增「托嬰」（銷售房型／安排房型會自動出現）＋一間托嬰室
+  if (!db.prepare("SELECT 1 FROM room_types WHERE name = '托嬰'").get()) {
+    db.prepare("INSERT INTO room_types (name, price, sort, active) VALUES ('托嬰', 0, 99, 1)").run();
+  }
+  if (!db.prepare("SELECT 1 FROM rooms WHERE room_type = '托嬰'").get()) {
+    db.prepare("INSERT INTO rooms (name, room_type, price_per_day, notes, active, sort) VALUES ('托嬰室', '托嬰', 0, '媽媽退房後寶寶續留館托嬰', 1, 99)").run();
+  }
   console.log(created ? '種子資料建立完成' : '資料庫已有資料，略過種子建立');
 }
 

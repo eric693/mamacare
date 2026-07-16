@@ -130,8 +130,8 @@ const MODULES = [
 ];
 const MODULE_KEYS = MODULES.map(m => m.key);
 // 寶寶位置狀態（房況卡片顏色）：嬰兒室／親子同室／隔離室／不在館內
-const BABY_LOCATIONS = ['nursery', 'rooming', 'isolation', 'out', 'hospital'];
-const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中' };
+const BABY_LOCATIONS = ['nursery', 'rooming', 'isolation', 'out', 'hospital', 'daycare'];
+const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中', daycare: '托嬰' };
 // 路由 → 模組對照（依序比對，先精準後一般）；未命中者視為基礎共用端點，任何登入員工皆可存取
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
@@ -370,8 +370,8 @@ app.get('/api/me', (req, res) => {
 // ---------- 總覽 ----------
 app.get('/api/dashboard', requireStaff, (req, res) => {
   const d = today();
-  const totalRooms = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active = 1').get().c;
-  const occupied = db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings WHERE status = 'checked_in'`).get().c;
+  const totalRooms = db.prepare("SELECT COUNT(*) c FROM rooms WHERE active = 1 AND room_type != '托嬰'").get().c;
+  const occupied = db.prepare(`SELECT COUNT(DISTINCT bk.room_id) c FROM bookings bk JOIN rooms r ON r.id = bk.room_id WHERE bk.status = 'checked_in' AND r.room_type != '托嬰'`).get().c;
   const mothersIn = db.prepare(`SELECT COUNT(*) c FROM mothers WHERE status = 'checked_in'`).get().c;
   const babiesIn = db.prepare(`
     SELECT COUNT(*) c FROM babies b JOIN mothers m ON m.id = b.mother_id
@@ -2400,13 +2400,15 @@ app.delete('/api/mother-records/:id', requireAdmin, (req, res) => {
 
 // ---------- 房務與訂房 ----------
 app.get('/api/rooms', requireStaff, (req, res) => {
+  // 托嬰室為非產婦房間：預設不列入一般選房（僅 include_daycare=1 時回傳，供排房「安排房型＝托嬰」與房間資料管理使用）
+  const dcCond = req.query.include_daycare ? '' : " AND r.room_type != '托嬰'";
   const rows = db.prepare(`
     SELECT r.*,
       (SELECT m.name FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
         WHERE bk.room_id = r.id AND bk.status = 'checked_in' LIMIT 1) AS occupant,
       (SELECT bk.check_out FROM bookings bk
         WHERE bk.room_id = r.id AND bk.status = 'checked_in' LIMIT 1) AS occupied_until
-    FROM rooms r WHERE r.active = 1 ORDER BY r.name`).all();
+    FROM rooms r WHERE r.active = 1${dcCond} ORDER BY r.name`).all();
   res.json(rows);
 });
 
@@ -5416,9 +5418,11 @@ const ppMonths = (from, to) => {
   }
   return out;
 };
-// 某日佔用房數（reserved 不算、checked_in/checked_out 依期間涵蓋）
-const ppOccupiedOn = date => db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings
-  WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).get(date, date).c;
+// 某日佔用房數（reserved 不算、checked_in/checked_out 依期間涵蓋；托嬰室不計入住宿率）
+const ppOccupiedOn = date => db.prepare(`SELECT COUNT(DISTINCT bk.room_id) c FROM bookings bk
+  JOIN rooms r ON r.id = bk.room_id
+  WHERE bk.status IN ('checked_in','checked_out') AND r.room_type != '托嬰'
+    AND bk.check_in <= ? AND bk.check_out > ?`).get(date, date).c;
 
 // 滿意度報表：以媽媽發送（提交）日期認定；入住期間＝提交當日在訂房期間內
 const SATISFY_Q_COLS = [['d', '提交時間'], ['mother', '媽媽姓名'], ['survey', '問卷'], ['avg', '平均評分'], ['detail', '回覆內容']];
@@ -5563,7 +5567,7 @@ const PP_REPORTS = {
     ['d', '查詢日期'], ['occupied', '已入住(間)'], ['not_in', '尚未入住(間)'], ['subtotal', '住房小計(間)'],
     ['rate', '單日住宿率'], ['cum_rate', '累積住宿率']],
     run: (f, t) => {
-      const total = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active=1').get().c || 1;
+      const total = db.prepare("SELECT COUNT(*) c FROM rooms WHERE active=1 AND room_type != '托嬰'").get().c || 1;
       let cumSub = 0, cumCap = 0;
       return ppDays(f, t).map(d => {
         const occ = ppOccupiedOn(d);
@@ -5578,7 +5582,7 @@ const PP_REPORTS = {
   occupancy_month: { label: '住宿率統計表', columns: [
     ['month', '查詢月份'], ['occupied', '已入住(天)'], ['not_in', '尚未入住(天)'], ['subtotal', '住房小計(天)'], ['rate', '住宿率']],
     run: (f, t) => {
-      const total = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active=1').get().c || 1;
+      const total = db.prepare("SELECT COUNT(*) c FROM rooms WHERE active=1 AND room_type != '托嬰'").get().c || 1;
       return ppMonths(f, t).map(month => {
         const last = new Date(new Date(month + '-01').getFullYear(), new Date(month + '-01').getMonth() + 1, 0);
         const days = ppDays(month + '-01', last.toISOString().slice(0, 10));
@@ -5598,7 +5602,7 @@ const PP_REPORTS = {
     ['rate', '住宿率'], ['checkouts', '退房人數'], ['cancels', '退訂人數'],
     ['new_moms', '新入住媽媽人數'], ['new_babies', '新入住寶寶人數']],
     run: (f, t) => {
-      const total = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active=1').get().c || 1;
+      const total = db.prepare("SELECT COUNT(*) c FROM rooms WHERE active=1 AND room_type != '托嬰'").get().c || 1;
       const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
       return ppMonths(f, t).map(month => {
         const mStart = month + '-01';
@@ -7187,7 +7191,7 @@ app.get('/api/room-calendar', requireStaff, (req, res) => {
   const start = req.query.start || today();
   const days = Math.min(Math.max(parseInt(req.query.days || '30', 10), 7), 62);
   const end = new Date(new Date(start).getTime() + days * 86400000).toISOString().slice(0, 10);
-  const rooms = db.prepare('SELECT id, name, room_type, price_per_day FROM rooms WHERE active=1 ORDER BY name').all();
+  const rooms = db.prepare("SELECT id, name, room_type, price_per_day FROM rooms WHERE active=1 AND room_type != '托嬰' ORDER BY name").all();
   const bookings = db.prepare(`
     SELECT bk.id, bk.room_id, bk.mother_id, bk.check_in, bk.check_out, bk.actual_check_out, bk.status, bk.notes,
            m.name AS mother_name
@@ -7207,7 +7211,7 @@ app.get('/api/room-calendar', requireStaff, (req, res) => {
 // 媽媽房況：每間房的即時狀態（入住中住客、住到第幾天、今日進退房、照護與房務摘要、下一筆預約）
 app.get('/api/room-status/mothers', requireStaff, (req, res) => {
   const d = today();
-  const rooms = db.prepare('SELECT id, name, room_type, price_per_day, notes FROM rooms WHERE active=1 ORDER BY name').all();
+  const rooms = db.prepare("SELECT id, name, room_type, price_per_day, notes FROM rooms WHERE active=1 AND room_type != '托嬰' ORDER BY name").all();
   const occupants = db.prepare(`
     SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out, bk.baby_check_in,
            m.id AS mother_id, m.name AS mother_name, m.phone, m.delivery_type, m.delivery_date,
@@ -7387,12 +7391,31 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
              ORDER BY bk.check_in DESC LIMIT 1) AS check_out
     FROM babies b JOIN mothers m ON m.id = b.mother_id
     WHERE m.status = 'checked_in'
-    ORDER BY b.location, m.name, b.name`).all(d, d, d, d);
+       OR EXISTS (SELECT 1 FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+                  WHERE bk.mother_id = m.id AND r.room_type = '托嬰' AND bk.status != 'cancelled'
+                    AND bk.check_in <= ? AND bk.check_out > ?)
+    ORDER BY b.location, m.name, b.name`).all(d, d, d, d, d, d);
+  // 托嬰：媽媽退房後寶寶續留館。托嬰起始日起自動轉為「托嬰」狀態、房號顯示「托嬰」
+  const dcStmt = db.prepare(`SELECT bk.check_in, bk.check_out FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.mother_id = ? AND r.room_type = '托嬰' AND bk.status != 'cancelled'
+      AND bk.check_in <= ? AND bk.check_out > ? ORDER BY bk.check_in DESC LIMIT 1`);
   for (const b of rows) {
     b.age_days = b.birth_date ? Math.round((new Date(d) - new Date(b.birth_date)) / 86400000) : null;
     // 最近一次寶寶護理評估的臍帶狀態（房況卡片顯示用）
     try { b.cord = JSON.parse(b.last_assess_data || '{}').cord || ''; } catch (e) { b.cord = ''; }
     delete b.last_assess_data;
+    const dc = dcStmt.get(b.mother_id, d, d);
+    if (dc) {
+      b.room_name = '托嬰';
+      b.daycare_start = dc.check_in;
+      b.daycare_end = dc.check_out;   // 寶寶結案日預設帶入托嬰結束日
+      if (b.location !== 'daycare' && !b.closed) {
+        db.prepare('UPDATE babies SET location = ? WHERE id = ?').run('daycare', b.id);
+        db.prepare('INSERT INTO baby_location_logs (baby_id, location, note) VALUES (?,?,?)')
+          .run(b.id, 'daycare', `托嬰起始日 ${dc.check_in} 自動轉入`);
+        b.location = 'daycare';
+      }
+    }
   }
   const alerts = abnormalRecords(d, d); // 今日異常照護紀錄（門檻取自系統設定）
   // 今日入住寶寶（寶寶報喜資料已儲存者）：
@@ -7422,6 +7445,7 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
       isolation: rows.filter(b => b.location === 'isolation').length,
       out: rows.filter(b => b.location === 'out').length,
       hospital: rows.filter(b => b.location === 'hospital').length,
+      daycare: rows.filter(b => b.location === 'daycare').length,
       due_in: dueIn.length,
       alerts: alerts.length
     },
@@ -8126,7 +8150,7 @@ app.get('/api/reports/analytics', requireStaff, (req, res) => {
   const months = [];
   for (let i = n - 1; i >= 0; i--) months.push(new Date(base.getFullYear(), base.getMonth() - i, 1).toISOString().slice(0, 7));
   const startDate = months[0] + '-01';
-  const totalRooms = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active=1').get().c;
+  const totalRooms = db.prepare("SELECT COUNT(*) c FROM rooms WHERE active=1 AND room_type != '托嬰'").get().c;
   const bookings = db.prepare("SELECT check_in, check_out FROM bookings WHERE status!='cancelled' AND check_out > ?").all(startDate);
   const payMap = {}; for (const r of db.prepare("SELECT substr(paid_on,1,7) m, SUM(amount) s FROM payments GROUP BY m").all()) payMap[r.m] = r.s;
   const tourMap = {}; for (const r of db.prepare("SELECT substr(tour_at,1,7) m, COUNT(*) c, SUM(CASE WHEN status='signed' THEN 1 ELSE 0 END) s FROM tours GROUP BY m").all()) tourMap[r.m] = r;
@@ -8169,7 +8193,7 @@ app.get('/api/reports/quality', requireStaff, (req, res) => {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return res.status(400).json({ error: '月份格式需為 YYYY-MM' });
   const [y, m] = month.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
-  const totalRooms = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active = 1').get().c;
+  const totalRooms = db.prepare("SELECT COUNT(*) c FROM rooms WHERE active = 1 AND room_type != '托嬰'").get().c;
   const occOn = db.prepare(`SELECT COUNT(DISTINCT room_id) c FROM bookings
     WHERE status != 'cancelled' AND check_in <= ? AND check_out > ?`);
 
@@ -8239,7 +8263,7 @@ app.get('/api/reports/quality', requireStaff, (req, res) => {
 function computeMonthlyReport(month) {
   const [y, m] = month.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
-  const totalRooms = db.prepare('SELECT COUNT(*) c FROM rooms WHERE active = 1').get().c;
+  const totalRooms = db.prepare("SELECT COUNT(*) c FROM rooms WHERE active = 1 AND room_type != '托嬰'").get().c;
   const occupiedOn = db.prepare(`
     SELECT COUNT(DISTINCT room_id) c FROM bookings
     WHERE status != 'cancelled' AND check_in <= ? AND check_out > ?`);

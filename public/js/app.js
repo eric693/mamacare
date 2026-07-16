@@ -49,8 +49,8 @@ const STATUS_BADGE = {
 };
 const MEAL_LABEL = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' };
 const MEAL_STATUS = { preparing: '備餐中', served: '已出餐', cancelled: '取消' };
-const LOCATION_LABEL = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中' };
-const LOCATION_BADGE = { nursery: 'teal', rooming: 'purple', isolation: 'yellow', out: 'green', hospital: 'red' };
+const LOCATION_LABEL = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中', daycare: '托嬰' };
+const LOCATION_BADGE = { nursery: 'teal', rooming: 'purple', isolation: 'yellow', out: 'green', hospital: 'red', daycare: 'gray' };
 // 寶寶房況卡片圖例顏色（卡身＝狀態；性別不以顏色區別，改以「之子／之女」文字呈現）
 const BABY_LEGEND = [
   ['親子同室', '#d9a6ee'], ['隔離室', '#f6df7a'], ['不在館內', '#9ccc9c'], ['住院中', '#f3b1b1'], ['嬰兒室', '#ffffff']
@@ -7716,7 +7716,7 @@ async function viewBabyRooms() {
           <div class="row" style="gap:6px;align-items:center;margin-top:6px">
             <small style="color:var(--muted)">狀態切換：</small>
             <select data-loc-sel="${b.id}" data-name="${esc(b.name)}" data-loc="${b.location}" style="width:auto;padding:4px 8px;font-size:.85rem">
-              ${['nursery', 'rooming', 'isolation', 'out', 'hospital'].map(l => `<option value="${l}" ${b.location === l ? 'selected' : ''}>${LOCATION_LABEL[l]}</option>`).join('')}
+              ${['nursery', 'rooming', 'isolation', 'out', 'hospital', 'daycare'].map(l => `<option value="${l}" ${b.location === l ? 'selected' : ''}>${LOCATION_LABEL[l]}</option>`).join('')}
             </select>
           </div>
         </div>` : ''}
@@ -7763,6 +7763,7 @@ async function viewBabyRooms() {
       <div class="stat"><div class="num" style="color:${st.isolation ? 'var(--warn)' : 'var(--primary)'}">${st.isolation}</div><div class="label">隔離室</div></div>
       <div class="stat"><div class="num">${st.out}</div><div class="label">不在館內</div></div>
       <div class="stat"><div class="num" style="color:${st.hospital ? 'var(--danger)' : 'var(--primary)'}">${st.hospital}</div><div class="label">住院中</div></div>
+      <div class="stat"><div class="num">${st.daycare || 0}</div><div class="label">托嬰</div></div>
       <div class="stat"><div class="num" style="color:${st.alerts ? 'var(--danger)' : 'var(--primary)'}">${st.alerts}</div><div class="label">今日異常紀錄</div></div>
     </div>
     <div id="nr-banner"></div>
@@ -7789,6 +7790,7 @@ async function viewBabyRooms() {
           <button class="btn small secondary" data-board-flt="isolation">隔離室</button>
           <button class="btn small secondary" data-board-flt="out">不在館內</button>
           <button class="btn small secondary" data-board-flt="hospital">住院中</button>
+          <button class="btn small secondary" data-board-flt="daycare">托嬰</button>
           <button class="btn small secondary" data-board-flt="alert">有警示</button>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
@@ -11199,11 +11201,12 @@ async function viewCustomers() {
     const bkRows = $q('#bk-rows');
     if (bkRows) {
       let roomList = [];
-      try { roomList = (await api('/rooms')).filter(r => r.active); } catch (e) { roomList = []; }
+      try { roomList = (await api('/rooms?include_daycare=1')).filter(r => r.active); } catch (e) { roomList = []; }
       const roomOpt = r => `<option value="${r.id}">${esc(r.name)}（${esc(r.room_type)}｜$${(r.price_per_day || 0).toLocaleString()}/日）${r.occupant ? `｜在住至 ${esc(r.occupied_until || '')}` : ''}</option>`;
       const roomOpts = type => {
         const match = roomList.filter(r => r.room_type === type);
-        const rest = roomList.filter(r => r.room_type !== type);
+        // 托嬰室僅在「安排房型＝托嬰」時可選，不列入其他房型的升等／降等
+        const rest = roomList.filter(r => r.room_type !== type && r.room_type !== '托嬰');
         return '<option value="">--請選擇--</option>'
           + (match.length ? `<optgroup label="同房型">${match.map(roomOpt).join('')}</optgroup>` : '')
           + (rest.length ? `<optgroup label="其他房型（升等／降等）">${rest.map(roomOpt).join('')}</optgroup>` : '');
@@ -12700,7 +12703,7 @@ async function viewRoomTypes() {
 
 /* ---------- 房間資料管理：房間資料 ---------- */
 async function viewRoomList() {
-  const [rooms, types] = await Promise.all([api('/rooms'), api('/room-types')]);
+  const [rooms, types] = await Promise.all([api('/rooms?include_daycare=1'), api('/room-types')]);
   const canWrite = currentUser.role === 'admin';
   const typeOpts = types.filter(t => t.active).map(t => t.name);
   main().innerHTML = `
@@ -13927,9 +13930,12 @@ async function viewBabyClosure() {
   const d = (closure && closure.data) || {};
   const now = new Date();
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  // 托嬰中的寶寶：結案日預設帶入托嬰結束日（仍可手改，需人工按結案）
+  const dcEnd = (babies.find(x => x.id === babyId) || {}).daycare_end || '';
+  const defCloseDate = closure ? closure.close_date : (dcEnd || todayStr());
 
   // 實際入住天數：入住日 → 結案日（未結案則今日）
-  const endDate = closure ? closure.close_date : todayStr();
+  const endDate = defCloseDate;
   const stayDays = summary.checkin_date
     ? Math.max(1, Math.round((new Date(endDate) - new Date(summary.checkin_date)) / 86400000) + 1) : null;
   // 體重增減：結案體重（未填則最新體重）vs 出生體重
@@ -13974,7 +13980,7 @@ async function viewBabyClosure() {
     <div class="card" id="bcl-form">
       <div class="sec-hd">產後嬰兒結案單（<b>*</b> 為必填）</div>
       <div class="form-grid">
-        <div class="field"><label>結案日期 <b class="req">*</b></label><input type="date" id="bcl-date" value="${esc(closure ? closure.close_date : todayStr())}"></div>
+        <div class="field"><label>結案日期 <b class="req">*</b>${dcEnd && !closure ? '<small>（托嬰結束日帶入）</small>' : ''}</label><input type="date" id="bcl-date" value="${esc(defCloseDate)}"></div>
         <div class="field"><label>結案時間 <b class="req">*</b></label><input type="time" id="bcl-time" value="${esc(closure ? closure.close_time : hhmm)}"></div>
         <div class="field"><label>結案原因 <b class="req">*</b></label>${sel('bcl-reason', options.reasons, d.reason || '')}</div>
         <div class="field"><label>結案原因補述<small>（選「其他」時必填）</small></label><input id="bcl-reason-other" maxlength="100" value="${esc(d.reason_other || '')}"></div>
