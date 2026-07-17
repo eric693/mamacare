@@ -4872,10 +4872,12 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   try { data = JSON.parse(cur.data); } catch (e) { data = {}; }
   // 每次修改儲存都記 LOG：逐欄記錄 舊值→新值
   const changes = [];
+  let substantive = false;   // 實質欄位（住期）變更 → 既有電子合約需重簽
   for (const k of CCT_FIELDS) if (b[k] !== undefined) {
     const nv = String(b[k] ?? '').slice(0, 600);
     if (String(data[k] ?? '') !== nv && !k.endsWith('_by')) {
       changes.push(`${CCT_LABELS[k] || k}：${String(data[k] ?? '') || '（空）'}→${nv || '（空）'}`);
+      if (k === 'expected_check_in' || k === 'expected_check_out') substantive = true;
     }
     data[k] = nv;
   }
@@ -4906,6 +4908,7 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   }
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id,
     summary: changes.length ? `客戶合約資料修改：${changes.join('；').slice(0, 900)}` : '客戶合約資料修改（無欄位變更）' });
+  if (substantive) markContractsNeedResign(mother.id);   // 住期變更 → 既有電子合約標示需重簽
   res.json({ ok: true, contract_no: cur.contract_no });
 });
 
@@ -5123,9 +5126,9 @@ app.post('/api/customers/:motherId/contract/items', requireStaff, (req, res) => 
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id,
     summary: `合約明細新增 ${name} ${qty}天（金額 ${before}→${totalOf(items)}）` });
   let sync;
+  markContractsNeedResign(mother.id);   // 先標記：含將被連動取消之訂房的合約
   try { sync = syncBookingsToContractItems(req, mother.id, '合約明細新增'); }
   catch (e) { return res.status(e.httpStatus || 500).json({ error: e.message, saved: true }); }
-  markContractsNeedResign(mother.id);
   res.json({ ok: true, sync, deposit_over: depositOverHint(mother.id) });
 });
 
@@ -5151,9 +5154,9 @@ app.post('/api/customers/:motherId/contract/items/edit', requireStaff, (req, res
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id,
     summary: `合約明細修改天數 ${items[idx].name} ${oldQty}→${qty}天（金額 ${before}→${totalOf(items)}）` });
   let sync;
+  markContractsNeedResign(cur.mother_id);
   try { sync = syncBookingsToContractItems(req, cur.mother_id, '合約明細修改天數'); }
   catch (e) { return res.status(e.httpStatus || 500).json({ error: e.message, saved: true }); }
-  markContractsNeedResign(cur.mother_id);
   res.json({ ok: true, sync, deposit_over: depositOverHint(cur.mother_id) });
 });
 
@@ -5177,9 +5180,9 @@ app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, r
   logAudit(req, { action: 'delete', entity: 'customer_contracts', entity_id: cur.mother_id,
     summary: `合約明細刪除 ${removed.name} ${removed.qty}天（${reason}）（金額 ${before}→${totalOf(items)}）` });
   let sync;
+  markContractsNeedResign(cur.mother_id);
   try { sync = syncBookingsToContractItems(req, cur.mother_id, reason); }
   catch (e) { return res.status(e.httpStatus || 500).json({ error: e.message, saved: true }); }
-  markContractsNeedResign(cur.mother_id);
   res.json({ ok: true, sync, deposit_over: depositOverHint(cur.mother_id) });
 });
 
