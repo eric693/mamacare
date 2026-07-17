@@ -2183,8 +2183,17 @@ async function viewBedPlanning() {
       </div>
       <div class="field"><label>異動為房號</label>
         <select id="bm-room">${active.map(r => `<option value="${r.id}" ${r.id === bk.room_id ? 'selected' : ''}>${esc(r.name)}（${esc(r.room_type)}）</option>`).join('')}</select></div>
-      <small style="color:var(--muted)">此異動即為該筆訂房的房號變更，客戶管理／排房資料同步更新；期間衝突會被擋下。</small>
-      <div class="row mt"><button class="btn danger" id="bm-save">確認異動</button><span class="error-msg" id="bm-err"></span></div>`, body => {
+      <small style="color:var(--muted)">整段異動＝該筆訂房整段換房號，客戶管理／排房資料同步更新；期間衝突會被擋下。</small>
+      <div class="row mt"><button class="btn danger" id="bm-save">確認整段異動</button><span class="error-msg" id="bm-err"></span></div>
+      <div style="border-top:1px dashed var(--border);margin-top:10px;padding-top:8px">
+        <div style="font-weight:600;color:var(--primary-dark);margin-bottom:4px">期間轉房（自轉房日起換住上方選擇的房號）</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="max-width:160px;margin:0"><label>轉房日</label><input type="date" id="bm-date" min="${esc(bk.check_in)}" max="${esc(bk.check_out)}"></div>
+          <div class="field" style="flex:1;min-width:160px;margin:0"><label>原因<small>（記入稽核）</small></label><input id="bm-reason" maxlength="200"></div>
+          <button class="btn danger" id="bm-transfer">確認期間轉房</button>
+        </div>
+        <small style="color:var(--muted)">轉房日前住原房、轉房日起住新房；前後段沿用原合約單價、應收總額不變，銷售明細不需重簽${bk.status === 'checked_in' ? '；原房自動排轉房日退房清潔' : ''}。</small>
+      </div>`, body => {
       body.querySelector('#bm-save').onclick = async () => {
         const roomId = Number(body.querySelector('#bm-room').value) || 0;
         if (!roomId || roomId === bk.room_id) { closeModal(); return; }
@@ -2192,6 +2201,20 @@ async function viewBedPlanning() {
           await api(`/bookings/${bk.id}`, { method: 'PUT', body: { room_id: roomId } });
           closeModal(); viewBedPlanning();
         } catch (e) { body.querySelector('#bm-err').textContent = e.message; }
+      };
+      body.querySelector('#bm-transfer').onclick = async () => {
+        const roomId = Number(body.querySelector('#bm-room').value) || 0;
+        const tDate = body.querySelector('#bm-date').value;
+        const err = body.querySelector('#bm-err');
+        if (!tDate) { err.textContent = '請填寫轉房日'; return; }
+        if (!roomId || roomId === bk.room_id) { err.textContent = '請於上方選擇不同的新房號'; return; }
+        const newRoom = active.find(r => r.id === roomId) || {};
+        if (!confirm(`確認「${bk.mother_name}」自 ${tDate} 起由 ${curRoom.name || '—'} 房轉住 ${newRoom.name} 房？\n\n前後段沿用原合約單價，應收總額不變。`)) return;
+        try {
+          await api(`/bookings/${bk.id}/transfer`, { method: 'POST',
+            body: { transfer_date: tDate, room_id: roomId, reason: body.querySelector('#bm-reason').value.trim() } });
+          closeModal(); viewBedPlanning();
+        } catch (e) { err.textContent = e.message; }
       };
     });
   });
@@ -2617,6 +2640,7 @@ async function openBillingDetail(bookingId) {
     </table></div>
     <div class="row" style="margin-bottom:10px">
       <button class="btn small secondary" id="bd-refund">退費試算</button>
+      ${b.status === 'checked_in' ? '<button class="btn small secondary" id="bd-change">期間變更（升等/降等）</button>' : ''}
       <button class="btn small secondary" id="bd-receipt">開立收據</button>
       <button class="btn small secondary" id="bd-print-charges">列印加購明細</button>
     </div>
@@ -2641,6 +2665,7 @@ async function openBillingDetail(bookingId) {
       </p>
     </div>
     <div id="bd-refund-box"></div>
+    <div id="bd-change-box"></div>
     <h3 style="color:var(--primary-dark);font-size:1rem;margin:8px 0">加購消費</h3>
     <div class="table-wrap"><table class="data stack">
       <thead><tr><th>日期</th><th>項目</th><th>金額</th><th>經手</th><th></th></tr></thead>
@@ -2852,6 +2877,62 @@ async function openBillingDetail(bookingId) {
       };
     };
     body.querySelector('#bd-refund').onclick = () => { if (refundBox.innerHTML) refundBox.innerHTML = ''; else drawRefund(); };
+    // 入住中期間變更（升等/降等，可同時增減天數）：生效日切段計價，縮短部分依定型化契約收違約金／手續費
+    const changeBox = body.querySelector('#bd-change-box');
+    const drawChange = async () => {
+      const rooms = await api('/rooms');
+      const roomOpts = rooms.map(r =>
+        `<option value="${r.id}" ${r.id === b.room_id ? 'selected' : ''}>${esc(r.name)}（${esc(r.room_type)}・$${(r.price_per_day || 0).toLocaleString()}/日）${r.occupant ? `　入住中：${esc(r.occupant)}` : ''}</option>`).join('');
+      changeBox.innerHTML = `
+        <div class="card" style="background:#f7faf9;padding:12px;margin-bottom:10px">
+          <div style="font-weight:600;color:var(--primary-dark);margin-bottom:6px">入住中期間變更（升等/降等，可同時增減天數）</div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <div class="field" style="max-width:160px;margin:0"><label>生效日（換房日）</label><input type="date" id="cs-date" value="${todayStr()}"></div>
+            <div class="field" style="min-width:230px;margin:0"><label>新房號</label><select id="cs-room">${roomOpts}</select></div>
+            <div class="field" style="max-width:160px;margin:0"><label>新出住日</label><input type="date" id="cs-out" value="${esc(b.check_out)}"></div>
+            <button class="btn small" id="cs-quote">試算</button>
+          </div>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0">生效日前照原房型單價、生效日起按新房間單價；總天數縮短時，縮短天數依定型化契約加計違約金與作業手續費。</p>
+          <div id="cs-result" style="margin-top:8px"></div>
+        </div>`;
+      changeBox.querySelector('#cs-quote').onclick = async () => {
+        const resBox = changeBox.querySelector('#cs-result');
+        const eff = changeBox.querySelector('#cs-date').value, rid = changeBox.querySelector('#cs-room').value,
+          out = changeBox.querySelector('#cs-out').value;
+        let q;
+        try { q = await api(`/bookings/${b.id}/change-stay-quote?effective_date=${eff}&room_id=${rid}&new_check_out=${out}`); }
+        catch (e) { resBox.innerHTML = `<span class="error-msg">${esc(e.message)}</span>`; return; }
+        resBox.innerHTML = `
+          <table class="data" style="font-size:13px"><tbody>
+            <tr><td>變更內容</td><td style="text-align:right">${esc(q.old_room)}（${esc(q.old_type)}）→ ${esc(q.new_room)}（${esc(q.new_type)}）　<b>${esc(q.grade)}</b></td></tr>
+            <tr><td>前段 ${esc(q.check_in)}~${esc(q.effective_date)}（${q.days1} 天 × ${fmtMoney(q.rate1)}）</td><td style="text-align:right">${fmtMoney(q.seg1_total)}</td></tr>
+            <tr><td>後段 ${esc(q.effective_date)}~${esc(q.new_check_out)}（${q.days2} 天 × ${fmtMoney(q.rate2)}）</td><td style="text-align:right">${fmtMoney(q.days2 * q.rate2)}</td></tr>
+            ${q.unused_days ? `<tr><td>違約金（縮短 ${q.unused_days} 天 × ${q.penalty_pct}%）</td><td style="text-align:right">${fmtMoney(q.penalty)}</td></tr>
+            <tr><td>作業手續費（已收 × ${q.handling_pct}%）</td><td style="text-align:right">${fmtMoney(q.handling)}</td></tr>` : ''}
+            <tr style="border-top:2px solid #cdd"><td><strong>合約應收</strong></td>
+              <td style="text-align:right"><strong style="color:var(--primary-dark)">${fmtMoney(q.old_total)} → ${fmtMoney(q.new_total)}</strong></td></tr>
+          </tbody></table>
+          <div class="row no-print" style="gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px">
+            <div class="field" style="flex:1;min-width:200px;margin:0"><label>變更原因<small>（記入稽核與合約修改紀錄）</small></label><input id="cs-reason" maxlength="200"></div>
+            <button class="btn danger" id="cs-run">確認期間變更</button>
+          </div>
+          <p style="font-size:.78rem;color:var(--muted);margin-top:4px">確認後：原段結至生效日、新段自生效日入住新房，合約明細改為兩筆並標示需重簽；床表、房況、訂餐與原房清潔任務同步連動。</p>`;
+        resBox.querySelector('#cs-run').onclick = async () => {
+          if (!confirm(`確認「${b.mother_name}」自 ${q.effective_date} 起由 ${q.old_room} 房改住 ${q.new_room} 房（${q.grade}）、出住日 ${q.new_check_out}？\n\n合約應收將由 ${fmtMoney(q.old_total)} 改為 ${fmtMoney(q.new_total)}，床表／房況／訂餐同步更新。`)) return;
+          try {
+            await api(`/bookings/${b.id}/change-stay`, { method: 'POST',
+              body: { effective_date: q.effective_date, room_id: Number(rid), new_check_out: q.new_check_out,
+                reason: resBox.querySelector('#cs-reason').value.trim() } });
+            closeModal();   // 關閉後收費帳務清單自動重載（modal onclose）
+          } catch (e) { alert(`期間變更未完成：${e.message}`); }
+        };
+      };
+    };
+    const changeBtn = body.querySelector('#bd-change');
+    if (changeBtn) changeBtn.onclick = () => {
+      if (changeBox.innerHTML) changeBox.innerHTML = '';
+      else drawChange().catch(e => alert(e.message));
+    };
     body.querySelector('#bd-print-charges').onclick = () => printCharges(b);
     body.querySelector('#bd-receipt').onclick = () => {
       const due = b.balance > 0 ? b.balance : b.total_paid;
@@ -10973,6 +11054,71 @@ async function viewCustomers() {
         } catch (e) { alert(e.message); await selectCustomer(editId); }
       };
     });
+    // 改房型：入住前整段升等/降等（單價帶新房型定價、可手改），連動換房／應收／訂餐／需重簽
+    const typeOpts = sel => (d.room_types || []).map(r =>
+      `<option value="${esc(r.name)}" data-price="${r.price || 0}" ${r.name === sel ? 'selected' : ''}>${esc(r.name)}（$${(r.price || 0).toLocaleString()}/日）</option>`).join('');
+    $('#cust-extra').querySelectorAll('[data-cttype]').forEach(btn => {
+      btn.onclick = () => {
+        openModal(`更改房型（${esc(btn.dataset.name)}）`, `
+          <div class="form-grid">
+            <div class="field"><label>新銷售房型 <b class="req">*</b></label><select id="cy-type">${typeOpts(btn.dataset.name)}</select></div>
+            <div class="field"><label>單價（元/日，可手改）</label><input type="number" min="0" id="cy-price" value="${Number(btn.dataset.price) || 0}"></div>
+            <div class="full row"><button class="btn danger" id="cy-save">確定更改</button><span class="error-msg" id="cy-err"></span></div>
+          </div>
+          <small style="color:var(--muted)">存檔後自動連動：該段排房改為新房型空房（無空房會提示至排房資料處理）、應收重算、已簽合約標示需重簽。</small>`, body => {
+          const bv = s => body.querySelector(s);
+          bv('#cy-type').onchange = () => { bv('#cy-price').value = bv('#cy-type').selectedOptions[0].dataset.price || 0; };
+          bv('#cy-save').onclick = async () => {
+            try {
+              const r = await api(`/customers/${editId}/contract/items/change-type`, { method: 'POST',
+                body: { index: Number(btn.dataset.cttype), name: bv('#cy-type').value, price: Number(bv('#cy-price').value) } });
+              closeModal();
+              if (r.room_warning) alert(r.room_warning);
+              notifyItemSync(r);
+              await selectCustomer(editId);
+            } catch (e) { bv('#cy-err').textContent = e.message; }
+          };
+        });
+      };
+    });
+    // 拆分：入住前部分天數升等/降等（前段原房型＋後段新房型，可同時增減總天數）
+    $('#cust-extra').querySelectorAll('[data-ctsplit]').forEach(btn => {
+      btn.onclick = () => {
+        openModal(`拆分明細（${esc(btn.dataset.name)} ${esc(btn.dataset.qty)}天）`, `
+          <div class="form-grid">
+            <div class="field"><label>前段天數（${esc(btn.dataset.name)}）<b class="req">*</b></label><input type="number" min="1" id="sp-q1" value="${Math.max(1, Number(btn.dataset.qty) - 1)}"></div>
+            <div class="field"><label>後段房型 <b class="req">*</b></label><select id="sp-type">${typeOpts('')}</select></div>
+            <div class="field"><label>後段天數 <b class="req">*</b></label><input type="number" min="1" id="sp-q2" value="1"></div>
+            <div class="field"><label>後段單價（元/日，可手改）</label><input type="number" min="0" id="sp-price"></div>
+            <div class="field full"><label>拆分後合計</label><input id="sp-sum" readonly></div>
+            <div class="full row"><button class="btn danger" id="sp-save">確定拆分</button><span class="error-msg" id="sp-err"></span></div>
+          </div>
+          <small style="color:var(--muted)">前段沿用原單價；後段帶新房型定價。已排房者自動為後段選同房型空房並依序接續（無空房會擋下）；尚未排房者請於拆分後至排房資料選房。</small>`, body => {
+          const bv = s => body.querySelector(s);
+          const syncPrice = () => { bv('#sp-price').value = bv('#sp-type').selectedOptions[0].dataset.price || 0; syncSum(); };
+          const syncSum = () => {
+            const t = (Number(bv('#sp-q1').value) || 0) + (Number(bv('#sp-q2').value) || 0);
+            bv('#sp-sum').value = `${t} 天（原 ${btn.dataset.qty} 天）`;
+          };
+          bv('#sp-type').onchange = syncPrice;
+          bv('#sp-q1').oninput = syncSum;
+          bv('#sp-q2').oninput = syncSum;
+          syncPrice();
+          bv('#sp-save').onclick = async () => {
+            const qty1 = Number(bv('#sp-q1').value), qty2 = Number(bv('#sp-q2').value);
+            if (!(qty1 > 0 && qty2 > 0)) { bv('#sp-err').textContent = '前後段天數需為 1 以上'; return; }
+            try {
+              const r = await api(`/customers/${editId}/contract/items/split`, { method: 'POST',
+                body: { index: Number(btn.dataset.ctsplit), qty1, name2: bv('#sp-type').value, qty2, price2: Number(bv('#sp-price').value) } });
+              closeModal();
+              if (r.note) alert(r.note);
+              notifyItemSync(r);
+              await selectCustomer(editId);
+            } catch (e) { bv('#sp-err').textContent = e.message; }
+          };
+        });
+      };
+    });
     // 特殊折扣訂房：跳出視窗，單價自動帶入房型定價、可手改（折扣價）後儲存
     const itemModalBtn = $q('#ct-item-modal');
     if (itemModalBtn) itemModalBtn.onclick = () => {
@@ -11491,6 +11637,38 @@ async function viewCustomers() {
         catch (e) { alert(e.message); }
       };
     });
+    // 期間轉房：預定期間（天數不變換房）或入住後轉房；前後段沿用原合約單價、應收總額不變
+    $('#cust-extra').querySelectorAll('[data-bktr]').forEach(btn => {
+      btn.onclick = async () => {
+        const bk = d.bookings.find(b => String(b.id) === btn.dataset.bktr);
+        if (!bk) return;
+        let rooms;
+        try { rooms = (await api('/rooms')).filter(r => r.active && r.name !== bk.room_name); }
+        catch (e) { alert(e.message); return; }
+        openModal(`期間轉房 — ${esc(bk.room_name)} 房（${esc(bk.check_in)} ~ ${esc(bk.check_out)}）`, `
+          <div class="form-grid">
+            <div class="field"><label>轉房日 <b class="req">*</b></label><input type="date" id="tr-date" min="${esc(bk.check_in)}" max="${esc(bk.check_out)}"></div>
+            <div class="field"><label>新房號 <b class="req">*</b></label>
+              <select id="tr-room">${rooms.map(r => `<option value="${r.id}">${esc(r.name)}（${esc(r.room_type)}・$${(r.price_per_day || 0).toLocaleString()}/日）</option>`).join('')}</select></div>
+            <div class="field full"><label>原因<small>（記入稽核）</small></label><input id="tr-reason" maxlength="200"></div>
+            <div class="full row"><button class="btn danger" id="tr-save">確認轉房</button><span class="error-msg" id="tr-err"></span></div>
+          </div>
+          <small style="color:var(--muted)">轉房日前住原房、轉房日起住新房；前後段沿用原合約單價、應收總額不變，銷售明細不需重簽。若要「換銷售房型並改計價」，入住前請至合約明細改房型/拆分、入住中請走收費明細的期間變更。</small>`, body => {
+          body.querySelector('#tr-save').onclick = async () => {
+            const err = body.querySelector('#tr-err');
+            const tDate = body.querySelector('#tr-date').value;
+            if (!tDate) { err.textContent = '請填寫轉房日'; return; }
+            try {
+              await api(`/bookings/${bk.id}/transfer`, { method: 'POST',
+                body: { transfer_date: tDate, room_id: Number(body.querySelector('#tr-room').value),
+                  reason: body.querySelector('#tr-reason').value.trim() } });
+              closeModal();
+              await selectCustomer(editId);
+            } catch (e) { err.textContent = e.message; }
+          };
+        });
+      };
+    });
   }
 
   // 客戶互動紀錄（潛在客戶分頁內）
@@ -11653,7 +11831,8 @@ async function viewCustomers() {
               <td data-label="操作" class="no-print">${canAccess('#/rooms') ? `
                 ${b.status === 'reserved' ? `<button class="btn small" data-bkst="${b.id}|checked_in">辦理入住</button>
                   <button class="btn small secondary" data-bkst="${b.id}|cancelled">取消</button>` : ''}
-                ${b.status === 'checked_in' ? `<button class="btn small danger" data-bkst="${b.id}|checked_out">退房</button>` : ''}` : ''}
+                ${b.status === 'checked_in' ? `<button class="btn small danger" data-bkst="${b.id}|checked_out">退房</button>` : ''}
+                ${['reserved', 'checked_in'].includes(b.status) ? `<button class="btn small secondary" data-bktr="${b.id}">轉房</button>` : ''}` : ''}
               </td></tr>`;
           }).join('')}</tbody></table></div>` : '<div class="empty">尚無排房資料</div>'}
       </div>
@@ -11696,13 +11875,13 @@ async function viewCustomers() {
                 <td data-label="小計">$${((it.qty || 0) * (it.price || 0)).toLocaleString()}</td>
                 <td data-label="建檔人">${esc(it.by || '—')}<br><small>${esc(it.at || '')}</small></td>
                 <td data-label="" class="no-print">${(d.bookings || []).some(b => b.status === 'checked_in') ? '' :
-                  `<button class="btn small secondary" data-ctedit="${i}" data-qty="${it.qty}" data-name="${esc(it.name)}">改天數</button> <button class="btn small danger" data-ctdel="${i}">刪</button>`}</td></tr>`).join('')
+                  `<button class="btn small secondary" data-ctedit="${i}" data-qty="${it.qty}" data-name="${esc(it.name)}">改天數</button> <button class="btn small secondary" data-cttype="${i}" data-name="${esc(it.name)}" data-price="${it.price || 0}">改房型</button> <button class="btn small secondary" data-ctsplit="${i}" data-name="${esc(it.name)}" data-qty="${it.qty}" data-price="${it.price || 0}">拆分</button> <button class="btn small danger" data-ctdel="${i}">刪</button>`}</td></tr>`).join('')
               : '<tr><td colspan="7"><div class="empty">尚無明細</div></td></tr>'}
               <tr><td colspan="7" style="text-align:right"><b>合計金額：$${total.toLocaleString()}</b></td></tr>
             </tbody>
           </table>
         </div>
-        <small style="color:var(--muted)">入住前的新增／改天數／刪除會自動連動排房、應收與訂餐，並將已簽合約標示「需重簽」；已入住後鎖定，縮短請走收費明細（退費試算）。</small>
+        <small style="color:var(--muted)">入住前的新增／改天數／改房型／拆分／刪除會自動連動排房、應收與訂餐，並將已簽合約標示「需重簽」；已入住後鎖定，縮短或升等/降等請走收費明細（退費試算／期間變更）。</small>
       </div>
       <div class="card">
         <div class="sec-hd">${ct ? '修改' : '新增'}合約資料</div>

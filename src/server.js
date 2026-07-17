@@ -5031,7 +5031,7 @@ function syncBookingsToContractItems(req, motherId, reasonText) {
   let items = [];
   try { items = JSON.parse((cur || {}).items || '[]'); } catch (e) { items = []; }
   const bks = db.prepare(`SELECT * FROM bookings WHERE mother_id = ? AND status = 'reserved'
-    ORDER BY check_in`).all(motherId);
+    ORDER BY check_in, id`).all(motherId);
   if (!bks.length) return { updated: 0, cancelled: 0 };
   const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
   // 依序建立計畫：起算日維持第一段原入住日，逐段接續
@@ -5091,6 +5091,23 @@ function syncBookingsToContractItems(req, motherId, reasonText) {
   }
   return { updated, cancelled };
 }
+// 找指定房型的空房（期間無其他有效訂房）；供更改房型／拆分自動連動換房用
+function findFreeRoomOfType(roomType, checkIn, checkOut, excludeBookingId) {
+  return db.prepare(`SELECT r.* FROM rooms r
+    WHERE r.active = 1 AND r.room_type = ? AND NOT EXISTS (
+      SELECT 1 FROM bookings bk WHERE bk.room_id = r.id AND bk.id != ?
+        AND bk.status IN ('reserved','checked_in') AND bk.check_in < ? AND bk.check_out > ?)
+    ORDER BY r.name LIMIT 1`).get(roomType, excludeBookingId || 0, checkOut, checkIn);
+}
+// 換房時同步該段「請備房」房務任務（房號、任務名、備註內的房名）
+function moveHousekeepingPrepTasks(motherId, oldRoomId, oldRoomName, newRoomId, newRoomName) {
+  for (const t of db.prepare(`SELECT id, task, note FROM housekeeping_logs
+    WHERE mother_id = ? AND room_id = ? AND status = 'pending' AND task LIKE '%請備房%'`).all(motherId, oldRoomId)) {
+    db.prepare('UPDATE housekeeping_logs SET room_id = ?, task = ?, note = ? WHERE id = ?')
+      .run(newRoomId, String(t.task).split(oldRoomName).join(newRoomName),
+        String(t.note || '').split(`${oldRoomName}房`).join(`${newRoomName}房`), t.id);
+  }
+}
 // 訂金溢收提示：已收訂金 vs 新合約總額 10%
 function depositOverHint(motherId) {
   const dep = db.prepare(`SELECT COALESCE(SUM(deposit),0) t FROM bookings WHERE mother_id = ? AND status != 'cancelled'`).get(motherId).t;
@@ -5102,7 +5119,7 @@ function depositOverHint(motherId) {
 app.post('/api/customers/:motherId/contract/items', requireStaff, (req, res) => {
   const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.motherId);
   if (!mother) return res.status(404).json({ error: '找不到客戶' });
-  if (motherHasCheckedIn(mother.id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短請走收費明細（退費試算），加項請走加購消費' });
+  if (motherHasCheckedIn(mother.id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短/升等降等請走收費明細（退費試算/期間變更），加項請走加購消費' });
   const b = req.body || {};
   const name = String(b.name || '').trim().slice(0, 100);
   const qty = Number(b.qty);
@@ -5139,7 +5156,7 @@ app.post('/api/customers/:motherId/contract/items/edit', requireStaff, (req, res
   const qty = Math.round(Number(b.qty));
   const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '找不到合約資料' });
-  if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短請走收費明細（退費試算）' });
+  if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短/升等降等請走收費明細（退費試算/期間變更）' });
   let items = [];
   try { items = JSON.parse(cur.items); } catch (e) { items = []; }
   if (!(idx >= 0 && idx < items.length)) return res.status(400).json({ error: '明細序號錯誤' });
@@ -5168,7 +5185,7 @@ app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, r
   if (!reason) return res.status(400).json({ error: '請填寫刪除說明' });
   const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '找不到合約資料' });
-  if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短請走收費明細（退費試算）' });
+  if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短/升等降等請走收費明細（退費試算/期間變更）' });
   let items = [];
   try { items = JSON.parse(cur.items); } catch (e) { items = []; }
   if (!(idx >= 0 && idx < items.length)) return res.status(400).json({ error: '明細序號錯誤' });
@@ -5184,6 +5201,117 @@ app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, r
   try { sync = syncBookingsToContractItems(req, cur.mother_id, reason); }
   catch (e) { return res.status(e.httpStatus || 500).json({ error: e.message, saved: true }); }
   res.json({ ok: true, sync, deposit_over: depositOverHint(cur.mother_id) });
+});
+
+// 合約明細：更改房型（入住前整段升等/降等；單價帶新房型定價可手改，連動換房與應收）
+app.post('/api/customers/:motherId/contract/items/change-type', requireStaff, (req, res) => {
+  const b = req.body || {};
+  const idx = Number(b.index);
+  const name = String(b.name || '').trim().slice(0, 100);
+  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  if (!cur) return res.status(404).json({ error: '找不到合約資料' });
+  if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；升等/降等請走收費明細（期間變更）' });
+  let items = [];
+  try { items = JSON.parse(cur.items); } catch (e) { items = []; }
+  if (!(idx >= 0 && idx < items.length)) return res.status(400).json({ error: '明細序號錯誤' });
+  if (!name) return res.status(400).json({ error: '請選擇銷售房型' });
+  let price = Number(b.price);
+  if (!(price >= 0)) {
+    const r = db.prepare('SELECT MIN(price_per_day) p FROM rooms WHERE room_type = ? AND active = 1').get(name);
+    price = (r && r.p) || 0;
+  }
+  price = Math.round(price);
+  const old = items[idx];
+  if (old.name === name && Number(old.price) === price) return res.json({ ok: true, sync: { updated: 0, cancelled: 0 } });
+  const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  const before = totalOf(items);
+  items[idx] = { ...old, name, price, by: req.session.user.name, at: today() };
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    .run(JSON.stringify(items).slice(0, 12000), cur.mother_id);
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id,
+    summary: `合約明細更改房型 ${old.name}→${name}（單價 ${old.price}→${price}）（金額 ${before}→${totalOf(items)}）` });
+  markContractsNeedResign(cur.mother_id);
+  // 對應排房段換房：第 idx 段預約若房型不符，自動改排新房型空房；無空房則保留原房並提示
+  let room_warning = '';
+  const bks = db.prepare(`SELECT bk.*, r.room_type, r.name AS room_name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.mother_id = ? AND bk.status = 'reserved' ORDER BY bk.check_in, bk.id`).all(cur.mother_id);
+  const bkA = bks[idx];
+  if (bkA && bkA.room_type !== name) {
+    const free = findFreeRoomOfType(name, bkA.check_in, bkA.check_out, bkA.id);
+    if (free) {
+      db.prepare('UPDATE bookings SET room_id = ? WHERE id = ?').run(free.id, bkA.id);
+      moveHousekeepingPrepTasks(cur.mother_id, bkA.room_id, bkA.room_name, free.id, free.name);
+      logAudit(req, { action: 'update', entity: 'bookings', entity_id: bkA.id,
+        summary: `合約明細更改房型連動換房：${bkA.room_name}→${free.name}（${bkA.check_in}~${bkA.check_out}）` });
+    } else {
+      room_warning = `「${name}」${bkA.check_in}~${bkA.check_out} 無空房，房號未變更（仍為 ${bkA.room_name}），請至排房資料調整`;
+    }
+  }
+  let sync;
+  try { sync = syncBookingsToContractItems(req, cur.mother_id, '合約明細更改房型'); }
+  catch (e) { return res.status(e.httpStatus || 500).json({ error: e.message, saved: true }); }
+  res.json({ ok: true, sync, room_warning, deposit_over: depositOverHint(cur.mother_id) });
+});
+
+// 合約明細：拆分（入住前部分天數升等/降等；一筆拆成前段原房型＋後段新房型，可同時增減天數）
+app.post('/api/customers/:motherId/contract/items/split', requireStaff, (req, res) => {
+  const b = req.body || {};
+  const idx = Number(b.index);
+  const qty1 = Math.round(Number(b.qty1));
+  const name2 = String(b.name2 || '').trim().slice(0, 100);
+  const qty2 = Math.round(Number(b.qty2));
+  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  if (!cur) return res.status(404).json({ error: '找不到合約資料' });
+  if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；升等/降等請走收費明細（期間變更）' });
+  let items = [];
+  try { items = JSON.parse(cur.items); } catch (e) { items = []; }
+  if (!(idx >= 0 && idx < items.length)) return res.status(400).json({ error: '明細序號錯誤' });
+  if (!name2) return res.status(400).json({ error: '請選擇後段銷售房型' });
+  if (!(qty1 > 0 && qty1 <= 999) || !(qty2 > 0 && qty2 <= 999)) return res.status(400).json({ error: '前後段天數需為 1～999' });
+  let price2 = Number(b.price2);
+  if (!(price2 >= 0)) {
+    const r = db.prepare('SELECT MIN(price_per_day) p FROM rooms WHERE room_type = ? AND active = 1').get(name2);
+    price2 = (r && r.p) || 0;
+  }
+  price2 = Math.round(price2);
+  const old = items[idx];
+  const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
+  // 對應排房段：第 idx 段已排房者需為後段先建立訂房（自動選後段房型空房），排序連動才不會錯位
+  const bks = db.prepare(`SELECT bk.*, r.room_type, r.name AS room_name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.mother_id = ? AND bk.status = 'reserved' ORDER BY bk.check_in, bk.id`).all(cur.mother_id);
+  const bkA = bks[idx];
+  let seg2 = null;
+  if (bkA) {
+    if (bks.length > idx + 1 && qty1 >= Number(old.qty)) {
+      return res.status(400).json({ error: '前段天數未減少且後方已有其他排房段，順序無法自動接續，請先改天數或至排房資料調整' });
+    }
+    const segStart = addDays(bkA.check_in, qty1);
+    const segEnd = addDays(segStart, qty2);
+    const free = findFreeRoomOfType(name2, segStart, segEnd, 0);
+    if (!free) return res.status(409).json({ error: `「${name2}」${segStart}~${segEnd} 無空房，無法拆分；請先於排房資料調整` });
+    seg2 = { room: free, check_in: segStart, check_out: segEnd };
+  }
+  const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  const before = totalOf(items);
+  const by = req.session.user.name, at = today();
+  items.splice(idx, 1, { ...old, qty: qty1, by, at }, { name: name2, qty: qty2, price: price2, by, at });
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    .run(JSON.stringify(items).slice(0, 12000), cur.mother_id);
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id,
+    summary: `合約明細拆分 ${old.name} ${old.qty}天 → ${old.name} ${qty1}天＋${name2} ${qty2}天（金額 ${before}→${totalOf(items)}）` });
+  markContractsNeedResign(cur.mother_id);
+  if (seg2) {
+    const info = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
+      VALUES (?,?,?,?,0,?,'reserved','合約明細拆分建立')`)
+      .run(cur.mother_id, seg2.room.id, seg2.check_in, seg2.check_out, qty2 * price2);
+    logAudit(req, { action: 'create', entity: 'bookings', entity_id: info.lastInsertRowid,
+      summary: `合約明細拆分連動排房：${seg2.room.name}（${seg2.check_in}~${seg2.check_out}、應收 ${qty2 * price2}）` });
+  }
+  let sync;
+  try { sync = syncBookingsToContractItems(req, cur.mother_id, '合約明細拆分'); }
+  catch (e) { return res.status(e.httpStatus || 500).json({ error: e.message, saved: true }); }
+  res.json({ ok: true, sync, deposit_over: depositOverHint(cur.mother_id),
+    note: bkA ? '' : '後段尚未排房，請至排房資料選房' });
 });
 
 // 合約金額增加／減少查詢：由 LOG 判讀「第一次合約金額（舊）vs 最新合約金額（新／實際）」
@@ -7743,6 +7871,202 @@ app.post('/api/bookings/:id/shorten', requireStaff, (req, res) => {
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: bk.mother_id,
     summary: `入住中縮短住期（訂房#${bk.id}）：退房日 ${bk.check_out}→${leaveDate}；銷售房型明細維持原約，應收依定型化契約重算` });
   res.json({ ok: true, check_out: leaveDate, total_amount: newTotal, quote: q });
+});
+
+// ---------- 入住中期間變更（升等/降等，可同時增減天數）：生效日切段計價 ----------
+// 已住天數照原房型單價、生效日起按新房間單價；若總天數縮短，縮短天數依定型化契約收違約金＋作業手續費
+function changeStayQuoteOf(bk, effectiveDate, newRoom, newCheckOut) {
+  const s = getSettings();
+  const dayDiff = (a, c) => Math.round((new Date(c) - new Date(a)) / 86400000);
+  const origDays = Math.max(1, dayDiff(bk.check_in, bk.check_out));
+  const rate1 = bk.price_per_day > 0 ? bk.price_per_day : Math.round(bk.total_amount / origDays);
+  const rate2 = newRoom.price_per_day > 0 ? newRoom.price_per_day
+    : (((db.prepare('SELECT price FROM room_types WHERE name = ?').get(newRoom.room_type) || {}).price) || rate1);
+  const days1 = dayDiff(bk.check_in, effectiveDate);
+  const days2 = dayDiff(effectiveDate, newCheckOut);
+  const unusedDays = Math.max(0, origDays - days1 - days2);
+  const paid = bk.deposit + db.prepare('SELECT COALESCE(SUM(amount),0) t FROM payments WHERE booking_id=?').get(bk.id).t;
+  const penaltyPct = Math.min(Math.max(parseFloat(s.refund_penalty_pct) || 0, 0), 100);
+  const handlingPct = Math.min(Math.max(parseFloat(s.refund_handling_fee_pct) || 0, 0), 100);
+  const penalty = unusedDays ? Math.round(unusedDays * rate1 * penaltyPct / 100) : 0;
+  const handling = unusedDays ? Math.round(paid * handlingPct / 100) : 0;
+  const seg1Total = days1 * rate1;
+  const seg2Total = days2 * rate2 + penalty + handling;
+  return {
+    booking_id: bk.id, mother_name: bk.mother_name,
+    old_room: bk.room_name, old_type: bk.room_type, new_room: newRoom.name, new_type: newRoom.room_type,
+    check_in: bk.check_in, check_out: bk.check_out, effective_date: effectiveDate, new_check_out: newCheckOut,
+    orig_days: origDays, days1, rate1, days2, rate2,
+    unused_days: unusedDays, penalty_pct: penaltyPct, penalty, handling_pct: handlingPct, handling,
+    seg1_total: seg1Total, seg2_total: seg2Total, old_total: bk.total_amount, new_total: seg1Total + seg2Total,
+    grade: rate2 > rate1 ? '升等' : rate2 < rate1 ? '降等' : '平轉'
+  };
+}
+function changeStayValidate(req) {
+  const bk = db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, r.room_type, r.price_per_day
+    FROM bookings bk JOIN mothers m ON m.id=bk.mother_id JOIN rooms r ON r.id=bk.room_id
+    WHERE bk.id=?`).get(req.params.id);
+  if (!bk) return { error: '找不到訂房', code: 404 };
+  if (bk.status !== 'checked_in') return { error: '僅入住中訂房可辦理期間變更（預約中請至合約明細／排房資料調整）', code: 400 };
+  const p = req.method === 'GET' ? req.query : (req.body || {});
+  const effectiveDate = String(p.effective_date || '');
+  const newCheckOut = String(p.new_check_out || '') || bk.check_out;
+  const roomId = Number(p.room_id);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) return { error: '請填寫生效日', code: 400 };
+  if (!(effectiveDate > bk.check_in && effectiveDate < bk.check_out)) {
+    return { error: '生效日需在入住日之後、原出住日之前（整段變更請於入住前辦理）', code: 400 };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(newCheckOut) || newCheckOut <= effectiveDate) {
+    return { error: '新出住日需在生效日之後', code: 400 };
+  }
+  const newRoom = db.prepare('SELECT * FROM rooms WHERE id = ? AND active = 1').get(roomId);
+  if (!newRoom) return { error: '請選擇新房號', code: 400 };
+  const hit = db.prepare(`SELECT m.name FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+    WHERE bk.room_id = ? AND bk.id != ? AND bk.status IN ('reserved','checked_in')
+      AND bk.check_in < ? AND bk.check_out > ? LIMIT 1`).get(roomId, bk.id, newCheckOut, effectiveDate);
+  if (hit) return { error: `${newRoom.name} 房 ${effectiveDate}~${newCheckOut} 已有 ${hit.name} 的訂房，請改選其他房間或日期`, code: 409 };
+  return { bk, effectiveDate, newCheckOut, newRoom };
+}
+app.get('/api/bookings/:id/change-stay-quote', requireStaff, (req, res) => {
+  const v = changeStayValidate(req);
+  if (v.error) return res.status(v.code).json({ error: v.error });
+  res.json(changeStayQuoteOf(v.bk, v.effectiveDate, v.newRoom, v.newCheckOut));
+});
+app.post('/api/bookings/:id/change-stay', requireStaff, (req, res) => {
+  const v = changeStayValidate(req);
+  if (v.error) return res.status(v.code).json({ error: v.error });
+  const { bk, effectiveDate, newCheckOut, newRoom } = v;
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
+  const q = changeStayQuoteOf(bk, effectiveDate, newRoom, newCheckOut);
+  const run = db.transaction(() => {
+    // 原段收尾：出住日改生效日、應收＝已住天數×原單價；轉已退住讓「入住中」唯一指向新段
+    db.prepare(`UPDATE bookings SET check_out = ?, actual_check_out = ?, total_amount = ?, status = 'checked_out' WHERE id = ?`)
+      .run(effectiveDate, effectiveDate, q.seg1_total, bk.id);
+    // 新段：生效日起入住新房，應收＝天數×新單價（縮短時加計違約金／手續費）
+    const info = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
+      VALUES (?,?,?,?,0,?,'checked_in',?)`)
+      .run(bk.mother_id, newRoom.id, effectiveDate, newCheckOut, q.seg2_total,
+        `入住中期間變更（${q.grade}，原${bk.room_name}房）${reason ? `：${reason}` : ''}`);
+    // 合約明細改為兩筆：找到對應原房型明細者拆為前後段；找不到則不動明細、僅記稽核
+    const cc = db.prepare('SELECT items FROM customer_contracts WHERE mother_id = ?').get(bk.mother_id);
+    let itemNote = '明細無對應原房型項目，未自動改寫';
+    if (cc) {
+      let items = [];
+      try { items = JSON.parse(cc.items || '[]'); } catch (e) { items = []; }
+      let ci = items.findIndex(it => it.name === bk.room_type && Number(it.qty) === q.orig_days);
+      if (ci < 0) ci = items.findIndex(it => it.name === bk.room_type);
+      if (ci >= 0) {
+        const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+        const before = totalOf(items);
+        const by = req.session.user.name, at = today();
+        items.splice(ci, 1, { name: bk.room_type, qty: q.days1, price: q.rate1, by, at },
+          { name: newRoom.room_type, qty: q.days2, price: q.rate2, by, at });
+        db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+          .run(JSON.stringify(items).slice(0, 12000), bk.mother_id);
+        itemNote = `明細改為 ${bk.room_type} ${q.days1}天＋${newRoom.room_type} ${q.days2}天`;
+        logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: bk.mother_id,
+          summary: `入住中期間變更（${q.grade}）：${itemNote}（金額 ${before}→${totalOf(items)}）` });
+      }
+    }
+    markContractsNeedResign(bk.mother_id);
+    // 訂餐連動：住期尾端變動時清原住期重鋪（沿用原餐別；供餐至新出住日早餐）
+    if (newCheckOut !== bk.check_out) {
+      const seed = db.prepare(`SELECT choice, note FROM meal_orders WHERE mother_id = ? AND meal_date >= ? AND meal_date <= ?
+        ORDER BY meal_date, meal_type LIMIT 1`).get(bk.mother_id, bk.check_in, bk.check_out);
+      if (seed) {
+        db.prepare('DELETE FROM meal_orders WHERE mother_id = ? AND meal_date >= ? AND meal_date <= ?')
+          .run(bk.mother_id, bk.check_in, bk.check_out);
+        seedStayMeals(bk.mother_id, bk.check_in, newCheckOut, seed.choice, seed.note || '');
+      }
+    }
+    // 房務：原房生效日退房清潔任務
+    db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
+      VALUES (?,?,?,?,?,?)`)
+      .run(bk.room_id, bk.mother_id, `${bk.room_name}退房清潔`, effectiveDate,
+        `入住中期間變更：${bk.mother_name} ${effectiveDate} 換至${newRoom.name}房`, req.session.user.id);
+    logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id,
+      summary: `入住中期間變更（${q.grade}）：${bk.room_name}→${newRoom.name}房、生效日 ${effectiveDate}、出住日 ${bk.check_out}→${newCheckOut}；` +
+        `應收 ${bk.total_amount}→${q.new_total}（前段${q.days1}天×${q.rate1}＋後段${q.days2}天×${q.rate2}` +
+        `${q.penalty || q.handling ? `＋違約金${q.penalty}＋手續費${q.handling}` : ''}）${reason ? `；原因：${reason}` : ''}` });
+    return info.lastInsertRowid;
+  });
+  let newId;
+  try { newId = run(); } catch (e) { return res.status(500).json({ error: e.message }); }
+  res.json({ ok: true, new_booking_id: newId, quote: q });
+});
+
+// ---------- 期間轉房（不改銷售明細）：轉房日起換住他房，前後段沿用原合約單價、應收總額不變 ----------
+// 預約中＝預定入住期間轉房（拆兩段預約，合約明細同房型同價拆兩筆以維持連動順序）
+// 入住中＝入住後轉房（原段結至轉房日轉已退住、新段入住新房；銷售明細不動、不標需重簽）
+app.post('/api/bookings/:id/transfer', requireStaff, (req, res) => {
+  const bk = db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, r.room_type
+    FROM bookings bk JOIN mothers m ON m.id=bk.mother_id JOIN rooms r ON r.id=bk.room_id
+    WHERE bk.id=?`).get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  if (!['reserved', 'checked_in'].includes(bk.status)) return res.status(400).json({ error: '僅預約中／入住中訂房可轉房' });
+  const b = req.body || {};
+  const transferDate = String(b.transfer_date || '');
+  const roomId = Number(b.room_id);
+  const reason = String(b.reason || '').trim().slice(0, 200);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(transferDate)) return res.status(400).json({ error: '請填寫轉房日' });
+  if (!(transferDate > bk.check_in && transferDate < bk.check_out)) {
+    return res.status(400).json({ error: '轉房日需在入住日之後、出住日之前（整段換房請直接改房號）' });
+  }
+  const newRoom = db.prepare('SELECT * FROM rooms WHERE id = ? AND active = 1').get(roomId);
+  if (!newRoom) return res.status(400).json({ error: '請選擇新房號' });
+  if (newRoom.id === bk.room_id) return res.status(400).json({ error: '新房號與目前相同' });
+  const hit = db.prepare(`SELECT m.name FROM bookings bk2 JOIN mothers m ON m.id = bk2.mother_id
+    WHERE bk2.room_id = ? AND bk2.id != ? AND bk2.status IN ('reserved','checked_in')
+      AND bk2.check_in < ? AND bk2.check_out > ? LIMIT 1`).get(roomId, bk.id, bk.check_out, transferDate);
+  if (hit) return res.status(409).json({ error: `${newRoom.name} 房 ${transferDate}~${bk.check_out} 已有 ${hit.name} 的訂房，請改選其他房間` });
+  const dayDiff = (a, c) => Math.round((new Date(c) - new Date(a)) / 86400000);
+  const totalDays = Math.max(1, dayDiff(bk.check_in, bk.check_out));
+  const days1 = dayDiff(bk.check_in, transferDate), days2 = totalDays - days1;
+  // 前後段沿用原合約單價；尾差記在後段，兩段合計＝原應收不變
+  let rate = Math.round(bk.total_amount / totalDays);
+  const run = db.transaction(() => {
+    let itemNote = '';
+    if (bk.status === 'reserved') {
+      // 合約明細同房型同價拆兩筆（依段序對應），排房連動順序才不會錯位；非實質變更不標需重簽
+      const bks = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status = 'reserved'
+        ORDER BY check_in, id`).all(bk.mother_id);
+      const idx = bks.findIndex(x => x.id === bk.id);
+      const cc = db.prepare('SELECT items FROM customer_contracts WHERE mother_id = ?').get(bk.mother_id);
+      let items = [];
+      try { items = JSON.parse((cc || {}).items || '[]'); } catch (e) { items = []; }
+      if (idx >= 0 && idx < items.length) {
+        const it = items[idx];
+        if (Number(it.price) > 0) rate = Number(it.price);
+        items.splice(idx, 1, { ...it, qty: days1 }, { ...it, qty: days2 });
+        db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+          .run(JSON.stringify(items).slice(0, 12000), bk.mother_id);
+        itemNote = `；明細 ${it.name} ${it.qty}天拆為 ${days1}＋${days2} 天（同價，總額不變）`;
+      }
+      db.prepare('UPDATE bookings SET check_out = ?, total_amount = ? WHERE id = ?')
+        .run(transferDate, days1 * rate, bk.id);
+      db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
+        VALUES (?,?,?,?,0,?,'reserved',?)`)
+        .run(bk.mother_id, newRoom.id, transferDate, bk.check_out, bk.total_amount - days1 * rate,
+          `預定期間轉房（原${bk.room_name}房）${reason ? `：${reason}` : ''}`);
+    } else {
+      // 入住中：原段結至轉房日、新段入住新房；房務排原房轉房日清潔
+      db.prepare(`UPDATE bookings SET check_out = ?, actual_check_out = ?, total_amount = ?, status = 'checked_out' WHERE id = ?`)
+        .run(transferDate, transferDate, days1 * rate, bk.id);
+      db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
+        VALUES (?,?,?,?,0,?,'checked_in',?)`)
+        .run(bk.mother_id, newRoom.id, transferDate, bk.check_out, bk.total_amount - days1 * rate,
+          `入住後轉房（原${bk.room_name}房）${reason ? `：${reason}` : ''}`);
+      db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
+        VALUES (?,?,?,?,?,?)`)
+        .run(bk.room_id, bk.mother_id, `${bk.room_name}退房清潔`, transferDate,
+          `入住後轉房：${bk.mother_name} ${transferDate} 換至${newRoom.name}房`, req.session.user.id);
+    }
+    logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id,
+      summary: `${bk.status === 'reserved' ? '預定期間轉房' : '入住後轉房'}：${bk.room_name}→${newRoom.name}房、轉房日 ${transferDate}` +
+        `（前段${days1}天／後段${days2}天，單價與應收總額不變）${itemNote}${reason ? `；原因：${reason}` : ''}` });
+  });
+  try { run(); } catch (e) { return res.status(500).json({ error: e.message }); }
+  res.json({ ok: true, transfer_date: transferDate, new_room: newRoom.name, days1, days2 });
 });
 
 // ---------- 護理提醒：本班未完成護理紀錄／衛教未完成／家屬護理需求未處理 ----------
