@@ -1191,6 +1191,8 @@ function init() {
   const ctCols = db.prepare('PRAGMA table_info(contracts)').all().map(c => c.name);
   if (!ctCols.includes('replaces_id')) db.exec('ALTER TABLE contracts ADD COLUMN replaces_id INTEGER');
   if (!ctCols.includes('handler')) db.exec("ALTER TABLE contracts ADD COLUMN handler TEXT DEFAULT ''");
+  // 合約明細/總額實質變更後標示「需重簽」（人工按重新簽署後清除）
+  if (!ctCols.includes('needs_resign')) db.exec('ALTER TABLE contracts ADD COLUMN needs_resign INTEGER NOT NULL DEFAULT 0');
 
   // 應收帳款催收：記錄最後催收時間
   const bkCols = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);

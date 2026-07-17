@@ -4410,7 +4410,7 @@ async function viewContracts() {
               <td data-label="媽媽 / 房間">${esc(c.mother_name || '-')}<br><small>${esc(c.room_name || '')} 房</small></td>
               <td data-label="合約">${esc(c.title)}<br><small>${esc(c.created_at?.slice(0, 16) || '')}　${esc(c.created_by_name || '')}</small></td>
               <td data-label="經手人">${esc(c.handler || '-')}</td>
-              <td data-label="狀態"><span class="badge ${st.badge}">${st.label}</span></td>
+              <td data-label="狀態"><span class="badge ${st.badge}">${st.label}</span>${c.needs_resign && c.status !== 'void' ? '<br><span class="badge red" title="合約明細／總額已變更，請按「重新簽署」產生新版">內容已變更，需重簽</span>' : ''}</td>
               <td data-label="簽署人">${c.status === 'signed' ? `${esc(c.signer_name)}${c.signer_relation ? `（${esc(c.signer_relation)}）` : ''}<br><small>${esc(c.signed_at || '')}</small>` : '-'}</td>
               <td data-label="操作">
                 ${c.status === 'pending' ? `<button class="btn small secondary" data-link="${esc(c.sign_token)}">簽署連結</button>` : ''}
@@ -10934,20 +10934,48 @@ async function viewCustomers() {
       } catch (e) { alert(e.message); }
     };
 
+    // 明細變更回應提示：排房連動筆數／已簽合約需重簽／訂金溢收
+    const notifyItemSync = r => {
+      const msgs = [];
+      if (r && r.sync && (r.sync.updated || r.sync.cancelled)) {
+        msgs.push(`已連動排房：更新 ${r.sync.updated} 段${r.sync.cancelled ? `、取消 ${r.sync.cancelled} 段` : ''}（床表／應收／訂餐已同步）`);
+      }
+      if (r && r.deposit_over > 0) msgs.push(`提醒：已收訂金超過新合約總額 10%，溢收 ${fmtMoney(r.deposit_over)}（退款請人工處理）`);
+      msgs.push('若已有簽署合約，已標示「需重簽」，請至合約簽署重新產生。');
+      alert(msgs.join('\n'));
+    };
     const addItem = async price => {
       const err = $q('#ct-item-err');
       err.textContent = '';
       const name = gv('#ct-item-type'), days = gv('#ct-item-days');
       if (!days) { err.textContent = '請填寫訂房天數'; return; }
       try {
-        await api(`/customers/${editId}/contract/items`, { method: 'POST',
+        const r = await api(`/customers/${editId}/contract/items`, { method: 'POST',
           body: price != null ? { name, qty: days, price } : { name, qty: days } });
+        notifyItemSync(r);
         await selectCustomer(editId);
       } catch (e) { err.textContent = e.message; }
     };
-    $q('#ct-item-add').onclick = () => addItem(null);
+    const itemAddBtn = $q('#ct-item-add');
+    if (itemAddBtn) itemAddBtn.onclick = () => addItem(null);
+    // 改天數：入住前直接修改明細天數（單價鎖定原價），自動連動排房
+    $('#cust-extra').querySelectorAll('[data-ctedit]').forEach(btn => {
+      btn.onclick = async () => {
+        const v = prompt(`修改「${btn.dataset.name}」訂房天數（目前 ${btn.dataset.qty} 天）：`, btn.dataset.qty);
+        if (v == null) return;
+        const qty = Math.round(Number(v));
+        if (!(qty > 0 && qty <= 999)) { alert('訂房天數需為 1～999'); return; }
+        try {
+          const r = await api(`/customers/${editId}/contract/items/edit`, { method: 'POST',
+            body: { index: Number(btn.dataset.ctedit), qty } });
+          if (qty !== Number(btn.dataset.qty)) notifyItemSync(r);
+          await selectCustomer(editId);
+        } catch (e) { alert(e.message); await selectCustomer(editId); }
+      };
+    });
     // 特殊折扣訂房：跳出視窗，單價自動帶入房型定價、可手改（折扣價）後儲存
-    $q('#ct-item-modal').onclick = () => {
+    const itemModalBtn = $q('#ct-item-modal');
+    if (itemModalBtn) itemModalBtn.onclick = () => {
       const typeSel = $q('#ct-item-type');
       const opts = [...typeSel.options].map(o => `<option value="${esc(o.value)}" data-price="${o.dataset.price || 0}">${esc(o.textContent)}</option>`).join('');
       openModal('特殊折扣訂房', `
@@ -10973,9 +11001,10 @@ async function viewCustomers() {
           if (!(days > 0)) { bv('#im-err').textContent = '請填寫訂房天數'; return; }
           if (!(price >= 0)) { bv('#im-err').textContent = '單價需為 0 以上數字'; return; }
           try {
-            await api(`/customers/${editId}/contract/items`, { method: 'POST',
+            const r = await api(`/customers/${editId}/contract/items`, { method: 'POST',
               body: { name: bv('#im-type').value, qty: days, price } });
             closeModal();
+            notifyItemSync(r);
             await selectCustomer(editId);
           } catch (e) { bv('#im-err').textContent = e.message; }
         };
@@ -10983,13 +11012,14 @@ async function viewCustomers() {
     };
     $('#cust-extra').querySelectorAll('[data-ctdel]').forEach(btn => {
       btn.onclick = async () => {
-        const reason = prompt('刪除訂房明細：請填寫刪除說明（必填，記入稽核）');
+        const reason = prompt('刪除訂房明細：請填寫刪除說明（必填，記入稽核；已排的預約段將連動取消）');
         if (reason == null) return;
         try {
-          await api(`/customers/${editId}/contract/items/delete`, { method: 'POST',
+          const r = await api(`/customers/${editId}/contract/items/delete`, { method: 'POST',
             body: { index: Number(btn.dataset.ctdel), reason } });
+          notifyItemSync(r);
           await selectCustomer(editId);
-        } catch (e) { alert(e.message); }
+        } catch (e) { alert(e.message); await selectCustomer(editId); }
       };
     });
 
@@ -11645,7 +11675,8 @@ async function viewCustomers() {
         </div>
       </div>
       <div class="card">
-        <div class="sec-hd">合約資料明細（銷售房型）</div>
+        <div class="sec-hd">合約資料明細（銷售房型）${(d.bookings || []).some(b => b.status === 'checked_in') ? '　<span class="badge gray">已入住，明細鎖定唯讀</span>' : ''}</div>
+        ${(d.bookings || []).some(b => b.status === 'checked_in') ? '' : `
         <div class="row no-print" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div class="field" style="margin:0"><label>銷售房型</label>
             <select id="ct-item-type">${d.room_types.map(r => `<option value="${esc(r.name)}" data-price="${r.price || 0}">${esc(r.name)}（$${(r.price || 0).toLocaleString()}/日）</option>`).join('')}</select></div>
@@ -11653,7 +11684,7 @@ async function viewCustomers() {
           <button class="btn danger" id="ct-item-add">確定新增</button>
           <button class="btn" id="ct-item-modal" style="background:#2fb6e8">特殊折扣訂房</button>
           <span class="error-msg" id="ct-item-err"></span>
-        </div>
+        </div>`}
         <div class="table-wrap" style="margin-top:8px">
           <table class="data stack">
             <thead><tr><th>項次</th><th>銷售品名</th><th>數量</th><th>單價</th><th>小計</th><th>建檔人</th><th class="no-print"></th></tr></thead>
@@ -11664,13 +11695,14 @@ async function viewCustomers() {
                 <td data-label="單價">$${(it.price || 0).toLocaleString()}</td>
                 <td data-label="小計">$${((it.qty || 0) * (it.price || 0)).toLocaleString()}</td>
                 <td data-label="建檔人">${esc(it.by || '—')}<br><small>${esc(it.at || '')}</small></td>
-                <td data-label="" class="no-print"><button class="btn small danger" data-ctdel="${i}">刪</button></td></tr>`).join('')
+                <td data-label="" class="no-print">${(d.bookings || []).some(b => b.status === 'checked_in') ? '' :
+                  `<button class="btn small secondary" data-ctedit="${i}" data-qty="${it.qty}" data-name="${esc(it.name)}">改天數</button> <button class="btn small danger" data-ctdel="${i}">刪</button>`}</td></tr>`).join('')
               : '<tr><td colspan="7"><div class="empty">尚無明細</div></td></tr>'}
               <tr><td colspan="7" style="text-align:right"><b>合計金額：$${total.toLocaleString()}</b></td></tr>
             </tbody>
           </table>
         </div>
-        <small style="color:var(--muted)">刪除明細需填寫刪除說明（記入稽核軌跡）。</small>
+        <small style="color:var(--muted)">入住前的新增／改天數／刪除會自動連動排房、應收與訂餐，並將已簽合約標示「需重簽」；已入住後鎖定，縮短請走收費明細（退費試算）。</small>
       </div>
       <div class="card">
         <div class="sec-hd">${ct ? '修改' : '新增'}合約資料</div>
