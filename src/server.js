@@ -7543,14 +7543,9 @@ app.delete('/api/housekeeping/tasks/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- 退費試算（依機構定型化契約參數） ----------
-app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
-  const bk = db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, r.price_per_day
-    FROM bookings bk JOIN mothers m ON m.id=bk.mother_id JOIN rooms r ON r.id=bk.room_id
-    WHERE bk.id=?`).get(req.params.id);
-  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+// ---------- 退費試算（依機構定型化契約參數）；同一公式供「入住中縮短住期」沿用 ----------
+function refundQuoteOf(bk, leaveDate) {
   const s = getSettings();
-  const leaveDate = req.query.leave_date || today();
   const totalDays = Math.max(1, Math.round((new Date(bk.check_out) - new Date(bk.check_in)) / 86400000));
   const dailyRate = bk.price_per_day > 0 ? bk.price_per_day : Math.round(bk.total_amount / totalDays);
   // 已使用天數：入住日至離開日（含當日），夾在 0~總天數之間
@@ -7571,7 +7566,7 @@ app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
   const babyDeduct = babyAbsentUsed * rate;                   // 已使用期間的寶寶未入住扣抵
   const deductible = Math.max(0, usedFee + charges + penalty + handling - babyDeduct); // 機構可收取合計
   const refund = Math.max(0, paid - deductible);
-  res.json({
+  return {
     booking_id: bk.id, mother_name: bk.mother_name, room_name: bk.room_name,
     check_in: bk.check_in, check_out: bk.check_out, leave_date: leaveDate,
     total_days: totalDays, used_days: usedDays, unused_days: unusedDays, daily_rate: dailyRate,
@@ -7579,7 +7574,48 @@ app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
     penalty_pct: penaltyPct, penalty, handling_pct: handlingPct, handling,
     baby_absent_days: babyAbsentUsed, baby_deduct: babyDeduct,
     deductible, refund
-  });
+  };
+}
+app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
+  const bk = db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, r.price_per_day
+    FROM bookings bk JOIN mothers m ON m.id=bk.mother_id JOIN rooms r ON r.id=bk.room_id
+    WHERE bk.id=?`).get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  res.json(refundQuoteOf(bk, req.query.leave_date || today()));
+});
+
+// 入住中縮短住期：以離開日期為新退房日，依退費試算公式重算合約應收，並連動訂餐／床表／房況
+app.post('/api/bookings/:id/shorten', requireStaff, (req, res) => {
+  const bk = db.prepare(`SELECT bk.*, m.name AS mother_name, r.name AS room_name, r.price_per_day
+    FROM bookings bk JOIN mothers m ON m.id=bk.mother_id JOIN rooms r ON r.id=bk.room_id
+    WHERE bk.id=?`).get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  if (bk.status !== 'checked_in') return res.status(400).json({ error: '僅入住中訂房可縮短住期（預約中請至排房資料調整）' });
+  const leaveDate = (req.body || {}).leave_date || '';
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(leaveDate)) return res.status(400).json({ error: '請填寫離開日期' });
+  if (leaveDate < bk.check_in || leaveDate >= bk.check_out) {
+    return res.status(400).json({ error: '離開日期需在入住日之後、原退房日之前' });
+  }
+  const q = refundQuoteOf(bk, leaveDate);
+  // 新合約應收＝已使用住宿費＋違約金＋作業手續費（加購與寶寶扣抵由帳務另計；溢收顯示為負餘額待退）
+  const newTotal = q.used_fee + q.penalty + q.handling;
+  db.prepare(`UPDATE bookings SET check_out = ?, total_amount = ?, early_reason = ? WHERE id = ?`)
+    .run(leaveDate, newTotal, reason ? `入住中縮短住期：${reason}` : '入住中縮短住期', bk.id);
+  // 訂餐連動：清掉原住期、依新住期重鋪（入住日午餐～新退房日早餐；沿用原餐別與備註）
+  const seed = db.prepare(`SELECT choice, note FROM meal_orders WHERE mother_id = ? AND meal_date >= ? AND meal_date <= ?
+    ORDER BY meal_date, meal_type LIMIT 1`).get(bk.mother_id, bk.check_in, bk.check_out);
+  if (seed) {
+    db.prepare('DELETE FROM meal_orders WHERE mother_id = ? AND meal_date >= ? AND meal_date <= ?')
+      .run(bk.mother_id, bk.check_in, bk.check_out);
+    seedStayMeals(bk.mother_id, bk.check_in, leaveDate, seed.choice, seed.note || '');
+  }
+  logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id,
+    summary: `入住中縮短住期：退房日 ${bk.check_out}→${leaveDate}、合約應收 ${bk.total_amount}→${newTotal}` +
+      `（已用${q.used_days}天×${q.daily_rate}＋違約金${q.penalty}＋手續費${q.handling}）${reason ? `；原因：${reason}` : ''}` });
+  logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: bk.mother_id,
+    summary: `入住中縮短住期（訂房#${bk.id}）：退房日 ${bk.check_out}→${leaveDate}；銷售房型明細維持原約，應收依定型化契約重算` });
+  res.json({ ok: true, check_out: leaveDate, total_amount: newTotal, quote: q });
 });
 
 // ---------- 護理提醒：本班未完成護理紀錄／衛教未完成／家屬護理需求未處理 ----------

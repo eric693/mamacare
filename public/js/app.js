@@ -2833,8 +2833,23 @@ async function openBillingDetail(bookingId) {
             </tbody>
           </table>
           <p style="font-size:.78rem;color:var(--muted);margin-top:6px">※ 試算結果，實際依雙方契約與衛福部產後護理機構定型化契約退費規定；違約金與手續費比例可於系統設定調整。</p>
+          ${b.status === 'checked_in' && q.leave_date >= q.check_in && q.leave_date < q.check_out ? `
+          <div class="row no-print" style="gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;border-top:1px dashed var(--border);padding-top:8px">
+            <div class="field" style="flex:1;min-width:200px;margin:0"><label>縮短原因<small>（記入稽核與合約修改紀錄）</small></label><input id="rf-reason" maxlength="200"></div>
+            <button class="btn danger" id="rf-shorten">確認縮短住期（退房日改為 ${esc(q.leave_date)}）</button>
+          </div>
+          <p style="font-size:.78rem;color:var(--muted);margin-top:4px">確認後：訂房退房日與合約應收（已用住宿費＋違約金＋手續費）即改定，並連動床表、媽寶房況預退日與訂餐（供餐至新退房日早餐）。</p>` : ''}
         </div>`;
       refundBox.querySelector('#rf-date').onchange = e => drawRefund(e.target.value);
+      const shortenBtn = refundBox.querySelector('#rf-shorten');
+      if (shortenBtn) shortenBtn.onclick = async () => {
+        const reason = refundBox.querySelector('#rf-reason').value.trim();
+        if (!confirm(`確認將「${b.mother_name}」退房日由 ${q.check_out} 縮短為 ${q.leave_date}？\n\n合約應收將改為 ${fmtMoney(q.used_fee + q.penalty + q.handling)}（已用${q.used_days}天＋違約金＋手續費），床表／房況／訂餐將同步更新。`)) return;
+        try {
+          await api(`/bookings/${b.id}/shorten`, { method: 'POST', body: { leave_date: q.leave_date, reason } });
+          closeModal();   // 關閉後收費帳務清單自動重載（modal onclose）
+        } catch (e) { alert(`縮短住期未完成：${e.message}`); }
+      };
     };
     body.querySelector('#bd-refund').onclick = () => { if (refundBox.innerHTML) refundBox.innerHTML = ''; else drawRefund(); };
     body.querySelector('#bd-print-charges').onclick = () => printCharges(b);
