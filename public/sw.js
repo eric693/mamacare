@@ -1,6 +1,6 @@
 /* MamaCare 服務工作者：快取靜態外殼，支援「加到主畫面」與離線檢視。
    API 與上傳檔不快取（一律走網路，確保資料即時與權限正確）。 */
-const CACHE = 'mamacare-v66';
+const CACHE = 'mamacare-v67';
 const ASSETS = [
   '/family.html', '/index.html',
   '/css/style.css', '/js/api.js', '/js/family.js', '/js/app.js',
@@ -22,7 +22,8 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   if (url.origin !== location.origin) return;
   if (url.pathname.startsWith('/api') || url.pathname.startsWith('/uploads')) return; // 即時資料不快取
-  // 靜態資源：快取優先，背景更新；離線時回退家屬入口外殼
+  // 靜態資源：快取優先，背景更新；離線導航依入口回退對應外殼（員工端 index、家屬端 family）
+  const offlineShell = url.pathname.startsWith('/family') ? '/family.html' : '/index.html';
   e.respondWith(
     caches.match(e.request).then(cached => {
       const fetched = fetch(e.request).then(resp => {
@@ -31,7 +32,7 @@ self.addEventListener('fetch', e => {
           caches.open(CACHE).then(c => c.put(e.request, copy));
         }
         return resp;
-      }).catch(() => cached || caches.match('/family.html'));
+      }).catch(() => cached || caches.match(offlineShell));
       return cached || fetched;
     })
   );

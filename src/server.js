@@ -2729,13 +2729,24 @@ app.put('/api/bookings/:id/status', requireStaff, (req, res) => {
         summary: `撤銷未生效變更（接續段#${bk.id} 取消）：出住日恢復 ${bk.check_out}、應收併回 ${bk.total_amount}、帳務移回` });
     }
   }
-  // 接續段直接辦理入住＝提前生效：前段（入住中）自動轉已退住，避免同時兩段入住中
+  // 已結轉至後段的原段不可改回入住中（會與後段同時入住中、帳務重複）
+  if (status === 'checked_in') {
+    const succ = db.prepare(`SELECT id, status FROM bookings WHERE continued_from = ? AND status IN ('checked_in','checked_out') LIMIT 1`).get(bk.id);
+    if (succ) return res.status(409).json({ error: `此訂房已由期間變更／轉房結轉至後段（訂房#${succ.id}），請改於後段操作` });
+  }
+  // 接續段直接辦理入住＝提前生效：前段（入住中）自動轉已退住，切換日改為今日對齊床表（應收維持原約定）
   if (status === 'checked_in' && bk.continued_from) {
     const pred = db.prepare(`SELECT * FROM bookings WHERE id = ? AND status = 'checked_in'`).get(bk.continued_from);
     if (pred) {
-      db.prepare(`UPDATE bookings SET status = 'checked_out', actual_check_out = ? WHERE id = ?`).run(today(), pred.id);
+      const d0 = today();
+      db.prepare(`UPDATE bookings SET status = 'checked_out', actual_check_out = ?, check_out = ? WHERE id = ?`)
+        .run(d0, d0 < pred.check_out ? d0 : pred.check_out, pred.id);
+      if (d0 < bk.check_in) db.prepare('UPDATE bookings SET check_in = ? WHERE id = ?').run(d0, bk.id);
+      // 原房退房清潔任務提前到今日
+      db.prepare(`UPDATE housekeeping_logs SET scheduled_for = ? WHERE room_id = ? AND mother_id = ?
+        AND status = 'pending' AND task LIKE '%退房清潔%' AND scheduled_for > ?`).run(d0, pred.room_id, pred.mother_id, d0);
       logAudit(req, { action: 'update', entity: 'bookings', entity_id: pred.id,
-        summary: `切段提前生效：接續段#${bk.id} 辦理入住，原段轉已退住` });
+        summary: `切段提前生效：接續段#${bk.id} 辦理入住，原段轉已退住、切換日改為 ${d0}（應收維持原約定）` });
     }
   }
   db.prepare('UPDATE bookings SET status = ? WHERE id = ?').run(status, req.params.id);

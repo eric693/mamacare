@@ -2638,9 +2638,11 @@ async function openBillingDetail(bookingId) {
         </tr>
       </tbody>
     </table></div>
+    ${b.merged_into ? `<div class="card" style="background:#fdf6e3;padding:8px 12px;margin-bottom:10px;font-size:.85rem">
+      此段已因期間變更／轉房結轉：帳務（訂金／收款／加購）已併入後段訂房 #${b.merged_into}，收款、退費試算與期間變更請至現行段的收費明細辦理。</div>` : ''}
     <div class="row" style="margin-bottom:10px">
-      <button class="btn small secondary" id="bd-refund">退費試算</button>
-      ${b.status === 'checked_in' ? '<button class="btn small secondary" id="bd-change">期間變更（升等/降等）</button>' : ''}
+      ${b.merged_into ? '' : '<button class="btn small secondary" id="bd-refund">退費試算</button>'}
+      ${b.status === 'checked_in' && !b.merged_into ? '<button class="btn small secondary" id="bd-change">期間變更（升等/降等）</button>' : ''}
       <button class="btn small secondary" id="bd-receipt">開立收據</button>
       <button class="btn small secondary" id="bd-print-charges">列印加購明細</button>
     </div>
@@ -2877,7 +2879,8 @@ async function openBillingDetail(bookingId) {
         } catch (e) { alert(`縮短住期未完成：${e.message}`); }
       };
     };
-    body.querySelector('#bd-refund').onclick = () => { if (refundBox.innerHTML) refundBox.innerHTML = ''; else drawRefund(); };
+    const refundBtn = body.querySelector('#bd-refund');
+    if (refundBtn) refundBtn.onclick = () => { if (refundBox.innerHTML) refundBox.innerHTML = ''; else drawRefund(); };
     // 入住中期間變更（升等/降等，可同時增減天數）：生效日切段計價，縮短部分依定型化契約收違約金／手續費
     const changeBox = body.querySelector('#bd-change-box');
     const drawChange = async () => {
