@@ -1199,6 +1199,8 @@ function init() {
   if (!bkCols.includes('dunned_at')) db.exec("ALTER TABLE bookings ADD COLUMN dunned_at TEXT DEFAULT ''");
   // 寶寶入住日（媽媽入住但寶寶較晚到院時，用於計算未入住扣抵）
   if (!bkCols.includes('baby_check_in')) db.exec("ALTER TABLE bookings ADD COLUMN baby_check_in TEXT DEFAULT ''");
+  // 住期切段接續鏈：期間變更／轉房／拆分產生的後段記前段訂房 id（報表去重、帳務併段、生效日自動轉入住）
+  if (!bkCols.includes('continued_from')) db.exec('ALTER TABLE bookings ADD COLUMN continued_from INTEGER');
 
   // 參觀預約：下次跟進日（到期併入待辦提醒）；歡迎訊息是否已發（避免重複）
   const tourCols = db.prepare('PRAGMA table_info(tours)').all().map(c => c.name);

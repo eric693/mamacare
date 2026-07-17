@@ -2828,13 +2828,58 @@ function syncBabyAbsences(bk) {
 }
 
 // rate 可由呼叫端帶入避免重複讀設定；未帶入時自動讀取
+// ---------- 住期切段接續鏈（bookings.continued_from）：期間變更／轉房／拆分的前後段 ----------
+// 後段＝接續本段的有效訂房；前段鏈＝沿 continued_from 往前追（防呆上限 20 層）
+function chainSuccessorId(bookingId) {
+  const r = db.prepare(`SELECT id FROM bookings WHERE continued_from = ? AND status != 'cancelled' ORDER BY id LIMIT 1`).get(bookingId);
+  return r ? r.id : null;
+}
+// 新段插入鏈中時，把前段原有的其他接續改指到新段（維持鏈為嚴格線性，帳務不重複併入）
+function chainRelink(oldId, newId) {
+  db.prepare(`UPDATE bookings SET continued_from = ? WHERE continued_from = ? AND id != ? AND status != 'cancelled'`)
+    .run(newId, oldId, newId);
+}
+// 前段鏈未結餘額（應收＋加購−寶寶扣抵−訂金−已收），併入現行段應收。
+// 期間變更／入住後轉房已把訂金與收款移到後段，此值通常＝前段應收；預約段拆分則訂金留前段自動淨額。
+// 僅沿「指定後段」（chainSuccessorId）往前累計，前段帳務只會併入一個後段。
+function chainPriorBalance(row, rate) {
+  let sum = 0, curId = row.id, curFrom = row.continued_from;
+  for (let i = 0; curFrom && i < 20; i++) {
+    const p = db.prepare(`SELECT bk.*, ${BILLING_SUMS} FROM bookings bk WHERE bk.id = ?`).get(curFrom);
+    if (!p || chainSuccessorId(p.id) !== curId) break;
+    sum += p.total_amount + p.charges_total - babyAbsenceDays(p) * rate - p.deposit - p.payments_total;
+    curId = p.id;
+    curFrom = p.continued_from;
+  }
+  return sum;
+}
+// 沿前段鏈找整段住期的起始入住日（供平均住宿日數等報表用）
+function chainRootCheckIn(bk) {
+  let cur = bk;
+  for (let i = 0; cur.continued_from && i < 20; i++) {
+    const p = db.prepare('SELECT id, check_in, continued_from FROM bookings WHERE id = ?').get(cur.continued_from);
+    if (!p) break;
+    cur = p;
+  }
+  return cur.check_in;
+}
+
 function withBalance(row, rate) {
   if (rate === undefined) rate = babyDeductRate();
   // 寶寶不在館內扣抵：baby_absences 期間每日扣 rate，自動調整合約應收
   const absentDays = babyAbsenceDays(row);
   row.baby_absent_days = absentDays;
   row.baby_deduct = absentDays * rate;
-  row.total_due = row.total_amount + row.charges_total - row.baby_deduct;
+  // 切段接續：有後段者帳務全數併入後段（本列不再計餘額）；現行段把前段鏈未結併入應收
+  row.merged_into = row.id ? chainSuccessorId(row.id) : null;
+  row.chain_prior = (!row.merged_into && row.continued_from) ? chainPriorBalance(row, rate) : 0;
+  if (row.merged_into) {
+    row.total_due = 0; row.total_paid = 0; row.balance = 0;
+    row.paid_contract = 0; row.paid_addon = 0;
+    row.contract_due = 0; row.addon_due = 0; row.contract_balance = 0; row.addon_balance = 0;
+    return row;
+  }
+  row.total_due = row.total_amount + row.chain_prior + row.charges_total - row.baby_deduct;
   row.total_paid = row.deposit + row.payments_total;
   row.balance = row.total_due - row.total_paid;
   // 合約款與加購款分開記帳（開立不同公司發票）：
@@ -2843,7 +2888,7 @@ function withBalance(row, rate) {
   row.payments_addon = row.payments_addon || 0;
   row.paid_contract = row.deposit + (row.payments_total - row.payments_addon);
   row.paid_addon = row.payments_addon;
-  row.contract_due = row.total_amount - row.baby_deduct;
+  row.contract_due = row.total_amount + row.chain_prior - row.baby_deduct;
   row.addon_due = row.charges_total;
   row.contract_balance = row.contract_due - row.paid_contract;
   row.addon_balance = row.addon_due - row.paid_addon; // 兩者相加恆等於 balance
@@ -4981,11 +5026,13 @@ app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
     }
   });
   tx();
-  // 報喜後續自動帶入：房務「請備房」任務＋入住日當日訂餐（以最新排房紀錄為準）
+  // 報喜後續自動帶入：房務「請備房」任務（第一段房間／入住日）＋住期訂餐（鋪滿全部段落至最末段出住日）
   const annBk = db.prepare(`SELECT bk.id, bk.check_in, bk.check_out, bk.room_id, r.name AS room_name
     FROM bookings bk JOIN rooms r ON r.id = bk.room_id
     WHERE bk.mother_id = ? AND bk.status IN ('reserved','checked_in')
-    ORDER BY bk.check_in DESC LIMIT 1`).get(m.id);
+    ORDER BY bk.check_in, bk.id LIMIT 1`).get(m.id);
+  const annOut = annBk ? db.prepare(`SELECT MAX(check_out) o FROM bookings
+    WHERE mother_id = ? AND status IN ('reserved','checked_in')`).get(m.id).o : '';
   let hkTaskName = '';
   if (annBk) {
     // 房務任務：(房號)請備房+MMdd(入住日)；建立於報喜儲存日；重複報喜不重複建立（同任務名且待處理者跳過）
@@ -4996,20 +5043,20 @@ app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
     if (!dupTask) {
       db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
         VALUES (?,?,?,?,?,?)`).run(annBk.room_id, m.id, hkTaskName, today(),
-        `媽咪 ${m.name}／${annBk.room_name}房／入住 ${annBk.check_in}／出住 ${annBk.check_out}／哺乳衣 ${ann.announce_bra || '—'}`,
+        `媽咪 ${m.name}／${annBk.room_name}房／入住 ${annBk.check_in}／出住 ${annOut}／哺乳衣 ${ann.announce_bra || '—'}`,
         req.session.user.id);
     }
-    // 膳食管理：自入住日午餐起至出住日早餐止，逐日自動帶入餐別（未來每一天都有訂餐，不再顯示未訂）
+    // 膳食管理：自入住日午餐起至（最末段）出住日早餐止，逐日自動帶入餐別（多段住期整段鋪滿）
     if (ann.announce_meal && ann.announce_meal !== '不需供餐') {
       const mealNote = [ann.announce_diet_type, ann.announce_taboos ? `禁忌：${ann.announce_taboos}` : '']
         .filter(Boolean).join('　');
-      seedStayMeals(m.id, annBk.check_in, annBk.check_out, ann.announce_meal, mealNote);
+      seedStayMeals(m.id, annBk.check_in, annOut, ann.announce_meal, mealNote);
     }
   }
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: m.id,
     summary: `寶寶報喜：生產日 ${b.birth_date}、${babiesIn.length} 胎、餐別 ${ann.announce_meal || '—'}、車號 ${ann.announce_car_no || '—'}` });
   res.json({ ok: true, created_babies: Math.max(0, babiesIn.length - existingBefore),
-    hk_task: hkTaskName, meal_date: annBk ? annBk.check_in : '', meal_end: annBk ? annBk.check_out : '' });
+    hk_task: hkTaskName, meal_date: annBk ? annBk.check_in : '', meal_end: annOut });
 });
 
 // 合約明細：新增銷售房型（qty=訂房天數；price 未帶則取該房型每日房價）
@@ -5301,9 +5348,10 @@ app.post('/api/customers/:motherId/contract/items/split', requireStaff, (req, re
     summary: `合約明細拆分 ${old.name} ${old.qty}天 → ${old.name} ${qty1}天＋${name2} ${qty2}天（金額 ${before}→${totalOf(items)}）` });
   markContractsNeedResign(cur.mother_id);
   if (seg2) {
-    const info = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
-      VALUES (?,?,?,?,0,?,'reserved','合約明細拆分建立')`)
-      .run(cur.mother_id, seg2.room.id, seg2.check_in, seg2.check_out, qty2 * price2);
+    const info = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes, continued_from)
+      VALUES (?,?,?,?,0,?,'reserved','合約明細拆分建立',?)`)
+      .run(cur.mother_id, seg2.room.id, seg2.check_in, seg2.check_out, qty2 * price2, bkA.id);
+    chainRelink(bkA.id, info.lastInsertRowid);   // 前段既有接續段改接到新段（維持鏈線性）
     logAudit(req, { action: 'create', entity: 'bookings', entity_id: info.lastInsertRowid,
       summary: `合約明細拆分連動排房：${seg2.room.name}（${seg2.check_in}~${seg2.check_out}、應收 ${qty2 * price2}）` });
   }
@@ -5781,8 +5829,14 @@ const PP_REPORTS = {
       dep_amt: db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE paid_on=? AND note LIKE '訂金%'`).get(d).s,
       res_unpaid: db.prepare(`SELECT COUNT(*) c FROM bookings bk WHERE substr(bk.created_at,1,10)=? AND bk.status='reserved'
         AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.booking_id=bk.id)`).get(d).c,
-      checkins: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out')`).get(d).c,
-      stay_amt: db.prepare(`SELECT COALESCE(SUM(total_amount),0) s FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out')`).get(d).s
+      // 切段接續（期間變更／轉房／拆分）不重算人次；金額沿接續鏈併回原入住日
+      checkins: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out')
+        AND continued_from IS NULL`).get(d).c,
+      stay_amt: db.prepare(`WITH RECURSIVE chain(id, total_amount) AS (
+          SELECT id, total_amount FROM bookings WHERE check_in=? AND status IN ('checked_in','checked_out') AND continued_from IS NULL
+          UNION ALL
+          SELECT b.id, b.total_amount FROM bookings b JOIN chain c ON b.continued_from = c.id WHERE b.status != 'cancelled'
+        ) SELECT COALESCE(SUM(total_amount),0) s FROM chain`).get(d).s
     })) },
   // 商城商品銷售／加購項目收入：以收款日認定，支援 入住日期/收款日期/媽媽姓名/特定商品 搜尋
   supply_sales: { label: '商城商品銷售明細表', columns: [
@@ -5880,12 +5934,16 @@ const PP_REPORTS = {
           month, moms: momSet.size, babies: babyCnt, mom_days: momDays, baby_days: babyDays,
           avg_days: momSet.size ? Math.round(momDays / momSet.size) : 0,
           rate: (momDays / (total * mDays) * 100).toFixed(2) + ' %',
-          checkouts: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status='checked_out' AND substr(check_out,1,7)=?`).get(month).c,
+          // 切段接續段不計入出住／新收人次（避免同一住客被算兩次）
+          checkouts: db.prepare(`SELECT COUNT(*) c FROM bookings bk WHERE bk.status='checked_out' AND substr(bk.check_out,1,7)=?
+            AND NOT EXISTS (SELECT 1 FROM bookings s WHERE s.continued_from = bk.id AND s.status != 'cancelled')`).get(month).c,
           cancels: db.prepare(`SELECT COUNT(*) c FROM customer_contracts WHERE status='cancelled'
             AND substr(json_extract(data,'$.cancel_date'),1,7)=?`).get(month).c
             + db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status='cancelled' AND substr(check_in,1,7)=?`).get(month).c,
-          new_moms: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status IN ('checked_in','checked_out') AND substr(check_in,1,7)=?`).get(month).c,
-          new_babies: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE baby_check_in IS NOT NULL AND substr(baby_check_in,1,7)=?`).get(month).c
+          new_moms: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status IN ('checked_in','checked_out') AND substr(check_in,1,7)=?
+            AND continued_from IS NULL`).get(month).c,
+          new_babies: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE baby_check_in IS NOT NULL AND substr(baby_check_in,1,7)=?
+            AND continued_from IS NULL`).get(month).c
         };
       });
     } },
@@ -6289,9 +6347,12 @@ const PP_REPORTS = {
     ['d', '日期'], ['in_cnt', '入住人數'], ['out_cnt', '出住人數'], ['total', '本日總人數']],
     run: (f, t) => ppDays(f, t).map(d => ({
       d,
-      in_cnt: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status IN ('checked_in','checked_out') AND check_in = ?`).get(d).c,
-      out_cnt: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status='checked_out'
-        AND (CASE WHEN actual_check_out != '' THEN actual_check_out ELSE check_out END) = ?`).get(d).c,
+      // 切段接續段不計入出入住人數（同一住客換房／變更不重算）
+      in_cnt: db.prepare(`SELECT COUNT(*) c FROM bookings WHERE status IN ('checked_in','checked_out') AND check_in = ?
+        AND continued_from IS NULL`).get(d).c,
+      out_cnt: db.prepare(`SELECT COUNT(*) c FROM bookings bk WHERE bk.status='checked_out'
+        AND (CASE WHEN bk.actual_check_out != '' THEN bk.actual_check_out ELSE bk.check_out END) = ?
+        AND NOT EXISTS (SELECT 1 FROM bookings s WHERE s.continued_from = bk.id AND s.status != 'cancelled')`).get(d).c,
       total: db.prepare(`SELECT COUNT(DISTINCT mother_id) c FROM bookings
         WHERE status IN ('checked_in','checked_out') AND check_in <= ? AND check_out > ?`).get(d, d).c
     })) },
@@ -7819,7 +7880,8 @@ function refundQuoteOf(bk, leaveDate) {
   syncBabyAbsences(bk);
   const babyAbsentUsed = Math.max(0, Math.min(babyAbsenceDays(bk, leaveDate), usedDays));
   const babyDeduct = babyAbsentUsed * rate;                   // 已使用期間的寶寶未入住扣抵
-  const deductible = Math.max(0, usedFee + charges + penalty + handling - babyDeduct); // 機構可收取合計
+  const chainPrior = bk.continued_from ? chainPriorBalance(bk, rate) : 0;  // 切段接續：前段鏈未結（收款已移本段，應計入可收取）
+  const deductible = Math.max(0, chainPrior + usedFee + charges + penalty + handling - babyDeduct); // 機構可收取合計
   const refund = Math.max(0, paid - deductible);
   return {
     booking_id: bk.id, mother_name: bk.mother_name, room_name: bk.room_name,
@@ -7828,7 +7890,7 @@ function refundQuoteOf(bk, leaveDate) {
     paid_total: paid, charges_total: charges, used_fee: usedFee,
     penalty_pct: penaltyPct, penalty, handling_pct: handlingPct, handling,
     baby_absent_days: babyAbsentUsed, baby_deduct: babyDeduct,
-    deductible, refund
+    chain_prior: chainPrior, deductible, refund
   };
 }
 app.get('/api/bookings/:id/refund-quote', requireStaff, (req, res) => {
@@ -7938,15 +8000,38 @@ app.post('/api/bookings/:id/change-stay', requireStaff, (req, res) => {
   const { bk, effectiveDate, newCheckOut, newRoom } = v;
   const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
   const q = changeStayQuoteOf(bk, effectiveDate, newRoom, newCheckOut);
+  // 生效日已到＝立即切換；生效日在未來＝新段先掛預約、原段維持入住中，到生效日由排程自動轉換
+  const immediate = effectiveDate <= today();
   const run = db.transaction(() => {
-    // 原段收尾：出住日改生效日、應收＝已住天數×原單價；轉已退住讓「入住中」唯一指向新段
-    db.prepare(`UPDATE bookings SET check_out = ?, actual_check_out = ?, total_amount = ?, status = 'checked_out' WHERE id = ?`)
-      .run(effectiveDate, effectiveDate, q.seg1_total, bk.id);
-    // 新段：生效日起入住新房，應收＝天數×新單價（縮短時加計違約金／手續費）
-    const info = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
-      VALUES (?,?,?,?,0,?,'checked_in',?)`)
-      .run(bk.mother_id, newRoom.id, effectiveDate, newCheckOut, q.seg2_total,
-        `入住中期間變更（${q.grade}，原${bk.room_name}房）${reason ? `：${reason}` : ''}`);
+    // 原段收尾：出住日改生效日、應收＝已住天數×原單價；訂金隨帳務移往新段
+    if (immediate) {
+      db.prepare(`UPDATE bookings SET check_out = ?, actual_check_out = ?, total_amount = ?, deposit = 0, status = 'checked_out' WHERE id = ?`)
+        .run(effectiveDate, effectiveDate, q.seg1_total, bk.id);
+    } else {
+      db.prepare(`UPDATE bookings SET check_out = ?, total_amount = ?, deposit = 0 WHERE id = ?`)
+        .run(effectiveDate, q.seg1_total, bk.id);
+    }
+    // 新段：生效日起入住新房，應收＝天數×新單價（縮短時加計違約金／手續費）；接續鏈記前段
+    const info = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes,
+        baby_check_in, dunned_at, continued_from)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(bk.mother_id, newRoom.id, effectiveDate, newCheckOut, bk.deposit, q.seg2_total,
+        immediate ? 'checked_in' : 'reserved',
+        `入住中期間變更（${q.grade}，原${bk.room_name}房）${reason ? `：${reason}` : ''}`,
+        bk.baby_check_in || '', bk.dunned_at || '', bk.id);
+    chainRelink(bk.id, info.lastInsertRowid);   // 原段既有接續段改接到新段（維持鏈線性）
+    // 帳務隨住客走：收款與加購移到新段（收費帳務／退費試算以新段為現行帳；前段應收由接續鏈自動併入）
+    db.prepare('UPDATE payments SET booking_id = ? WHERE booking_id = ?').run(info.lastInsertRowid, bk.id);
+    db.prepare('UPDATE charge_items SET booking_id = ? WHERE booking_id = ?').run(info.lastInsertRowid, bk.id);
+    // 房務：新房生效日前請備房（重複報喜同名待處理任務不重建）
+    const mmdd = effectiveDate.slice(5).replace('-', '');
+    const prepTask = `${newRoom.name}請備房${mmdd}`;
+    if (!db.prepare(`SELECT 1 FROM housekeeping_logs WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`)
+      .get(bk.mother_id, prepTask)) {
+      db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
+        VALUES (?,?,?,?,?,?)`).run(newRoom.id, bk.mother_id, prepTask, today(),
+        `入住中期間變更：${bk.mother_name} ${effectiveDate} 自${bk.room_name}房換入`, req.session.user.id);
+    }
     // 合約明細改為兩筆：找到對應原房型明細者拆為前後段；找不到則不動明細、僅記稽核
     const cc = db.prepare('SELECT items FROM customer_contracts WHERE mother_id = ?').get(bk.mother_id);
     let itemNote = '明細無對應原房型項目，未自動改寫';
@@ -7992,8 +8077,33 @@ app.post('/api/bookings/:id/change-stay', requireStaff, (req, res) => {
   });
   let newId;
   try { newId = run(); } catch (e) { return res.status(500).json({ error: e.message }); }
-  res.json({ ok: true, new_booking_id: newId, quote: q });
+  res.json({ ok: true, new_booking_id: newId, immediate, quote: q });
 });
+
+// 切段生效排程：生效日在未來的新段（預約中）到期自動轉換——前段轉已退住、新段轉入住中
+function sweepStayContinuations() {
+  const rows = db.prepare(`SELECT s.id sid, p.id pid, p.check_out eff
+    FROM bookings s JOIN bookings p ON p.id = s.continued_from
+    WHERE s.status = 'reserved' AND p.status = 'checked_in' AND s.check_in <= ?`).all(today());
+  for (const r of rows) {
+    db.transaction(() => {
+      db.prepare(`UPDATE bookings SET status = 'checked_out', actual_check_out = ? WHERE id = ?`).run(r.eff, r.pid);
+      db.prepare(`UPDATE bookings SET status = 'checked_in' WHERE id = ?`).run(r.sid);
+      insAudit.run(null, '系統', 'system', 'update', 'AUTO', 'bookings', String(r.sid), '',
+        `切段生效：訂房#${r.pid} 轉已退住、#${r.sid} 自動轉入住中`, '', '');
+    })();
+  }
+  return rows.length;
+}
+// 手動觸發（管理員；排程外例如剛改完系統時間、想立即生效時使用）
+app.post('/api/admin/sweep-continuations', requireAdmin, (req, res) => {
+  res.json({ ok: true, switched: sweepStayContinuations() });
+});
+// 啟動後補跑一次＋每 30 分鐘檢查一次（生效日當天自動切換，毋須人工辦理退房／入住）
+if (process.env.NODE_ENV !== 'test') {
+  setTimeout(() => { try { sweepStayContinuations(); } catch (e) { console.error('切段生效檢查失敗', e.message); } }, 5000);
+  setInterval(() => { try { sweepStayContinuations(); } catch (e) { console.error('切段生效檢查失敗', e.message); } }, 30 * 60 * 1000);
+}
 
 // ---------- 期間轉房（不改銷售明細）：轉房日起換住他房，前後段沿用原合約單價、應收總額不變 ----------
 // 預約中＝預定入住期間轉房（拆兩段預約，合約明細同房型同價拆兩筆以維持連動順序）
@@ -8044,22 +8154,44 @@ app.post('/api/bookings/:id/transfer', requireStaff, (req, res) => {
       }
       db.prepare('UPDATE bookings SET check_out = ?, total_amount = ? WHERE id = ?')
         .run(transferDate, days1 * rate, bk.id);
-      db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
-        VALUES (?,?,?,?,0,?,'reserved',?)`)
+      const rinfo = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes, continued_from)
+        VALUES (?,?,?,?,0,?,'reserved',?,?)`)
         .run(bk.mother_id, newRoom.id, transferDate, bk.check_out, bk.total_amount - days1 * rate,
-          `預定期間轉房（原${bk.room_name}房）${reason ? `：${reason}` : ''}`);
+          `預定期間轉房（原${bk.room_name}房）${reason ? `：${reason}` : ''}`, bk.id);
+      chainRelink(bk.id, rinfo.lastInsertRowid);
     } else {
-      // 入住中：原段結至轉房日、新段入住新房；房務排原房轉房日清潔
-      db.prepare(`UPDATE bookings SET check_out = ?, actual_check_out = ?, total_amount = ?, status = 'checked_out' WHERE id = ?`)
-        .run(transferDate, transferDate, days1 * rate, bk.id);
-      db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
-        VALUES (?,?,?,?,0,?,'checked_in',?)`)
-        .run(bk.mother_id, newRoom.id, transferDate, bk.check_out, bk.total_amount - days1 * rate,
-          `入住後轉房（原${bk.room_name}房）${reason ? `：${reason}` : ''}`);
+      // 入住中：原段結至轉房日、新段入住新房（轉房日在未來＝新段先掛預約、排程到期自動轉換）；
+      // 訂金／收款／加購隨住客移到新段，前段應收由接續鏈自動併入；房務排原房清潔＋新房請備房
+      const immediate = transferDate <= today();
+      if (immediate) {
+        db.prepare(`UPDATE bookings SET check_out = ?, actual_check_out = ?, total_amount = ?, deposit = 0, status = 'checked_out' WHERE id = ?`)
+          .run(transferDate, transferDate, days1 * rate, bk.id);
+      } else {
+        db.prepare(`UPDATE bookings SET check_out = ?, total_amount = ?, deposit = 0 WHERE id = ?`)
+          .run(transferDate, days1 * rate, bk.id);
+      }
+      const info = db.prepare(`INSERT INTO bookings (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes,
+          baby_check_in, dunned_at, continued_from)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(bk.mother_id, newRoom.id, transferDate, bk.check_out, bk.deposit, bk.total_amount - days1 * rate,
+          immediate ? 'checked_in' : 'reserved',
+          `入住後轉房（原${bk.room_name}房）${reason ? `：${reason}` : ''}`,
+          bk.baby_check_in || '', bk.dunned_at || '', bk.id);
+      chainRelink(bk.id, info.lastInsertRowid);   // 原段既有接續段改接到新段（維持鏈線性）
+      db.prepare('UPDATE payments SET booking_id = ? WHERE booking_id = ?').run(info.lastInsertRowid, bk.id);
+      db.prepare('UPDATE charge_items SET booking_id = ? WHERE booking_id = ?').run(info.lastInsertRowid, bk.id);
       db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
         VALUES (?,?,?,?,?,?)`)
         .run(bk.room_id, bk.mother_id, `${bk.room_name}退房清潔`, transferDate,
           `入住後轉房：${bk.mother_name} ${transferDate} 換至${newRoom.name}房`, req.session.user.id);
+      const mmdd = transferDate.slice(5).replace('-', '');
+      const prepTask = `${newRoom.name}請備房${mmdd}`;
+      if (!db.prepare(`SELECT 1 FROM housekeeping_logs WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`)
+        .get(bk.mother_id, prepTask)) {
+        db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
+          VALUES (?,?,?,?,?,?)`).run(newRoom.id, bk.mother_id, prepTask, today(),
+          `入住後轉房：${bk.mother_name} ${transferDate} 自${bk.room_name}房換入`, req.session.user.id);
+      }
     }
     logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id,
       summary: `${bk.status === 'reserved' ? '預定期間轉房' : '入住後轉房'}：${bk.room_name}→${newRoom.name}房、轉房日 ${transferDate}` +
@@ -8641,8 +8773,9 @@ app.get('/api/reports/analytics', requireStaff, (req, res) => {
   const bookings = db.prepare("SELECT check_in, check_out FROM bookings WHERE status!='cancelled' AND check_out > ?").all(startDate);
   const payMap = {}; for (const r of db.prepare("SELECT substr(paid_on,1,7) m, SUM(amount) s FROM payments GROUP BY m").all()) payMap[r.m] = r.s;
   const tourMap = {}; for (const r of db.prepare("SELECT substr(tour_at,1,7) m, COUNT(*) c, SUM(CASE WHEN status='signed' THEN 1 ELSE 0 END) s FROM tours GROUP BY m").all()) tourMap[r.m] = r;
-  const admMap = {}; for (const r of db.prepare("SELECT substr(check_in,1,7) m, COUNT(*) c FROM bookings WHERE status!='cancelled' GROUP BY m").all()) admMap[r.m] = r.c;
-  const disMap = {}; for (const r of db.prepare("SELECT substr(check_out,1,7) m, COUNT(*) c FROM bookings WHERE status!='cancelled' GROUP BY m").all()) disMap[r.m] = r.c;
+  const admMap = {}; for (const r of db.prepare("SELECT substr(check_in,1,7) m, COUNT(*) c FROM bookings WHERE status!='cancelled' AND continued_from IS NULL GROUP BY m").all()) admMap[r.m] = r.c;
+  const disMap = {}; for (const r of db.prepare(`SELECT substr(bk.check_out,1,7) m, COUNT(*) c FROM bookings bk WHERE bk.status!='cancelled'
+    AND NOT EXISTS (SELECT 1 FROM bookings s WHERE s.continued_from = bk.id AND s.status != 'cancelled') GROUP BY m`).all()) disMap[r.m] = r.c;
   const shopRevMap = {}; for (const r of db.prepare("SELECT substr(confirmed_at,1,7) m, SUM(total_amount) s FROM orders WHERE status='confirmed' AND confirmed_at!='' GROUP BY m").all()) shopRevMap[r.m] = r.s;
   const shopCostMap = {}; for (const r of db.prepare(`SELECT substr(o.confirmed_at,1,7) m, SUM(oi.quantity*COALESCE(p.cost,0)) c
     FROM orders o JOIN order_items oi ON oi.order_id=o.id LEFT JOIN products p ON p.id=oi.product_id
@@ -9473,15 +9606,21 @@ function govMonthlyForm(month) {
   const [y, m] = month.split('-').map(Number);
   const start = `${month}-01`, end = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
   const cnt = (sql, ...a) => db.prepare(sql).get(...a).c;
-  const newAdm = cnt(`SELECT COUNT(*) c FROM bookings WHERE status!='cancelled' AND check_in BETWEEN ? AND ?`, start, end);
-  const discharges = cnt(`SELECT COUNT(*) c FROM bookings WHERE status!='cancelled' AND check_out BETWEEN ? AND ?`, start, end);
+  // 切段接續段（期間變更／轉房／拆分）不重複計入新收／出住
+  const newAdm = cnt(`SELECT COUNT(*) c FROM bookings WHERE status!='cancelled' AND check_in BETWEEN ? AND ? AND continued_from IS NULL`, start, end);
+  const discharges = cnt(`SELECT COUNT(*) c FROM bookings bk WHERE bk.status!='cancelled' AND bk.check_out BETWEEN ? AND ?
+    AND NOT EXISTS (SELECT 1 FROM bookings s WHERE s.continued_from = bk.id AND s.status != 'cancelled')`, start, end);
   const startResidents = cnt(`SELECT COUNT(*) c FROM bookings WHERE status!='cancelled' AND check_in<=? AND check_out>?`, start, start);
   const endResidents = cnt(`SELECT COUNT(*) c FROM bookings WHERE status!='cancelled' AND check_in<=? AND check_out>?`, end, end);
   const occupiedBedDays = r.days.reduce((s, d) => s + d.occupied_rooms, 0);
   const babyCareDays = r.days.reduce((s, d) => s + d.babies, 0);
   const totalBedDays = r.total_rooms * r.days.length;
-  const losRows = db.prepare(`SELECT check_in, check_out FROM bookings WHERE status!='cancelled' AND check_out BETWEEN ? AND ?`).all(start, end);
-  const avgLos = losRows.length ? Math.round(losRows.reduce((s, b) => s + Math.max(0, (new Date(b.check_out) - new Date(b.check_in)) / 86400000), 0) / losRows.length * 10) / 10 : 0;
+  // 平均住宿日數：以最終段結束為準、住期自接續鏈起始入住日起算（切段不縮短平均值）
+  const losRows = db.prepare(`SELECT bk.check_in, bk.check_out, bk.continued_from FROM bookings bk
+    WHERE bk.status!='cancelled' AND bk.check_out BETWEEN ? AND ?
+    AND NOT EXISTS (SELECT 1 FROM bookings s WHERE s.continued_from = bk.id AND s.status != 'cancelled')`).all(start, end);
+  const avgLos = losRows.length ? Math.round(losRows.reduce((s, b) =>
+    s + Math.max(0, (new Date(b.check_out) - new Date(chainRootCheckIn(b))) / 86400000), 0) / losRows.length * 10) / 10 : 0;
   const s = getSettings();
   const fields = [
     ['機構名稱', s.center_name || ''],

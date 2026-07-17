@@ -2192,7 +2192,7 @@ async function viewBedPlanning() {
           <div class="field" style="flex:1;min-width:160px;margin:0"><label>原因<small>（記入稽核）</small></label><input id="bm-reason" maxlength="200"></div>
           <button class="btn danger" id="bm-transfer">確認期間轉房</button>
         </div>
-        <small style="color:var(--muted)">轉房日前住原房、轉房日起住新房；前後段沿用原合約單價、應收總額不變，銷售明細不需重簽${bk.status === 'checked_in' ? '；原房自動排轉房日退房清潔' : ''}。</small>
+        <small style="color:var(--muted)">轉房日前住原房、轉房日起住新房；前後段沿用原合約單價、應收總額不變，銷售明細不需重簽${bk.status === 'checked_in' ? '；帳務自動移至新段、原房排退房清潔＋新房請備房；轉房日在未來時新段先掛預約、當天自動轉換' : ''}。</small>
       </div>`, body => {
       body.querySelector('#bm-save').onclick = async () => {
         const roomId = Number(body.querySelector('#bm-room').value) || 0;
@@ -2463,9 +2463,9 @@ async function viewBilling() {
           <thead><tr><th>媽媽</th><th>房間 / 期間</th><th>應收</th><th>已收</th><th>未結餘額</th><th></th></tr></thead>
           <tbody>${rows.map(b => `
             <tr class="${isOverdue(b) ? 'row-overdue' : ''}" data-filter="${esc(b.mother_name + ' ' + b.room_name)}" data-status="${b.balance > 0 ? 'unpaid' : 'paid'}">
-              <td data-label="媽媽">${esc(b.mother_name)}　<span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span></td>
+              <td data-label="媽媽">${esc(b.mother_name)}　<span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span>${b.merged_into ? ' <span class="badge gray" title="期間變更／轉房切段：此段帳務已併入後段訂房">已併入後段</span>' : ''}</td>
               <td data-label="房間 / 期間">${esc(b.room_name)} 房<br><small>${esc(b.check_in)} ~ ${esc(b.check_out)}</small></td>
-              <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶不在館內 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
+              <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}${b.chain_prior ? `＋前段 ${fmtMoney(b.chain_prior)}` : ''}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶不在館內 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
               <td data-label="已收">${fmtMoney(b.total_paid)}<br><small>含訂金 ${fmtMoney(b.deposit)}</small></td>
               <td data-label="未結餘額">${b.balance > 0
                 ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span><br><small>合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}</small>`
@@ -2849,6 +2849,7 @@ async function openBillingDetail(bookingId) {
           <table class="data" style="font-size:13px">
             <tbody>
               <tr><td>已收總額</td><td style="text-align:right">${fmtMoney(q.paid_total)}</td></tr>
+              ${q.chain_prior ? `<tr><td>應收：前段住宿費（期間變更／轉房切段併入）</td><td style="text-align:right">${fmtMoney(q.chain_prior)}</td></tr>` : ''}
               <tr><td>應收：已使用 ${q.used_days} 天住宿費</td><td style="text-align:right">${fmtMoney(q.used_fee)}</td></tr>
               <tr><td>應收：加購消費</td><td style="text-align:right">${fmtMoney(q.charges_total)}</td></tr>
               ${q.baby_deduct ? `<tr><td>扣抵：寶寶不在館內 ${q.baby_absent_days} 天</td><td style="text-align:right;color:var(--primary-dark)">-${fmtMoney(q.baby_deduct)}</td></tr>` : ''}
@@ -2892,7 +2893,7 @@ async function openBillingDetail(bookingId) {
             <div class="field" style="max-width:160px;margin:0"><label>新出住日</label><input type="date" id="cs-out" value="${esc(b.check_out)}"></div>
             <button class="btn small" id="cs-quote">試算</button>
           </div>
-          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0">生效日前照原房型單價、生效日起按新房間單價；總天數縮短時，縮短天數依定型化契約加計違約金與作業手續費。</p>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0">生效日前照原房型單價、生效日起按新房間單價；總天數縮短時，縮短天數依定型化契約加計違約金與作業手續費。生效日在未來時，新段先掛「已預約」，生效日當天系統自動轉換（原段轉已退住、新段轉入住中）。訂金／收款／加購帳務自動移至新段。</p>
           <div id="cs-result" style="margin-top:8px"></div>
         </div>`;
       changeBox.querySelector('#cs-quote').onclick = async () => {
@@ -2920,10 +2921,13 @@ async function openBillingDetail(bookingId) {
         resBox.querySelector('#cs-run').onclick = async () => {
           if (!confirm(`確認「${b.mother_name}」自 ${q.effective_date} 起由 ${q.old_room} 房改住 ${q.new_room} 房（${q.grade}）、出住日 ${q.new_check_out}？\n\n合約應收將由 ${fmtMoney(q.old_total)} 改為 ${fmtMoney(q.new_total)}，床表／房況／訂餐同步更新。`)) return;
           try {
-            await api(`/bookings/${b.id}/change-stay`, { method: 'POST',
+            const r2 = await api(`/bookings/${b.id}/change-stay`, { method: 'POST',
               body: { effective_date: q.effective_date, room_id: Number(rid), new_check_out: q.new_check_out,
                 reason: resBox.querySelector('#cs-reason').value.trim() } });
             closeModal();   // 關閉後收費帳務清單自動重載（modal onclose）
+            if (r2 && r2.immediate === false) {
+              alert(`生效日 ${q.effective_date} 在未來：新段已建立為「已預約」，生效日當天系統自動轉換（原段轉已退住、新段轉入住中）。`);
+            }
           } catch (e) { alert(`期間變更未完成：${e.message}`); }
         };
       };
@@ -11653,7 +11657,7 @@ async function viewCustomers() {
             <div class="field full"><label>原因<small>（記入稽核）</small></label><input id="tr-reason" maxlength="200"></div>
             <div class="full row"><button class="btn danger" id="tr-save">確認轉房</button><span class="error-msg" id="tr-err"></span></div>
           </div>
-          <small style="color:var(--muted)">轉房日前住原房、轉房日起住新房；前後段沿用原合約單價、應收總額不變，銷售明細不需重簽。若要「換銷售房型並改計價」，入住前請至合約明細改房型/拆分、入住中請走收費明細的期間變更。</small>`, body => {
+          <small style="color:var(--muted)">轉房日前住原房、轉房日起住新房；前後段沿用原合約單價、應收總額不變，銷售明細不需重簽。入住中轉房：帳務自動移至新段、原房排退房清潔＋新房請備房；轉房日在未來時新段先掛預約、當天自動轉換。若要「換銷售房型並改計價」，入住前請至合約明細改房型/拆分、入住中請走收費明細的期間變更。</small>`, body => {
           body.querySelector('#tr-save').onclick = async () => {
             const err = body.querySelector('#tr-err');
             const tDate = body.querySelector('#tr-date').value;
