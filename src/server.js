@@ -516,27 +516,47 @@ app.put('/api/mothers/:id', requireStaff, (req, res) => {
 // ---------- 寶寶 ----------
 app.get('/api/babies', requireStaff, (req, res) => {
   const rows = db.prepare(`
-    SELECT b.*, m.name AS mother_name, m.status AS mother_status
+    SELECT b.*, m.name AS mother_name, m.status AS mother_status, bb.bed_no
     FROM babies b JOIN mothers m ON m.id = b.mother_id
+    LEFT JOIN baby_beds bb ON bb.id = b.bed_id
     ORDER BY m.status = 'checked_in' DESC, b.id DESC`).all();
   res.json(rows);
 });
 
+// 床位指派防呆：床位需存在且啟用，且未被其他在住寶寶佔用
+function validateBedAssign(bedId, excludeBabyId) {
+  if (!bedId) return null;   // 未指派床位
+  const bed = db.prepare('SELECT * FROM baby_beds WHERE id = ?').get(bedId);
+  if (!bed) return '找不到指定的嬰兒床';
+  if (!bed.active) return `嬰兒床 ${bed.bed_no} 已停用`;
+  const occ = db.prepare(`SELECT b.name FROM babies b JOIN mothers m ON m.id = b.mother_id
+    WHERE b.bed_id = ? AND m.status = 'checked_in' AND b.id != ? LIMIT 1`).get(bedId, excludeBabyId || -1);
+  if (occ) return `嬰兒床 ${bed.bed_no} 已由「${occ.name}」使用中`;
+  return null;
+}
+
 app.post('/api/babies', requireStaff, (req, res) => {
   const b = req.body || {};
   if (!b.mother_id || !b.name) return res.status(400).json({ error: '媽媽與姓名必填' });
+  const bedId = b.bed_id ? Number(b.bed_id) : null;
+  const bedErr = validateBedAssign(bedId, null);
+  if (bedErr) return res.status(400).json({ error: bedErr });
   const info = db.prepare(`INSERT INTO babies
-    (mother_id, name, gender, birth_date, birth_weight_g, notes) VALUES (?,?,?,?,?,?)`).run(
-    b.mother_id, b.name, b.gender || '', b.birth_date || '', b.birth_weight_g || null, b.notes || '');
+    (mother_id, name, gender, birth_date, birth_weight_g, notes, bed_id) VALUES (?,?,?,?,?,?,?)`).run(
+    b.mother_id, b.name, b.gender || '', b.birth_date || '', b.birth_weight_g || null, b.notes || '', bedId);
   res.json({ id: info.lastInsertRowid });
 });
 
 app.put('/api/babies/:id', requireStaff, (req, res) => {
   const b = req.body || {};
-  const info = db.prepare(`UPDATE babies SET
-    name = ?, gender = ?, birth_date = ?, birth_weight_g = ?, notes = ? WHERE id = ?`).run(
-    b.name, b.gender || '', b.birth_date || '', b.birth_weight_g || null, b.notes || '', req.params.id);
-  if (!info.changes) return res.status(404).json({ error: '找不到資料' });
+  const cur = db.prepare('SELECT * FROM babies WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到資料' });
+  const bedId = b.bed_id === undefined ? cur.bed_id : (b.bed_id ? Number(b.bed_id) : null);
+  const bedErr = validateBedAssign(bedId, cur.id);
+  if (bedErr) return res.status(400).json({ error: bedErr });
+  db.prepare(`UPDATE babies SET
+    name = ?, gender = ?, birth_date = ?, birth_weight_g = ?, notes = ?, bed_id = ? WHERE id = ?`).run(
+    b.name, b.gender || '', b.birth_date || '', b.birth_weight_g || null, b.notes || '', bedId, req.params.id);
   res.json({ ok: true });
 });
 
@@ -833,7 +853,7 @@ app.get('/api/babies/:id/breastfeeding', requireStaff, (req, res) => {
     WHERE baby_id = ? AND record_type = 'weight' AND value_num IS NOT NULL
     ORDER BY recorded_at DESC, id DESC LIMIT 1`).get(baby.id);
   let parity = '';
-  const mia = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(baby.mother_id);
+  const mia = intakeForMother(baby.mother_id);
   if (mia) { try { parity = JSON.parse(mia.data).parity || ''; } catch (e) { /* */ } }
   if (!parity) {
     const cp = db.prepare('SELECT data FROM customer_profiles WHERE mother_id = ?').get(baby.mother_id);
@@ -1327,7 +1347,7 @@ app.get('/api/mothers/:id/handovers', requireStaff, (req, res) => {
     WHERE h.mother_id = ? ORDER BY h.handover_date DESC, h.handover_time DESC, h.id DESC LIMIT 200`).all(mother.id);
 
   // 產婦入住評估 profile：重要備註/特殊餐/藥物過敏/胎次（未填→前端顯示紅字提醒）
-  const mia = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(mother.id);
+  const mia = intakeForMother(mother.id);
   let miaData = null;
   if (mia) { try { miaData = JSON.parse(mia.data); } catch (e) { miaData = {}; } }
 
@@ -1389,17 +1409,18 @@ app.put('/api/mothers/:id/handover-profile', requireStaff, (req, res) => {
     db.prepare('UPDATE mothers SET diet_notes = ? WHERE id = ?').run(b.diet_notes.slice(0, 500), mother.id);
   }
   if (MHO_PROFILE_FIELDS.some(k => b[k] !== undefined)) {
-    const cur = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(mother.id);
+    const cur = intakeForMother(mother.id);
     let data = {};
     if (cur) { try { data = JSON.parse(cur.data); } catch (e) { data = {}; } }
     for (const k of MHO_PROFILE_FIELDS) if (b[k] !== undefined) data[k] = String(b[k]).slice(0, 500);
     const json = JSON.stringify(data).slice(0, 16000);
+    const stayRoot = stayRootForMother(mother.id);
     if (cur) {
-      db.prepare(`UPDATE mother_intake_assessments SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
-        .run(json, mother.id);
+      db.prepare(`UPDATE mother_intake_assessments SET data=?, booking_id=?, updated_at=datetime('now','localtime') WHERE id=?`)
+        .run(json, stayRoot, cur.id);
     } else {
-      db.prepare('INSERT INTO mother_intake_assessments (mother_id, nurse_id, data) VALUES (?,?,?)')
-        .run(mother.id, req.session.user.id, json);
+      db.prepare('INSERT INTO mother_intake_assessments (mother_id, booking_id, nurse_id, data) VALUES (?,?,?,?)')
+        .run(mother.id, stayRoot, req.session.user.id, json);
     }
   }
   logAudit(req, { action: 'update', entity: 'mother_handover_profile', entity_id: mother.id, summary: '產婦交班單備註/飲食/特殊餐' });
@@ -1459,7 +1480,8 @@ app.get('/api/mothers/:id/closure', requireStaff, (req, res) => {
   const closure = db.prepare(`
     SELECT c.*, u.name AS nurse_name, e.name AS edited_by_name FROM mother_closures c
     LEFT JOIN users u ON u.id = c.nurse_id
-    LEFT JOIN users e ON e.id = c.edited_by WHERE c.mother_id = ?`).get(mother.id);
+    LEFT JOIN users e ON e.id = c.edited_by WHERE c.mother_id = ? AND c.booking_id IN (?, 0)
+    ORDER BY c.booking_id DESC LIMIT 1`).get(mother.id, stayRootForMother(mother.id));
   if (closure) { try { closure.data = JSON.parse(closure.data); } catch (e) { closure.data = {}; } }
   // 住期摘要：最近生命徵象／宮底惡露（媽媽護理評估）、最新 EPDS、未結案健康問題、指導單完成度
   const mna = db.prepare(`SELECT * FROM mother_nursing_assessments
@@ -1511,15 +1533,16 @@ app.put('/api/mothers/:id/closure', requireStaff, (req, res) => {
   }
   data.educations = (Array.isArray(b.educations) ? b.educations : []).filter(x => MCL_EDU.includes(x));
   const note = String(b.note || '').slice(0, 600);
-  const cur = db.prepare('SELECT id FROM mother_closures WHERE mother_id = ?').get(mother.id);
+  const cur = closureForMother(mother.id);
   const json = JSON.stringify(data).slice(0, 8000);
+  const stayRoot = stayRootForMother(mother.id);
   if (cur) {
-    db.prepare(`UPDATE mother_closures SET close_date=?, close_time=?, data=?, note=?,
-      edited_at=datetime('now','localtime'), edited_by=? WHERE mother_id=?`)
-      .run(date, time, json, note, req.session.user.id, mother.id);
+    db.prepare(`UPDATE mother_closures SET close_date=?, close_time=?, data=?, note=?, booking_id=?,
+      edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`)
+      .run(date, time, json, note, stayRoot, req.session.user.id, cur.id);
   } else {
-    db.prepare(`INSERT INTO mother_closures (mother_id, nurse_id, close_date, close_time, data, note)
-      VALUES (?,?,?,?,?,?)`).run(mother.id, req.session.user.id, date, time, json, note);
+    db.prepare(`INSERT INTO mother_closures (mother_id, booking_id, nurse_id, close_date, close_time, data, note)
+      VALUES (?,?,?,?,?,?,?)`).run(mother.id, stayRoot, req.session.user.id, date, time, json, note);
   }
   // 儲存結案即代表已退房：同步退房入住中的訂房，媽媽房況改顯示空房，並自動建立清潔任務（與客服退房完成一致）
   const bk = db.prepare(`SELECT bk.id, bk.room_id, bk.check_out, r.name AS room_name
@@ -1544,8 +1567,9 @@ app.put('/api/mothers/:id/closure', requireStaff, (req, res) => {
 
 // 解除結案（管理員）；若退房是結案時自動產生的（實際退房日＝結案日），一併恢復為入住中
 app.delete('/api/mother-closures/:motherId', requireAdmin, (req, res) => {
-  const cl = db.prepare('SELECT close_date FROM mother_closures WHERE mother_id = ?').get(req.params.motherId);
-  db.prepare('DELETE FROM mother_closures WHERE mother_id = ?').run(req.params.motherId);
+  // 僅解除當前住期的結案，不影響前一胎的歷史結案
+  const cl = closureForMother(req.params.motherId);
+  if (cl) db.prepare('DELETE FROM mother_closures WHERE id = ?').run(cl.id);
   let restored = false;
   if (cl) {
     const bk = db.prepare(`SELECT id, actual_check_out FROM bookings
@@ -1592,7 +1616,7 @@ app.get('/api/physician-rounds', requireStaff, (req, res) => {
     WHERE bk.status = 'checked_in' ORDER BY r.name`).all();
   const rows = moms.map(m => {
     // 胎次：入住評估表 → 母乳哺育評估
-    const mia = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(m.id);
+    const mia = intakeForMother(m.id);
     let parity = '';
     if (mia) { try { parity = JSON.parse(mia.data).parity || ''; } catch (e) { /* */ } }
     if (!parity) {
@@ -2081,7 +2105,8 @@ app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
   if (!mother) return res.status(404).json({ error: '找不到媽媽' });
   const rec = db.prepare(`
     SELECT a.*, u.name AS nurse_name FROM mother_intake_assessments a
-    LEFT JOIN users u ON u.id = a.nurse_id WHERE a.mother_id = ?`).get(mother.id);
+    LEFT JOIN users u ON u.id = a.nurse_id WHERE a.mother_id = ? AND a.booking_id IN (?, 0)
+    ORDER BY a.booking_id DESC LIMIT 1`).get(mother.id, stayRootForMother(mother.id));
   if (rec) { try { rec.data = JSON.parse(rec.data); } catch (e) { rec.data = {}; } }
   // 量表填寫概況（供入住評估表以顏色標示：家庭功能 apgar／愛丁堡 epds）
   const scaleRows = db.prepare(`SELECT kind, COUNT(*) c, MAX(fill_date) last FROM mother_scales WHERE mother_id = ? GROUP BY kind`).all(mother.id);
@@ -2106,7 +2131,7 @@ app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {
       if (!(n >= 0 && n <= max)) return res.status(400).json({ error: msg });
     }
   }
-  const cur = db.prepare('SELECT data FROM mother_intake_assessments WHERE mother_id = ?').get(mother.id);
+  const cur = intakeForMother(mother.id);
   let data = {};
   if (cur) { try { data = JSON.parse(cur.data); } catch (e) { data = {}; } }
   for (const k of MIA_FIELDS) if (b[k] !== undefined) {
@@ -2114,12 +2139,13 @@ app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {
       : (typeof b[k] === 'string' ? b[k].slice(0, 500) : b[k]);
   }
   const json = JSON.stringify(data).slice(0, 16000);
+  const stayRoot = stayRootForMother(mother.id);
   if (cur) {
-    db.prepare(`UPDATE mother_intake_assessments SET nurse_id=?, data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
-      .run(req.session.user.id, json, mother.id);
+    db.prepare(`UPDATE mother_intake_assessments SET nurse_id=?, data=?, booking_id=?, updated_at=datetime('now','localtime') WHERE id=?`)
+      .run(req.session.user.id, json, stayRoot, cur.id);
   } else {
-    db.prepare('INSERT INTO mother_intake_assessments (mother_id, nurse_id, data) VALUES (?,?,?)')
-      .run(mother.id, req.session.user.id, json);
+    db.prepare('INSERT INTO mother_intake_assessments (mother_id, booking_id, nurse_id, data) VALUES (?,?,?,?)')
+      .run(mother.id, stayRoot, req.session.user.id, json);
   }
   // 身分證號同步回住客資料（媽媽護理等中衛欄位共用）
   if (typeof b.id_no === 'string' && b.id_no.trim()) {
@@ -2477,15 +2503,35 @@ app.put('/api/room-types/:id', requireAdmin, (req, res) => {
   const cur = db.prepare('SELECT * FROM room_types WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到房型' });
   const b = req.body || {};
+  const newName = String(b.name ?? cur.name).trim() || cur.name;
   try {
-    db.prepare('UPDATE room_types SET name=?, price=?, sort=?, active=? WHERE id=?').run(
-      String(b.name ?? cur.name).trim() || cur.name, b.price !== undefined ? Number(b.price) || 0 : cur.price,
-      b.sort !== undefined ? Number(b.sort) || 0 : cur.sort,
-      b.active !== undefined ? (b.active ? 1 : 0) : cur.active, cur.id);
+    // 房型改名連動：rooms／room_discounts 以名稱對應房型，改名一併更新避免對不上
+    const tx = db.transaction(() => {
+      db.prepare('UPDATE room_types SET name=?, price=?, sort=?, active=? WHERE id=?').run(
+        newName, b.price !== undefined ? Number(b.price) || 0 : cur.price,
+        b.sort !== undefined ? Number(b.sort) || 0 : cur.sort,
+        b.active !== undefined ? (b.active ? 1 : 0) : cur.active, cur.id);
+      if (newName !== cur.name) {
+        db.prepare('UPDATE rooms SET room_type = ? WHERE room_type = ?').run(newName, cur.name);
+        db.prepare('UPDATE room_discounts SET room_type = ? WHERE room_type = ?').run(newName, cur.name);
+      }
+    });
+    tx();
+    if (newName !== cur.name) {
+      logAudit(req, { action: 'update', entity: 'room_types', entity_id: cur.id,
+        summary: `房型改名：${cur.name}→${newName}（連動房間與房價折扣）` });
+    }
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: '房型名稱重複' }); }
 });
 app.delete('/api/room-types/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM room_types WHERE id = ?').get(req.params.id);
+  if (cur) {
+    const usedRooms = db.prepare('SELECT COUNT(*) c FROM rooms WHERE room_type = ?').get(cur.name).c;
+    if (usedRooms) return res.status(400).json({ error: `尚有 ${usedRooms} 間房間屬於「${cur.name}」，請先調整房間房型再刪除` });
+    const usedDiscounts = db.prepare('SELECT COUNT(*) c FROM room_discounts WHERE room_type = ?').get(cur.name).c;
+    if (usedDiscounts) return res.status(400).json({ error: `尚有 ${usedDiscounts} 筆房價折扣屬於「${cur.name}」，請先刪除或改掛其他房型` });
+  }
   db.prepare('DELETE FROM room_types WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
@@ -2561,7 +2607,13 @@ app.get('/api/baby-beds', requireStaff, (req, res) => {
   const kw = String(req.query.keyword || '').trim();
   const where = kw ? 'WHERE bed_no LIKE ?' : '';
   const args = kw ? [`%${kw}%`] : [];
-  res.json(db.prepare(`SELECT * FROM baby_beds ${where} ORDER BY zone, bed_no`).all(...args));
+  // 佔用狀態：在住（媽媽入住中）寶寶所指派的床位
+  res.json(db.prepare(`SELECT bb.*,
+      (SELECT b.name FROM babies b JOIN mothers m ON m.id = b.mother_id
+        WHERE b.bed_id = bb.id AND m.status = 'checked_in' LIMIT 1) AS occupant_name,
+      (SELECT m.name FROM babies b JOIN mothers m ON m.id = b.mother_id
+        WHERE b.bed_id = bb.id AND m.status = 'checked_in' LIMIT 1) AS occupant_mother
+    FROM baby_beds bb ${where} ORDER BY bb.zone, bb.bed_no`).all(...args));
 });
 app.post('/api/baby-beds', requireAdmin, (req, res) => {
   const b = req.body || {};
@@ -2599,7 +2651,15 @@ app.put('/api/baby-beds/:id', requireAdmin, (req, res) => {
   } catch (e) { res.status(400).json({ error: '床號重複' }); }
 });
 app.delete('/api/baby-beds/:id', requireAdmin, (req, res) => {
-  db.prepare('DELETE FROM baby_beds WHERE id = ?').run(req.params.id);
+  // 在住寶寶使用中不可刪；歷史寶寶的指派先解除再刪，避免外鍵擋下
+  const occ = db.prepare(`SELECT b.name FROM babies b JOIN mothers m ON m.id = b.mother_id
+    WHERE b.bed_id = ? AND m.status = 'checked_in' LIMIT 1`).get(req.params.id);
+  if (occ) return res.status(400).json({ error: `此床位由在住寶寶「${occ.name}」使用中，請先改派床位` });
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE babies SET bed_id = NULL WHERE bed_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM baby_beds WHERE id = ?').run(req.params.id);
+  });
+  tx();
   res.json({ ok: true });
 });
 
@@ -2698,7 +2758,8 @@ app.put('/api/bookings/:id/status', requireStaff, (req, res) => {
   const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
   if (!bk) return res.status(404).json({ error: '找不到訂房' });
   // 已辦理產婦結案者不可改回入住中（結案＝已退房），避免結案與房況兩邊不同步
-  if (status === 'checked_in' && db.prepare('SELECT 1 FROM mother_closures WHERE mother_id = ?').get(bk.mother_id)) {
+  if (status === 'checked_in' && db.prepare(`SELECT 1 FROM mother_closures
+      WHERE mother_id = ? AND booking_id IN (?, 0)`).get(bk.mother_id, chainRootIdOf(bk.id))) {
     return res.status(409).json({ error: '此媽媽已辦理產婦結案，請先於「產婦結案」頁解除結案，再改回入住中' });
   }
   // 生效日前提前退房／取消：未生效的接續段（期間變更／轉房的預約段）一併作廢，帳務移回本段
@@ -3178,6 +3239,33 @@ function activeBookingForMother(motherId) {
     ORDER BY CASE status WHEN 'checked_in' THEN 0 WHEN 'reserved' THEN 1 ELSE 2 END, check_in DESC`).get(motherId);
 }
 
+// ---------- 住期識別（回住支援）----------
+// 一段住期＝一條訂房接續鏈，以鏈根 booking id 代表；回住（二胎）會產生新的鏈根。
+// 入住評估／產婦結案／衛教紀錄以住期區分，0＝建檔時尚無訂房。
+function chainRootIdOf(bookingId) {
+  let id = bookingId;
+  for (let i = 0; i < 20; i++) {
+    const r = db.prepare('SELECT continued_from FROM bookings WHERE id = ?').get(id);
+    if (!r || !r.continued_from) break;
+    id = r.continued_from;
+  }
+  return id;
+}
+function stayRootForMother(motherId) {
+  const bk = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status != 'cancelled'
+    ORDER BY check_in DESC, id DESC LIMIT 1`).get(motherId);
+  return bk ? chainRootIdOf(bk.id) : 0;
+}
+// 住期範疇讀取：優先取當前住期的資料，無則回退尚未蓋住期章（booking_id=0）的資料
+function intakeForMother(motherId) {
+  return db.prepare(`SELECT * FROM mother_intake_assessments WHERE mother_id = ? AND booking_id IN (?, 0)
+    ORDER BY booking_id DESC LIMIT 1`).get(motherId, stayRootForMother(motherId));
+}
+function closureForMother(motherId) {
+  return db.prepare(`SELECT * FROM mother_closures WHERE mother_id = ? AND booking_id IN (?, 0)
+    ORDER BY booking_id DESC LIMIT 1`).get(motherId, stayRootForMother(motherId));
+}
+
 // 員工端：商品列表（含下架）
 app.get('/api/products', requireStaff, (req, res) => {
   res.json(db.prepare('SELECT * FROM products ORDER BY active DESC, sort, id DESC').all());
@@ -3429,9 +3517,9 @@ app.post('/api/orders/:id/confirm', requireStaff, (req, res) => {
         }
         if (bookingId) {
           db.prepare(`INSERT INTO charge_items
-            (booking_id, item_name, unit_price, quantity, charged_on, note, created_by)
-            VALUES (?,?,?,?,?,?,?)`).run(
-            bookingId, it.item_name, it.unit_price, it.quantity, today(),
+            (booking_id, order_id, item_name, unit_price, quantity, charged_on, note, created_by)
+            VALUES (?,?,?,?,?,?,?,?)`).run(
+            bookingId, o.id, it.item_name, it.unit_price, it.quantity, today(),
             `商城訂單#${o.id}`, req.session.user.id);
         }
       }
@@ -3441,9 +3529,9 @@ app.post('/api/orders/:id/confirm', requireStaff, (req, res) => {
         if (o.coupon_code) parts.push(`優惠券 ${o.coupon_code}`);
         if (o.points_used > 0) parts.push(`點數 ${o.points_used} 點`);
         db.prepare(`INSERT INTO charge_items
-          (booking_id, item_name, unit_price, quantity, charged_on, note, created_by)
-          VALUES (?,?,?,?,?,?,?)`).run(
-          bookingId, '商城優惠折抵', -o.discount, 1, today(),
+          (booking_id, order_id, item_name, unit_price, quantity, charged_on, note, created_by)
+          VALUES (?,?,?,?,?,?,?,?)`).run(
+          bookingId, o.id, '商城優惠折抵', -o.discount, 1, today(),
           `商城訂單#${o.id}（${parts.join('、')}）`, req.session.user.id);
       }
       // 回饋點數給會員（媽媽）
@@ -4827,7 +4915,7 @@ app.get('/api/customers', requireStaff, (req, res) => {
   }
   const rows = db.prepare(`
     SELECT m.id, m.name, m.phone, m.id_no, m.due_date, m.status,
-      (SELECT cc.contract_no FROM customer_contracts cc WHERE cc.mother_id = m.id) AS contract_no,
+      (SELECT cc.contract_no FROM customer_contracts cc WHERE cc.mother_id = m.id AND cc.status != 'archived') AS contract_no,
       (SELECT c.id FROM contracts c JOIN bookings bk ON bk.id = c.booking_id
         WHERE bk.mother_id = m.id AND c.status != 'void' ORDER BY c.id DESC LIMIT 1) AS contract_id,
       (SELECT COUNT(*) FROM customer_profiles p WHERE p.mother_id = m.id) AS has_profile
@@ -4932,7 +5020,7 @@ const CCT_LABELS = {
   emergency_name: '緊急聯絡人姓名', emergency_relation: '緊急聯絡人關係', emergency_phone: '緊急聯絡人電話'
 };
 function getCustomerContract(motherId) {
-  const c = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(motherId);
+  const c = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(motherId);
   if (!c) return null;
   try { c.data = JSON.parse(c.data); } catch (e) { c.data = {}; }
   try { c.items = JSON.parse(c.items); } catch (e) { c.items = []; }
@@ -4940,7 +5028,7 @@ function getCustomerContract(motherId) {
   return c;
 }
 function ensureCustomerContract(motherId, userId) {
-  let c = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(motherId);
+  let c = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(motherId);
   if (c) return c;
   // 合約編號：YYYYMM＋3 碼流水（依當月既有數量遞增，衝突時往後找）
   const ym = today().slice(0, 7).replace('-', '');
@@ -4952,7 +5040,7 @@ function ensureCustomerContract(motherId, userId) {
   }
   db.prepare('INSERT INTO customer_contracts (mother_id, contract_no, created_by) VALUES (?,?,?)')
     .run(motherId, no, userId);
-  return db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(motherId);
+  return db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(motherId);
 }
 
 // 合約資料存檔（部分欄位合併；同步 mothers 的預產期/生產方式/飲食禁忌）
@@ -4980,7 +5068,7 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   if (b.cash_discount !== undefined) data.cash_discount_at = stampAt;
   if (b.gift_content !== undefined) data.gift_at = stampAt;
   if (b.consult_date !== undefined || b.consult_note !== undefined) data.consult_at = stampAt;
-  db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(data).slice(0, 12000), mother.id);
   if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) {
     db.prepare('UPDATE mothers SET due_date = ? WHERE id = ?').run(b.due_date, mother.id);
@@ -5003,6 +5091,31 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
     summary: changes.length ? `客戶合約資料修改：${changes.join('；').slice(0, 900)}` : '客戶合約資料修改（無欄位變更）' });
   if (substantive) markContractsNeedResign(mother.id);   // 住期變更 → 既有電子合約標示需重簽
   res.json({ ok: true, contract_no: cur.contract_no });
+});
+
+// 回住開新約：封存現行合約並以新編號開新約；舊約保留供查閱（歷史合約）
+app.post('/api/customers/:motherId/contract/renew', requireStaff, (req, res) => {
+  const m = db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!m) return res.status(404).json({ error: '找不到客戶' });
+  const cur = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(m.id);
+  if (!cur) return res.status(400).json({ error: '目前沒有現行合約，直接編輯合約資料即可' });
+  db.prepare(`UPDATE customer_contracts SET status='archived', updated_at=datetime('now','localtime') WHERE id=?`).run(cur.id);
+  const nc = ensureCustomerContract(m.id, req.session.user.id);
+  logAudit(req, { action: 'create', entity: 'customer_contracts', entity_id: m.id,
+    summary: `回住開新約：封存舊約 ${cur.contract_no}，新約 ${nc.contract_no}` });
+  res.json({ ok: true, archived_no: cur.contract_no, contract_no: nc.contract_no });
+});
+
+// 歷史（封存）合約查閱
+app.get('/api/customers/:motherId/contract/history', requireStaff, (req, res) => {
+  const rows = db.prepare(`SELECT id, contract_no, data, items, updated_at FROM customer_contracts
+    WHERE mother_id = ? AND status = 'archived' ORDER BY id DESC`).all(req.params.motherId);
+  for (const r of rows) {
+    try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; }
+    try { r.items = JSON.parse(r.items); } catch (e) { r.items = []; }
+    r.total = r.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  }
+  res.json(rows);
 });
 
 // 報喜訂餐鋪床：自入住日午餐起至出住日早餐止，逐日鋪入餐別（入住日略過早餐、出住日僅早餐）
@@ -5054,7 +5167,7 @@ app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
   data.birth_date = b.birth_date;
   const existingBefore = db.prepare('SELECT COUNT(*) c FROM babies WHERE mother_id = ?').get(m.id).c;
   const tx = db.transaction(() => {
-    db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+    db.prepare(`UPDATE customer_contracts SET data=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
       .run(JSON.stringify(data).slice(0, 12000), m.id);
     // 媽媽主檔：實際生產日期／方式；禁忌併入飲食備註
     db.prepare('UPDATE mothers SET delivery_date=?, delivery_type=COALESCE(NULLIF(?,\'\'), delivery_type) WHERE id=?')
@@ -5122,7 +5235,7 @@ function markContractsNeedResign(motherId) {
 // 依合約明細順序同步既有「預約中」訂房段：改天數→順延重排；明細少於訂房→多出的段取消
 // 撞到其他客戶訂房整批擋下（丟 409）；訂餐依新住期重鋪（沿用原餐別）
 function syncBookingsToContractItems(req, motherId, reasonText) {
-  const cur = db.prepare('SELECT items FROM customer_contracts WHERE mother_id = ?').get(motherId);
+  const cur = db.prepare("SELECT items FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(motherId);
   let items = [];
   try { items = JSON.parse((cur || {}).items || '[]'); } catch (e) { items = []; }
   const bks = db.prepare(`SELECT * FROM bookings WHERE mother_id = ? AND status = 'reserved'
@@ -5232,7 +5345,7 @@ app.post('/api/customers/:motherId/contract/items', requireStaff, (req, res) => 
   const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
   const before = totalOf(items);
   items.push({ name, qty, price: Math.round(price), by: req.session.user.name, at: today() });
-  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(items).slice(0, 12000), mother.id);
   // 金額變化記入 LOG（合約金額增加／減少查詢由此判讀）
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: mother.id,
@@ -5249,7 +5362,7 @@ app.post('/api/customers/:motherId/contract/items/edit', requireStaff, (req, res
   const b = req.body || {};
   const idx = Number(b.index);
   const qty = Math.round(Number(b.qty));
-  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  const cur = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '找不到合約資料' });
   if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短/升等降等請走收費明細（退費試算/期間變更）' });
   let items = [];
@@ -5261,7 +5374,7 @@ app.post('/api/customers/:motherId/contract/items/edit', requireStaff, (req, res
   const oldQty = items[idx].qty;
   if (Number(oldQty) === qty) return res.json({ ok: true, sync: { updated: 0, cancelled: 0 } });
   items[idx] = { ...items[idx], qty, by: req.session.user.name, at: today() };
-  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(items).slice(0, 12000), cur.mother_id);
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id,
     summary: `合約明細修改天數 ${items[idx].name} ${oldQty}→${qty}天（金額 ${before}→${totalOf(items)}）` });
@@ -5278,7 +5391,7 @@ app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, r
   const idx = Number(b.index);
   const reason = String(b.reason || '').trim().slice(0, 200);
   if (!reason) return res.status(400).json({ error: '請填寫刪除說明' });
-  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  const cur = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '找不到合約資料' });
   if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；縮短/升等降等請走收費明細（退費試算/期間變更）' });
   let items = [];
@@ -5287,7 +5400,7 @@ app.post('/api/customers/:motherId/contract/items/delete', requireStaff, (req, r
   const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
   const before = totalOf(items);
   const removed = items.splice(idx, 1)[0];
-  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(items), cur.mother_id);
   logAudit(req, { action: 'delete', entity: 'customer_contracts', entity_id: cur.mother_id,
     summary: `合約明細刪除 ${removed.name} ${removed.qty}天（${reason}）（金額 ${before}→${totalOf(items)}）` });
@@ -5303,7 +5416,7 @@ app.post('/api/customers/:motherId/contract/items/change-type', requireStaff, (r
   const b = req.body || {};
   const idx = Number(b.index);
   const name = String(b.name || '').trim().slice(0, 100);
-  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  const cur = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '找不到合約資料' });
   if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；升等/降等請走收費明細（期間變更）' });
   let items = [];
@@ -5321,7 +5434,7 @@ app.post('/api/customers/:motherId/contract/items/change-type', requireStaff, (r
   const totalOf = arr => arr.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
   const before = totalOf(items);
   items[idx] = { ...old, name, price, by: req.session.user.name, at: today() };
-  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(items).slice(0, 12000), cur.mother_id);
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id,
     summary: `合約明細更改房型 ${old.name}→${name}（單價 ${old.price}→${price}）（金額 ${before}→${totalOf(items)}）` });
@@ -5355,7 +5468,7 @@ app.post('/api/customers/:motherId/contract/items/split', requireStaff, (req, re
   const qty1 = Math.round(Number(b.qty1));
   const name2 = String(b.name2 || '').trim().slice(0, 100);
   const qty2 = Math.round(Number(b.qty2));
-  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  const cur = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '找不到合約資料' });
   if (motherHasCheckedIn(cur.mother_id)) return res.status(400).json({ error: '已入住，合約明細鎖定；升等/降等請走收費明細（期間變更）' });
   let items = [];
@@ -5390,7 +5503,7 @@ app.post('/api/customers/:motherId/contract/items/split', requireStaff, (req, re
   const before = totalOf(items);
   const by = req.session.user.name, at = today();
   items.splice(idx, 1, { ...old, qty: qty1, by, at }, { name: name2, qty: qty2, price: price2, by, at });
-  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(items).slice(0, 12000), cur.mother_id);
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id,
     summary: `合約明細拆分 ${old.name} ${old.qty}天 → ${old.name} ${qty1}天＋${name2} ${qty2}天（金額 ${before}→${totalOf(items)}）` });
@@ -5434,7 +5547,7 @@ app.get('/api/contract-amount-changes', requireStaff, (req, res) => {
       (SELECT bk.status FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS bk_status
     FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
-    WHERE cc.status != 'cancelled'`).all()) {
+    WHERE cc.status NOT IN ('cancelled','archived')`).all()) {
     let items = [], data = {};
     try { items = JSON.parse(c.items); } catch (e) { items = []; }
     try { data = JSON.parse(c.data); } catch (e) { data = {}; }
@@ -5598,6 +5711,7 @@ app.get('/api/contract-transfers', requireStaff, (req, res) => {
       (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
     FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
+    WHERE cc.status != 'archived'
     ORDER BY cc.id DESC LIMIT 200`).all();
   for (const r of rows) {
     try { r.total = JSON.parse(r.items).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0); }
@@ -5637,6 +5751,7 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
       (SELECT COALESCE(SUM(p.amount),0) FROM payments p JOIN bookings bk ON bk.id = p.booking_id
         WHERE bk.mother_id = m.id AND bk.status != 'cancelled' AND p.target = 'contract' AND p.paid_on < bk.check_in) AS prepaid_pay
     FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
+    WHERE cc.status != 'archived'
     ORDER BY cc.id DESC LIMIT 500`).all();
   let rows = all.map(r => {
     let items = [], data = {};
@@ -5723,7 +5838,7 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
 
 // 合約退訂（原因必填；記稽核）／取消退訂（admin）
 app.post('/api/customers/:motherId/contract/cancel', requireStaff, (req, res) => {
-  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  const cur = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '尚未建立合約資料' });
   if (cur.status === 'cancelled') return res.status(400).json({ error: '此合約已退訂' });
   const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
@@ -5733,18 +5848,18 @@ app.post('/api/customers/:motherId/contract/cancel', requireStaff, (req, res) =>
   data.cancel_date = today();
   data.cancel_reason = reason;
   data.cancel_by = req.session.user.name;
-  db.prepare(`UPDATE customer_contracts SET status='cancelled', data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET status='cancelled', data=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(data).slice(0, 12000), cur.mother_id);
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id, summary: `合約退訂（${reason}）` });
   res.json({ ok: true });
 });
 app.post('/api/customers/:motherId/contract/restore', requireAdmin, (req, res) => {
-  const cur = db.prepare('SELECT * FROM customer_contracts WHERE mother_id = ?').get(req.params.motherId);
+  const cur = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(req.params.motherId);
   if (!cur) return res.status(404).json({ error: '尚未建立合約資料' });
   let data = {};
   try { data = JSON.parse(cur.data); } catch (e) { data = {}; }
   delete data.cancel_date; delete data.cancel_reason; delete data.cancel_by;
-  db.prepare(`UPDATE customer_contracts SET status='active', data=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+  db.prepare(`UPDATE customer_contracts SET status='active', data=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
     .run(JSON.stringify(data), cur.mother_id);
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: cur.mother_id, summary: '取消合約退訂（恢復有效）' });
   res.json({ ok: true });
@@ -6686,7 +6801,7 @@ function contractContext(bookingId) {
   const balance = Math.max(0, (bk.total_amount || 0) - (bk.deposit || 0));
   // 合約資料（客戶管理→合約資料）已存檔的優惠明細：帶入訂房確認單
   let cd = {};
-  try { cd = JSON.parse((db.prepare('SELECT data FROM customer_contracts WHERE mother_id = ?').get(bk.mother_id) || {}).data || '{}'); }
+  try { cd = JSON.parse((db.prepare("SELECT data FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id) || {}).data || '{}'); }
   catch (e) { cd = {}; }
   return {
     bk, cd,
@@ -7230,7 +7345,54 @@ app.get('/api/physician-visits', requireStaff, (req, res) => {
     LEFT JOIN mothers bmo ON bmo.id = b.mother_id
     LEFT JOIN users u ON u.id = v.recorded_by
     ${where} ORDER BY v.visit_at DESC, v.id DESC`).all(args);
-  res.json(rows);
+
+  // 合併呈現兒科／產科「醫師診視」表單紀錄（唯讀；於各自頁面維護），巡診清單自此一站看全
+  const merged = [];
+  const addFormRows = (subjectType, specialty) => {
+    if (req.query.subject && req.query.subject !== subjectType) return;
+    if (req.query.specialty && req.query.specialty !== specialty) return;
+    if (subjectType === 'mother' && req.query.baby_id) return;
+    const c = [], a = {};
+    if (subjectType === 'baby') {
+      if (req.query.baby_id) { c.push('v.baby_id = @baby_id'); a.baby_id = req.query.baby_id; }
+      if (req.query.mother_id) { c.push('b.mother_id = @mother_id'); a.mother_id = req.query.mother_id; }
+    } else if (req.query.mother_id) { c.push('v.mother_id = @mother_id'); a.mother_id = req.query.mother_id; }
+    if (req.query.month) { c.push("strftime('%Y-%m', v.visit_date) = @month"); a.month = req.query.month; }
+    if (req.query.start) { c.push('v.visit_date >= @start'); a.start = req.query.start; }
+    if (req.query.end) { c.push('v.visit_date <= @end'); a.end = req.query.end; }
+    if (req.query.in_house === '1' || req.query.in_house === 'true') c.push("mm.status = 'checked_in'");
+    const roomSub2 = `(SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = mm.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1)`;
+    if (kw) {
+      a.kw = `%${kw}%`;
+      if (req.query.kwtype === 'room') c.push(`${roomSub2} LIKE @kw`);
+      else c.push('mm.name LIKE @kw');
+    }
+    const w = c.length ? 'WHERE ' + c.join(' AND ') : '';
+    const sel = subjectType === 'baby'
+      ? `SELECT v.id AS form_id, v.visit_date, v.visit_time, v.note, b.name AS baby_name,
+           mm.name AS mother_name, mm.status AS mother_status, u.name AS recorded_by_name, ${roomSub2} AS room_name
+         FROM baby_doctor_visits v JOIN babies b ON b.id = v.baby_id JOIN mothers mm ON mm.id = b.mother_id
+         LEFT JOIN users u ON u.id = v.recorded_by ${w}`
+      : `SELECT v.id AS form_id, v.visit_date, v.visit_time, v.note, NULL AS baby_name,
+           mm.name AS mother_name, mm.status AS mother_status, u.name AS recorded_by_name, ${roomSub2} AS room_name
+         FROM mother_doctor_visits v JOIN mothers mm ON mm.id = v.mother_id
+         LEFT JOIN users u ON u.id = v.recorded_by ${w}`;
+    for (const r of db.prepare(sel).all(a)) {
+      merged.push({
+        id: `${subjectType === 'baby' ? 'bdv' : 'mdv'}-${r.form_id}`,
+        source: 'form', readonly: 1,
+        subject_type: subjectType, specialty, physician: '', visit_type: 'routine',
+        visit_at: `${r.visit_date} ${r.visit_time || ''}`.trim(),
+        subjective: '', objective: '', assessment: String(r.note || '').slice(0, 200),
+        plan: '', follow_up: '', referral: '',
+        baby_name: r.baby_name, mother_name: r.mother_name, mother_status: r.mother_status,
+        recorded_by_name: r.recorded_by_name, room_name: r.room_name
+      });
+    }
+  };
+  if (req.query.merged !== '0') { addFormRows('baby', 'pediatrics'); addFormRows('mother', 'obgyn'); }
+  res.json(rows.concat(merged).sort((x, y) => String(y.visit_at).localeCompare(String(x.visit_at))));
 });
 
 function normalizeVisit(v) {
@@ -7589,10 +7751,15 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
              WHERE b2.mother_id = m.id AND fm.sender = 'family' AND fm.read_by_staff = 0) AS need_count,
            (SELECT COUNT(*) FROM meal_swap_requests ms
              WHERE ms.mother_id = m.id AND ms.status = 'pending') AS meal_swap_count,
-           (SELECT COUNT(*) FROM mother_closures c WHERE c.mother_id = m.id) AS closed
+           0 AS closed
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
     WHERE bk.status = 'checked_in'
     ORDER BY bk.check_in DESC`).all(d);
+  // 結案標記限當前住期（回住的新住期不再帶到前一胎的結案）
+  for (const oc of occupants) {
+    oc.closed = db.prepare(`SELECT COUNT(*) c FROM mother_closures
+      WHERE mother_id = ? AND booking_id IN (?, 0)`).get(oc.mother_id, chainRootIdOf(oc.booking_id)).c;
+  }
   // 每房下一筆預約（含今日應到）
   const upcoming = db.prepare(`
     SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out,
@@ -7641,7 +7808,7 @@ app.get('/api/room-status/mother-upcoming', requireStaff, (req, res) => {
     SELECT bk.check_in, bk.check_out, r.name AS room_name, r.room_type,
            m.id AS mother_id, m.name AS mother_name, m.phone, m.due_date,
            m.birth_date AS mother_birth, m.id_no, m.delivery_date, m.delivery_type,
-           (SELECT c.data FROM customer_contracts c WHERE c.mother_id = m.id) AS contract_data
+           (SELECT c.data FROM customer_contracts c WHERE c.mother_id = m.id AND c.status != 'archived') AS contract_data
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.status = 'reserved' AND bk.check_in <= date(?, '+7 day')
       AND bk.continued_from IS NULL
@@ -8085,7 +8252,7 @@ app.post('/api/bookings/:id/change-stay', requireStaff, (req, res) => {
         `入住中期間變更：${bk.mother_name} ${effectiveDate} 自${bk.room_name}房換入`, req.session.user.id);
     }
     // 合約明細改為兩筆：找到對應原房型明細者拆為前後段；找不到則不動明細、僅記稽核
-    const cc = db.prepare('SELECT items FROM customer_contracts WHERE mother_id = ?').get(bk.mother_id);
+    const cc = db.prepare("SELECT items FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id);
     let itemNote = '明細無對應原房型項目，未自動改寫';
     if (cc) {
       let items = [];
@@ -8098,7 +8265,7 @@ app.post('/api/bookings/:id/change-stay', requireStaff, (req, res) => {
         const by = req.session.user.name, at = today();
         items.splice(ci, 1, { name: bk.room_type, qty: q.days1, price: q.rate1, by, at },
           { name: newRoom.room_type, qty: q.days2, price: q.rate2, by, at });
-        db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+        db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
           .run(JSON.stringify(items).slice(0, 12000), bk.mother_id);
         itemNote = `明細改為 ${bk.room_type} ${q.days1}天＋${newRoom.room_type} ${q.days2}天`;
         logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: bk.mother_id,
@@ -8196,14 +8363,14 @@ app.post('/api/bookings/:id/transfer', requireStaff, (req, res) => {
       const bks = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status = 'reserved'
         ORDER BY check_in, id`).all(bk.mother_id);
       const idx = bks.findIndex(x => x.id === bk.id);
-      const cc = db.prepare('SELECT items FROM customer_contracts WHERE mother_id = ?').get(bk.mother_id);
+      const cc = db.prepare("SELECT items FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id);
       let items = [];
       try { items = JSON.parse((cc || {}).items || '[]'); } catch (e) { items = []; }
       if (idx >= 0 && idx < items.length) {
         const it = items[idx];
         if (Number(it.price) > 0) rate = Number(it.price);
         items.splice(idx, 1, { ...it, qty: days1 }, { ...it, qty: days2 });
-        db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=?`)
+        db.prepare(`UPDATE customer_contracts SET items=?, updated_at=datetime('now','localtime') WHERE mother_id=? AND status != 'archived'`)
           .run(JSON.stringify(items).slice(0, 12000), bk.mother_id);
         itemNote = `；明細 ${it.name} ${it.qty}天拆為 ${days1}＋${days2} 天（同價，總額不變）`;
       }
@@ -8286,13 +8453,13 @@ app.get('/api/nursing-reminders', requireStaff, (req, res) => {
       (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1) AS check_in,
       (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id WHERE bk.mother_id = m.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1) AS room_name
     FROM mothers m WHERE m.status = 'checked_in'`).all();
-  const doneStmt = db.prepare('SELECT edu_day, item FROM edu_records WHERE mother_id = ?');
+  const doneStmt = db.prepare('SELECT edu_day, item FROM edu_records WHERE mother_id = ? AND booking_id IN (?, 0)');
   const edu_pending = [];
   for (const mo of moms) {
     if (!mo.check_in) continue;
     const day = Math.floor((new Date(today) - new Date(mo.check_in)) / 86400000) + 1;
     if (day < 1) continue;
-    const done = new Set(doneStmt.all(mo.id).map(r => r.edu_day + '' + r.item));
+    const done = new Set(doneStmt.all(mo.id, stayRootForMother(mo.id)).map(r => r.edu_day + '' + r.item));
     const items = [];
     for (const sc of schedule) {
       if (Number(sc.day) > day) continue;
@@ -8330,8 +8497,8 @@ app.get('/api/nursing-reminders', requireStaff, (req, res) => {
 app.post('/api/edu-records', requireStaff, (req, res) => {
   const b = req.body || {};
   if (!b.mother_id || !(Number(b.edu_day) > 0) || !String(b.item || '').trim()) return res.status(400).json({ error: '資料不完整' });
-  db.prepare('INSERT OR IGNORE INTO edu_records (mother_id, edu_day, item, done_by) VALUES (?,?,?,?)')
-    .run(b.mother_id, Math.round(Number(b.edu_day)), String(b.item).slice(0, 100), req.session.user.id);
+  db.prepare('INSERT OR IGNORE INTO edu_records (mother_id, booking_id, edu_day, item, done_by) VALUES (?,?,?,?,?)')
+    .run(b.mother_id, stayRootForMother(b.mother_id), Math.round(Number(b.edu_day)), String(b.item).slice(0, 100), req.session.user.id);
   res.json({ ok: true });
 });
 

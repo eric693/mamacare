@@ -1503,7 +1503,13 @@ function readMotherForm(body) {
 }
 
 async function viewResidents() {
-  const [data, mothers, babies] = await Promise.all([api('/room-status/mothers'), api('/mothers'), api('/babies')]);
+  const [data, mothers, babies, beds] = await Promise.all([
+    api('/room-status/mothers'), api('/mothers'), api('/babies'), api('/baby-beds')]);
+  // 床位選項：啟用且未被其他在住寶寶佔用者可選（本寶寶目前的床位永遠可選）
+  const bedOptions = (currentBedId) => ['<option value="">未指派</option>'].concat(
+    beds.filter(bb => bb.active && (!bb.occupant_name || bb.id === currentBedId))
+      .map(bb => `<option value="${bb.id}" ${bb.id === currentBedId ? 'selected' : ''}>${esc(bb.bed_no)}（${esc(bb.zone || '')}區）</option>`)
+  ).join('');
   const st = data.stats;
   // 房況看板（呈現同媽媽房況；資訊區塊保留不變，卡片按鈕改為營運功能）
   const boardCards = data.rooms.map(r => {
@@ -1607,6 +1613,7 @@ async function viewResidents() {
       <div class="rs-kv">
         <span>出生日期：${esc(b.birth_date || '—')}</span>
         <span>出生體重：${b.birth_weight_g ? `${b.birth_weight_g} g` : '—'}</span>
+        <span>嬰兒床：${b.bed_no ? esc(b.bed_no) : '—'}</span>
         ${b.notes ? `<span>備註：${esc(b.notes)}</span>` : ''}
       </div>
       <div class="row" style="gap:6px;margin-top:10px">
@@ -1755,6 +1762,7 @@ async function viewResidents() {
           </div>
           <div class="field"><label>出生日期</label><input type="date" id="be-birth" value="${esc(b.birth_date || '')}"></div>
           <div class="field"><label>出生體重 (g)</label><input type="number" id="be-weight" inputmode="numeric" value="${b.birth_weight_g ?? ''}"></div>
+          <div class="field"><label>嬰兒床</label><select id="be-bed">${bedOptions(b.bed_id)}</select></div>
           <div class="field full"><label>備註</label><input id="be-notes" value="${esc(b.notes || '')}"></div>
           <div class="full row">
             <button class="btn" id="be-save">儲存</button>
@@ -1770,6 +1778,7 @@ async function viewResidents() {
                 gender: body.querySelector('#be-gender').value,
                 birth_date: body.querySelector('#be-birth').value,
                 birth_weight_g: Number(body.querySelector('#be-weight').value) || null,
+                bed_id: Number(body.querySelector('#be-bed').value) || null,
                 notes: body.querySelector('#be-notes').value
               }
             });
@@ -1800,6 +1809,7 @@ async function viewResidents() {
         </div>
         <div class="field"><label>出生日期</label><input type="date" id="bf-birth"></div>
         <div class="field"><label>出生體重 (g)</label><input type="number" id="bf-weight" inputmode="numeric"></div>
+        <div class="field"><label>嬰兒床</label><select id="bf-bed">${bedOptions(null)}</select></div>
         <div class="field full"><label>備註</label><input id="bf-notes"></div>
         <div class="full row">
           <button class="btn" id="bf-save">儲存</button>
@@ -1816,6 +1826,7 @@ async function viewResidents() {
               gender: body.querySelector('#bf-gender').value,
               birth_date: body.querySelector('#bf-birth').value,
               birth_weight_g: Number(body.querySelector('#bf-weight').value) || null,
+              bed_id: Number(body.querySelector('#bf-bed').value) || null,
               notes: body.querySelector('#bf-notes').value
             }
           });
@@ -4985,18 +4996,21 @@ async function viewPhysicianVisits() {
     const detailHref = v.subject_type === 'baby'
       ? (canAccess('#/baby-doctor') ? `#/baby-doctor?b=${v.baby_id}` : '')
       : (canAccess('#/mother-doctor') ? `#/mother-doctor?m=${v.mother_id}` : '');
+    const isForm = v.source === 'form';   // 兒科／產科「醫師診視」表單帶入列：唯讀，於各自頁面維護
     return `
           <tr>
             <td data-label="巡診時間">${esc(v.visit_at)}<br><small>${esc(v.recorded_by_name || '')}</small></td>
-            <td data-label="科別"><span class="badge teal">${VISIT_SPECIALTY_LABEL[v.specialty] || v.specialty}</span><br><small><span class="badge ${VISIT_TYPE_BADGE[v.visit_type] || 'gray'}">${VISIT_TYPE_LABEL[v.visit_type] || ''}</span></small></td>
+            <td data-label="科別"><span class="badge teal">${VISIT_SPECIALTY_LABEL[v.specialty] || v.specialty}</span>${isForm ? '<br><small><span class="badge gray">診視表單</span></small>' : `<br><small><span class="badge ${VISIT_TYPE_BADGE[v.visit_type] || 'gray'}">${VISIT_TYPE_LABEL[v.visit_type] || ''}</span></small>`}</td>
             <td data-label="對象">${v.room_name ? `<span class="badge gray">${esc(v.room_name)}</span> ` : ''}${esc(v.baby_name || v.mother_name || '-')}<br><small>${v.subject_type === 'baby' ? `寶寶（${esc(v.mother_name || '')}）` : '媽媽'}</small></td>
             <td data-label="醫師">${esc(v.physician || '-')}</td>
-            <td data-label="評估/處置">${esc((v.assessment || '').slice(0, 30))}${(v.assessment || '').length > 30 ? '…' : ''}<br><small>處置：${esc((v.plan || '').slice(0, 24))}</small></td>
+            <td data-label="評估/處置">${esc((v.assessment || '').slice(0, 30))}${(v.assessment || '').length > 30 ? '…' : ''}${isForm ? '' : `<br><small>處置：${esc((v.plan || '').slice(0, 24))}</small>`}</td>
             <td data-label="追蹤">${v.referral ? '<span class="badge red">轉診</span> ' : ''}${esc((v.follow_up || '').slice(0, 20))}</td>
             <td data-label="操作">
-              <button class="btn small secondary" data-edit="${v.id}">檢視/編輯</button>
+              ${isForm
+                ? (detailHref ? `<a class="btn small secondary" href="${detailHref}">詳細診視</a>` : '<small style="color:var(--muted)">診視表單</small>')
+                : `<button class="btn small secondary" data-edit="${v.id}">檢視/編輯</button>
               ${detailHref ? `<a class="btn small secondary" href="${detailHref}">詳細診視</a>` : ''}
-              ${isAdmin ? `<button class="btn small danger" data-del="${v.id}">刪除</button>` : ''}
+              ${isAdmin ? `<button class="btn small danger" data-del="${v.id}">刪除</button>` : ''}`}
             </td>
           </tr>`;
   }).join('') || '<tr><td colspan="7"><div class="empty">尚無符合條件的巡診紀錄</div></td></tr>'}</tbody>
@@ -11021,6 +11035,33 @@ async function viewCustomers() {
         await selectCustomer(editId);
       } catch (e) { alert(e.message); }
     };
+    // 回住開新約：封存現行合約，開立新合約編號（二胎回住用；舊約在「歷史合約」可查閱）
+    const ctRenew = $q('#ct-renew');
+    if (ctRenew) ctRenew.onclick = async () => {
+      if (!confirm('回住開新約：現行合約將封存（僅供查閱），並以新編號開立空白合約。確定執行？')) return;
+      try {
+        const r = await api(`/customers/${editId}/contract/renew`, { method: 'POST' });
+        alert(`已封存舊約 ${r.archived_no}，新約編號 ${r.contract_no}`);
+        await selectCustomer(editId);
+      } catch (e) { alert(e.message); }
+    };
+    // 歷史（封存）合約查閱
+    const ctHistory = $q('#ct-history');
+    if (ctHistory) ctHistory.onclick = async () => {
+      const rows = await api(`/customers/${editId}/contract/history`);
+      openModal('歷史合約（已封存）', rows.length ? `
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>合約編號</th><th>簽約日</th><th>合約明細</th><th>合約總額</th><th>最後更新</th></tr></thead>
+          <tbody>${rows.map(r => `
+            <tr>
+              <td data-label="合約編號">${esc(r.contract_no)}</td>
+              <td data-label="簽約日">${esc((r.data || {}).sign_date || '—')}</td>
+              <td data-label="合約明細">${(r.items || []).map(it => `${esc(it.name)}×${it.qty}`).join('、') || '—'}</td>
+              <td data-label="合約總額">$${Number(r.total || 0).toLocaleString()}</td>
+              <td data-label="最後更新">${esc(r.updated_at || '')}</td>
+            </tr>`).join('')}</tbody></table></div>`
+        : '<div class="empty">尚無封存的歷史合約</div>');
+    };
 
     // 明細變更回應提示：排房連動筆數／已簽合約需重簽／訂金溢收
     const notifyItemSync = r => {
@@ -11928,6 +11969,8 @@ async function viewCustomers() {
             ${ct ? '<button class="btn" id="ct-announce" title="實際生產醫院／日期／方式皆填寫後才可按下">寶寶報喜</button>' : ''}
             ${ct && ct.status !== 'cancelled' ? '<button class="btn secondary" id="ct-cancel">合約退訂</button>' : ''}
             ${ct && ct.status === 'cancelled' && currentUser.role === 'admin' ? '<button class="btn secondary" id="ct-restore">取消退訂（恢復有效）</button>' : ''}
+            ${ct && m.status === 'checked_out' ? '<button class="btn secondary" id="ct-renew">回住開新約</button>' : ''}
+            ${ct ? '<button class="btn small secondary" id="ct-history">歷史合約</button>' : ''}
             <span class="error-msg" id="ct-err"></span>
           </div>
           <div class="full row no-print" style="gap:8px;flex-wrap:wrap;align-items:center">
@@ -13276,16 +13319,19 @@ async function viewBabyBeds() {
     </div>`;
   const render = (list) => {
     $('#bb-result').innerHTML = `<table class="data stack">
-      <thead><tr><th>筆數</th><th>嬰兒床號碼</th><th>嬰兒床分區</th><th>狀態</th><th class="no-print"></th></tr></thead>
+      <thead><tr><th>筆數</th><th>嬰兒床號碼</th><th>嬰兒床分區</th><th>狀態</th><th>使用中寶寶</th><th class="no-print"></th></tr></thead>
       <tbody>${list.map((r, i) => `
         <tr>
           <td data-label="筆數">${i + 1}</td>
           <td data-label="嬰兒床號碼">${esc(r.bed_no)}</td>
           <td data-label="嬰兒床分區">${esc(r.zone)}</td>
           <td data-label="狀態"><span class="badge ${r.active ? 'green' : 'gray'}">${r.active ? '可用' : '停用'}</span></td>
+          <td data-label="使用中寶寶">${r.occupant_name
+            ? `<span class="badge teal">${esc(r.occupant_name)}</span> <small style="color:var(--muted)">媽媽 ${esc(r.occupant_mother || '')}</small>`
+            : '<small style="color:var(--muted)">空床</small>'}</td>
           <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>
             <button class="btn small danger" data-del="${r.id}">刪</button>` : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="5"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
+        </tr>`).join('') || '<tr><td colspan="6"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
     $('#bb-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => bedForm(beds.find(x => x.id == b.dataset.edit)));
     $('#bb-result').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
       if (!confirm('確定刪除此床位？')) return;

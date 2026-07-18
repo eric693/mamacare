@@ -1625,6 +1625,140 @@ function init() {
     rows.forEach((r, i) => ins.run(r.room_type, r.price || 0, i));
   }
 
+  // ---- 資料串接補強（2026-07）----
+  // 1) 寶寶床位：babies.bed_id 指向嬰兒床名冊，床位自此可知佔用者
+  const babyBedCols = db.prepare('PRAGMA table_info(babies)').all().map(c => c.name);
+  if (!babyBedCols.includes('bed_id')) {
+    db.exec('ALTER TABLE babies ADD COLUMN bed_id INTEGER REFERENCES baby_beds(id)');
+  }
+
+  // 2) 帳務回溯：charge_items.order_id 記錄來源商城訂單；舊資料由 note「商城訂單#N」回填
+  const ciCols = db.prepare('PRAGMA table_info(charge_items)').all().map(c => c.name);
+  if (!ciCols.includes('order_id')) {
+    db.exec('ALTER TABLE charge_items ADD COLUMN order_id INTEGER REFERENCES orders(id)');
+    for (const r of db.prepare(`SELECT id, note FROM charge_items WHERE note LIKE '商城訂單#%'`).all()) {
+      const m = /商城訂單#(\d+)/.exec(r.note || '');
+      if (m && db.prepare('SELECT 1 FROM orders WHERE id = ?').get(Number(m[1]))) {
+        db.prepare('UPDATE charge_items SET order_id = ? WHERE id = ?').run(Number(m[1]), r.id);
+      }
+    }
+  }
+
+  // 3) 回住支援：入住評估／產婦結案／衛教紀錄改以「住期」（訂房接續鏈根 id）區分，
+  //    同一位媽媽二胎回住不再與上一胎唯一鍵相撞。booking_id=0＝建檔時尚無訂房。
+  //    既有資料一次性蓋上當前住期章（每位媽媽目前只有一段住期，取最近有效訂房的鏈根）。
+  const chainRootIdMig = (bkId) => {
+    let id = bkId;
+    for (let i = 0; i < 20; i++) {
+      const r = db.prepare('SELECT continued_from FROM bookings WHERE id = ?').get(id);
+      if (!r || !r.continued_from) break;
+      id = r.continued_from;
+    }
+    return id;
+  };
+  const stampStayMig = (table) => {
+    for (const row of db.prepare(`SELECT DISTINCT mother_id FROM ${table} WHERE booking_id = 0`).all()) {
+      const bk = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status != 'cancelled'
+        ORDER BY check_in DESC, id DESC LIMIT 1`).get(row.mother_id);
+      if (bk) db.prepare(`UPDATE ${table} SET booking_id = ? WHERE mother_id = ? AND booking_id = 0`)
+        .run(chainRootIdMig(bk.id), row.mother_id);
+    }
+  };
+  const miaCols = db.prepare('PRAGMA table_info(mother_intake_assessments)').all().map(c => c.name);
+  if (!miaCols.includes('booking_id')) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE mother_intake_assessments_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        booking_id INTEGER NOT NULL DEFAULT 0,
+        nurse_id INTEGER REFERENCES users(id),
+        data TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        UNIQUE(mother_id, booking_id)
+      );
+      INSERT INTO mother_intake_assessments_new (id, mother_id, nurse_id, data, updated_at)
+        SELECT id, mother_id, nurse_id, data, updated_at FROM mother_intake_assessments;
+      DROP TABLE mother_intake_assessments;
+      ALTER TABLE mother_intake_assessments_new RENAME TO mother_intake_assessments;
+    `);
+    db.pragma('foreign_keys = ON');
+    stampStayMig('mother_intake_assessments');
+  }
+  const mclCols = db.prepare('PRAGMA table_info(mother_closures)').all().map(c => c.name);
+  if (!mclCols.includes('booking_id')) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE mother_closures_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        booking_id INTEGER NOT NULL DEFAULT 0,
+        nurse_id INTEGER REFERENCES users(id),
+        close_date TEXT NOT NULL,
+        close_time TEXT NOT NULL DEFAULT '',
+        data TEXT NOT NULL DEFAULT '{}',
+        note TEXT DEFAULT '',
+        edited_at TEXT DEFAULT '',
+        edited_by INTEGER REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        UNIQUE(mother_id, booking_id)
+      );
+      INSERT INTO mother_closures_new (id, mother_id, nurse_id, close_date, close_time, data, note, edited_at, edited_by, created_at)
+        SELECT id, mother_id, nurse_id, close_date, close_time, data, note, edited_at, edited_by, created_at FROM mother_closures;
+      DROP TABLE mother_closures;
+      ALTER TABLE mother_closures_new RENAME TO mother_closures;
+    `);
+    db.pragma('foreign_keys = ON');
+    stampStayMig('mother_closures');
+  }
+  const eduCols = db.prepare('PRAGMA table_info(edu_records)').all().map(c => c.name);
+  if (eduCols.length && !eduCols.includes('booking_id')) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE edu_records_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        booking_id INTEGER NOT NULL DEFAULT 0,
+        edu_day INTEGER NOT NULL,
+        item TEXT NOT NULL,
+        done_by INTEGER REFERENCES users(id),
+        done_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        UNIQUE(mother_id, booking_id, edu_day, item)
+      );
+      INSERT INTO edu_records_new (id, mother_id, edu_day, item, done_by, done_at)
+        SELECT id, mother_id, edu_day, item, done_by, done_at FROM edu_records;
+      DROP TABLE edu_records;
+      ALTER TABLE edu_records_new RENAME TO edu_records;
+    `);
+    db.pragma('foreign_keys = ON');
+    stampStayMig('edu_records');
+  }
+  // 4) 銷售合約：取消「每位媽媽僅一筆」限制，改為「僅一筆現行（非封存）合約」，
+  //    回住可封存舊約開新約；舊約保留供查閱。
+  const ccUnique = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='customer_contracts'`).get();
+  if (ccUnique && /mother_id INTEGER NOT NULL UNIQUE/.test(ccUnique.sql)) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE customer_contracts_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        contract_no TEXT NOT NULL DEFAULT '',
+        data TEXT NOT NULL DEFAULT '{}',
+        items TEXT NOT NULL DEFAULT '[]',
+        created_by INTEGER REFERENCES users(id),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        status TEXT NOT NULL DEFAULT 'active'
+      );
+      INSERT INTO customer_contracts_new (id, mother_id, contract_no, data, items, created_by, updated_at, status)
+        SELECT id, mother_id, contract_no, data, items, created_by, updated_at, status FROM customer_contracts;
+      DROP TABLE customer_contracts;
+      ALTER TABLE customer_contracts_new RENAME TO customer_contracts;
+    `);
+    db.pragma('foreign_keys = ON');
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_contracts_current
+    ON customer_contracts(mother_id) WHERE status != 'archived'`);
+
   ensureSettings();
   ensureContractTemplate();
   // 托嬰：既有資料庫於啟動時補建「托嬰」房型＋托嬰室
