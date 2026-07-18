@@ -1733,6 +1733,31 @@ function init() {
     db.pragma('foreign_keys = ON');
     stampStayMig('edu_records');
   }
+  // 護理指導單：與衛教紀錄同屬「入住第N天 checklist」，補住期(booking_id)區分，
+  // 否則二胎回住時前一胎的指導紀錄會被拿去配對新住期提醒（誤判已完成）。
+  const mglCols = db.prepare('PRAGMA table_info(mother_guidance_logs)').all().map(c => c.name);
+  if (mglCols.length && !mglCols.includes('booking_id')) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE mother_guidance_logs_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        booking_id INTEGER NOT NULL DEFAULT 0,
+        nurse_id INTEGER REFERENCES users(id),
+        kind TEXT NOT NULL CHECK (kind IN ('care','breastfeeding')),
+        done_date TEXT NOT NULL,
+        note TEXT DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      );
+      INSERT INTO mother_guidance_logs_new (id, mother_id, nurse_id, kind, done_date, note, created_at)
+        SELECT id, mother_id, nurse_id, kind, done_date, note, created_at FROM mother_guidance_logs;
+      DROP TABLE mother_guidance_logs;
+      ALTER TABLE mother_guidance_logs_new RENAME TO mother_guidance_logs;
+      CREATE INDEX IF NOT EXISTS idx_mgl_mother ON mother_guidance_logs(mother_id, done_date);
+    `);
+    db.pragma('foreign_keys = ON');
+    stampStayMig('mother_guidance_logs');
+  }
   // 4) 銷售合約：取消「每位媽媽僅一筆」限制，改為「僅一筆現行（非封存）合約」，
   //    回住可封存舊約開新約；舊約保留供查閱。
   const ccUnique = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='customer_contracts'`).get();

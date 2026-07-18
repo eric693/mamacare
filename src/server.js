@@ -1845,7 +1845,8 @@ const GUIDANCE_DAYS = [1, 3, 7, 10];
 // 指導紀錄＋提醒配對（媽媽護理頁與護理指導頁共用；mother 需含 check_in）
 function motherGuidanceData(mother) {
   const guidance = db.prepare(`SELECT g.*, u.name AS nurse_name FROM mother_guidance_logs g
-    LEFT JOIN users u ON u.id = g.nurse_id WHERE g.mother_id = ? ORDER BY g.done_date, g.id`).all(mother.id);
+    LEFT JOIN users u ON u.id = g.nurse_id WHERE g.mother_id = ? AND g.booking_id IN (?, 0)
+    ORDER BY g.done_date, g.id`).all(mother.id, stayRootForMother(mother.id));
   let reminders = [];
   if (mother.check_in) {
     const used = new Set();
@@ -1968,8 +1969,8 @@ app.post('/api/mothers/:id/guidance', requireStaff, (req, res) => {
   const b = req.body || {};
   if (!['care', 'breastfeeding'].includes(b.kind)) return res.status(400).json({ error: '指導單類別錯誤' });
   const date = /^\d{4}-\d{2}-\d{2}$/.test(b.done_date || '') ? b.done_date : today();
-  const info = db.prepare(`INSERT INTO mother_guidance_logs (mother_id, nurse_id, kind, done_date, note)
-    VALUES (?,?,?,?,?)`).run(mother.id, req.session.user.id, b.kind, date, String(b.note || '').slice(0, 300));
+  const info = db.prepare(`INSERT INTO mother_guidance_logs (mother_id, booking_id, nurse_id, kind, done_date, note)
+    VALUES (?,?,?,?,?,?)`).run(mother.id, stayRootForMother(mother.id), req.session.user.id, b.kind, date, String(b.note || '').slice(0, 300));
   res.json({ id: info.lastInsertRowid });
 });
 app.delete('/api/mother-guidance/:id', requireAdmin, (req, res) => {
