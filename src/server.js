@@ -4265,14 +4265,19 @@ app.post('/api/members/:id/points', requireAdmin, (req, res) => {
 // 指定日期在住的媽媽（依訂房推算）與當日訂餐
 app.get('/api/meals', requireStaff, (req, res) => {
   const date = req.query.date || today();
+  // 出住日當天仍供早餐：check_out >= date 保留當日出住者；轉房日（前段出住＝後段入住）優先取仍在住的段
   const mothers = db.prepare(`
     SELECT m.id, m.name, m.diet_notes, m.meal_diet, m.delivery_date, m.delivery_type,
            r.name AS room_name, bk.check_in, bk.check_out
     FROM mothers m
-    JOIN bookings bk ON bk.mother_id = m.id AND bk.status != 'cancelled'
-      AND bk.check_in <= ? AND bk.check_out > ?
+    JOIN bookings bk ON bk.id = (
+      SELECT bk2.id FROM bookings bk2
+      WHERE bk2.mother_id = m.id AND bk2.status != 'cancelled'
+        AND bk2.check_in <= ? AND bk2.check_out >= ?
+      ORDER BY (bk2.check_out > ?) DESC, bk2.check_in DESC LIMIT 1)
     JOIN rooms r ON r.id = bk.room_id
-    GROUP BY m.id ORDER BY r.name`).all(date, date);
+    ORDER BY r.name`).all(date, date, date);
+  for (const mo of mothers) mo.checkout_today = mo.check_out === date;
   const orders = db.prepare('SELECT * FROM meal_orders WHERE meal_date = ?').all(date);
   res.json({ date, mothers, orders });
 });
@@ -7761,13 +7766,13 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     oc.closed = db.prepare(`SELECT COUNT(*) c FROM mother_closures
       WHERE mother_id = ? AND booking_id IN (?, 0)`).get(oc.mother_id, chainRootIdOf(oc.booking_id)).c;
   }
-  // 每房下一筆預約（含今日應到）
+  // 每房「今日應到」的預約（房況表不顯示未來預約，只顯示當日入住；未來預約請看 7 日內入住／實際入住床表）
   const upcoming = db.prepare(`
     SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out,
            m.id AS mother_id, m.name AS mother_name, m.phone
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
-    WHERE bk.status = 'reserved' AND bk.check_out > ?
-    ORDER BY bk.check_in`).all(d);
+    WHERE bk.status = 'reserved' AND bk.check_out > ? AND bk.check_in <= ?
+    ORDER BY bk.check_in`).all(d, d);
   // 在住寶寶依媽媽彙總（顯示母嬰同室狀況）
   const babies = db.prepare(`
     SELECT b.mother_id, b.name, b.location FROM babies b
@@ -7814,25 +7819,28 @@ app.get('/api/room-status/mother-upcoming', requireStaff, (req, res) => {
     WHERE bk.status = 'reserved' AND bk.check_in <= date(?, '+7 day')
       AND bk.continued_from IS NULL
     ORDER BY bk.check_in, r.name`).all(d);
-  // 補報喜／合約資料欄位（生產醫院、胎次、妊娠週數）與寶寶性別體重
+  // 資料來源以「已儲存的寶寶報喜」為準（實際生產日／實際入住日與預產期、預訂日常有出入）：
+  // 未報喜的預約不列入 7 日內入住；報喜儲存時實際入住日已回寫床表，故 check_in 即實際入住日
   const babyStmt = db.prepare('SELECT gender, birth_weight_g FROM babies WHERE mother_id = ? ORDER BY id');
   for (const c of checkins) {
     let cd = {};
     try { cd = JSON.parse(c.contract_data || '{}'); } catch (e) { cd = {}; }
+    c.announced = !!cd.announce_date;
     c.birth_hospital = cd.birth_hospital || '';
     c.parity_no = cd.parity_no || '';
     c.weeks = cd.announce_weeks || '';
-    c.id4 = String(c.id_no || '').slice(-4);
+    c.id4 = String(c.id_no || '').slice(-4) || cd.announce_id4 || '';
     c.babies = babyStmt.all(c.mother_id);
     delete c.contract_data; delete c.id_no;
   }
+  const announcedCheckins = checkins.filter(c => c.announced);
   const checkouts = db.prepare(`
     SELECT bk.check_in, bk.check_out, r.name AS room_name, r.room_type,
            m.id AS mother_id, m.name AS mother_name, m.phone
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.status = 'checked_in' AND bk.check_out <= date(?, '+7 day')
     ORDER BY bk.check_out, r.name`).all(d);
-  res.json({ date: d, checkins, checkouts });
+  res.json({ date: d, checkins: announcedCheckins, checkouts });
 });
 
 // 照護紀錄查詢（入住中＋已出住）：kind=mother|baby，可依日期區間、媽媽姓名／房號關鍵字、住客狀態查詢

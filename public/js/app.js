@@ -7551,7 +7551,7 @@ async function viewMotherUpcoming(kind) {
     return `<tr data-kw="${esc(`${r.mother_name} ${r.room_name} ${r.phone || ''}`.toLowerCase())}">${cells.map((c, i) => `<td data-label="${cols[i]}">${c}</td>`).join('')}</tr>`;
   };
   main().innerHTML = `
-    <div class="page-title">${title} <small style="font-weight:400;color:var(--muted);font-size:.85rem">（${esc(d)} 起 7 日內，含逾期）</small></div>
+    <div class="page-title">${title} <small style="font-weight:400;color:var(--muted);font-size:.85rem">（${esc(d)} 起 7 日內，含逾期${isIn ? '；資料來源：已儲存的寶寶報喜（實際入住日為準）' : ''}）</small></div>
     <div class="card">
       <div class="row between" style="flex-wrap:wrap;gap:8px">
         <input id="mu-kw" placeholder="搜尋姓名／房號／電話" style="max-width:240px">
@@ -11218,26 +11218,33 @@ async function viewCustomers() {
     });
 
     // 住房卡／分享卡四區塊 2026-07-11 依需求移除；歷史資料仍留在合約 data JSON，後端欄位未動
+    // 各區塊儲存一併帶上整份合約表單（含尚未按存檔的上方欄位），儲存後重繪不會清空已輸入內容
     $q('#ct-consult-save').onclick = () => cput({
-      consult_date: gv('#ct-consult-date'), consult_note: gv('#ct-consult-note'), consult_by: currentUser.name
+      ...ctPayload(), consult_date: gv('#ct-consult-date'), consult_note: gv('#ct-consult-note'), consult_by: currentUser.name
     }).catch(e => alert(e.message));
     // 商品禮券／現金折扣／贈品內容
     $q('#ct-voucher-save').onclick = () => cput({
-      voucher_amount: gv('#ct-voucher'), voucher_by: currentUser.name
+      ...ctPayload(), voucher_amount: gv('#ct-voucher'), voucher_by: currentUser.name
     }).catch(e => alert(e.message));
     $q('#ct-cashdisc-save').onclick = () => cput({
-      cash_discount: gv('#ct-cashdisc'), cash_discount_by: currentUser.name
+      ...ctPayload(), cash_discount: gv('#ct-cashdisc'), cash_discount_by: currentUser.name
     }).catch(e => alert(e.message));
     $q('#ct-gift-save').onclick = () => cput({
-      gift_content: gv('#ct-gift'), gift_by: currentUser.name
+      ...ctPayload(), gift_content: gv('#ct-gift'), gift_by: currentUser.name
     }).catch(e => alert(e.message));
   }
 
   // ----- 寶寶報喜：入住通知單填寫視窗（儲存後轉入床表／住客／膳食／房況） -----
   async function openBabyAnnounce(d, birth) {
     const m = d.mother, cd = (d.contract && d.contract.data) || {}, prof = d.profile || {};
-    // 房號／入退住日：從實際入住床表的已預約帶入；無紀錄時可手 key，儲存時雙向寫回床表（自動建立訂房）
-    const bk = d.bookings.find(b => b.status === 'reserved') || d.bookings.find(b => b.status === 'checked_in') || {};
+    // 房號／入退住日：從實際入住床表帶入「入住段」（最早 check_in 的有效段）。
+    // 多段住期（例如預約時已排 201×5 天→轉 101×5 天）時，報喜房號＝入住當天的房（201），不再誤抓最後一段。
+    const activeSegs = (d.bookings || [])
+      .filter(b => b.status === 'reserved' || b.status === 'checked_in')
+      .sort((a, b) => (a.check_in < b.check_in ? -1 : a.check_in > b.check_in ? 1 : (a.id || 0) - (b.id || 0)));
+    const bk = activeSegs[0] || {};
+    // 出住日＝最後一段的出住日（多段住期整段結束日；例如 201×5→101×5，入住 201、出住取最末段）
+    const lastOut = activeSegs.length ? activeSegs[activeSegs.length - 1].check_out : (bk.check_out || '');
     const nBabies = birth.baby_count === '三胞胎' ? 3 : birth.baby_count === '雙胞胎' ? 2 : 1;
     // 總天數從合約資料（銷售房型明細天數合計）自動帶入
     const ctItems = (d.contract && d.contract.items) || [];
@@ -11265,7 +11272,7 @@ async function viewCustomers() {
     openModal(`寶寶報喜：${m.name}（入住通知單）`, `
       <div class="form-grid">
         ${bk.id ? `
-        <div class="field"><label>房號<small>（實際入住床表帶入）</small></label><input id="ba-room" value="${esc(bk.room_name || '')}" readonly></div>` : `
+        <div class="field"><label>房號<small>（實際入住床表帶入${activeSegs.length > 1 ? '，入住段房號；本次住期含轉房' : ''}）</small></label><input id="ba-room" value="${esc(bk.room_name || '')}" readonly>${activeSegs.length > 1 ? `<small style="color:var(--muted)">後續轉房：${activeSegs.slice(1).map(s => esc(s.room_name)).join('→')}</small>` : ''}</div>` : `
         <div class="field"><label>房號<small>（尚未排房，選擇後自動寫回床表）</small></label>
           <select id="ba-room-sel"><option value="">--請選擇--</option>${roomList.map(r =>
             `<option value="${r.id}" data-name="${esc(r.name)}">${esc(r.name)}（${esc(r.room_type)}）${r.occupant ? `｜在住至 ${esc(r.occupied_until || '')}` : ''}</option>`).join('')}</select></div>`}
@@ -11273,7 +11280,7 @@ async function viewCustomers() {
         <div class="field"><label>媽媽生日</label><input value="${esc(m.birth_date || '—')}" readonly></div>
         <div class="field"><label>後四碼<small>（身分證自動帶入）</small></label><input id="ba-id4" maxlength="4" value="${esc((m.id_no || '').slice(-4))}"></div>
         <div class="field"><label>入住日<small>（合約帶入，可手改；提早／延後生可調整）</small></label><input type="date" id="ba-in" value="${esc(bk.id ? (bk.check_in || defIn) : defIn)}"></div>
-        <div class="field"><label>出住日<small>（依合約總天數自動計算，可手改）</small></label><input type="date" id="ba-out" value="${esc(bk.id ? (bk.check_out || defOut) : defOut)}"></div>
+        <div class="field"><label>出住日<small>（依合約總天數自動計算，可手改）</small></label><input type="date" id="ba-out" value="${esc(bk.id ? (lastOut || defOut) : defOut)}"></div>
         <div class="field"><label>總天數<small>（合約資料帶入）</small></label><input value="${stayDays ? stayDays + ' 天' : '—'}" readonly></div>
         <div class="field"><label>生產日期</label><input value="${esc(birth.birth_date)}" readonly></div>
         <div class="field"><label>生產方式</label><input value="${esc(birth.birth_mode)}" readonly></div>
@@ -11319,12 +11326,18 @@ async function viewCustomers() {
         const other = body.querySelector('#ba-taboo-other').value.trim();
         if (other) taboos.push(other);
         // 入住／出住日：既有訂房則更新（連動床表／房務／膳食）；無排房紀錄則手 key 房號建立訂房
-        let bkRoom = bk.room_name || '', bkIn = bk.check_in || '', bkOut = bk.check_out || '';
+        let bkRoom = bk.room_name || '', bkIn = bk.check_in || '', bkOut = lastOut || bk.check_out || '';
         const inVal = body.querySelector('#ba-in').value;
         const outVal = body.querySelector('#ba-out').value;
         if (bk.id) {
-          bkIn = inVal || bk.check_in; bkOut = outVal || bk.check_out;
-          if (inVal && outVal && (inVal !== bk.check_in || outVal !== bk.check_out)) {
+          bkIn = inVal || bk.check_in; bkOut = outVal || lastOut || bk.check_out;
+          if (activeSegs.length > 1) {
+            // 多段住期（床表已含轉房）：報喜不改訂房日期，避免覆寫轉房段；日期異動請於實際入住床表調整
+            if ((inVal && inVal !== bk.check_in) || (outVal && outVal !== lastOut)) {
+              err.textContent = '本住期含轉房（多段），入住／出住日請於「實際入住床表」調整，此處不改訂房';
+              return;
+            }
+          } else if (inVal && outVal && (inVal !== bk.check_in || outVal !== bk.check_out)) {
             try { await api(`/bookings/${bk.id}`, { method: 'PUT', body: { check_in: inVal, check_out: outVal } }); }
             catch (e) { err.textContent = `入住日更新未完成：${e.message}`; return; }
           }
