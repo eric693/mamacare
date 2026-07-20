@@ -1559,18 +1559,20 @@ async function viewResidents() {
     }
     const nextLine = occ && next
       ? `<div class="rs-next" ${nextDue ? 'style="color:var(--warn);font-weight:600"' : ''}>${nextDue ? '今日應入住' : '下一筆'}：${esc(next.mother_name)}　${esc(next.check_in)} 入住</div>` : '';
-    const actions = occ ? [
+    // 營運按鈕對象：在住者優先；今日應入住（已排房的預約）同樣給整組營運按鈕
+    const sub = occ || (r.state === 'due_in' && next ? next : null);
+    const actions = sub ? [
       canAccess('#/meals') ? '<a class="btn small" href="#/meals">膳食管理</a>' : '',
       canAccess('#/housekeeping') ? '<a class="btn small" href="#/housekeeping">房務清潔</a>' : '',
-      canAccess('#/billing') ? `<button class="btn small" data-bill="${occ.booking_id}">收費帳務</button>` : '',
+      canAccess('#/billing') ? `<button class="btn small" data-bill="${sub.booking_id}">收費帳務</button>` : '',
       canAccess('#/shop') ? '<a class="btn small" href="#/shop">商城商品</a>' : '',
-      canAccess('#/customers') ? `<button class="btn small" data-contract="${occ.mother_id}">合約資料</button>` : '',
+      canAccess('#/customers') ? `<button class="btn small" data-contract="${sub.mother_id}">合約資料</button>` : '',
       canAccess('#/visitor-reservations') ? '<a class="btn small" href="#/visitor-reservations">訪客預約</a>' : '',
       canAccess('#/family') ? '<a class="btn small" href="#/family">＋家屬帳號</a>' : '',
-      `<button class="btn small" data-equip-check="${occ.booking_id}" data-room="${esc(r.name)}" data-mom="${esc(occ.mother_name)}">設備清點</button>`,
-      occ.check_out <= data.date
-        ? `<button class="btn small" style="background:var(--accent)" data-checkout-done="${occ.booking_id}" data-room="${esc(r.name)}" data-mom="${esc(occ.mother_name)}">退房完成</button>`
-        : `<button class="btn small secondary" disabled title="未到退房日（${esc(occ.check_out)}）00:00，暫不可辦理" style="opacity:.55;cursor:not-allowed">退房完成</button>`
+      `<button class="btn small" data-equip-check="${sub.booking_id}" data-room="${esc(r.name)}" data-mom="${esc(sub.mother_name)}">設備清點</button>`,
+      sub.check_out <= data.date
+        ? `<button class="btn small" style="background:var(--accent)" data-checkout-done="${sub.booking_id}" data-room="${esc(r.name)}" data-mom="${esc(sub.mother_name)}">退房完成</button>`
+        : `<button class="btn small secondary" disabled title="未到退房日（${esc(sub.check_out)}）00:00，暫不可辦理" style="opacity:.55;cursor:not-allowed">退房完成</button>`
     ].filter(Boolean).join('') : (canAccess('#/bed-planning') ? '<a class="btn small secondary" href="#/bed-planning">排床</a>' : '');
     // 已退房尚未辦產婦結案：住客管理同樣看得到（僅提示，退房已完成故不再有退房完成鈕）
     const pendBlock = (r.pending_closures || []).map(p => `
