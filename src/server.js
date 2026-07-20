@@ -2365,9 +2365,23 @@ app.get('/api/mothers/:id/records', requireStaff, (req, res) => {
 app.post('/api/mothers/:id/records', requireStaff, (req, res) => {
   const r = req.body || {};
   if (!r.record_type) return res.status(400).json({ error: '紀錄類型必填' });
-  const info = db.prepare(`INSERT INTO mother_records
-    (mother_id, nurse_id, record_type, value_text, note) VALUES (?,?,?,?,?)`).run(
-    req.params.id, req.session.user.id, r.record_type, r.value_text || '', r.note || '');
+  // 補登紀錄：可指定發生時間（限現在之前）；未帶則以現在時間記錄
+  let at = null;
+  if (r.recorded_at !== undefined && String(r.recorded_at).trim()) {
+    const v = String(r.recorded_at).trim();
+    if (!/^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/.test(v)) {
+      return res.status(400).json({ error: '紀錄時間格式需為 YYYY-MM-DD 或 YYYY-MM-DD HH:MM' });
+    }
+    at = (v.length === 10 ? `${v} 00:00:00` : v.replace('T', ' ')).slice(0, 19);
+    if (at.length === 16) at += ':00';
+    const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19).replace('T', ' ');
+    if (at > nowLocal) return res.status(400).json({ error: '補登紀錄時間不可晚於現在' });
+  }
+  const info = at
+    ? db.prepare(`INSERT INTO mother_records (mother_id, nurse_id, record_type, value_text, note, recorded_at)
+        VALUES (?,?,?,?,?,?)`).run(req.params.id, req.session.user.id, r.record_type, r.value_text || '', r.note || '', at)
+    : db.prepare(`INSERT INTO mother_records (mother_id, nurse_id, record_type, value_text, note)
+        VALUES (?,?,?,?,?)`).run(req.params.id, req.session.user.id, r.record_type, r.value_text || '', r.note || '');
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -3228,6 +3242,36 @@ function chainRootIdOf(bookingId) {
   }
   return id;
 }
+// 依「紀錄當下的日期」對應當時所住的房號：多段轉房時，歷史照護／巡診紀錄顯示當時的房，
+// 不會被最後一段（或目前在住段）整批覆蓋。查無涵蓋該日的段落時，退回最近一次住房。
+// dateExpr＝紀錄日期運算式；momExpr＝媽媽 id 運算式（皆為 SQL 片段）
+function roomAtDateSql(dateExpr, momExpr) {
+  return `COALESCE(
+    (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+      WHERE bk.mother_id = ${momExpr} AND bk.status != 'cancelled'
+        AND ${dateExpr} >= bk.check_in AND ${dateExpr} <= bk.check_out
+      ORDER BY bk.check_in DESC LIMIT 1),
+    (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+      WHERE bk.mother_id = ${momExpr} AND bk.status IN ('checked_in','checked_out')
+      ORDER BY bk.check_in DESC LIMIT 1))`;
+}
+
+// 本次住期的房段歷程（轉房 log）：沿 continued_from 鏈由起始段往後列出，供房況卡片顯示
+// 「201（07-01~07-05）→ 101（07-05~07-10）」這類轉房軌跡
+function staySegmentsOf(bookingId) {
+  const rootId = chainRootIdOf(bookingId);
+  const segs = [];
+  let curId = rootId;
+  for (let i = 0; curId && i < 20; i++) {
+    const s = db.prepare(`SELECT bk.id, bk.check_in, bk.check_out, bk.status, bk.notes, r.name AS room_name, r.room_type
+      FROM bookings bk JOIN rooms r ON r.id = bk.room_id WHERE bk.id = ?`).get(curId);
+    if (!s || s.status === 'cancelled') break;
+    segs.push(s);
+    curId = chainSuccessorId(curId);
+  }
+  return segs;
+}
+
 function stayRootForMother(motherId) {
   const bk = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status != 'cancelled'
     ORDER BY check_in DESC, id DESC LIMIT 1`).get(motherId);
@@ -7366,10 +7410,8 @@ const VISIT_SPECIALTIES = ['pediatrics', 'obgyn', 'other'];
 const VISIT_TYPES = ['routine', 'follow_up', 'acute', 'discharge'];
 app.get('/api/physician-visits', requireStaff, (req, res) => {
   const conds = [], args = {};
-  // 有效媽媽（媽媽巡診用 v.mother_id；寶寶巡診用寶寶的媽媽 b.mother_id）目前在住的房號
-  const roomSub = `(SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
-      WHERE bk.mother_id = COALESCE(v.mother_id, b.mother_id) AND bk.status = 'checked_in'
-      ORDER BY bk.check_in DESC LIMIT 1)`;
+  // 房號依巡診當日對應當時的房（媽媽巡診用 v.mother_id；寶寶巡診用寶寶的媽媽 b.mother_id）
+  const roomSub = roomAtDateSql('date(v.visit_at)', 'COALESCE(v.mother_id, b.mother_id)');
   if (req.query.subject) { conds.push('v.subject_type = @subject'); args.subject = req.query.subject; }
   if (req.query.specialty) { conds.push('v.specialty = @specialty'); args.specialty = req.query.specialty; }
   if (req.query.baby_id) { conds.push('v.baby_id = @baby_id'); args.baby_id = req.query.baby_id; }
@@ -7416,8 +7458,7 @@ app.get('/api/physician-visits', requireStaff, (req, res) => {
     if (req.query.start) { c.push('v.visit_date >= @start'); a.start = req.query.start; }
     if (req.query.end) { c.push('v.visit_date <= @end'); a.end = req.query.end; }
     if (req.query.in_house === '1' || req.query.in_house === 'true') c.push("mm.status = 'checked_in'");
-    const roomSub2 = `(SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
-        WHERE bk.mother_id = mm.id AND bk.status = 'checked_in' ORDER BY bk.check_in DESC LIMIT 1)`;
+    const roomSub2 = roomAtDateSql('v.visit_date', 'mm.id');
     if (kw) {
       a.kw = `%${kw}%`;
       if (req.query.kwtype === 'room') c.push(`${roomSub2} LIKE @kw`);
@@ -7810,10 +7851,13 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
     WHERE bk.status = 'checked_in'
     ORDER BY bk.check_in DESC`).all(d);
-  // 結案標記限當前住期（回住的新住期不再帶到前一胎的結案）
+  // 結案標記限當前住期（回住的新住期不再帶到前一胎的結案）；並帶出本次住期的轉房歷程
   for (const oc of occupants) {
     oc.closed = db.prepare(`SELECT COUNT(*) c FROM mother_closures
       WHERE mother_id = ? AND booking_id IN (?, 0)`).get(oc.mother_id, chainRootIdOf(oc.booking_id)).c;
+    const segs = staySegmentsOf(oc.booking_id);
+    oc.segments = segs;
+    oc.transfers = segs.length > 1 ? segs.length - 1 : 0;   // 轉房次數（0＝未轉房）
   }
   // 已辦「退房完成」但尚未辦「產婦結案」者：仍留在原房號供護理端結案（三者互不連動）
   // 只取近 60 天內退房的，避免歷史資料長期佔用看板
@@ -7918,9 +7962,8 @@ app.get('/api/care-records/query', requireStaff, (req, res) => {
   const args = {};
   if (req.query.start) { conds.push('date(x.recorded_at) >= @start'); args.start = req.query.start; }
   if (req.query.end) { conds.push('date(x.recorded_at) <= @end'); args.end = req.query.end; }
-  // 房號取最近一次入住（含已退房）的房間，讓已出住資料仍能以房號查詢
-  const roomSub = `(SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
-      WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','checked_out') ORDER BY bk.check_in DESC LIMIT 1)`;
+  // 房號依「紀錄當下」對應當時的房（多段轉房時歷史紀錄不被最後一段覆蓋）；查無涵蓋段落退回最近一次住房
+  const roomSub = roomAtDateSql('date(x.recorded_at)', 'm.id');
   if (kw) {
     args.kw = `%${kw}%`;
     if (kwtype === 'room') conds.push(`${roomSub} LIKE @kw`);
@@ -8030,6 +8073,12 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
     const dc = dcStmt.get(b.mother_id, d, d);
     // 媽媽已退房、非托嬰、寶寶尚未結案 → 標示「已退房・待結案」（護理端仍可在原房號辦嬰兒結案）
     b.pending_closure = !b.closed && !dc && b.mother_status === 'checked_out' && !!b.mother_left_on ? 1 : 0;
+    // 本次住期的轉房歷程（寶寶隨媽媽的房段移動）
+    const curBk = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status != 'cancelled'
+      ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(b.mother_id);
+    const segs = curBk ? staySegmentsOf(curBk.id) : [];
+    b.segments = segs;
+    b.transfers = segs.length > 1 ? segs.length - 1 : 0;
     if (dc) {
       b.room_name = '托嬰';
       b.daycare_start = dc.check_in;
@@ -8238,12 +8287,37 @@ app.post('/api/bookings/:id/shorten', requireStaff, (req, res) => {
       .run(bk.mother_id, bk.check_in, bk.check_out);
     seedStayMeals(bk.mother_id, bk.check_in, leaveDate, seed.choice, seed.note || '');
   }
+  // 托嬰段連動：媽媽提早出住時，接在原退房日之後的托嬰段整段順移到新退房日（天數不變）
+  // 例：原 10 天住期＋出住後托嬰 5 天，第 N 天提早出住 → 托嬰改為新出住日起算 5 天
+  let daycare_moved = null;
+  const dcBk = db.prepare(`SELECT bk.id, bk.check_in, bk.check_out, r.name AS room_name
+    FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.mother_id = ? AND r.room_type = '托嬰' AND bk.status != 'cancelled'
+      AND bk.check_in >= ? ORDER BY bk.check_in LIMIT 1`).get(bk.mother_id, leaveDate);
+  if (dcBk && dcBk.check_in !== leaveDate) {
+    const dcDays = Math.max(1, Math.round((new Date(dcBk.check_out) - new Date(dcBk.check_in)) / 86400000));
+    const newEnd = new Date(new Date(leaveDate + 'T00:00:00Z').getTime() + dcDays * 86400000)
+      .toISOString().slice(0, 10);
+    // 同房其他訂房撞期則不動，改回報提示由人工調整
+    const clash = db.prepare(`SELECT m.name FROM bookings bk2 JOIN mothers m ON m.id = bk2.mother_id
+      WHERE bk2.room_id = (SELECT room_id FROM bookings WHERE id = ?) AND bk2.id != ?
+        AND bk2.status IN ('reserved','checked_in') AND bk2.check_in < ? AND bk2.check_out > ? LIMIT 1`)
+      .get(dcBk.id, dcBk.id, newEnd, leaveDate);
+    if (clash) {
+      daycare_moved = { ok: false, warning: `托嬰段 ${leaveDate}~${newEnd} 與 ${clash.name} 撞期，未自動順移，請至排房調整` };
+    } else {
+      db.prepare('UPDATE bookings SET check_in = ?, check_out = ? WHERE id = ?').run(leaveDate, newEnd, dcBk.id);
+      daycare_moved = { ok: true, from: dcBk.check_in, to: leaveDate, end: newEnd, days: dcDays };
+      logAudit(req, { action: 'update', entity: 'bookings', entity_id: dcBk.id,
+        summary: `縮短住期連動托嬰段順移：${dcBk.check_in}~${dcBk.check_out} → ${leaveDate}~${newEnd}（${dcDays}天不變）` });
+    }
+  }
   logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id,
     summary: `入住中縮短住期：退房日 ${bk.check_out}→${leaveDate}、合約應收 ${bk.total_amount}→${newTotal}` +
       `（已用${q.used_days}天×${q.daily_rate}＋違約金${q.penalty}＋手續費${q.handling}）${reason ? `；原因：${reason}` : ''}` });
   logAudit(req, { action: 'update', entity: 'customer_contracts', entity_id: bk.mother_id,
     summary: `入住中縮短住期（訂房#${bk.id}）：退房日 ${bk.check_out}→${leaveDate}；銷售房型明細維持原約，應收依定型化契約重算` });
-  res.json({ ok: true, check_out: leaveDate, total_amount: newTotal, quote: q });
+  res.json({ ok: true, check_out: leaveDate, total_amount: newTotal, quote: q, daycare_moved });
 });
 
 // ---------- 入住中期間變更（升等/降等，可同時增減天數）：生效日切段計價 ----------

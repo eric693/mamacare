@@ -1545,6 +1545,7 @@ async function viewResidents() {
           ${occ.medical_notes ? `<span style="color:var(--danger)">醫療注意：${esc(occ.medical_notes)}</span>` : ''}
           <span>寶寶：${babyLine}</span>
           <span>今日照護 ${occ.today_care_count} 次${occ.last_care_at ? `・最後 ${fmtTime(occ.last_care_at)}（${sinceText(occ.last_care_at)}）` : ''}</span>
+          ${transferLogHtml(occ) ? `<span>${transferLogHtml(occ)}</span>` : ''}
           ${occ.pending_tasks > 0 ? `<span class="badge yellow">待辦房務 ${occ.pending_tasks} 件</span>` : ''}
         </div>`;
     } else if (next) {
@@ -7481,6 +7482,7 @@ async function viewMotherRooms() {
           ${occ.medical_notes ? `<span style="color:var(--danger)">醫療注意：${esc(occ.medical_notes)}</span>` : ''}
           <span>寶寶：${babyLine}</span>
           <span>今日照護 ${occ.today_care_count} 次${occ.last_care_at ? `・最後 ${fmtTime(occ.last_care_at)}（${sinceText(occ.last_care_at)}）` : ''}</span>
+          ${transferLogHtml(occ) ? `<span>${transferLogHtml(occ)}</span>` : ''}
           ${occ.pending_tasks > 0 ? `<span class="badge yellow">待辦房務 ${occ.pending_tasks} 件</span>` : ''}
         </div>`;
     } else if (next) {
@@ -7582,6 +7584,16 @@ async function viewMotherRooms() {
       };
     });
   });
+}
+
+/* 轉房歷程（轉房 log）：本次住期有多段時，顯示「201（07-01~07-05）→ 101（07-05~07-10）」 */
+function transferLogHtml(occ) {
+  const segs = (occ && occ.segments) || [];
+  if (segs.length < 2) return '';
+  const md = d => String(d || '').slice(5);
+  const trail = segs.map(s => `${esc(s.room_name)}（${md(s.check_in)}~${md(s.check_out)}）`).join(' → ');
+  return `<span title="本次住期的轉房軌跡；照護紀錄的房號依當時住的房顯示">
+    <span class="badge yellow">轉房 ${occ.transfers} 次</span> <small style="color:var(--muted)">${trail}</small></span>`;
 }
 
 /* ---------- 7日內入住／7日內退房（側欄最上層項目） ---------- */
@@ -7881,6 +7893,7 @@ async function viewBabyRooms() {
             <span class="${jaunAbn ? 'rs-alert' : ''}">黃疸：${b.last_jaundice != null ? `${b.last_jaundice} mg/dL${jaunAbn ? ' ⚠' : ''}` : '—'}</span>
             <span>體重：${b.last_weight != null ? `${b.last_weight} g` : (b.birth_weight_g ? `出生 ${b.birth_weight_g} g` : '—')}</span>
             <span>臍帶：${b.cord ? esc(b.cord) : '—'}${b.last_assess_at ? `<small style="color:var(--muted)">（護理評估 ${esc(b.last_assess_at.slice(5))}）</small>` : ''}</span>
+            ${transferLogHtml(b) ? `<span>${transferLogHtml(b)}</span>` : ''}
             ${b.moved_at ? `<span style="color:var(--muted)">位置異動：${esc(b.moved_at.slice(5, 16))}</span>` : ''}
             ${b.notes ? `<span style="color:var(--muted)">備註：${esc(b.notes)}</span>` : ''}
           </div>
