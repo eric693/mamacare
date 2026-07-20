@@ -4596,14 +4596,44 @@ async function openContractEditor(c, mode) {
   const resign = mode === 'resign';
   const users = await api('/users');
   const handlerOptions = handlerSelectOptions(users, c.handler || '');
+  // 重新簽署：預設以「目前的房型／房號／住期／金額」重新套版產生內容，
+  // 否則沿用舊快照會讓改過房型的合約仍印出舊房型（可按鈕切回原內容比對）
+  let fresh = null;
+  if (resign) {
+    try { fresh = await api(`/contracts/${c.id}/rerender`); } catch (e) { fresh = { error: e.message }; }
+  }
+  const useFresh = !!(fresh && fresh.body);
+  const changed = useFresh && fresh.body !== (c.body || '');
   openModal(resign ? '重新簽署（建立新版合約）' : '編輯合約內容', `
     ${resign ? `<p style="font-size:.85rem;color:var(--muted)">將以下方內容建立一份<strong>新合約</strong>並產生新的簽署連結；原合約（${c.status === 'signed' ? '已簽署' : '待簽署'}）會自動作廢並保留存證。</p>` : ''}
+    ${resign && useFresh ? `
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;padding:8px 10px;border-radius:6px;background:${changed ? '#fff6e5' : '#eef5f4'};margin-bottom:8px">
+        <span style="font-size:.85rem">${changed
+          ? `內容已依<strong>目前資料</strong>重新產生：${esc(fresh.room_type || '')} ${esc(fresh.room_name || '')} 房／${esc(fresh.check_in || '')} ~ ${esc(fresh.check_out || '')}（${esc(fresh.days || '')} 天）`
+          : '目前資料與原合約內容一致，未做變更'}</span>
+        <button class="btn small secondary" id="ce-use-old">改用原內容</button>
+        <button class="btn small secondary" id="ce-use-new" style="display:none">改用目前資料</button>
+      </div>` : ''}
+    ${resign && fresh && fresh.error ? `<div class="row" style="padding:8px 10px;border-radius:6px;background:#fdecec;margin-bottom:8px"><span style="font-size:.85rem;color:var(--danger)">無法依目前資料重新產生內容（${esc(fresh.error)}），以下為原合約內容，請自行確認房型／住期是否正確。</span></div>` : ''}
     <div class="form-grid">
       <div class="field full"><label>合約名稱</label><input id="ce-title" value="${esc(c.title || '')}"></div>
       <div class="field"><label>經手人</label><select id="ce-handler">${handlerOptions}</select></div>
-      <div class="field full"><label>合約內容</label><textarea id="ce-body" rows="14" style="font-family:inherit">${esc(c.body || '')}</textarea></div>
+      <div class="field full"><label>合約內容</label><textarea id="ce-body" rows="14" style="font-family:inherit">${esc(useFresh ? fresh.body : (c.body || ''))}</textarea></div>
     </div>
     <div class="row" style="margin-top:8px"><button class="btn" id="ce-save">${resign ? '建立新版並取得簽署連結' : '儲存'}</button><span class="error-msg" id="ce-err"></span></div>`, body => {
+    // 原內容／目前資料切換
+    const oldBtn = body.querySelector('#ce-use-old');
+    const newBtn = body.querySelector('#ce-use-new');
+    if (oldBtn && newBtn) {
+      oldBtn.onclick = () => {
+        body.querySelector('#ce-body').value = c.body || '';
+        oldBtn.style.display = 'none'; newBtn.style.display = '';
+      };
+      newBtn.onclick = () => {
+        body.querySelector('#ce-body').value = fresh.body;
+        newBtn.style.display = 'none'; oldBtn.style.display = '';
+      };
+    }
     body.querySelector('#ce-save').onclick = async () => {
       const payload = { title: body.querySelector('#ce-title').value.trim(), body: body.querySelector('#ce-body').value, handler: body.querySelector('#ce-handler').value };
       try {

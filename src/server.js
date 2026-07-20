@@ -6920,6 +6920,29 @@ app.get('/api/contracts', requireStaff, (req, res) => {
 });
 
 // 由某筆訂房 + 範本產生合約，當下渲染並凍結全文
+// 依範本＋當下訂房資料渲染合約內容（新建與「重新產生」共用，確保兩者結果一致）
+function renderContractBody(tpl, ctx) {
+  let body = renderTemplate(tpl.body, ctx.map);
+  // 範本未自行放入優惠欄位時，自動附上合約資料頁存檔的優惠明細（避免重複附加）
+  if (!/\{\{(voucher_amount|cash_discount|gift_content)\}\}/.test(tpl.body || '')) {
+    body += discountBlock(ctx.cd || {});
+  }
+  return body;
+}
+
+// 以目前資料重新產生合約內容（房型／房號／住期／金額改過後重簽用；不寫入，僅回傳供預覽編輯）
+app.get('/api/contracts/:id/rerender', requireStaff, (req, res) => {
+  const c = db.prepare('SELECT * FROM contracts WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: '找不到合約' });
+  const tpl = db.prepare('SELECT * FROM contract_templates WHERE id = ?').get(c.template_id);
+  if (!tpl) return res.status(400).json({ error: '原合約範本已不存在，無法重新產生內容' });
+  const ctx = contractContext(c.booking_id);
+  if (!ctx) return res.status(404).json({ error: '找不到對應訂房（可能已取消），無法重新產生內容' });
+  res.json({ body: renderContractBody(tpl, ctx), title: c.title || tpl.name,
+    room_name: ctx.map.room_name, room_type: ctx.map.room_type,
+    check_in: ctx.map.check_in, check_out: ctx.map.check_out, days: ctx.map.days });
+});
+
 app.post('/api/bookings/:id/contracts', requireStaff, (req, res) => {
   const ctx = contractContext(req.params.id);
   if (!ctx) return res.status(404).json({ error: '找不到訂房' });
@@ -6928,11 +6951,7 @@ app.post('/api/bookings/:id/contracts', requireStaff, (req, res) => {
   if (!tpl) return res.status(400).json({ error: '請選擇合約範本' });
   const title = (req.body || {}).title || tpl.name;
   const handler = ((req.body || {}).handler || '').trim();
-  let body = renderTemplate(tpl.body, ctx.map);
-  // 範本未自行放入優惠欄位時，自動附上合約資料頁存檔的優惠明細（避免重複附加）
-  if (!/\{\{(voucher_amount|cash_discount|gift_content)\}\}/.test(tpl.body || '')) {
-    body += discountBlock(ctx.cd || {});
-  }
+  const body = renderContractBody(tpl, ctx);
   const info = db.prepare(`INSERT INTO contracts
     (booking_id, template_id, title, body, sign_token, created_by, handler)
     VALUES (?,?,?,?,?,?,?)`).run(
@@ -6975,7 +6994,14 @@ app.post('/api/contracts/:id/resign', requireStaff, (req, res) => {
   if (old.status === 'void') return res.status(400).json({ error: '已作廢的合約無法重簽，請重新建立' });
   const b = req.body || {};
   const title = b.title || old.title;
-  const body = b.body !== undefined ? b.body : old.body;
+  // 未指定內容時：若原合約已標示「需重簽」（房型／住期／金額等已變更），
+  // 依目前資料重新套版，避免沿用舊快照印出舊房型；重新產生失敗才退回原內容
+  let body = b.body !== undefined ? b.body : old.body;
+  if (b.body === undefined && old.needs_resign) {
+    const tpl = db.prepare('SELECT * FROM contract_templates WHERE id = ?').get(old.template_id);
+    const ctx = tpl ? contractContext(old.booking_id) : null;
+    if (tpl && ctx) body = renderContractBody(tpl, ctx);
+  }
   const handler = b.handler !== undefined ? String(b.handler).trim() : old.handler;
   const tx = db.transaction(() => {
     const info = db.prepare(`INSERT INTO contracts
