@@ -10904,7 +10904,20 @@ async function viewCustomers() {
         const r = await api('/customers', { method: 'POST', body });
         await selectCustomer(r.id);
       }
-    } catch (e) { err.textContent = e.message; }
+    } catch (e) {
+      // 重複偵測：讓使用者選擇開啟既有資料，或確定為不同人時仍新增
+      if (e.status === 409 && e.data && Array.isArray(e.data.duplicates) && e.data.duplicates.length) {
+        const list = e.data.duplicates
+          .map(x => `・${x.name}（電話 ${x.phone || '—'}／預產期 ${x.due_date || '—'}）`).join('\n');
+        const openExisting = confirm(
+          `系統已有可能相同的潛在客戶：\n${list}\n\n按「確定」開啟第一筆既有資料；按「取消」仍要新增一筆（確定是不同人）。`);
+        if (openExisting) { await selectCustomer(e.data.duplicates[0].id); return; }
+        try { const r = await api('/customers', { method: 'POST', body: { ...body, force: true } }); await selectCustomer(r.id); }
+        catch (e2) { err.textContent = e2.message; }
+        return;
+      }
+      err.textContent = e.message;
+    }
   }
 
   // ----- 選取客戶：紅色橫幅＋表單帶入＋分頁關聯資料 -----
@@ -10918,10 +10931,19 @@ async function viewCustomers() {
         <div class="row between" style="flex-wrap:wrap;gap:8px;align-items:center">
           <span>潛在客戶資料：<b>${esc(m.name)}</b>　｜　電話：${esc(m.phone || '—')}
             <span class="badge ${CUST_STATUS[m.status] ? CUST_STATUS[m.status][1] : 'gray'}" style="margin-left:8px">${CUST_STATUS[m.status] ? CUST_STATUS[m.status][0] : m.status}</span></span>
-          <button class="btn small secondary" id="cb-new">切換新增模式</button>
+          <div class="row" style="gap:6px">
+            ${m.status === 'reserved' ? '<button class="btn small secondary" id="cb-del" title="刪除重複／誤建的空白潛客（有排房、合約、寶寶或紀錄者不可刪）">刪除潛客</button>' : ''}
+            <button class="btn small secondary" id="cb-new">切換新增模式</button>
+          </div>
         </div>
       </div>`;
     $('#cb-new').onclick = resetNew;
+    const delBtn = $('#cb-del');
+    if (delBtn) delBtn.onclick = async () => {
+      if (!confirm(`確定刪除潛在客戶「${m.name}」？\n（僅限無排房、無合約、無寶寶、無照護紀錄的空白潛客；此動作無法復原）`)) return;
+      try { await api(`/customers/${editId}`, { method: 'DELETE' }); alert('已刪除潛在客戶'); resetNew(); }
+      catch (e) { alert(e.message); }
+    };
     renderForm(m, d.profile || {});
     renderTabs(d);
     $('#cust-banner').scrollIntoView({ behavior: 'smooth' });

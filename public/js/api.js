@@ -10,6 +10,7 @@ async function api(path, options = {}) {
   if (!res.ok) {
     const err = new Error((data && data.error) || ('HTTP ' + res.status));
     err.status = res.status;
+    err.data = data;   // 保留完整回應內容（例如重複偵測回傳的候選清單）
     throw err;
   }
   return data;

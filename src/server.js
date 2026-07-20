@@ -6577,6 +6577,16 @@ app.post('/api/customers', requireStaff, (req, res) => {
   const name = String(b.name || '').trim();
   if (!name) return res.status(400).json({ error: '請填寫媽媽姓名' });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) return res.status(400).json({ error: '請填寫媽媽預產期' });
+  // 重複偵測：同電話，或同姓名＋同預產期，且尚未退住者 → 可能為同一人（避免多筆潛客檔）
+  // 前端顯示候選後由使用者選擇「開啟既有」或帶 force 仍新增（真的是不同人時）
+  const phone = String(b.phone || '').trim();
+  if (!b.force) {
+    const dupes = db.prepare(`SELECT id, name, phone, due_date, status FROM mothers
+      WHERE status != 'checked_out'
+        AND ((@phone != '' AND phone = @phone) OR (name = @name AND due_date = @due))
+      ORDER BY id DESC LIMIT 10`).all({ phone, name, due: b.due_date });
+    if (dupes.length) return res.status(409).json({ error: '可能已有相同的潛在客戶', duplicates: dupes });
+  }
   const info = db.prepare(`INSERT INTO mothers (name, phone, birth_date, due_date, delivery_type, status)
     VALUES (?,?,?,?,?, 'reserved')`).run(
     name.slice(0, 50), String(b.phone || '').slice(0, 20),
@@ -6607,6 +6617,43 @@ app.put('/api/customers/:motherId', requireStaff, (req, res) => {
   if (sets.length) db.prepare(`UPDATE mothers SET ${sets.join(', ')} WHERE id = ?`).run(...args, mother.id);
   custProfileUpsert(mother.id, b, req.session.user.id);
   logAudit(req, { action: 'update', entity: 'customer_profiles', entity_id: mother.id, summary: '潛在客戶資料修改' });
+  res.json({ ok: true });
+});
+
+// 刪除潛在客戶（清掉重複／誤建的空白潛客）：僅限「潛客/預約」狀態且無任何實質關聯資料者，
+// 有訂房（含已取消以外）／合約／寶寶／照護紀錄一律擋下，避免誤刪有作業的客戶
+app.delete('/api/customers/:motherId', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id, name, status FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!mother) return res.status(404).json({ error: '找不到客戶' });
+  if (mother.status !== 'reserved') {
+    return res.status(409).json({ error: '僅「潛客/預約」狀態可刪除；已入住／已退住請走退房或結案流程' });
+  }
+  const guards = [
+    ['bookings', `SELECT COUNT(*) c FROM bookings WHERE mother_id = ? AND status != 'cancelled'`, '有排房紀錄（請先於排房取消）'],
+    ['customer_contracts', `SELECT COUNT(*) c FROM customer_contracts WHERE mother_id = ? AND status != 'archived'`, '有合約資料（請先退訂合約）'],
+    ['babies', 'SELECT COUNT(*) c FROM babies WHERE mother_id = ?', '已建立寶寶資料'],
+    ['mother_records', 'SELECT COUNT(*) c FROM mother_records WHERE mother_id = ?', '已有照護紀錄']
+  ];
+  for (const [, sql, msg] of guards) {
+    if (db.prepare(sql).get(mother.id).c > 0) return res.status(409).json({ error: `無法刪除：${msg}` });
+  }
+  db.transaction(() => {
+    // 解除參觀單關聯（保留參觀歷史）、清掉已取消的空排房與其附屬，最後刪 profile 與主檔
+    db.prepare('UPDATE tours SET mother_id = NULL WHERE mother_id = ?').run(mother.id);
+    const cancelledBks = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status = 'cancelled'`).all(mother.id);
+    for (const bk of cancelledBks) {
+      db.prepare('DELETE FROM payments WHERE booking_id = ?').run(bk.id);
+      db.prepare('DELETE FROM charge_items WHERE booking_id = ?').run(bk.id);
+      db.prepare('DELETE FROM contracts WHERE booking_id = ?').run(bk.id);
+    }
+    db.prepare(`DELETE FROM bookings WHERE mother_id = ? AND status = 'cancelled'`).run(mother.id);
+    db.prepare('DELETE FROM meal_orders WHERE mother_id = ?').run(mother.id);
+    db.prepare('DELETE FROM customer_contracts WHERE mother_id = ?').run(mother.id);
+    db.prepare('DELETE FROM customer_logs WHERE mother_id = ?').run(mother.id);
+    db.prepare('DELETE FROM customer_profiles WHERE mother_id = ?').run(mother.id);
+    db.prepare('DELETE FROM mothers WHERE id = ?').run(mother.id);
+  })();
+  logAudit(req, { action: 'delete', entity: 'mothers', entity_id: mother.id, summary: `刪除潛在客戶 ${mother.name}` });
   res.json({ ok: true });
 });
 
