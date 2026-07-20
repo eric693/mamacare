@@ -5222,17 +5222,13 @@ app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
     WHERE mother_id = ? AND status IN ('reserved','checked_in')`).get(m.id).o : '';
   let hkTaskName = '';
   if (annBk) {
-    // 房務任務：(房號)請備房+MMdd(入住日)；建立於報喜儲存日；重複報喜不重複建立（同任務名且待處理者跳過）
+    // 房務任務：(房號)請備房+MMdd(入住日)；建立於報喜儲存日。
+    // 同名待處理任務（重複報喜、或轉房已先建立）不重複建立，但報喜資訊會併入備註
     const mmdd = String(annBk.check_in || '').slice(5).replace('-', ''); // 入住日 MMdd，例如 0720
     hkTaskName = `${annBk.room_name}請備房${mmdd}`;
-    const dupTask = db.prepare(`SELECT 1 FROM housekeeping_logs
-      WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`).get(m.id, hkTaskName);
-    if (!dupTask) {
-      db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
-        VALUES (?,?,?,?,?,?)`).run(annBk.room_id, m.id, hkTaskName, today(),
-        `媽咪 ${m.name}／${annBk.room_name}房／入住 ${annBk.check_in}／出住 ${annOut}／哺乳衣 ${ann.announce_bra || '—'}`,
-        req.session.user.id);
-    }
+    upsertPrepTask(annBk.room_id, m.id, hkTaskName,
+      `媽咪 ${m.name}／${annBk.room_name}房／入住 ${annBk.check_in}／出住 ${annOut}／哺乳衣 ${ann.announce_bra || '—'}`,
+      req.session.user.id);
     // 膳食管理：自入住日午餐起至（最末段）出住日早餐止，逐日自動帶入餐別（多段住期整段鋪滿）
     if (ann.announce_meal && ann.announce_meal !== '不需供餐') {
       const mealNote = [ann.announce_diet_type, ann.announce_taboos ? `禁忌：${ann.announce_taboos}` : '']
@@ -5342,6 +5338,25 @@ function moveHousekeepingPrepTasks(motherId, oldRoomId, oldRoomName, newRoomId, 
         String(t.note || '').split(`${oldRoomName}房`).join(`${newRoomName}房`), t.id);
   }
 }
+// 建立／合併「請備房」房務任務：同一位媽媽已有同名待處理任務時不重複建立，
+// 但把新的說明併入備註（例如轉房先建了任務，之後寶寶報喜要補上哺乳衣尺寸與住期，
+// 反之亦然），避免其中一邊的資訊被整段丟棄。
+function upsertPrepTask(roomId, motherId, taskName, note, userId) {
+  const cur = db.prepare(`SELECT id, note FROM housekeeping_logs
+    WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`).get(motherId, taskName);
+  if (!cur) {
+    db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
+      VALUES (?,?,?,?,?,?)`).run(roomId, motherId, taskName, today(), String(note || '').slice(0, 500), userId);
+    return { created: true, merged: false };
+  }
+  const prev = String(cur.note || '').trim();
+  const add = String(note || '').trim();
+  if (!add || prev.includes(add)) return { created: false, merged: false };
+  const merged = (prev ? `${add}｜${prev}` : add).slice(0, 500);
+  db.prepare('UPDATE housekeeping_logs SET note = ? WHERE id = ?').run(merged, cur.id);
+  return { created: false, merged: true };
+}
+
 // 訂金溢收提示：已收訂金 vs 新合約總額 10%
 function depositOverHint(motherId) {
   const dep = db.prepare(`SELECT COALESCE(SUM(deposit),0) t FROM bookings WHERE mother_id = ? AND status != 'cancelled'`).get(motherId).t;
@@ -8409,15 +8424,10 @@ app.post('/api/bookings/:id/change-stay', requireStaff, (req, res) => {
     // 帳務隨住客走：收款與加購移到新段（收費帳務／退費試算以新段為現行帳；前段應收由接續鏈自動併入）
     db.prepare('UPDATE payments SET booking_id = ? WHERE booking_id = ?').run(info.lastInsertRowid, bk.id);
     db.prepare('UPDATE charge_items SET booking_id = ? WHERE booking_id = ?').run(info.lastInsertRowid, bk.id);
-    // 房務：新房生效日前請備房（重複報喜同名待處理任務不重建）
+    // 房務：新房生效日前請備房（同名待處理任務不重建，說明併入備註）
     const mmdd = effectiveDate.slice(5).replace('-', '');
-    const prepTask = `${newRoom.name}請備房${mmdd}`;
-    if (!db.prepare(`SELECT 1 FROM housekeeping_logs WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`)
-      .get(bk.mother_id, prepTask)) {
-      db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
-        VALUES (?,?,?,?,?,?)`).run(newRoom.id, bk.mother_id, prepTask, today(),
-        `入住中期間變更：${bk.mother_name} ${effectiveDate} 自${bk.room_name}房換入`, req.session.user.id);
-    }
+    upsertPrepTask(newRoom.id, bk.mother_id, `${newRoom.name}請備房${mmdd}`,
+      `入住中期間變更：${bk.mother_name} ${effectiveDate} 自${bk.room_name}房換入`, req.session.user.id);
     // 合約明細改為兩筆：找到對應原房型明細者拆為前後段；找不到則不動明細、僅記稽核
     const cc = db.prepare("SELECT items FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id);
     let itemNote = '明細無對應原房型項目，未自動改寫';
@@ -8574,13 +8584,8 @@ app.post('/api/bookings/:id/transfer', requireStaff, (req, res) => {
         .run(bk.room_id, bk.mother_id, `${bk.room_name}退房清潔`, transferDate,
           `入住後轉房：${bk.mother_name} ${transferDate} 換至${newRoom.name}房`, req.session.user.id);
       const mmdd = transferDate.slice(5).replace('-', '');
-      const prepTask = `${newRoom.name}請備房${mmdd}`;
-      if (!db.prepare(`SELECT 1 FROM housekeeping_logs WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`)
-        .get(bk.mother_id, prepTask)) {
-        db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
-          VALUES (?,?,?,?,?,?)`).run(newRoom.id, bk.mother_id, prepTask, today(),
-          `入住後轉房：${bk.mother_name} ${transferDate} 自${bk.room_name}房換入`, req.session.user.id);
-      }
+      upsertPrepTask(newRoom.id, bk.mother_id, `${newRoom.name}請備房${mmdd}`,
+        `入住後轉房：${bk.mother_name} ${transferDate} 自${bk.room_name}房換入`, req.session.user.id);
     }
     logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id,
       summary: `${bk.status === 'reserved' ? '預定期間轉房' : '入住後轉房'}：${bk.room_name}→${newRoom.name}房、轉房日 ${transferDate}` +
