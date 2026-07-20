@@ -1518,6 +1518,7 @@ async function viewResidents() {
     if (occ && occ.pending_tasks > 0) states.push('has_tasks');
     if (occ && occ.need_count > 0) states.push('has_needs');
     if (occ && occ.meal_swap_count > 0) states.push('has_meal_swap');
+    if ((r.pending_closures || []).length) states.push('pending_closure');
     const nextDue = occ && next && next.check_in <= data.date;
     if (nextDue) states.push('due_in');
     // 家屬傳送新訊息提示（護理留言／換餐申請）
@@ -1571,6 +1572,12 @@ async function viewResidents() {
         ? `<button class="btn small" style="background:var(--accent)" data-checkout-done="${occ.booking_id}" data-room="${esc(r.name)}" data-mom="${esc(occ.mother_name)}">退房完成</button>`
         : `<button class="btn small secondary" disabled title="未到退房日（${esc(occ.check_out)}）00:00，暫不可辦理" style="opacity:.55;cursor:not-allowed">退房完成</button>`
     ].filter(Boolean).join('') : (canAccess('#/bed-planning') ? '<a class="btn small secondary" href="#/bed-planning">排床</a>' : '');
+    // 已退房尚未辦產婦結案：住客管理同樣看得到（僅提示，退房已完成故不再有退房完成鈕）
+    const pendBlock = (r.pending_closures || []).map(p => `
+      <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
+        <div class="rs-kv"><span><b>${esc(p.mother_name)}</b> <span class="badge yellow">已退房・待產婦結案</span></span>
+          <span>實際退房 ${esc(p.actual_check_out || p.check_out)}</span></div>
+      </div>`).join('');
     return `
       <div class="room-card ${r.state}" data-state="${states.join(' ')}">
         <div class="row between" style="align-items:flex-start">
@@ -1580,6 +1587,7 @@ async function viewResidents() {
         </div>
         ${body}${nextLine}
         ${actions ? `<div class="row" style="gap:6px;margin-top:10px">${actions}</div>` : ''}
+        ${pendBlock}
       </div>`;
   }).join('');
   // 媽媽／寶寶資料管理卡片（收合區塊；左側色條依狀態）
@@ -7406,6 +7414,7 @@ async function viewMotherRooms() {
     const states = [r.state];
     if (occ && occ.pending_tasks > 0) states.push('has_tasks');
     if (occ && occ.need_count > 0) states.push('has_needs');
+    if ((r.pending_closures || []).length) states.push('pending_closure');
     // 前一位尚未退房、下一筆今日（含逾期）應入住：也列入「今日入住」名單
     const nextDue = occ && next && next.check_in <= data.date;
     if (nextDue) states.push('due_in');
@@ -7442,17 +7451,26 @@ async function viewMotherRooms() {
     }
     const nextLine = occ && next
       ? `<div class="rs-next" ${nextDue ? 'style="color:var(--warn);font-weight:600"' : ''}>${nextDue ? '今日應入住' : '下一筆'}：${esc(next.mother_name)}　${esc(next.check_in)} 入住</div>` : '';
+    // 護理作業對象：在住者優先；空房但今日應入住者，同樣給整組護理按鈕（當日即需建檔／評估）
+    const sub = occ || (r.state === 'due_in' && next ? { mother_id: next.mother_id, check_out: next.check_out, closed: 0 } : null);
     const actions = [
-      occ && canAccess('#/mother-nursing') ? `<a class="btn small" href="#/mother-nursing?m=${occ.mother_id}">媽媽護理</a>` : '',
-      occ && canAccess('#/mother-intake') ? `<a class="btn small" href="#/mother-intake?m=${occ.mother_id}">入住評估表</a>` : '',
-      occ && canAccess('#/mother-doctor') ? `<a class="btn small" href="#/mother-doctor?m=${occ.mother_id}">醫師巡診</a>` : '',
-      occ && canAccess('#/mother-handover') ? `<a class="btn small" href="#/mother-handover?m=${occ.mother_id}">產婦交班單</a>` : '',
-      occ && canAccess('#/mother-guidance') ? `<a class="btn small" href="#/mother-guidance?m=${occ.mother_id}">護理指導</a>` : '',
-      occ && canAccess('#/mother-close') ? (occ.closed || occ.check_out <= data.date
-        ? `<a class="btn small ${occ.closed ? 'secondary' : ''}" href="#/mother-close?m=${occ.mother_id}">產婦結案${occ.closed ? ' ✓' : ''}</a>`
-        : `<button class="btn small secondary" disabled title="未到退房日（${esc(occ.check_out)}）00:00，暫不可結案" style="opacity:.55;cursor:not-allowed">產婦結案</button>`) : '',
-      !occ && canAccess('#/rooms') ? `<a class="btn small secondary" href="#/rooms">訂房管理</a>` : ''
+      sub && canAccess('#/mother-nursing') ? `<a class="btn small" href="#/mother-nursing?m=${sub.mother_id}">媽媽護理</a>` : '',
+      sub && canAccess('#/mother-intake') ? `<a class="btn small" href="#/mother-intake?m=${sub.mother_id}">入住評估表</a>` : '',
+      sub && canAccess('#/mother-doctor') ? `<a class="btn small" href="#/mother-doctor?m=${sub.mother_id}">醫師巡診</a>` : '',
+      sub && canAccess('#/mother-handover') ? `<a class="btn small" href="#/mother-handover?m=${sub.mother_id}">產婦交班單</a>` : '',
+      sub && canAccess('#/mother-guidance') ? `<a class="btn small" href="#/mother-guidance?m=${sub.mother_id}">護理指導</a>` : '',
+      sub && canAccess('#/mother-close') ? (sub.closed || sub.check_out <= data.date
+        ? `<a class="btn small ${sub.closed ? 'secondary' : ''}" href="#/mother-close?m=${sub.mother_id}">產婦結案${sub.closed ? ' ✓' : ''}</a>`
+        : `<button class="btn small secondary" disabled title="未到退房日（${esc(sub.check_out)}）00:00，暫不可結案" style="opacity:.55;cursor:not-allowed">產婦結案</button>`) : '',
+      !sub && canAccess('#/rooms') ? `<a class="btn small secondary" href="#/rooms">訂房管理</a>` : ''
     ].filter(Boolean).join('');
+    // 已退房尚未辦產婦結案：留在原房號、獨立區塊（不影響房態，退房完成與結案互不連動）
+    const pendBlock = (r.pending_closures || []).map(p => `
+      <div class="rs-pending" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
+        <div class="rs-kv"><span><b>${esc(p.mother_name)}</b> <span class="badge yellow">已退房・待結案</span></span>
+          <span>住期 ${esc(p.check_in)} ~ ${esc(p.check_out)}${p.actual_check_out ? `　實際退房 ${esc(p.actual_check_out)}` : ''}</span></div>
+        ${canAccess('#/mother-close') ? `<div class="row" style="gap:6px;margin-top:6px"><a class="btn small" href="#/mother-close?m=${p.mother_id}">產婦結案</a></div>` : ''}
+      </div>`).join('');
     return `
       <div class="room-card ${r.state}" data-state="${states.join(' ')}">
         <div class="row between" style="align-items:flex-start">
@@ -7461,6 +7479,7 @@ async function viewMotherRooms() {
         </div>
         ${body}${nextLine}
         ${actions ? `<div class="row" style="gap:6px;margin-top:10px">${actions}</div>` : ''}
+        ${pendBlock}
       </div>`;
   }).join('');
   main().innerHTML = `
@@ -7470,6 +7489,7 @@ async function viewMotherRooms() {
       <div class="stat"><div class="num">${st.due_out}</div><div class="label">應退房</div></div>
       <div class="stat"><div class="num">${st.due_in}</div><div class="label">今日入住</div></div>
       <div class="stat"><div class="num" ${st.needs ? 'style="color:var(--danger)"' : ''}>${st.needs}</div><div class="label">有護理需求</div></div>
+      <div class="stat"><div class="num" ${st.pending_closure ? 'style="color:var(--warn)"' : ''}>${st.pending_closure || 0}</div><div class="label">已退房待結案</div></div>
     </div>
     <div id="nr-banner"></div>
     <div class="card">
@@ -7481,6 +7501,7 @@ async function viewMotherRooms() {
           <button class="btn small secondary" data-board-flt="due_in">今日入住</button>
           <button class="btn small secondary" data-board-flt="vacant">空房</button>
           <button class="btn small secondary" data-board-flt="has_needs">有護理需求</button>
+          <button class="btn small secondary" data-board-flt="pending_closure">已退房待結案</button>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
           ${canAccess('#/rounds-list') ? '<a class="btn small secondary" href="#/rounds-list">醫師查房清單</a>' : ''}
@@ -7790,6 +7811,7 @@ async function viewBabyRooms() {
     const hasAlert = feedOver || tempAbn || jaunAbn;
     const states = [b.location];
     if (hasAlert) states.push('alert');
+    if (b.pending_closure) states.push('pending_closure');
     const feedText = b.last_feed_at
       ? `${fmtTime(b.last_feed_at)}（${sinceText(b.last_feed_at)}）${esc(b.last_feed_method || '')}${b.last_feed_ml ? ` ${b.last_feed_ml}ml` : ''}`
       : '今日尚無紀錄';
@@ -7805,7 +7827,8 @@ async function viewBabyRooms() {
         </div>
         <div class="bbc-body loc-${b.location}">
           <div style="font-weight:700;font-size:1.02rem">${esc(b.mother_name)}${childWord}
-            ${b.closed ? ' <span class="badge gray">已結案</span>' : ''}</div>
+            ${b.closed ? ' <span class="badge gray">已結案</span>' : ''}
+            ${b.pending_closure ? ' <span class="badge yellow">已退房・待結案</span>' : ''}</div>
           <div class="rs-kv" style="margin-top:6px">
             <span>小名：${esc(b.name)}${b.age_days != null ? `　<small style="color:var(--muted)">出生 ${b.age_days} 天</small>` : ''}</span>
             <span class="${feedOver ? 'rs-alert' : ''}">最後餵食：${feedText}${feedOver ? `　⚠ 已逾 ${feedGap} 小時` : ''}</span>

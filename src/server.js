@@ -1544,44 +1544,20 @@ app.put('/api/mothers/:id/closure', requireStaff, (req, res) => {
     db.prepare(`INSERT INTO mother_closures (mother_id, booking_id, nurse_id, close_date, close_time, data, note)
       VALUES (?,?,?,?,?,?,?)`).run(mother.id, stayRoot, req.session.user.id, date, time, json, note);
   }
-  // 儲存結案即代表已退房：同步退房入住中的訂房，媽媽房況改顯示空房，並自動建立清潔任務（與客服退房完成一致）
-  const bk = db.prepare(`SELECT bk.id, bk.room_id, bk.check_out, r.name AS room_name
-    FROM bookings bk JOIN rooms r ON r.id = bk.room_id
-    WHERE bk.mother_id = ? AND bk.status = 'checked_in'
-    ORDER BY bk.check_in DESC LIMIT 1`).get(mother.id);
-  if (bk) {
-    db.prepare(`UPDATE bookings SET status = 'checked_out', actual_check_out = ? WHERE id = ?`).run(date, bk.id);
-    db.prepare(`UPDATE mothers SET status = 'checked_out' WHERE id = ?`).run(mother.id);
-    const taskName = `${bk.room_name}房已出住`;
-    const dupTask = db.prepare(`SELECT 1 FROM housekeeping_logs
-      WHERE mother_id = ? AND task = ? AND status = 'pending' LIMIT 1`).get(mother.id, taskName);
-    if (!dupTask) {
-      db.prepare(`INSERT INTO housekeeping_logs (room_id, mother_id, task, scheduled_for, note, created_by)
-        VALUES (?,?,?,?,?,?)`).run(bk.room_id, mother.id, taskName, date, '產婦結案自動建立', req.session.user.id);
-    }
-    pushCheckoutSurvey(mother.id); // 退房時自動推滿意度問卷
-  }
-  logAudit(req, { action: cur ? 'update' : 'create', entity: 'mother_closures', entity_id: mother.id, summary: `產婦結案${bk ? '（同步退房）' : ''}` });
+  // 產婦結案為護理端獨立作業：不動訂房／媽媽狀態、不建清潔任務、不推問卷。
+  // 退房（訂房轉已退房、房間釋出、清潔任務、滿意度問卷）一律由住客管理「退房完成」負責，
+  // 三者（退房完成／產婦結案／產後嬰兒結案）各自獨立完成，互不連動、互不阻擋。
+  logAudit(req, { action: cur ? 'update' : 'create', entity: 'mother_closures', entity_id: mother.id, summary: '產婦結案' });
   res.json({ ok: true });
 });
 
-// 解除結案（管理員）；若退房是結案時自動產生的（實際退房日＝結案日），一併恢復為入住中
+// 解除結案（管理員）：只解除結案紀錄，不動訂房／房況（退房與否由住客管理「退房完成」決定）
 app.delete('/api/mother-closures/:motherId', requireAdmin, (req, res) => {
   // 僅解除當前住期的結案，不影響前一胎的歷史結案
   const cl = closureForMother(req.params.motherId);
   if (cl) db.prepare('DELETE FROM mother_closures WHERE id = ?').run(cl.id);
-  let restored = false;
-  if (cl) {
-    const bk = db.prepare(`SELECT id, actual_check_out FROM bookings
-      WHERE mother_id = ? AND status = 'checked_out' ORDER BY check_in DESC LIMIT 1`).get(req.params.motherId);
-    if (bk && bk.actual_check_out === cl.close_date) {
-      db.prepare(`UPDATE bookings SET status = 'checked_in', actual_check_out = '' WHERE id = ?`).run(bk.id);
-      db.prepare(`UPDATE mothers SET status = 'checked_in' WHERE id = ?`).run(req.params.motherId);
-      restored = true;
-    }
-  }
-  logAudit(req, { action: 'delete', entity: 'mother_closures', entity_id: req.params.motherId, summary: `解除產婦結案${restored ? '（恢復入住中）' : ''}` });
-  res.json({ ok: true, restored });
+  logAudit(req, { action: 'delete', entity: 'mother_closures', entity_id: req.params.motherId, summary: '解除產婦結案' });
+  res.json({ ok: true, restored: false });
 });
 
 // 退房完成（客服部）：確認退房手續完成後退房、房況轉空房，並自動建立清潔任務
@@ -7766,6 +7742,18 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     oc.closed = db.prepare(`SELECT COUNT(*) c FROM mother_closures
       WHERE mother_id = ? AND booking_id IN (?, 0)`).get(oc.mother_id, chainRootIdOf(oc.booking_id)).c;
   }
+  // 已辦「退房完成」但尚未辦「產婦結案」者：仍留在原房號供護理端結案（三者互不連動）
+  // 只取近 60 天內退房的，避免歷史資料長期佔用看板
+  const pendingClosures = db.prepare(`
+    SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out, bk.actual_check_out,
+           m.id AS mother_id, m.name AS mother_name, m.phone
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+    WHERE bk.status = 'checked_out' AND bk.actual_check_out >= date(?, '-60 day')
+    ORDER BY bk.actual_check_out DESC`).all(d)
+    .filter(p => !db.prepare(`SELECT COUNT(*) c FROM mother_closures
+      WHERE mother_id = ? AND booking_id IN (?, 0)`).get(p.mother_id, chainRootIdOf(p.booking_id)).c)
+    // 同一位媽媽只留最近一次退房
+    .filter((p, i, arr) => arr.findIndex(x => x.mother_id === p.mother_id) === i);
   // 每房「今日應到」的預約（房況表不顯示未來預約，只顯示當日入住；未來預約請看 7 日內入住／實際入住床表）
   const upcoming = db.prepare(`
     SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out,
@@ -7792,7 +7780,9 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     if (occ) state = occ.check_out <= d ? 'due_out' : 'occupied'; // 今日（含逾期）應退房
     else if (next && next.check_in <= d) state = 'due_in';        // 今日應入住
     else if (next) state = 'reserved';
-    return { ...r, state, occupant: occ, next_booking: next };
+    // 已退房待產婦結案（不影響房態／佔房統計，僅供護理端在原房號完成結案）
+    const pending = pendingClosures.filter(p => p.room_id === r.id);
+    return { ...r, state, occupant: occ, next_booking: next, pending_closures: pending };
   });
   const stats = {
     total: list.length,
@@ -7802,7 +7792,8 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     due_in: list.filter(x => x.state === 'due_in' ||
       (x.occupant && x.next_booking && x.next_booking.check_in <= d)).length,
     vacant: list.filter(x => x.state === 'vacant' || x.state === 'reserved').length,
-    needs: list.filter(x => x.occupant && x.occupant.need_count > 0).length
+    needs: list.filter(x => x.occupant && x.occupant.need_count > 0).length,
+    pending_closure: pendingClosures.length   // 已退房尚未辦產婦結案
   };
   res.json({ date: d, stats, rooms: list });
 });
@@ -7898,10 +7889,16 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
   const d = today();
   const rows = db.prepare(`
     SELECT b.id, b.name, b.gender, b.birth_date, b.birth_weight_g, b.location, b.notes,
-           m.id AS mother_id, m.name AS mother_name,
-           (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
-             WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
-             ORDER BY bk.check_in DESC LIMIT 1) AS room_name,
+           m.id AS mother_id, m.name AS mother_name, m.status AS mother_status,
+           -- 房號：優先取當期住房（在住／今日應入住的預約），其次取最近一次已退房（待結案用）
+           COALESCE(
+             (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+               WHERE bk.mother_id = m.id AND bk.status != 'cancelled'
+                 AND bk.check_in <= @d AND bk.check_out > @d
+               ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1),
+             (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+               WHERE bk.mother_id = m.id AND bk.status = 'checked_out'
+               ORDER BY bk.check_in DESC LIMIT 1)) AS room_name,
            (SELECT MAX(ll.moved_at) FROM baby_location_logs ll WHERE ll.baby_id = b.id) AS moved_at,
            (SELECT MAX(recorded_at) FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding') AS last_feed_at,
            (SELECT feed_method FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding'
@@ -7909,13 +7906,13 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
            (SELECT amount_ml FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding'
              ORDER BY recorded_at DESC LIMIT 1) AS last_feed_ml,
            (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'feeding'
-             AND date(recorded_at) = ?) AS feed_count,
+             AND date(recorded_at) = @d) AS feed_count,
            (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'diaper'
-             AND diaper_kind = '濕' AND date(recorded_at) = ?) AS diaper_wet,
+             AND diaper_kind = '濕' AND date(recorded_at) = @d) AS diaper_wet,
            (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'diaper'
-             AND diaper_kind = '便' AND date(recorded_at) = ?) AS diaper_stool,
+             AND diaper_kind = '便' AND date(recorded_at) = @d) AS diaper_stool,
            (SELECT COUNT(*) FROM baby_records WHERE baby_id = b.id AND record_type = 'bath'
-             AND date(recorded_at) = ?) AS bath_done,
+             AND date(recorded_at) = @d) AS bath_done,
            (SELECT value_num FROM baby_records WHERE baby_id = b.id AND record_type = 'temperature'
              ORDER BY recorded_at DESC LIMIT 1) AS last_temp,
            (SELECT recorded_at FROM baby_records WHERE baby_id = b.id AND record_type = 'temperature'
@@ -7929,14 +7926,25 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
            (SELECT a.assess_date || ' ' || a.assess_time FROM baby_nursing_assessments a WHERE a.baby_id = b.id
              ORDER BY a.assess_date DESC, a.assess_time DESC, a.id DESC LIMIT 1) AS last_assess_at,
            (SELECT COUNT(*) FROM baby_closures c WHERE c.baby_id = b.id) AS closed,
-           (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
-             ORDER BY bk.check_in DESC LIMIT 1) AS check_out
+           -- 退房日取當期住房（在住或今日應入住的預約），供結案按鈕的日期閘門
+           (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status != 'cancelled'
+             AND bk.check_in <= @d AND bk.check_out > @d
+             ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS check_out,
+           (SELECT MAX(bk.actual_check_out) FROM bookings bk
+             WHERE bk.mother_id = m.id AND bk.status = 'checked_out') AS mother_left_on
     FROM babies b JOIN mothers m ON m.id = b.mother_id
     WHERE m.status = 'checked_in'
        OR EXISTS (SELECT 1 FROM bookings bk JOIN rooms r ON r.id = bk.room_id
                   WHERE bk.mother_id = m.id AND r.room_type = '托嬰' AND bk.status != 'cancelled'
-                    AND bk.check_in <= ? AND bk.check_out > ?)
-    ORDER BY b.location, m.name, b.name`).all(d, d, d, d, d, d);
+                    AND bk.check_in <= @d AND bk.check_out > @d)
+       -- 今日應入住（媽媽尚為預約）：寶寶卡片同步出現，護理端當日即可建檔／評估
+       OR EXISTS (SELECT 1 FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'reserved'
+                  AND bk.check_out > @d AND COALESCE(NULLIF(bk.baby_check_in, ''), bk.check_in) <= @d)
+       -- 媽媽已退房但寶寶尚未辦「產後嬰兒結案」：仍留在原房號供護理端結案（近 60 天內退房者）
+       OR (NOT EXISTS (SELECT 1 FROM baby_closures c WHERE c.baby_id = b.id)
+           AND EXISTS (SELECT 1 FROM bookings bk WHERE bk.mother_id = m.id
+                       AND bk.status = 'checked_out' AND bk.actual_check_out >= date(@d, '-60 day')))
+    ORDER BY b.location, m.name, b.name`).all({ d });
   // 托嬰：媽媽退房後寶寶續留館。托嬰起始日起自動轉為「托嬰」狀態、房號顯示「托嬰」
   const dcStmt = db.prepare(`SELECT bk.check_in, bk.check_out FROM bookings bk JOIN rooms r ON r.id = bk.room_id
     WHERE bk.mother_id = ? AND r.room_type = '托嬰' AND bk.status != 'cancelled'
@@ -7947,6 +7955,8 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
     try { b.cord = JSON.parse(b.last_assess_data || '{}').cord || ''; } catch (e) { b.cord = ''; }
     delete b.last_assess_data;
     const dc = dcStmt.get(b.mother_id, d, d);
+    // 媽媽已退房、非托嬰、寶寶尚未結案 → 標示「已退房・待結案」（護理端仍可在原房號辦嬰兒結案）
+    b.pending_closure = !b.closed && !dc && b.mother_status === 'checked_out' && !!b.mother_left_on ? 1 : 0;
     if (dc) {
       b.room_name = '托嬰';
       b.daycare_start = dc.check_in;
@@ -7989,6 +7999,7 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
       hospital: rows.filter(b => b.location === 'hospital').length,
       daycare: rows.filter(b => b.location === 'daycare').length,
       due_in: dueIn.length,
+      pending_closure: rows.filter(b => b.pending_closure).length,  // 已退房尚未辦產後嬰兒結案
       alerts: alerts.length
     },
     babies: rows, due_in: dueIn, alerts
