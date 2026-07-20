@@ -2491,7 +2491,7 @@ async function viewBilling() {
               <td data-label="未結餘額">${b.balance > 0
                 ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span><br><small>合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}</small>`
                 : '<span class="badge green">已結清</span>'}</td>
-              <td data-label="操作"><button class="btn small secondary" data-detail="${b.id}">收費明細</button>${b.balance > 0 ? ` <button class="btn small" data-notify="${b.id}">通知繳費</button>` : ''}</td>
+              <td data-label="操作"><button class="btn small secondary" data-detail="${b.id}">收費明細</button> <button class="btn small secondary" data-addpay="${b.id}">新增繳款</button>${b.balance > 0 ? ` <button class="btn small" data-notify="${b.id}">通知繳費</button>` : ''}</td>
             </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚無訂房資料</div></td></tr>'}</tbody>
         </table>
       </div>
@@ -2502,6 +2502,13 @@ async function viewBilling() {
     btn.onclick = () => {
       $('#modal').onclose = () => { $('#modal').onclose = null; viewBilling(); };
       openBillingDetail(btn.dataset.detail);
+    };
+  });
+  // 新增繳款：開同一個收費明細畫面，直接捲到繳費紀錄表單
+  main().querySelectorAll('[data-addpay]').forEach(btn => {
+    btn.onclick = () => {
+      $('#modal').onclose = () => { $('#modal').onclose = null; viewBilling(); };
+      openBillingDetail(btn.dataset.addpay, true);
     };
   });
   main().querySelectorAll('[data-notify]').forEach(btn => btn.onclick = async () => {
@@ -2600,7 +2607,7 @@ function printCharges(b) {
   win.document.close();
 }
 
-async function openBillingDetail(bookingId) {
+async function openBillingDetail(bookingId, focusPay) {
   const b = await api(`/bookings/${bookingId}/billing`);
   const isAdmin = currentUser.role === 'admin';
   const chargeRows = b.charges.length ? b.charges.map(c => `
@@ -2740,6 +2747,11 @@ async function openBillingDetail(bookingId) {
         <span class="error-msg" id="py-err"></span>
       </div>
     </div>`, body => {
+    // 由「新增繳款」開啟時：捲動到繳費紀錄表單並聚焦金額欄，方便直接輸入
+    if (focusPay) setTimeout(() => {
+      const amt = body.querySelector('#py-amount');
+      if (amt) { amt.scrollIntoView({ block: 'center', behavior: 'smooth' }); amt.focus(); }
+    }, 60);
     // 線上金流：已設定才顯示按鈕
     api('/pay/config').then(cfg => {
       if (!cfg.enabled) return;
