@@ -8257,14 +8257,31 @@ function openMotherScale(ctx, kind, onSaved) {
   openScale(kind);
 }
 
+// 護理／評估作業的媽媽名單：與房況同口徑（入住中＋今日應入住＋已退房待結案），依房號排序。
+// 另保證從房況/連結帶入的指定媽媽（?m=）一定在名單內，避免「點入卻不是該客戶」而 fallback 到第一位。
+async function nursingMotherList(wantId) {
+  let rooms = [];
+  try { rooms = (await api('/room-status/mothers')).rooms || []; } catch (e) { rooms = []; }
+  const seen = new Set(), list = [];
+  const push = (id, name, room) => { if (id && !seen.has(id)) { seen.add(id); list.push({ id, name, room_name: room || '' }); } };
+  for (const r of rooms) {
+    if (r.occupant) push(r.occupant.mother_id, r.occupant.mother_name, r.name);
+    else if (r.state === 'due_in' && r.next_booking) push(r.next_booking.mother_id, r.next_booking.mother_name, r.name);
+    for (const p of (r.pending_closures || [])) push(p.mother_id, p.mother_name, r.name);   // 已退房待結案仍可補記錄／結案
+  }
+  if (wantId && !seen.has(wantId)) {
+    try { const m = (await api('/mothers')).find(x => x.id === wantId); if (m) push(m.id, m.name, m.room_name || ''); } catch (e) { /* */ }
+  }
+  return list;
+}
+
 async function viewMotherNursing() {
-  const all = await api('/mothers');
-  const mothers = all.filter(m => m.status === 'checked_in');
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
   if (!mothers.length) {
     main().innerHTML = '<div class="page-title">媽媽護理</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
     return;
   }
-  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
   const { mother, medical_no, rows, problems, scales, reminders, today_photo, baby_info, babies } = await api(`/mothers/${momId}/nursing`);
   const now = new Date();
@@ -8659,13 +8676,12 @@ const MIA_MULTI = {
 };
 
 async function viewMotherIntake() {
-  const all = await api('/mothers');
-  const mothers = all.filter(m => m.status === 'checked_in');
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
   if (!mothers.length) {
     main().innerHTML = '<div class="page-title">產婦入住護理評估表</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
     return;
   }
-  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
   const { mother, medical_no, record, scales } = await api(`/mothers/${momId}/intake`);
   const d = (record && record.data) || {};
@@ -9757,13 +9773,12 @@ function mdvSel(id, opts) {
 }
 
 async function viewMotherDoctor() {
-  const all = await api('/mothers');
-  const mothers = all.filter(m => m.status === 'checked_in');
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
   if (!mothers.length) {
     main().innerHTML = '<div class="page-title">醫師巡診</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
     return;
   }
-  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
   const { mother, rows } = await api(`/mothers/${momId}/doctor-visits`);
   const now = new Date();
@@ -10159,13 +10174,12 @@ async function viewBabyHandover() {
 
 /* ---------- 產婦交班單 ---------- */
 async function viewMotherHandover() {
-  const all = await api('/mothers');
-  const mothers = all.filter(m => m.status === 'checked_in');
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
   if (!mothers.length) {
     main().innerHTML = '<div class="page-title">產婦交班單</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
     return;
   }
-  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
   const { mother, rows, header } = await api(`/mothers/${momId}/handovers`);
   const now = new Date();
@@ -10335,13 +10349,12 @@ async function viewMotherHandover() {
 
 /* ---------- 護理指導（獨立頁；資料與媽媽護理頁共用） ---------- */
 async function viewMotherGuidance() {
-  const all = await api('/mothers');
-  const mothers = all.filter(m => m.status === 'checked_in');
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
   if (!mothers.length) {
     main().innerHTML = '<div class="page-title">護理指導</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
     return;
   }
-  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
   const { mother, guidance, reminders } = await api(`/mothers/${momId}/guidance`);
   const kindLabel = k => k === 'care' ? '產婦衛教指導單' : '母乳哺育評估單';
@@ -10409,14 +10422,9 @@ async function viewMotherGuidance() {
 
 /* ---------- 產婦結案 ---------- */
 async function viewMotherClosure() {
-  const all = await api('/mothers');
-  const mothers = all.filter(m => m.status === 'checked_in');
   const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
-  // 結案存檔即同步退房；已退房媽媽仍可經 ?m= 檢視／修改結案單
-  if (want && !mothers.some(m => m.id === want)) {
-    const extra = all.find(m => m.id === want);
-    if (extra) mothers.unshift(extra);
-  }
+  // 名單與房況同口徑（含入住中／今日應入住／已退房待結案）；指定媽媽必在名單內
+  const mothers = await nursingMotherList(want);
   if (!mothers.length) {
     main().innerHTML = '<div class="page-title">產婦結案</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
     return;
