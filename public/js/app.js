@@ -1722,8 +1722,8 @@ async function viewResidents() {
           </table></div>
           <div style="text-align:right;font-weight:700">合約總額：${Number(ct.total).toLocaleString()} 元</div>` : ''}
         ${cd.note ? `<div>備註：${esc(cd.note)}</div>` : ''}
-        ${canAccess('#/customers') ? '<div class="row mt"><a class="btn small secondary" href="#/customers" data-close-modal>前往客戶管理</a></div>' : ''}
-      </div>` : '<div class="empty">此媽媽尚無合約資料（可至客戶管理建立）</div>',
+        ${canAccess('#/customers') ? `<div class="row mt"><a class="btn small secondary" href="#/customers?m=${b.dataset.contract}" data-close-modal>前往客戶管理</a></div>` : ''}
+      </div>` : `<div class="empty">此媽媽尚無合約資料${canAccess('#/customers') ? `（<a href="#/customers?m=${b.dataset.contract}" data-close-modal>前往客戶管理</a>建立）` : '（可至客戶管理建立）'}</div>`,
     body => body.querySelectorAll('[data-close-modal]').forEach(a => a.onclick = () => closeModal()));
   });
 
