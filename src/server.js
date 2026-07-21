@@ -7829,7 +7829,9 @@ app.get('/api/room-calendar', requireStaff, (req, res) => {
   const start = req.query.start || today();
   const days = Math.min(Math.max(parseInt(req.query.days || '30', 10), 7), 62);
   const end = new Date(new Date(start).getTime() + days * 86400000).toISOString().slice(0, 10);
-  const rooms = db.prepare("SELECT id, name, room_type, price_per_day FROM rooms WHERE active=1 AND room_type != '托嬰' ORDER BY name").all();
+  // 排房情境（include_daycare=1）需在床表看到托嬰房才能排托嬰段；一般房況床表仍排除托嬰
+  const dcCond = req.query.include_daycare ? '' : " AND room_type != '托嬰'";
+  const rooms = db.prepare(`SELECT id, name, room_type, price_per_day FROM rooms WHERE active=1${dcCond} ORDER BY name`).all();
   const bookings = db.prepare(`
     SELECT bk.id, bk.room_id, bk.mother_id, bk.check_in, bk.check_out, bk.actual_check_out, bk.status, bk.notes,
            m.name AS mother_name
