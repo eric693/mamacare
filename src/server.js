@@ -7897,7 +7897,7 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     ORDER BY bk.check_in`).all(d, d);
   // 在住寶寶依媽媽彙總（顯示母嬰同室狀況）
   const babies = db.prepare(`
-    SELECT b.mother_id, b.name, b.location FROM babies b
+    SELECT b.mother_id, b.name, b.gender, b.location FROM babies b
     JOIN mothers m ON m.id = b.mother_id WHERE m.status = 'checked_in'`).all();
   const babiesByMom = {};
   for (const b of babies) (babiesByMom[b.mother_id] = babiesByMom[b.mother_id] || []).push(b);

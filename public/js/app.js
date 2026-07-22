@@ -51,6 +51,8 @@ const MEAL_LABEL = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐' };
 const MEAL_STATUS = { preparing: '備餐中', served: '已出餐', cancelled: '取消' };
 const LOCATION_LABEL = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中', daycare: '托嬰' };
 const LOCATION_BADGE = { nursery: 'teal', rooming: 'purple', isolation: 'yellow', out: 'green', hospital: 'red', daycare: 'gray' };
+// 寶寶稱謂：依性別呈現「之子／之女」（未填性別＝之寶寶），媽媽房況與寶寶房況一致
+function childWord(gender) { return gender === 'female' ? '之女' : gender === 'male' ? '之子' : '之寶寶'; }
 // 寶寶房況卡片圖例顏色（卡身＝狀態；性別不以顏色區別，改以「之子／之女」文字呈現）
 const BABY_LEGEND = [
   ['親子同室', '#d9a6ee'], ['隔離室', '#f6df7a'], ['不在館內', '#9ccc9c'], ['住院中', '#f3b1b1'], ['嬰兒室', '#ffffff']
@@ -1529,7 +1531,7 @@ async function viewResidents() {
     let body = '';
     if (occ) {
       const babyLine = (occ.babies || []).length
-        ? occ.babies.map(b => `${esc(b.name)} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`).join('　')
+        ? occ.babies.map((b, i, arr) => { const same = arr.filter(x => x.gender === b.gender); const suffix = same.length > 1 ? (same.indexOf(b) + 1) : ''; return `${esc(occ.mother_name)}${childWord(b.gender)}${suffix} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`; }).join('　')
         : `<span style="color:var(--muted)">尚未登記</span> <button class="btn small" data-add-baby="${occ.mother_id}" data-mom="${esc(occ.mother_name)}">登記寶寶</button>`;
       body = `
         <div class="rs-name">${esc(occ.mother_name)}${occ.closed ? ' <span class="badge gray">已結案</span>' : ''}<small style="color:var(--muted);font-weight:400">　${esc(occ.phone || '')}</small></div>
@@ -7466,7 +7468,7 @@ async function viewMotherRooms() {
     let body = '';
     if (occ) {
       const babyLine = (occ.babies || []).length
-        ? occ.babies.map(b => `${esc(b.name)} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`).join('　')
+        ? occ.babies.map((b, i, arr) => { const same = arr.filter(x => x.gender === b.gender); const suffix = same.length > 1 ? (same.indexOf(b) + 1) : ''; return `${esc(occ.mother_name)}${childWord(b.gender)}${suffix} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`; }).join('　')
         : `<span style="color:var(--muted)">尚未登記</span> <button class="btn small" data-add-baby="${occ.mother_id}" data-mom="${esc(occ.mother_name)}">登記寶寶</button>`;
       body = `
         <div class="rs-name">${esc(occ.mother_name)}${occ.closed ? ' <span class="badge gray">已結案</span>' : ''}<small style="color:var(--muted);font-weight:400">　${esc(occ.phone || '')}</small></div>
@@ -7871,8 +7873,8 @@ async function viewBabyRooms() {
     const feedText = b.last_feed_at
       ? `${fmtTime(b.last_feed_at)}（${sinceText(b.last_feed_at)}）${esc(b.last_feed_method || '')}${b.last_feed_ml ? ` ${b.last_feed_ml}ml` : ''}`
       : '今日尚無紀錄';
-    // 性別不以顏色區別，改以「（媽媽）之子／之女」文字呈現
-    const childWord = b.gender === 'female' ? '之女' : b.gender === 'male' ? '之子' : '之寶寶';
+    // 性別不以顏色區別，改以「（媽媽）之子／之女」文字呈現（與媽媽房況一致）
+    const cWord = childWord(b.gender);
     // 當日已完成沐浴：卡片標題顯示浴缸圖示
     const bathTag = b.bath_done ? `<span title="今日已完成沐浴" style="display:inline-flex;align-items:center;color:#fff">${BATH_SVG}</span>` : '';
     return `
@@ -7882,7 +7884,7 @@ async function viewBabyRooms() {
           <small style="display:inline-flex;align-items:center;gap:6px">${bathTag}${LOCATION_LABEL[b.location] || '狀態'}</small>
         </div>
         <div class="bbc-body loc-${b.location}">
-          <div style="font-weight:700;font-size:1.02rem">${esc(b.mother_name)}${childWord}
+          <div style="font-weight:700;font-size:1.02rem">${esc(b.mother_name)}${cWord}
             ${b.closed ? ' <span class="badge gray">已結案</span>' : ''}
             ${b.pending_closure ? ' <span class="badge yellow">已退房・待結案</span>' : ''}</div>
           <div class="rs-kv" style="margin-top:6px">
