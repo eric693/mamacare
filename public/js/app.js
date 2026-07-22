@@ -53,6 +53,12 @@ const LOCATION_LABEL = { nursery: '嬰兒室', rooming: '親子同室', isolatio
 const LOCATION_BADGE = { nursery: 'teal', rooming: 'purple', isolation: 'yellow', out: 'green', hospital: 'red', daycare: 'gray' };
 // 寶寶稱謂：依性別呈現「之子／之女」（未填性別＝之寶寶），媽媽房況與寶寶房況一致
 function childWord(gender) { return gender === 'female' ? '之女' : gender === 'male' ? '之子' : '之寶寶'; }
+// 性別符號（♂藍／♀桃紅），未填不顯示；房況／清單一致
+function genderMark(gender) {
+  if (gender === 'male') return ' <span style="color:#3b78c2">♂</span>';
+  if (gender === 'female') return ' <span style="color:var(--accent)">♀</span>';
+  return '';
+}
 // 寶寶房況卡片圖例顏色（卡身＝狀態；性別不以顏色區別，改以「之子／之女」文字呈現）
 const BABY_LEGEND = [
   ['親子同室', '#d9a6ee'], ['隔離室', '#f6df7a'], ['不在館內', '#9ccc9c'], ['住院中', '#f3b1b1'], ['嬰兒室', '#ffffff']
@@ -1531,7 +1537,7 @@ async function viewResidents() {
     let body = '';
     if (occ) {
       const babyLine = (occ.babies || []).length
-        ? occ.babies.map((b, i, arr) => { const same = arr.filter(x => x.gender === b.gender); const suffix = same.length > 1 ? (same.indexOf(b) + 1) : ''; return `${esc(occ.mother_name)}${childWord(b.gender)}${suffix} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`; }).join('　')
+        ? occ.babies.map((b, i, arr) => { const same = arr.filter(x => x.gender === b.gender); const suffix = same.length > 1 ? (same.indexOf(b) + 1) : ''; return `${esc(occ.mother_name)}${childWord(b.gender)}${suffix}${genderMark(b.gender)} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`; }).join('　')
         : `<span style="color:var(--muted)">尚未登記</span> <button class="btn small" data-add-baby="${occ.mother_id}" data-mom="${esc(occ.mother_name)}">登記寶寶</button>`;
       body = `
         <div class="rs-name">${esc(occ.mother_name)}${occ.closed ? ' <span class="badge gray">已結案</span>' : ''}<small style="color:var(--muted);font-weight:400">　${esc(occ.phone || '')}</small></div>
@@ -7468,7 +7474,7 @@ async function viewMotherRooms() {
     let body = '';
     if (occ) {
       const babyLine = (occ.babies || []).length
-        ? occ.babies.map((b, i, arr) => { const same = arr.filter(x => x.gender === b.gender); const suffix = same.length > 1 ? (same.indexOf(b) + 1) : ''; return `${esc(occ.mother_name)}${childWord(b.gender)}${suffix} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`; }).join('　')
+        ? occ.babies.map((b, i, arr) => { const same = arr.filter(x => x.gender === b.gender); const suffix = same.length > 1 ? (same.indexOf(b) + 1) : ''; return `${esc(occ.mother_name)}${childWord(b.gender)}${suffix}${genderMark(b.gender)} <span class="badge ${LOCATION_BADGE[b.location] || 'gray'}" style="font-weight:400">${LOCATION_LABEL[b.location] || '-'}</span>`; }).join('　')
         : `<span style="color:var(--muted)">尚未登記</span> <button class="btn small" data-add-baby="${occ.mother_id}" data-mom="${esc(occ.mother_name)}">登記寶寶</button>`;
       body = `
         <div class="rs-name">${esc(occ.mother_name)}${occ.closed ? ' <span class="badge gray">已結案</span>' : ''}<small style="color:var(--muted);font-weight:400">　${esc(occ.phone || '')}</small></div>
@@ -7884,7 +7890,7 @@ async function viewBabyRooms() {
           <small style="display:inline-flex;align-items:center;gap:6px">${bathTag}${LOCATION_LABEL[b.location] || '狀態'}</small>
         </div>
         <div class="bbc-body loc-${b.location}">
-          <div style="font-weight:700;font-size:1.02rem">${esc(b.mother_name)}${cWord}
+          <div style="font-weight:700;font-size:1.02rem">${esc(b.mother_name)}${cWord}${genderMark(b.gender)}
             ${b.closed ? ' <span class="badge gray">已結案</span>' : ''}
             ${b.pending_closure ? ' <span class="badge yellow">已退房・待結案</span>' : ''}</div>
           <div class="rs-kv" style="margin-top:6px">
