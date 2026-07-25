@@ -11171,6 +11171,7 @@ async function viewCustomers() {
         phone_home: gv('#ct-phhome'), phone_company: gv('#ct-phcomp'),
         mother_email: gv('#ct-email'), mother_address: gv('#ct-addr'),
         book_date: gv('#ct-bookdate'), review_deadline: gv('#ct-review'), csection_date: gv('#ct-csec'),
+        review_start_basis: gv('#ct-rsbasis'), review_start_date: gv('#ct-rsdate'),
         gift_days: gv('#ct-giftdays'), diet_type: gv('#ct-diettype'), meal_plan: gv('#ct-mealplan'),
         deposit_method: gv('#ct-depmethod'), referrer: gv('#ct-referrer'),
         receptionist: gv('#ct-recept'), reviewer: gv('#ct-reviewer'),
@@ -11227,11 +11228,11 @@ async function viewCustomers() {
       $q('#ct-expout').value = new Date(new Date(expIn.value + 'T00:00:00Z').getTime() + days * 86400000)
         .toISOString().slice(0, 10);
     };
-    // 訂房日期改變 → 契約審閱截止日自動帶入（訂房日＋14 天，法定審閱期）
-    const bookDate = $q('#ct-bookdate');
-    if (bookDate) bookDate.onchange = () => {
-      if (!bookDate.value) return;
-      $q('#ct-review').value = new Date(new Date(bookDate.value + 'T00:00:00Z').getTime() + 14 * 86400000)
+    // 雙方約定審閱起始日改變 → 審閱截止日自動帶入（起始日＋14 天，法定審閱期）
+    const rsDate = $q('#ct-rsdate');
+    if (rsDate) rsDate.onchange = () => {
+      if (!rsDate.value) return;
+      $q('#ct-review').value = new Date(new Date(rsDate.value + 'T00:00:00Z').getTime() + 14 * 86400000)
         .toISOString().slice(0, 10);
     };
     // 寶寶報喜：實際生產醫院／日期／方式皆填寫後才可按下；先存檔再開啟填寫視窗（入住通知單）
@@ -12213,7 +12214,11 @@ async function viewCustomers() {
           <div class="field"><label>電子郵件</label><input id="ct-email" maxlength="100" value="${esc(cd.mother_email || p.email || '')}"></div>
           <div class="field full"><label>通訊地址</label><input id="ct-addr" maxlength="120" value="${esc(cd.mother_address || '')}"></div>
           <div class="field"><label>訂房日期</label><input type="date" id="ct-bookdate" value="${esc(cd.book_date || cd.sign_date || '')}"></div>
-          <div class="field"><label>契約審閱截止日<small>（訂房日 +14 天，可改）</small></label><input type="date" id="ct-review" value="${esc(cd.review_deadline || '')}"></div>
+          <div class="field"><label>審閱起始日基準</label>
+            <select id="ct-rsbasis">${['訂金入帳日', '雙方約定', '簽署日自動帶入'].map(o =>
+              `<option ${(cd.review_start_basis || '訂金入帳日') === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>雙方約定審閱起始日<small>（基準選「雙方約定」時使用）</small></label><input type="date" id="ct-rsdate" value="${esc(cd.review_start_date || '')}"></div>
+          <div class="field"><label>契約審閱截止日<small>（起始日 +14 天；留空則自動推算）</small></label><input type="date" id="ct-review" value="${esc(cd.review_deadline || '')}"></div>
           <div class="field"><label>預計剖腹日</label><input type="date" id="ct-csec" value="${esc(cd.csection_date || '')}"></div>
           <div class="field"><label>贈送天數</label><input type="number" min="0" max="99" id="ct-giftdays" value="${esc(cd.gift_days || '0')}"></div>
           <div class="field"><label>飲食餐別</label><select id="ct-diettype"><option value="">--請選擇--</option>${['葷食', '全素', '奶蛋素'].map(o => `<option ${cd.diet_type === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>

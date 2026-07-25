@@ -5037,6 +5037,7 @@ const CCT_FIELDS = [
   'gift_days', 'deposit_method', 'referrer', 'receptionist', 'reviewer',
   'pdpa_agree', 'portrait_agree',
   // 服務契約書當事人：甲方為契約委託人（非產婦本人）時之資料
+  'review_start_basis', 'review_start_date',
   'agent_is_mother', 'agent_name', 'agent_relation', 'agent_id_no', 'agent_birth',
   'agent_address', 'agent_phone', 'agent_phone_home', 'agent_phone_company', 'agent_email',
   // 服務契約書嬰兒欄位與緊急聯絡人完整聯絡資料
@@ -5060,6 +5061,7 @@ const CCT_LABELS = {
   diet_type: '飲食餐別', meal_plan: '月子餐別', disease_history: '疾病史',
   gift_days: '贈送天數', deposit_method: '訂金支付方式', referrer: '介紹人',
   receptionist: '接待人員', reviewer: '覆核', pdpa_agree: '個資提供合作廠商同意', portrait_agree: '肖像權使用同意',
+  review_start_basis: '審閱起始日基準', review_start_date: '雙方約定審閱起始日',
   agent_is_mother: '甲方是否即產婦本人', agent_name: '契約委託人姓名', agent_relation: '委託人與產婦關係',
   agent_id_no: '委託人身分證字號', agent_birth: '委託人出生年月日', agent_address: '委託人地址',
   agent_phone: '委託人行動電話', agent_phone_home: '委託人住家電話', agent_phone_company: '委託人公司電話',
@@ -6922,8 +6924,25 @@ function contractContext(bookingId) {
   let cd = {};
   try { cd = JSON.parse((db.prepare("SELECT data FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id) || {}).data || '{}'); }
   catch (e) { cd = {}; }
-  // 訂房日期未填時以簽約日／今日為準，審閱期限一律由此推 14 日
+  // 訂房日期未填時以簽約日／今日為準
   const bookDate = cd.book_date || cd.sign_date || today();
+  // 契約金額以「合約資料明細」為準（整份合約），訂房金額僅作為未建明細時的退路
+  let ccItems = [];
+  try { ccItems = JSON.parse((db.prepare("SELECT items FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id) || {}).items || '[]'); }
+  catch (e) { ccItems = []; }
+  const ccTotal = ccItems.reduce((sum, it) => sum + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  const totalAmount = ccTotal || bk.total_amount || 0;
+  const depositAmount = bk.deposit || Math.round(totalAmount * 0.1);
+  // 預約進住日期同樣以合約資料的預計入住／出住日為準，未填才回退到實際排房
+  const checkIn = cd.expected_check_in || bk.check_in || '';
+  const checkOut = cd.expected_check_out || bk.check_out || '';
+  const stayDays = (checkIn && checkOut)
+    ? Math.max(0, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000))
+    : days;
+  // 審閱起始日：依合約資料設定的基準取得；無法判定時留待簽署當下自動回填
+  const reviewStart = reviewStartDate(cd, bk.mother_id);
+  const reviewEnd = cd.review_deadline
+    || (reviewStart === AUTO_SIGN_DATE ? AUTO_SIGN_DEADLINE : reviewDeadline(reviewStart));
   return {
     bk, cd,
     map: {
@@ -6932,12 +6951,12 @@ function contractContext(bookingId) {
       mother_phone: bk.mother_phone || '',
       room_name: bk.room_name || '',
       room_type: bk.room_type || '',
-      check_in: bk.check_in || '',
-      check_out: bk.check_out || '',
-      days: String(days),
-      total_amount: money(bk.total_amount),
-      deposit: money(bk.deposit),
-      balance: money(balance),
+      check_in: checkIn,
+      check_out: checkOut,
+      days: String(stayDays),
+      total_amount: money(totalAmount),
+      deposit: money(depositAmount),
+      balance: money(Math.max(0, totalAmount - depositAmount)),
       today: today(),
       // 合約資料頁存檔的優惠明細（範本可用 {{voucher_amount}} 等自行排版）
       voucher_amount: money(Number(cd.voucher_amount) || 0),
@@ -6964,8 +6983,8 @@ function contractContext(bookingId) {
       diet_ban: cd.diet_ban || '無',
       disease_history: cd.disease_history || '無',
       book_date: bookDate,
-      review_deadline: cd.review_deadline || reviewDeadline(bookDate),
-      review_start: bookDate,
+      review_deadline: reviewEnd,
+      review_start: reviewStart,
       gift_days: cd.gift_days || '0',
       deposit_method: cd.deposit_method || blank(6),
       referrer: cd.referrer || blank(8),
@@ -7004,6 +7023,21 @@ function agreeText(v) {
   if (v === '同意') return '■同意　□不同意';
   if (v === '不同意') return '□同意　■不同意';
   return '□同意　□不同意';
+}
+// 審閱起始日未定時先留標記，待消費者簽署當下以簽署日回填（客服可先把空白合約傳給客戶）
+const AUTO_SIGN_DATE = '［簽署日自動帶入］';
+const AUTO_SIGN_DEADLINE = '［簽署日＋14 日自動帶入］';
+// 審閱起始日：訂金入帳日（取最早一筆訂金收款）或雙方約定日；都無法判定則留待簽署回填
+function reviewStartDate(cd, motherId) {
+  if (cd.review_start_basis === '雙方約定') return cd.review_start_date || AUTO_SIGN_DATE;
+  if (cd.review_start_basis === '訂金入帳日' || !cd.review_start_basis) {
+    const paid = db.prepare(`SELECT MIN(p.paid_on) AS d FROM payments p
+      JOIN bookings bk ON bk.id = p.booking_id
+      WHERE bk.mother_id = ? AND bk.status != 'cancelled'
+        AND (p.item = '訂金' OR p.note LIKE '訂金%')`).get(motherId);
+    if (paid && paid.d) return paid.d;
+  }
+  return AUTO_SIGN_DATE;
 }
 // 契約審閱期 14 日
 function reviewDeadline(from) {
@@ -7282,6 +7316,14 @@ app.delete('/api/contracts/:id', requireAdmin, (req, res) => {
 });
 
 // ---- 公開簽署（持簽署連結即可，無須登入）----
+// 審閱起始日留白的合約：簽署當下以簽署日（及 +14 日）回填凍結全文
+function fillSignDates(body, on) {
+  const d = on || today();
+  return String(body || '')
+    .split(AUTO_SIGN_DEADLINE).join(reviewDeadline(d))
+    .split(AUTO_SIGN_DATE).join(d);
+}
+
 // 合約包內的全部文件（依附件順序；單份舊合約則只有自己）
 function packetDocs(c) {
   return db.prepare(`SELECT * FROM contracts WHERE packet_id = ? OR id = ?
@@ -7332,11 +7374,11 @@ app.post('/api/sign/:token', (req, res) => {
   }
   const upd = db.prepare(`UPDATE contracts SET status = 'signed', signer_name = ?, signer_relation = ?,
     signer_id_last4 = ?, signature_data = ?, signed_at = datetime('now','localtime'),
-    signed_ip = ?, signed_ua = ?, ack_at = datetime('now','localtime') WHERE id = ?`);
+    signed_ip = ?, signed_ua = ?, ack_at = datetime('now','localtime'), body = ? WHERE id = ?`);
   const args = [name, (b.signer_relation || '').trim(),
     (b.signer_id_last4 || '').replace(/\D/g, '').slice(-4),
     sig, req.ip || '', (req.headers['user-agent'] || '').slice(0, 300)];
-  db.transaction(() => { for (const d of docs) upd.run(...args, d.id); })();
+  db.transaction(() => { for (const d of docs) upd.run(...args, fillSignDates(d.body), d.id); })();
   logAudit(req, { action: 'sign', entity: 'contracts', entity_id: c.packet_id || c.id,
     summary: `簽署人:${name}（合約包 ${docs.length} 份文件）` });
   res.json({ ok: true });
