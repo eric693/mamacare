@@ -1108,6 +1108,12 @@ function init() {
     db.exec("ALTER TABLE rooms ADD COLUMN service_ext TEXT DEFAULT ''");
     db.exec("ALTER TABLE rooms ADD COLUMN sort INTEGER NOT NULL DEFAULT 0");
   }
+  // 服務內容（契約附件）住房設備欄位：樓層與坪數依房間／房型帶入
+  {
+    const rmCols = db.prepare('PRAGMA table_info(rooms)').all().map(c => c.name);
+    if (!rmCols.includes('floor')) db.exec("ALTER TABLE rooms ADD COLUMN floor TEXT DEFAULT ''");
+    if (!rmCols.includes('size_ping')) db.exec("ALTER TABLE rooms ADD COLUMN size_ping TEXT DEFAULT ''");
+  }
   const bkoCols = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
   if (!bkoCols.includes('actual_check_out')) {
     // 實際退房日（退房操作時寫入；早於預退日即為提前退房）＋提前退房原因
@@ -2054,6 +2060,9 @@ const DEFAULT_SETTINGS = {
   // 門燈控制設定：房況狀態 → 色碼（JSON）
   door_light_options: '{"空房":"#057505","入住準備":"#409fff","媽媽入住":"#ff244a","母嬰同室":"#8c0fff","出住打掃":"#e0e070","等待檢查":"#ff9f40","保留":"#f53bd6","維修":"#9e9e9e"}',
   referral_hospital_options: '台大,國泰', // 護理後送醫院清單
+  // 服務內容（契約附件）住房設備勾選項：樓層與坪數（逗號分隔）
+  room_floor_options: '二樓,三樓,四樓',
+  room_size_options: '8坪,9.5坪,11坪,12.5坪,16.5坪',
   contact_class_options: '配偶,朋友,同事,好朋友,姊妹,父女,母女,婆媳,其他,父母',
   // 出院帶藥藥品設定：藥品種類＋藥品名稱（JSON 陣列）
   discharge_med_options: '[{"cat":"軟便劑","name":"MgO"},{"cat":"止痛劑","name":"Acetaminophen"},{"cat":"抗生素","name":"Amoxicilline"}]',

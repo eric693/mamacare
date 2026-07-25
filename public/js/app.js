@@ -6,6 +6,10 @@ let SETTINGS = {}; // 營運參數（餵食方式、生產方式、門檻值等�
 function feedMethods() {
   return (SETTINGS.feed_methods || '親餵').split(',').map(s => s.trim()).filter(Boolean);
 }
+// 設定檔逗號清單 → 陣列（房間樓層／坪數等選項）
+function optionList(key) {
+  return (SETTINGS[key] || '').split(',').map(s => s.trim()).filter(Boolean);
+}
 function deliveryTypes() {
   return (SETTINGS.delivery_types || '').split(',').map(s => s.trim()).filter(Boolean);
 }
@@ -13365,18 +13369,19 @@ async function viewRoomList() {
     </div>`;
   const render = (list) => {
     $('#rl-result').innerHTML = `<table class="data stack">
-      <thead><tr><th>筆數</th><th>房間號碼</th><th>房型名稱</th><th>呼叫分機</th><th>客服分機</th><th>排序</th><th>狀態</th><th class="no-print"></th></tr></thead>
+      <thead><tr><th>筆數</th><th>房間號碼</th><th>房型名稱</th><th>樓層／坪數</th><th>呼叫分機</th><th>客服分機</th><th>排序</th><th>狀態</th><th class="no-print"></th></tr></thead>
       <tbody>${list.map((r, i) => `
         <tr>
           <td data-label="筆數">${i + 1}</td>
           <td data-label="房間號碼">${esc(r.name)}</td>
           <td data-label="房型名稱">${esc(r.room_type)}</td>
+          <td data-label="樓層／坪數">${esc(r.floor || '—')}／${esc(r.size_ping || '—')}</td>
           <td data-label="呼叫分機">${esc(r.call_ext || '—')}</td>
           <td data-label="客服分機">${esc(r.service_ext || '—')}</td>
           <td data-label="排序">${r.sort || 0}</td>
           <td data-label="狀態"><span class="badge ${r.active ? 'green' : 'gray'}">${r.active ? '可用' : '停用'}</span></td>
           <td data-label="" class="no-print">${canWrite ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>` : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
+        </tr>`).join('') || '<tr><td colspan="9"><div class="empty">查無資料</div></td></tr>'}</tbody></table>`;
     $('#rl-result').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editRoom(rooms.find(x => x.id == b.dataset.edit), typeOpts));
   };
   const doSearch = () => {
@@ -13398,6 +13403,12 @@ function editRoom(r, typeOpts) {
     <div class="field"><label>房間號碼 <b class="req">*</b></label><input id="rm-name" value="${esc((r || {}).name || '')}"></div>
     <div class="field"><label>房型</label><select id="rm-type">${typeOpts.map(t => `<option ${r && r.room_type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
     <div class="field"><label>每日房價</label><input type="number" min="0" id="rm-price" value="${(r || {}).price_per_day ?? ''}"></div>
+    <div class="field"><label>樓層<small>（服務內容附件帶入）</small></label>
+      <select id="rm-floor"><option value="">未設定</option>${optionList('room_floor_options').map(o =>
+        `<option ${r && r.floor === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
+    <div class="field"><label>坪數<small>（服務內容附件帶入）</small></label>
+      <select id="rm-size"><option value="">未設定</option>${optionList('room_size_options').map(o =>
+        `<option ${r && r.size_ping === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
     <div class="field"><label>呼叫分機</label><input id="rm-call" value="${esc((r || {}).call_ext || '')}"></div>
     <div class="field"><label>客服分機</label><input id="rm-svc" value="${esc((r || {}).service_ext || '')}"></div>
     <div class="field"><label>排序</label><input type="number" id="rm-sort" value="${(r || {}).sort ?? 0}"></div>
@@ -13406,7 +13417,8 @@ function editRoom(r, typeOpts) {
     body.querySelector('#rm-save').onclick = async () => {
       const b = { name: body.querySelector('#rm-name').value.trim(), room_type: body.querySelector('#rm-type').value,
         price_per_day: body.querySelector('#rm-price').value, call_ext: body.querySelector('#rm-call').value.trim(),
-        service_ext: body.querySelector('#rm-svc').value.trim(), sort: body.querySelector('#rm-sort').value };
+        service_ext: body.querySelector('#rm-svc').value.trim(), sort: body.querySelector('#rm-sort').value,
+        floor: body.querySelector('#rm-floor').value, size_ping: body.querySelector('#rm-size').value };
       if (r) b.active = body.querySelector('#rm-active').value === '1';
       try {
         if (r) await api(`/rooms/${r.id}`, { method: 'PUT', body: b });

@@ -2434,9 +2434,9 @@ app.post('/api/rooms', requireAdmin, (req, res) => {
   const r = req.body || {};
   if (!r.name) return res.status(400).json({ error: '房號必填' });
   try {
-    const info = db.prepare(`INSERT INTO rooms (name, room_type, price_per_day, notes, call_ext, service_ext, sort)
-      VALUES (?,?,?,?,?,?,?)`).run(r.name, r.room_type || '標準房', r.price_per_day || 0, r.notes || '',
-      r.call_ext || '', r.service_ext || '', Number(r.sort) || 0);
+    const info = db.prepare(`INSERT INTO rooms (name, room_type, price_per_day, notes, call_ext, service_ext, sort, floor, size_ping)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(r.name, r.room_type || '標準房', r.price_per_day || 0, r.notes || '',
+      r.call_ext || '', r.service_ext || '', Number(r.sort) || 0, r.floor || '', r.size_ping || '');
     res.json({ id: info.lastInsertRowid });
   } catch (e) {
     res.status(400).json({ error: '房號重複' });
@@ -2448,11 +2448,13 @@ app.put('/api/rooms/:id', requireAdmin, (req, res) => {
   if (!cur) return res.status(404).json({ error: '找不到房間' });
   const r = req.body || {};
   try {
-    db.prepare(`UPDATE rooms SET name=?, room_type=?, price_per_day=?, notes=?, call_ext=?, service_ext=?, sort=?, active=? WHERE id=?`)
+    db.prepare(`UPDATE rooms SET name=?, room_type=?, price_per_day=?, notes=?, call_ext=?, service_ext=?,
+      sort=?, floor=?, size_ping=?, active=? WHERE id=?`)
       .run(String(r.name ?? cur.name).trim() || cur.name, r.room_type ?? cur.room_type,
         r.price_per_day !== undefined ? Number(r.price_per_day) || 0 : cur.price_per_day,
         r.notes ?? cur.notes, r.call_ext ?? cur.call_ext, r.service_ext ?? cur.service_ext,
         r.sort !== undefined ? Number(r.sort) || 0 : cur.sort,
+        r.floor ?? cur.floor, r.size_ping ?? cur.size_ping,
         r.active !== undefined ? (r.active ? 1 : 0) : cur.active, cur.id);
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: '房號重複' }); }
@@ -6914,7 +6916,7 @@ function contractContext(bookingId) {
   const bk = db.prepare(`
     SELECT bk.*, m.name AS mother_name, m.phone AS mother_phone, m.id_no AS mother_id_no,
            m.birth_date AS mother_birth, m.due_date AS mother_due, m.delivery_type AS delivery_type,
-           r.name AS room_name, r.room_type
+           r.name AS room_name, r.room_type, r.floor AS room_floor, r.size_ping AS room_size
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.id = ?`).get(bookingId);
   if (!bk) return null;
@@ -6956,6 +6958,9 @@ function contractContext(bookingId) {
       mother_phone: bk.mother_phone || '',
       room_name: bk.room_name || '',
       room_type: bk.room_type || '',
+      // 服務內容住房設備：依所排房間的樓層與坪數自動勾選
+      room_floor_line: optionLine(getSettings().room_floor_options, bk.room_floor),
+      room_size_line: optionLine(getSettings().room_size_options, bk.room_size),
       check_in: checkIn,
       check_out: checkOut,
       days: String(stayDays),
@@ -7023,6 +7028,14 @@ function contractContext(bookingId) {
     }
   };
 }
+// 設定檔選項清單印成勾選欄，符合者打■（未設定時全部留空框供手寫）
+function optionLine(options, value) {
+  const list = String(options || '').split(',').map(o => o.trim()).filter(Boolean);
+  const v = String(value || '').trim();
+  const line = list.map(o => `${o === v ? '■' : '□'}${o}`).join('　');
+  return list.includes(v) || !v ? line : `${line}　■其他：${v}`;
+}
+
 // 訂房確認單「相關備註」：商品禮券＋現金折扣＋贈品內容（合約資料存檔帶入）
 function giftRemark(cd) {
   const rows = [];
