@@ -131,16 +131,45 @@ const goodPng = 'data:image/png;base64,' +
   Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(300, 1)]).toString('base64');
 let signCid, signTok;
 
-test('電子簽署：由訂房＋範本建立合約', async () => {
+test('電子簽署：由訂房＋單份選用範本建立合約', async () => {
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' }); // 重新確保 admin
   const bk = (await req('GET', '/api/bookings')).data[0].id;
-  const tpl = (await req('GET', '/api/contract-templates')).data.find(t => t.active).id;
+  const tpl = (await req('GET', '/api/contract-templates')).data.find(t => t.active && !t.in_packet).id;
   const r = await req('POST', `/api/bookings/${bk}/contracts`, { template_id: tpl });
   assert.strictEqual(r.status, 200);
   assert.ok(r.data.id);
   signCid = r.data.id;
   signTok = (await req('GET', `/api/contracts/${signCid}`)).data.sign_token;
   assert.ok(signTok);
+});
+
+test('簽約文件包：缺件被擋、齊全才可建立，一次簽名涵蓋全部文件', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const bk = (await req('GET', '/api/bookings')).data[0].id;
+  const packet = (await req('GET', '/api/contract-templates')).data.filter(t => t.active && t.in_packet);
+  assert.ok(packet.length >= 2, '應有合約包必附範本');
+  // 少附一份 → 400
+  const partial = await req('POST', `/api/bookings/${bk}/contracts`,
+    { template_ids: packet.slice(0, packet.length - 1).map(t => t.id) });
+  assert.strictEqual(partial.status, 400);
+  // 齊全 → 建立整包，共用同一個簽署連結
+  const full = await req('POST', `/api/bookings/${bk}/contracts`, { template_ids: packet.map(t => t.id) });
+  assert.strictEqual(full.status, 200);
+  assert.strictEqual(full.data.ids.length, packet.length);
+  const tok = (await req('GET', `/api/contracts/${full.data.id}`)).data.sign_token;
+  cookie = '';
+  const page = await req('GET', `/api/sign/${tok}`, null, false);
+  assert.strictEqual(page.data.docs.length, packet.length);
+  // 未逐份確認閱讀 → 400
+  assert.strictEqual((await req('POST', `/api/sign/${tok}`,
+    { signer_name: '王小美', signature_data: goodPng, acks: [] }, false)).status, 400);
+  // 全部確認 → 整包簽署完成
+  const ok = await req('POST', `/api/sign/${tok}`,
+    { signer_name: '王小美', signature_data: goodPng, acks: page.data.docs.map(d => d.id) }, false);
+  assert.strictEqual(ok.status, 200);
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const pk = (await req('GET', `/api/contracts/${full.data.id}/packet`)).data;
+  assert.ok(pk.docs.every(d => d.status === 'signed' && d.signature_data));
 });
 
 test('電子簽署：公開頁免登入可讀（pending）', async () => {
@@ -160,9 +189,10 @@ test('電子簽署：空白與偽造（非 PNG）簽名被擋', async () => {
 
 test('電子簽署：合法簽署成功且不可重簽（409）', async () => {
   cookie = '';
-  const s = await req('POST', `/api/sign/${signTok}`, { signer_name: '王小明', signer_relation: '配偶', signature_data: goodPng }, false);
+  const acks = (await req('GET', `/api/sign/${signTok}`, null, false)).data.docs.map(d => d.id);
+  const s = await req('POST', `/api/sign/${signTok}`, { signer_name: '王小明', signer_relation: '配偶', signature_data: goodPng, acks }, false);
   assert.strictEqual(s.status, 200);
-  const again = await req('POST', `/api/sign/${signTok}`, { signer_name: '再簽', signature_data: goodPng }, false);
+  const again = await req('POST', `/api/sign/${signTok}`, { signer_name: '再簽', signature_data: goodPng, acks }, false);
   assert.strictEqual(again.status, 409);
 });
 
@@ -1813,7 +1843,7 @@ test('入住前改房型後重簽：合約內容依目前房型重新產生（�
     check_in: IN, check_out: D(130), deposit: 0, total_amount: 100000 })).data;
   assert.ok(bk.id);
   // 產生電子合約 → 內容應為豪華房
-  const tpl = (await req('GET', '/api/contract-templates')).data.find(t => t.active);
+  const tpl = (await req('GET', '/api/contract-templates')).data.find(t => t.active && !t.in_packet);
   const ec = (await req('POST', `/api/bookings/${bk.id}/contracts`, { template_id: tpl.id })).data;
   const c1 = (await req('GET', `/api/contracts/${ec.id}`)).data;
   assert.ok(c1.body.includes('豪華房'), '首次產生的合約應含豪華房');
@@ -2239,7 +2269,7 @@ test('合約資料：存檔蓋時間戳，優惠明細帶入訂房確認單（�
   // 產生合約 → 內文應帶入優惠明細
   const bk = cust.bookings.find(b => b.status === 'checked_in');
   const tpls = (await req('GET', '/api/contract-templates')).data;
-  const tpl = tpls.find(t => t.active) || tpls[0];
+  const tpl = tpls.find(t => t.active && !t.in_packet) || tpls[0];
   const made = await req('POST', `/api/bookings/${bk.id}/contracts`, { template_id: tpl.id, handler: '王主任' });
   assert.strictEqual(made.status, 200);
   const doc = (await req('GET', `/api/contracts/${made.data.id}`)).data;
@@ -2371,7 +2401,7 @@ test('入住前合約明細變更連動：改天數/刪除同步排房與訂餐�
   // 種一筆訂餐（模擬報喜鋪餐），驗證後續重鋪
   await req('POST', '/api/meals', { mother_id: mom.id, meal_date: IN, meal_type: 'lunch', choice: 'A' });
   // 由訂房建一張電子合約（供 needs_resign 驗證）
-  const tpl = (await req('GET', '/api/contract-templates')).data.find(t => t.active);
+  const tpl = (await req('GET', '/api/contract-templates')).data.find(t => t.active && !t.in_packet);
   const ec = (await req('POST', `/api/bookings/${bk1.id}/contracts`, { template_id: tpl.id })).data;
   // 1) 改第一筆明細 20→15 天：兩段順延、應收重算
   const e1 = await req('POST', `/api/customers/${mom.id}/contract/items/edit`, { index: 0, qty: 15 });

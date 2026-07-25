@@ -7,7 +7,7 @@ const multer = require('multer');
 const {
   db, hashPassword, verifyPassword, genAccessCode, seed,
   getSettings, setSetting, DEFAULT_SETTINGS,
-  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE
+  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE, DOC_KIND_LABELS
 } = require('./db');
 const notify = require('./notify');
 const { buildWorkbook } = require('./xlsx');
@@ -5030,7 +5030,18 @@ const CCT_FIELDS = [
   'share_card_used_date', 'share_card_used_no', 'share_card_used_by',
   'consult_date', 'consult_note', 'consult_by',
   'voucher_amount', 'voucher_by', 'cash_discount', 'cash_discount_by', 'gift_content', 'gift_by',
-  'emergency_name', 'emergency_relation', 'emergency_phone'
+  'emergency_name', 'emergency_relation', 'emergency_phone',
+  // 訂房確認單欄位（紙本表單同名欄位；供合約包套版帶入）
+  'book_date', 'review_deadline', 'csection_date', 'phone_home', 'phone_company',
+  'mother_address', 'mother_email', 'diet_type', 'meal_plan', 'disease_history',
+  'gift_days', 'deposit_method', 'referrer', 'receptionist', 'reviewer',
+  'pdpa_agree', 'portrait_agree',
+  // 服務契約書當事人：甲方為契約委託人（非產婦本人）時之資料
+  'agent_is_mother', 'agent_name', 'agent_relation', 'agent_id_no', 'agent_birth',
+  'agent_address', 'agent_phone', 'agent_phone_home', 'agent_phone_company', 'agent_email',
+  // 服務契約書嬰兒欄位與緊急聯絡人完整聯絡資料
+  'baby_name', 'baby_relation', 'baby_stay_type',
+  'emergency_address', 'emergency_phone_home', 'emergency_phone_company', 'emergency_email'
 ];
 // 稽核用欄位中文名（合約資料每次修改都記錄舊值→新值）
 const CCT_LABELS = {
@@ -5043,7 +5054,19 @@ const CCT_LABELS = {
   share_card_given_date: '分享卡贈送日', share_card_no: '分享卡號', share_card_used_date: '分享卡抵用日', share_card_used_no: '分享卡抵用卡號',
   consult_date: '產前諮詢日', consult_note: '諮詢備註',
   voucher_amount: '商品禮券金額', cash_discount: '現金折扣金額', gift_content: '贈品內容',
-  emergency_name: '緊急聯絡人姓名', emergency_relation: '緊急聯絡人關係', emergency_phone: '緊急聯絡人電話'
+  emergency_name: '緊急聯絡人姓名', emergency_relation: '緊急聯絡人關係', emergency_phone: '緊急聯絡人電話',
+  book_date: '訂房日期', review_deadline: '契約審閱截止日', csection_date: '預計剖腹日',
+  phone_home: '住家電話', phone_company: '公司電話', mother_address: '通訊地址', mother_email: '電子郵件',
+  diet_type: '飲食餐別', meal_plan: '月子餐別', disease_history: '疾病史',
+  gift_days: '贈送天數', deposit_method: '訂金支付方式', referrer: '介紹人',
+  receptionist: '接待人員', reviewer: '覆核', pdpa_agree: '個資提供合作廠商同意', portrait_agree: '肖像權使用同意',
+  agent_is_mother: '甲方是否即產婦本人', agent_name: '契約委託人姓名', agent_relation: '委託人與產婦關係',
+  agent_id_no: '委託人身分證字號', agent_birth: '委託人出生年月日', agent_address: '委託人地址',
+  agent_phone: '委託人行動電話', agent_phone_home: '委託人住家電話', agent_phone_company: '委託人公司電話',
+  agent_email: '委託人電子郵件',
+  baby_name: '嬰兒姓名', baby_relation: '嬰兒與甲方之關係', baby_stay_type: '嬰兒進住方式',
+  emergency_address: '緊急聯絡人地址', emergency_phone_home: '緊急聯絡人住家電話',
+  emergency_phone_company: '緊急聯絡人公司電話', emergency_email: '緊急聯絡人電子郵件'
 };
 function getCustomerContract(motherId) {
   const c = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(motherId);
@@ -5102,6 +5125,13 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   // 媽媽手機於合約表單可直接填寫，同步媽媽主檔
   if (b.mother_phone !== undefined && String(b.mother_phone).trim()) {
     db.prepare('UPDATE mothers SET phone = ? WHERE id = ?').run(String(b.mother_phone).trim().slice(0, 20), mother.id);
+  }
+  // 身分證字號／出生年月日為訂房確認單與服務契約書必填，於合約表單可直接補登
+  if (b.mother_id_no !== undefined && String(b.mother_id_no).trim()) {
+    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(String(b.mother_id_no).trim().slice(0, 10), mother.id);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(b.mother_birth_date || '')) {
+    db.prepare('UPDATE mothers SET birth_date = ? WHERE id = ?').run(b.mother_birth_date, mother.id);
   }
   if (b.delivery_mode !== undefined) {
     db.prepare('UPDATE mothers SET delivery_type = ? WHERE id = ?').run(String(b.delivery_mode).slice(0, 20), mother.id);
@@ -6879,7 +6909,8 @@ function money(n) {
 // 以訂房資料計算合約占位符對應值
 function contractContext(bookingId) {
   const bk = db.prepare(`
-    SELECT bk.*, m.name AS mother_name, m.phone AS mother_phone,
+    SELECT bk.*, m.name AS mother_name, m.phone AS mother_phone, m.id_no AS mother_id_no,
+           m.birth_date AS mother_birth, m.due_date AS mother_due, m.delivery_type AS delivery_type,
            r.name AS room_name, r.room_type
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.id = ?`).get(bookingId);
@@ -6891,6 +6922,8 @@ function contractContext(bookingId) {
   let cd = {};
   try { cd = JSON.parse((db.prepare("SELECT data FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id) || {}).data || '{}'); }
   catch (e) { cd = {}; }
+  // 訂房日期未填時以簽約日／今日為準，審閱期限一律由此推 14 日
+  const bookDate = cd.book_date || cd.sign_date || today();
   return {
     bk, cd,
     map: {
@@ -6912,9 +6945,72 @@ function contractContext(bookingId) {
       gift_content: cd.gift_content || '',
       voucher_by: cd.voucher_by || '',
       cash_discount_by: cd.cash_discount_by || '',
-      gift_by: cd.gift_by || ''
+      gift_by: cd.gift_by || '',
+      // 訂房確認單／服務契約書當事人欄位（未填者印出空白底線，供紙本補填）
+      mother_id_no: bk.mother_id_no || blank(10),
+      mother_birth: bk.mother_birth || blank(10),
+      mother_address: cd.mother_address || blank(30),
+      mother_email: cd.mother_email || blank(20),
+      phone_home: cd.phone_home || blank(12),
+      phone_company: cd.phone_company || blank(12),
+      due_date: bk.mother_due || blank(10),
+      parity_no: cd.parity_no || blank(6),
+      baby_count: cd.baby_count || '',
+      birth_hospital: cd.birth_hospital || cd.checkup_hospital || blank(14),
+      birth_mode: cd.birth_mode || bk.delivery_type || blank(8),
+      csection_date: cd.csection_date || blank(10),
+      diet_type: cd.diet_type || blank(8),
+      meal_plan: cd.meal_plan || blank(10),
+      diet_ban: cd.diet_ban || '無',
+      disease_history: cd.disease_history || '無',
+      book_date: bookDate,
+      review_deadline: cd.review_deadline || reviewDeadline(bookDate),
+      review_start: bookDate,
+      gift_days: cd.gift_days || '0',
+      deposit_method: cd.deposit_method || blank(6),
+      referrer: cd.referrer || blank(8),
+      receptionist: cd.receptionist || cd.handler || blank(8),
+      reviewer: cd.reviewer || blank(8),
+      handler: cd.handler || blank(8),
+      emergency_name: cd.emergency_name || blank(8),
+      emergency_relation: cd.emergency_relation || blank(6),
+      emergency_phone: cd.emergency_phone || blank(12),
+      pdpa_agree: agreeText(cd.pdpa_agree),
+      portrait_agree: agreeText(cd.portrait_agree),
+      // 契約當事人甲方：未指定委託人時即產婦本人
+      agent_name: cd.agent_name || bk.mother_name || blank(8),
+      agent_relation: cd.agent_name ? (cd.agent_relation || blank(6)) : '即產婦本人',
+      agent_id_no: cd.agent_name ? (cd.agent_id_no || blank(10)) : (bk.mother_id_no || blank(10)),
+      agent_birth: cd.agent_name ? (cd.agent_birth || blank(10)) : (bk.mother_birth || blank(10)),
+      agent_address: cd.agent_name ? (cd.agent_address || blank(30)) : (cd.mother_address || blank(30)),
+      agent_phone: cd.agent_name ? (cd.agent_phone || blank(12)) : (bk.mother_phone || blank(12)),
+      agent_phone_home: cd.agent_phone_home || blank(12),
+      agent_phone_company: cd.agent_phone_company || blank(12),
+      agent_email: cd.agent_email || cd.mother_email || blank(20),
+      baby_name: cd.baby_name || blank(8),
+      baby_relation: cd.baby_relation || blank(6),
+      baby_stay_type: cd.baby_stay_type || '□隨同產婦進住　□單獨托嬰',
+      emergency_address: cd.emergency_address || blank(30),
+      emergency_phone_home: cd.emergency_phone_home || blank(12),
+      emergency_phone_company: cd.emergency_phone_company || blank(12),
+      emergency_email: cd.emergency_email || blank(20)
     }
   };
+}
+// 未填欄位印成底線空格，讓列印出的紙本仍可手寫補填
+function blank(n) { return '＿'.repeat(Math.max(2, Math.round(n / 2))); }
+// 同意/不同意單選：未勾選時印出兩個方框供紙本勾選
+function agreeText(v) {
+  if (v === '同意') return '■同意　□不同意';
+  if (v === '不同意') return '□同意　■不同意';
+  return '□同意　□不同意';
+}
+// 契約審閱期 14 日
+function reviewDeadline(from) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '')) return blank(10);
+  const d = new Date(`${from}T00:00:00`);
+  d.setDate(d.getDate() + 14);
+  return d.toISOString().slice(0, 10);
 }
 
 // 優惠明細區塊：合約資料頁已存檔的禮券／折扣／贈品，附存檔人與存檔時間
@@ -6937,22 +7033,30 @@ function renderTemplate(body, map) {
 
 // 合約範本：員工可讀，管理員可增修刪
 app.get('/api/contract-templates', requireStaff, (req, res) => {
-  res.json(db.prepare('SELECT * FROM contract_templates ORDER BY active DESC, id').all());
+  res.json(db.prepare(`SELECT * FROM contract_templates
+    ORDER BY in_packet DESC, sort_order, active DESC, id`).all());
 });
 app.post('/api/contract-templates', requireAdmin, (req, res) => {
   const t = req.body || {};
   if (!t.name || !t.body) return res.status(400).json({ error: '範本名稱與內容必填' });
-  const info = db.prepare('INSERT INTO contract_templates (name, body, active) VALUES (?,?,?)')
-    .run(t.name, t.body, t.active === 0 ? 0 : 1);
+  const info = db.prepare(`INSERT INTO contract_templates
+    (name, body, active, doc_kind, sign_required, sort_order, in_packet) VALUES (?,?,?,?,?,?,?)`)
+    .run(t.name, t.body, t.active === 0 ? 0 : 1, t.doc_kind || 'other',
+      t.sign_required === 0 ? 0 : 1, Number(t.sort_order) || 0, t.in_packet ? 1 : 0);
   res.json({ id: info.lastInsertRowid });
 });
 app.put('/api/contract-templates/:id', requireAdmin, (req, res) => {
   const t = req.body || {};
   const cur = db.prepare('SELECT * FROM contract_templates WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到範本' });
-  db.prepare('UPDATE contract_templates SET name = ?, body = ?, active = ? WHERE id = ?').run(
+  db.prepare(`UPDATE contract_templates SET name = ?, body = ?, active = ?,
+    doc_kind = ?, sign_required = ?, sort_order = ?, in_packet = ? WHERE id = ?`).run(
     t.name ?? cur.name, t.body ?? cur.body,
-    t.active === undefined ? cur.active : (t.active ? 1 : 0), req.params.id);
+    t.active === undefined ? cur.active : (t.active ? 1 : 0),
+    t.doc_kind ?? cur.doc_kind,
+    t.sign_required === undefined ? cur.sign_required : (t.sign_required ? 1 : 0),
+    t.sort_order === undefined ? cur.sort_order : (Number(t.sort_order) || 0),
+    t.in_packet === undefined ? cur.in_packet : (t.in_packet ? 1 : 0), req.params.id);
   res.json({ ok: true });
 });
 app.delete('/api/contract-templates/:id', requireAdmin, (req, res) => {
@@ -6967,6 +7071,7 @@ app.get('/api/contracts', requireStaff, (req, res) => {
   const rows = db.prepare(`
     SELECT c.id, c.booking_id, c.title, c.status, c.sign_token, c.signer_name,
            c.signer_relation, c.signed_at, c.created_at, c.handler, c.needs_resign,
+           c.packet_id, c.doc_kind, c.sign_required, c.sort_order, c.ack_at,
            m.name AS mother_name, r.name AS room_name,
            u.name AS created_by_name
     FROM contracts c
@@ -6974,7 +7079,7 @@ app.get('/api/contracts', requireStaff, (req, res) => {
     LEFT JOIN mothers m ON m.id = bk.mother_id
     LEFT JOIN rooms r ON r.id = bk.room_id
     LEFT JOIN users u ON u.id = c.created_by
-    ${where} ORDER BY c.id DESC`).all(...args);
+    ${where} ORDER BY c.packet_id DESC, c.sort_order, c.id`).all(...args);
   res.json(rows);
 });
 
@@ -7002,20 +7107,55 @@ app.get('/api/contracts/:id/rerender', requireStaff, (req, res) => {
     check_in: ctx.map.check_in, check_out: ctx.map.check_out, days: ctx.map.days });
 });
 
+// 建立合約包：一次產生多份文件（服務說明書／訂房確認單／服務契約書／服務內容／住房須知），
+// 共用一組 packet_id 與同一個簽署連結，由消費者一次簽名完成
 app.post('/api/bookings/:id/contracts', requireStaff, (req, res) => {
   const ctx = contractContext(req.params.id);
   if (!ctx) return res.status(404).json({ error: '找不到訂房' });
-  const tplId = (req.body || {}).template_id;
-  const tpl = db.prepare('SELECT * FROM contract_templates WHERE id = ?').get(tplId);
-  if (!tpl) return res.status(400).json({ error: '請選擇合約範本' });
-  const title = (req.body || {}).title || tpl.name;
-  const handler = ((req.body || {}).handler || '').trim();
-  const body = renderContractBody(tpl, ctx);
-  const info = db.prepare(`INSERT INTO contracts
-    (booking_id, template_id, title, body, sign_token, created_by, handler)
-    VALUES (?,?,?,?,?,?,?)`).run(
-    req.params.id, tpl.id, title, body, genSignToken(), req.session.user.id, handler);
-  res.json({ id: info.lastInsertRowid });
+  const b = req.body || {};
+  const ids = Array.isArray(b.template_ids) && b.template_ids.length
+    ? b.template_ids.map(Number)
+    : (b.template_id ? [Number(b.template_id)] : []);
+  if (!ids.length) return res.status(400).json({ error: '請選擇合約範本' });
+  const tpls = ids
+    .map(id => db.prepare('SELECT * FROM contract_templates WHERE id = ?').get(id))
+    .filter(Boolean)
+    .sort((a, b2) => (a.sort_order || 99) - (b2.sort_order || 99) || a.id - b2.id);
+  if (!tpls.length) return res.status(400).json({ error: '請選擇合約範本' });
+  // 簽約必附文件檢核：勾了合約包成員就要齊全，避免只簽一半
+  const packetKinds = db.prepare('SELECT doc_kind FROM contract_templates WHERE in_packet = 1 AND active = 1').all()
+    .map(r => r.doc_kind);
+  const picked = new Set(tpls.map(t => t.doc_kind));
+  if (tpls.some(t => t.in_packet)) {
+    const missing = [...new Set(packetKinds)].filter(k => !picked.has(k));
+    if (missing.length) {
+      return res.status(400).json({ error: `簽約文件不完整，尚缺：${missing.map(k => DOC_KIND_LABELS[k] || k).join('、')}` });
+    }
+  }
+  const handler = (b.handler || '').trim();
+  const ins = db.prepare(`INSERT INTO contracts
+    (booking_id, template_id, title, body, sign_token, created_by, handler,
+     doc_kind, sign_required, sort_order, packet_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  const tx = db.transaction(() => {
+    const created = [];
+    for (const tpl of tpls) {
+      const info = ins.run(req.params.id, tpl.id, tpl.name, renderContractBody(tpl, ctx),
+        genSignToken(), req.session.user.id, handler,
+        tpl.doc_kind || 'other', tpl.sign_required === 0 ? 0 : 1, tpl.sort_order || 0, null);
+      created.push(info.lastInsertRowid);
+    }
+    // 主文件＝服務契約書（沒有則取第一份）：其 id 為 packet_id、其 sign_token 為簽署連結
+    const main = db.prepare(`SELECT id FROM contracts WHERE id IN (${created.map(() => '?').join(',')})
+      ORDER BY (doc_kind = 'contract') DESC, sort_order, id LIMIT 1`).get(...created);
+    const upd = db.prepare('UPDATE contracts SET packet_id = ? WHERE id = ?');
+    for (const id of created) upd.run(main.id, id);
+    return { packet_id: main.id, ids: created };
+  });
+  const out = tx();
+  logAudit(req, { action: 'create', entity: 'contracts', entity_id: out.packet_id,
+    summary: `建立合約包（${tpls.length} 份文件：${tpls.map(t => t.name).join('、')}）` });
+  res.json({ id: out.packet_id, packet_id: out.packet_id, ids: out.ids });
 });
 
 app.get('/api/contracts/:id', requireStaff, (req, res) => {
@@ -7031,6 +7171,19 @@ app.get('/api/contracts/:id', requireStaff, (req, res) => {
     WHERE c.id = ?`).get(req.params.id);
   if (!c) return res.status(404).json({ error: '找不到合約' });
   res.json(c);
+});
+
+// 合約包全文（檢視／列印用：一次拿到整包文件與同一份簽名存證）
+app.get('/api/contracts/:id/packet', requireStaff, (req, res) => {
+  const c = db.prepare('SELECT * FROM contracts WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: '找不到合約' });
+  const info = db.prepare(`SELECT m.name AS mother_name, r.name AS room_name
+    FROM bookings bk LEFT JOIN mothers m ON m.id = bk.mother_id
+    LEFT JOIN rooms r ON r.id = bk.room_id WHERE bk.id = ?`).get(c.booking_id) || {};
+  res.json({
+    mother_name: info.mother_name || '', room_name: info.room_name || '',
+    docs: packetDocs(c).map(d => ({ ...d, kind_label: DOC_KIND_LABELS[d.doc_kind] || '' }))
+  });
 });
 
 // 編輯尚未簽署的合約內容（已簽署者請改用「重新簽署」）
@@ -7062,19 +7215,37 @@ app.post('/api/contracts/:id/resign', requireStaff, (req, res) => {
     if (tpl && ctx) body = renderContractBody(tpl, ctx);
   }
   const handler = b.handler !== undefined ? String(b.handler).trim() : old.handler;
+  // 整包一起重簽：合約包內其他文件依目前資料重新套版產生新版，舊包整包作廢，
+  // 避免只換掉服務契約書、附件卻停留在舊版本
+  const siblings = packetDocs(old).filter(d => d.id !== old.id && d.status !== 'void');
+  const ins = db.prepare(`INSERT INTO contracts
+    (booking_id, template_id, title, body, sign_token, created_by, replaces_id, handler,
+     doc_kind, sign_required, sort_order, packet_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const voidOld = db.prepare(`UPDATE contracts SET status='void', voided_by=?,
+    voided_at=datetime('now','localtime'), void_reason=? WHERE id=?`);
   const tx = db.transaction(() => {
-    const info = db.prepare(`INSERT INTO contracts
-      (booking_id, template_id, title, body, sign_token, created_by, replaces_id, handler)
-      VALUES (?,?,?,?,?,?,?,?)`).run(
-      old.booking_id, old.template_id, title, body, genSignToken(), req.session.user.id, old.id, handler);
-    db.prepare(`UPDATE contracts SET status='void', voided_by=?, voided_at=datetime('now','localtime'),
-      void_reason=? WHERE id=?`).run(
-      req.session.user.id, `重新簽署，由合約#${info.lastInsertRowid} 取代`, old.id);
-    return info.lastInsertRowid;
+    const mainId = ins.run(old.booking_id, old.template_id, title, body, genSignToken(),
+      req.session.user.id, old.id, handler, old.doc_kind, old.sign_required, old.sort_order, null)
+      .lastInsertRowid;
+    const created = [mainId];
+    for (const d of siblings) {
+      const tpl = db.prepare('SELECT * FROM contract_templates WHERE id = ?').get(d.template_id);
+      const ctx = tpl ? contractContext(d.booking_id) : null;
+      const nbody = (tpl && ctx) ? renderContractBody(tpl, ctx) : d.body;
+      created.push(ins.run(d.booking_id, d.template_id, d.title, nbody, genSignToken(),
+        req.session.user.id, d.id, handler, d.doc_kind, d.sign_required, d.sort_order, null).lastInsertRowid);
+    }
+    const upd = db.prepare('UPDATE contracts SET packet_id = ? WHERE id = ?');
+    for (const id of created) upd.run(mainId, id);
+    voidOld.run(req.session.user.id, `重新簽署，由合約#${mainId} 取代`, old.id);
+    for (const d of siblings) voidOld.run(req.session.user.id, `重新簽署，由合約包#${mainId} 取代`, d.id);
+    return mainId;
   });
   const newId = tx();
   const nc = db.prepare('SELECT id, sign_token FROM contracts WHERE id = ?').get(newId);
-  logAudit(req, { action: 'update', entity: 'contracts', entity_id: old.id, summary: `重新簽署→#${newId}` });
+  logAudit(req, { action: 'update', entity: 'contracts', entity_id: old.id,
+    summary: `重新簽署→#${newId}${siblings.length ? `（含附件 ${siblings.length} 份）` : ''}` });
   res.json({ id: nc.id, sign_token: nc.sign_token });
 });
 
@@ -7083,32 +7254,53 @@ app.post('/api/contracts/:id/void', requireAdmin, (req, res) => {
   const c = db.prepare('SELECT * FROM contracts WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: '找不到合約' });
   if (c.status === 'void') return res.status(400).json({ error: '合約已作廢' });
-  db.prepare(`UPDATE contracts SET status = 'void', voided_by = ?, voided_at = datetime('now','localtime'),
-    void_reason = ? WHERE id = ?`).run(
-    req.session.user.id, (req.body || {}).reason || '', req.params.id);
-  res.json({ ok: true });
+  // 合約包一併作廢：附件單獨留著會變成沒有主約的孤兒文件
+  const docs = packetDocs(c).filter(d => d.status !== 'void');
+  const upd = db.prepare(`UPDATE contracts SET status = 'void', voided_by = ?,
+    voided_at = datetime('now','localtime'), void_reason = ? WHERE id = ?`);
+  const reason = (req.body || {}).reason || '';
+  db.transaction(() => { for (const d of docs) upd.run(req.session.user.id, reason, d.id); })();
+  logAudit(req, { action: 'update', entity: 'contracts', entity_id: c.packet_id || c.id,
+    summary: `作廢合約包（${docs.length} 份）${reason ? `：${reason}` : ''}` });
+  res.json({ ok: true, count: docs.length });
 });
 
 // 刪除：僅限尚未簽署的合約（已簽署者應作廢以保全紀錄）
 app.delete('/api/contracts/:id', requireAdmin, (req, res) => {
-  const c = db.prepare('SELECT status FROM contracts WHERE id = ?').get(req.params.id);
+  const c = db.prepare('SELECT * FROM contracts WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: '找不到合約' });
   if (c.status !== 'pending') {
     return res.status(400).json({ error: '已簽署或已作廢的合約不可刪除，請改用作廢' });
   }
-  db.prepare('DELETE FROM contracts WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
+  const docs = packetDocs(c);
+  if (docs.some(d => d.status !== 'pending')) {
+    return res.status(400).json({ error: '同一合約包內已有簽署或作廢的文件，請改用作廢' });
+  }
+  const del = db.prepare('DELETE FROM contracts WHERE id = ?');
+  db.transaction(() => { for (const d of docs) del.run(d.id); })();
+  res.json({ ok: true, count: docs.length });
 });
 
 // ---- 公開簽署（持簽署連結即可，無須登入）----
+// 合約包內的全部文件（依附件順序；單份舊合約則只有自己）
+function packetDocs(c) {
+  return db.prepare(`SELECT * FROM contracts WHERE packet_id = ? OR id = ?
+    ORDER BY sort_order, id`).all(c.packet_id || c.id, c.id);
+}
 app.get('/api/sign/:token', (req, res) => {
   const c = db.prepare('SELECT * FROM contracts WHERE sign_token = ?').get(req.params.token);
   if (!c) return res.status(404).json({ error: '簽署連結無效' });
+  const docs = packetDocs(c);
   res.json({
     title: c.title, body: c.body, status: c.status,
     center_name: getSettings().center_name || '',
     signer_name: c.signer_name, signer_relation: c.signer_relation,
-    signed_at: c.signed_at, signature_data: c.status === 'signed' ? c.signature_data : ''
+    signed_at: c.signed_at, signature_data: c.status === 'signed' ? c.signature_data : '',
+    docs: docs.map(d => ({
+      id: d.id, title: d.title, body: d.body, status: d.status,
+      doc_kind: d.doc_kind, kind_label: DOC_KIND_LABELS[d.doc_kind] || '',
+      sign_required: d.sign_required
+    }))
   });
 });
 
@@ -7131,13 +7323,22 @@ app.post('/api/sign/:token', (req, res) => {
       buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47) {
     return res.status(400).json({ error: '簽名無效，請重新手寫簽名' });
   }
-  db.prepare(`UPDATE contracts SET status = 'signed', signer_name = ?, signer_relation = ?,
+  // 一次簽名涵蓋整包文件：須先逐份確認已閱讀，才視為完整簽約
+  const docs = packetDocs(c).filter(d => d.status === 'pending');
+  const acks = new Set((Array.isArray(b.acks) ? b.acks : []).map(Number));
+  const unread = docs.filter(d => !acks.has(d.id));
+  if (unread.length) {
+    return res.status(400).json({ error: `請先確認已閱讀：${unread.map(d => d.title).join('、')}` });
+  }
+  const upd = db.prepare(`UPDATE contracts SET status = 'signed', signer_name = ?, signer_relation = ?,
     signer_id_last4 = ?, signature_data = ?, signed_at = datetime('now','localtime'),
-    signed_ip = ?, signed_ua = ? WHERE id = ?`).run(
-    name, (b.signer_relation || '').trim(),
+    signed_ip = ?, signed_ua = ?, ack_at = datetime('now','localtime') WHERE id = ?`);
+  const args = [name, (b.signer_relation || '').trim(),
     (b.signer_id_last4 || '').replace(/\D/g, '').slice(-4),
-    sig, req.ip || '', (req.headers['user-agent'] || '').slice(0, 300), c.id);
-  logAudit(req, { action: 'sign', entity: 'contracts', entity_id: c.id, summary: `簽署人:${name}` });
+    sig, req.ip || '', (req.headers['user-agent'] || '').slice(0, 300)];
+  db.transaction(() => { for (const d of docs) upd.run(...args, d.id); })();
+  logAudit(req, { action: 'sign', entity: 'contracts', entity_id: c.packet_id || c.id,
+    summary: `簽署人:${name}（合約包 ${docs.length} 份文件）` });
   res.json({ ok: true });
 });
 

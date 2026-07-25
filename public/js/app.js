@@ -4450,29 +4450,39 @@ function handlerSelectOptions(users, selected) {
 }
 
 // 另開視窗列印／另存 PDF：凍結全文 + 簽名圖 + 簽署存證
-function printContract(c) {
-  const st = CONTRACT_STATUS[c.status] || CONTRACT_STATUS.pending;
-  const proof = c.status === 'signed' ? `
+// 合約包檢視／列印：整包文件依附件順序連續印出，每份各自分頁，共用同一份簽名存證
+function printPacket(pk) {
+  const docs = pk.docs || [];
+  if (!docs.length) return;
+  const main0 = docs.find(d => d.doc_kind === 'contract') || docs[0];
+  const st = CONTRACT_STATUS[main0.status] || CONTRACT_STATUS.pending;
+  const proof = main0.status === 'signed' ? `
     <div class="sign-block">
       <div class="sig">
-        <img src="${c.signature_data}" alt="簽名">
-        <div class="sig-line">消費者簽名：${esc(c.signer_name)}${c.signer_relation ? `（${esc(c.signer_relation)}）` : ''}</div>
+        <img src="${main0.signature_data}" alt="簽名">
+        <div class="sig-line">消費者簽名：${esc(main0.signer_name)}${main0.signer_relation ? `（${esc(main0.signer_relation)}）` : ''}</div>
       </div>
       <div class="proof">
-        簽署時間：${esc(c.signed_at)}<br>
-        ${c.signer_id_last4 ? `身分證末四碼：${esc(c.signer_id_last4)}<br>` : ''}
-        簽署來源 IP：${esc(c.signed_ip || '-')}<br>
-        簽署裝置：${esc(c.signed_ua || '-')}
+        簽署時間：${esc(main0.signed_at)}<br>
+        ${main0.signer_id_last4 ? `身分證末四碼：${esc(main0.signer_id_last4)}<br>` : ''}
+        簽署來源 IP：${esc(main0.signed_ip || '-')}<br>
+        簽署裝置：${esc(main0.signed_ua || '-')}<br>
+        本簽名同時適用本次簽約之全部 ${docs.length} 份文件。
       </div>
-    </div>` : `<div class="sign-block"><div class="unsigned">— 本合約尚未完成簽署 —</div></div>`;
+    </div>` : '<div class="sign-block"><div class="unsigned">— 本次簽約文件尚未完成簽署 —</div></div>';
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
-    <title>${esc(c.title)}</title>
+    <title>${esc(pk.mother_name || '')} 簽約文件</title>
     <style>
       body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.7;
         max-width:760px;margin:24px auto;padding:0 24px}
       .status{text-align:right;color:${st.badge === 'green' ? '#2a7f78' : st.badge === 'gray' ? '#888' : '#c98a00'};font-weight:700}
+      h2{font-size:17px;border-bottom:2px solid #2a7f78;padding-bottom:6px;margin:0 0 10px}
       pre{white-space:pre-wrap;font-family:inherit;font-size:15px;margin:12px 0 28px}
+      .doc{page-break-after:always}
+      .doc:last-of-type{page-break-after:auto}
+      .toc{background:#f2f7f6;border-radius:8px;padding:12px 18px;margin-bottom:20px}
+      .toc li{line-height:1.9}
       .sign-block{border-top:1px solid #ccc;padding-top:18px;margin-top:18px}
       .sig img{max-width:280px;max-height:120px;border-bottom:1px solid #333}
       .sig-line{margin-top:6px;font-weight:700}
@@ -4481,8 +4491,10 @@ function printContract(c) {
       @media print{.noprint{display:none}}
     </style></head><body>
     <div class="status">${st.label}</div>
-    ${c.handler ? `<div style="font-size:13px;color:#555;margin-bottom:6px">經手人：${esc(c.handler)}</div>` : ''}
-    <pre>${esc(c.body)}</pre>
+    <div class="toc"><b>${esc(pk.mother_name || '')}　${esc(pk.room_name || '')} 房　本次簽約文件（${docs.length} 份）</b>
+      <ol>${docs.map(d => `<li>${esc(d.title)}${d.sign_required ? '' : '（閱讀確認）'}</li>`).join('')}</ol></div>
+    ${main0.handler ? `<div style="font-size:13px;color:#555;margin-bottom:6px">經手人：${esc(main0.handler)}</div>` : ''}
+    ${docs.map(d => `<div class="doc"><h2>${esc(d.title)}</h2><pre>${esc(d.body)}</pre></div>`).join('')}
     ${proof}
     <div class="noprint" style="margin-top:24px;text-align:center">
       <button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button>
@@ -4498,6 +4510,14 @@ async function viewContracts() {
   ]);
   const activeTpls = templates.filter(t => t.active);
   const handlerOptions = handlerSelectOptions(users, currentUser.name);
+  // 同一次簽約的多份文件（packet_id 相同）在清單併成一列呈現
+  const packets = [];
+  const byPacket = new Map();
+  for (const c of contracts) {
+    const key = c.packet_id || c.id;
+    if (!byPacket.has(key)) { byPacket.set(key, []); packets.push(byPacket.get(key)); }
+    byPacket.get(key).push(c);
+  }
   main().innerHTML = `
     <div class="page-title">合約簽署</div>
     <div class="card">
@@ -4511,19 +4531,23 @@ async function viewContracts() {
           </select>
         </div>
         <div class="field full">
-          <label>合約範本</label>
-          <select id="ct-template">
-            ${activeTpls.length
-              ? activeTpls.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')
-              : '<option value="">尚無啟用範本，請先到下方管理範本</option>'}
-          </select>
+          <label>簽約文件（每次簽約須完整附上合約包全部文件）</label>
+          ${activeTpls.length ? `
+            <div class="tpl-pick">${activeTpls.map(t => `
+              <label class="bna-chk" title="${t.in_packet ? '合約包必附文件' : '選用文件'}">
+                <input type="checkbox" class="ct-tpl" value="${t.id}" data-packet="${t.in_packet ? 1 : 0}" ${t.in_packet ? 'checked' : ''}>
+                ${esc(t.name)}
+                ${t.sign_required ? '<span class="badge red">須簽署</span>' : '<span class="badge gray">閱讀確認</span>'}
+              </label>`).join('')}</div>
+            <small style="color:var(--muted)">合約包必附文件已預設勾選；取消勾選任一份將無法建立（服務契約書與訂房確認單為簽約核心文件）。</small>`
+            : '<div class="empty">尚無啟用範本，請先到下方管理範本</div>'}
         </div>
         <div class="field">
           <label>經手人</label>
           <select id="ct-handler">${handlerOptions}</select>
         </div>
         <div class="full row">
-          <button class="btn" id="ct-create">產生合約</button>
+          <button class="btn" id="ct-create">產生合約包</button>
           ${isAdmin ? '<button class="btn secondary" id="ct-tpl">管理合約範本</button>' : ''}
           <span class="error-msg" id="ct-err"></span>
         </div>
@@ -4533,18 +4557,23 @@ async function viewContracts() {
       ${filterBar({ placeholder: '搜尋媽媽 / 房間 / 合約名稱…', statuses: [{ val: '', label: '全部' }, { val: 'pending', label: '待簽署' }, { val: 'signed', label: '已簽署' }, { val: 'void', label: '已作廢' }] })}
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th>媽媽 / 房間</th><th>合約</th><th>經手人</th><th>狀態</th><th>簽署人</th><th>操作</th></tr></thead>
-          <tbody>${contracts.map(c => {
+          <thead><tr><th>媽媽 / 房間</th><th>簽約文件</th><th>經手人</th><th>狀態</th><th>簽署人</th><th>操作</th></tr></thead>
+          <tbody>${packets.map(docs => {
+            // 主文件（服務契約書優先）代表整包：狀態／簽署連結／操作都以整包為單位
+            const c = docs.find(d => d.doc_kind === 'contract') || docs[0];
             const st = CONTRACT_STATUS[c.status] || CONTRACT_STATUS.pending;
-            return `<tr data-filter="${esc((c.mother_name || '') + ' ' + (c.room_name || '') + ' ' + c.title + ' ' + (c.signer_name || '') + ' ' + (c.handler || ''))}" data-status="${c.status}">
+            const needsResign = docs.some(d => d.needs_resign && d.status !== 'void');
+            return `<tr data-filter="${esc((c.mother_name || '') + ' ' + (c.room_name || '') + ' ' + docs.map(d => d.title).join(' ') + ' ' + (c.signer_name || '') + ' ' + (c.handler || ''))}" data-status="${c.status}">
               <td data-label="媽媽 / 房間">${esc(c.mother_name || '-')}<br><small>${esc(c.room_name || '')} 房</small></td>
-              <td data-label="合約">${esc(c.title)}<br><small>${esc(c.created_at?.slice(0, 16) || '')}　${esc(c.created_by_name || '')}</small></td>
+              <td data-label="簽約文件">${docs.length > 1 ? `<b>合約包（${docs.length} 份）</b><br>` : ''}
+                <small>${docs.map(d => `${esc(d.title)}${d.sign_required ? '' : '（閱讀確認）'}`).join('<br>')}</small>
+                <br><small>${esc(c.created_at?.slice(0, 16) || '')}　${esc(c.created_by_name || '')}</small></td>
               <td data-label="經手人">${esc(c.handler || '-')}</td>
-              <td data-label="狀態"><span class="badge ${st.badge}">${st.label}</span>${c.needs_resign && c.status !== 'void' ? '<br><span class="badge red" title="合約明細／總額已變更，請按「重新簽署」產生新版">內容已變更，需重簽</span>' : ''}</td>
+              <td data-label="狀態"><span class="badge ${st.badge}">${st.label}</span>${needsResign && c.status !== 'void' ? '<br><span class="badge red" title="合約明細／總額已變更，請按「重新簽署」產生新版">內容已變更，需重簽</span>' : ''}</td>
               <td data-label="簽署人">${c.status === 'signed' ? `${esc(c.signer_name)}${c.signer_relation ? `（${esc(c.signer_relation)}）` : ''}<br><small>${esc(c.signed_at || '')}</small>` : '-'}</td>
               <td data-label="操作">
                 ${c.status === 'pending' ? `<button class="btn small secondary" data-link="${esc(c.sign_token)}">簽署連結</button>` : ''}
-                ${c.status === 'pending' ? `<button class="btn small secondary" data-edit="${c.id}">編輯內容</button>` : ''}
+                ${c.status === 'pending' ? docs.map(d => `<button class="btn small secondary" data-edit="${d.id}">編輯${esc(d.title)}</button>`).join(' ') : ''}
                 ${c.status !== 'void' ? `<button class="btn small secondary" data-resign="${c.id}">重新簽署</button>` : ''}
                 <button class="btn small secondary" data-view="${c.id}">檢視 / 列印</button>
                 ${isAdmin && c.status === 'signed' ? `<button class="btn small danger" data-void="${c.id}">作廢</button>` : ''}
@@ -4559,12 +4588,12 @@ async function viewContracts() {
 
   $('#ct-create').onclick = async () => {
     const bookingId = $('#ct-booking').value;
-    const templateId = $('#ct-template').value;
+    const ids = [...main().querySelectorAll('.ct-tpl:checked')].map(el => Number(el.value));
     $('#ct-err').textContent = '';
     if (!bookingId) { $('#ct-err').textContent = '請選擇訂房'; return; }
-    if (!templateId) { $('#ct-err').textContent = '請選擇合約範本'; return; }
+    if (!ids.length) { $('#ct-err').textContent = '請至少選擇一份文件'; return; }
     try {
-      await api(`/bookings/${bookingId}/contracts`, { method: 'POST', body: { template_id: Number(templateId), handler: $('#ct-handler').value } });
+      await api(`/bookings/${bookingId}/contracts`, { method: 'POST', body: { template_ids: ids, handler: $('#ct-handler').value } });
       viewContracts();
     } catch (e) { $('#ct-err').textContent = e.message; }
   };
@@ -4575,7 +4604,7 @@ async function viewContracts() {
     btn.onclick = () => openSignLink(btn.dataset.link);
   });
   main().querySelectorAll('[data-view]').forEach(btn => {
-    btn.onclick = async () => { printContract(await api(`/contracts/${btn.dataset.view}`)); };
+    btn.onclick = async () => { printPacket(await api(`/contracts/${btn.dataset.view}/packet`)); };
   });
   main().querySelectorAll('[data-edit]').forEach(btn => {
     btn.onclick = async () => openContractEditor(await api(`/contracts/${btn.dataset.edit}`), 'edit');
@@ -4585,7 +4614,7 @@ async function viewContracts() {
   });
   main().querySelectorAll('[data-void]').forEach(btn => {
     btn.onclick = async () => {
-      const reason = prompt('請輸入作廢原因（可留空）：', '');
+      const reason = prompt('作廢將同時作廢本次簽約的全部文件。請輸入作廢原因（可留空）：', '');
       if (reason === null) return;
       await api(`/contracts/${btn.dataset.void}/void`, { method: 'POST', body: { reason } });
       viewContracts();
@@ -4593,7 +4622,7 @@ async function viewContracts() {
   });
   main().querySelectorAll('[data-del]').forEach(btn => {
     btn.onclick = async () => {
-      if (!confirm('確定刪除這份未簽署的合約？')) return;
+      if (!confirm('確定刪除本次簽約的全部未簽署文件？')) return;
       await api(`/contracts/${btn.dataset.del}`, { method: 'DELETE' });
       viewContracts();
     };
@@ -4686,7 +4715,9 @@ async function openTemplateManager() {
   const templates = await api('/contract-templates');
   const list = templates.map(t => `
     <tr>
-      <td data-label="範本">${esc(t.name)} ${t.active ? '' : '<span class="badge gray">停用</span>'}</td>
+      <td data-label="範本">${esc(t.name)} ${t.active ? '' : '<span class="badge gray">停用</span>'}
+        ${t.in_packet ? '<span class="badge green">合約包必附</span>' : ''}
+        ${t.sign_required ? '<span class="badge red">須簽署</span>' : '<span class="badge gray">閱讀確認</span>'}</td>
       <td data-label="操作">
         <button class="btn small secondary" data-edit-tpl="${t.id}">編輯</button>
         <button class="btn small danger" data-del-tpl="${t.id}">刪除</button>
@@ -4694,7 +4725,9 @@ async function openTemplateManager() {
     </tr>`).join('') || '<tr><td colspan="2"><div class="empty">尚無範本</div></td></tr>';
   openModal('合約範本管理', `
     <p>範本內容可使用占位符，產生合約時自動帶入訂房資料：<br>
-      <small>${esc('{{center_name}} {{mother_name}} {{mother_phone}} {{room_name}} {{room_type}} {{check_in}} {{check_out}} {{days}} {{total_amount}} {{deposit}} {{balance}} {{today}}')}</small></p>
+      <small>${esc('{{center_name}} {{mother_name}} {{mother_phone}} {{room_name}} {{room_type}} {{check_in}} {{check_out}} {{days}} {{total_amount}} {{deposit}} {{balance}} {{today}}')}</small><br>
+      訂房確認單／服務契約書當事人欄位：<br>
+      <small>${esc('{{mother_id_no}} {{mother_birth}} {{mother_address}} {{mother_email}} {{phone_home}} {{phone_company}} {{due_date}} {{parity_no}} {{baby_count}} {{birth_hospital}} {{birth_mode}} {{csection_date}} {{diet_type}} {{meal_plan}} {{diet_ban}} {{disease_history}} {{book_date}} {{review_start}} {{review_deadline}} {{gift_days}} {{deposit_method}} {{referrer}} {{receptionist}} {{reviewer}} {{handler}} {{emergency_name}} {{emergency_relation}} {{emergency_phone}} {{pdpa_agree}} {{portrait_agree}}')}</small></p>
     <div class="table-wrap"><table class="data stack"><tbody>${list}</tbody></table></div>
     <div class="row mt"><button class="btn" id="tpl-new">新增範本</button></div>`, body => {
     body.querySelector('#tpl-new').onclick = () => openTemplateEditor(null);
@@ -4709,13 +4742,42 @@ async function openTemplateManager() {
   });
 }
 
+// 訂房確認單勾選項（其餘自填內容存在同一欄位，以「、」分隔）
+const DISEASE_OPTS = ['心臟疾病', '高血壓', '糖尿病', '甲狀腺亢進/低下', '貧血', '氣喘', 'B型肝炎', 'C型肝炎', '自體免疫疾病'];
+const DIET_BAN_OPTS = ['牛肉', '羊肉', '內臟', '帶殼海鮮', '堅果類'];
+function listOther(v, opts) {
+  return (v || '').split('、').filter(x => x && !opts.includes(x)).join('、');
+}
+
+// 文件種類：對應紙本簽約文件包的 5 份文件
+const DOC_KINDS = {
+  brief: '服務說明書', booking: '訂房確認單', contract: '服務契約書',
+  content: '服務內容', rules: '住房須知暨同意書', other: '其他文件'
+};
 function openTemplateEditor(tpl) {
   openModal(tpl ? '編輯範本' : '新增範本', `
     <div class="form-grid">
       <div class="field full"><label>範本名稱</label><input id="te-name" value="${esc(tpl?.name || '')}"></div>
-      <div class="field full"><label>啟用</label>
+      <div class="field"><label>啟用</label>
         <select id="te-active"><option value="1" ${!tpl || tpl.active ? 'selected' : ''}>啟用</option><option value="0" ${tpl && !tpl.active ? 'selected' : ''}>停用</option></select>
       </div>
+      <div class="field"><label>文件種類</label>
+        <select id="te-kind">${Object.entries(DOC_KINDS).map(([k, v]) =>
+          `<option value="${k}" ${(tpl?.doc_kind || 'other') === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>簽署方式</label>
+        <select id="te-signreq">
+          <option value="1" ${!tpl || tpl.sign_required ? 'selected' : ''}>須手寫簽名</option>
+          <option value="0" ${tpl && !tpl.sign_required ? 'selected' : ''}>僅須閱讀確認</option>
+        </select>
+      </div>
+      <div class="field"><label>合約包必附</label>
+        <select id="te-packet">
+          <option value="1" ${tpl?.in_packet ? 'selected' : ''}>是（每次簽約自動帶入）</option>
+          <option value="0" ${tpl?.in_packet ? '' : 'selected'}>否（選用）</option>
+        </select>
+      </div>
+      <div class="field"><label>合約包內順序</label><input type="number" id="te-sort" min="0" max="99" value="${tpl?.sort_order ?? 0}"></div>
       <div class="field full"><label>合約內容</label>
         <textarea id="te-body" rows="14" style="font-family:inherit">${esc(tpl?.body || '')}</textarea>
       </div>
@@ -4725,7 +4787,11 @@ function openTemplateEditor(tpl) {
       const payload = {
         name: body.querySelector('#te-name').value.trim(),
         body: body.querySelector('#te-body').value,
-        active: Number(body.querySelector('#te-active').value)
+        active: Number(body.querySelector('#te-active').value),
+        doc_kind: body.querySelector('#te-kind').value,
+        sign_required: Number(body.querySelector('#te-signreq').value),
+        in_packet: Number(body.querySelector('#te-packet').value),
+        sort_order: Number(body.querySelector('#te-sort').value) || 0
       };
       try {
         if (tpl) await api(`/contract-templates/${tpl.id}`, { method: 'PUT', body: payload });
@@ -4802,7 +4868,25 @@ function printPaperContract(d) {
       ${kv('寶寶人數', cd.baby_count)}${kv('預計生產方式', cd.delivery_mode || m.delivery_type)}
       ${kv('預計入住日', cd.expected_check_in)}${kv('預計出住日', cd.expected_check_out)}
       ${kv('產檢醫院', cd.checkup_hospital)}${kv('小管家', cd.butler)}
+      ${kv('身分證字號', m.id_no)}${kv('出生年月日', m.birth_date)}
+      ${kv('住家電話', cd.phone_home)}${kv('公司電話', cd.phone_company)}
+      ${kv('電子郵件', cd.mother_email)}${kv('通訊地址', cd.mother_address)}
+      ${kv('訂房日期', cd.book_date)}${kv('契約審閱截止日', cd.review_deadline)}
+      ${kv('生產醫院/診所', cd.birth_hospital)}${kv('預計剖腹日', cd.csection_date)}
+      ${kv('飲食餐別', cd.diet_type)}${kv('月子餐別', cd.meal_plan)}
+      ${kv('疾病史', cd.disease_history || '無')}${kv('贈送天數', cd.gift_days ? `${cd.gift_days} 天` : '')}
+      ${kv('訂金支付方式', cd.deposit_method)}${kv('介紹人', cd.referrer)}
+      ${kv('接待人員', cd.receptionist)}${kv('覆核', cd.reviewer)}
+      ${kv('個資提供合作廠商', cd.pdpa_agree)}${kv('肖像權使用', cd.portrait_agree)}
       ${kv('緊急聯絡人', cd.emergency_name ? `${cd.emergency_name}（${cd.emergency_relation || '—'}）${cd.emergency_phone || ''}` : '')}
+      ${kv('緊急聯絡人地址', cd.emergency_address)}
+      ${kv('緊急聯絡人住家電話', cd.emergency_phone_home)}${kv('緊急聯絡人公司電話', cd.emergency_phone_company)}
+      ${kv('緊急聯絡人電子郵件', cd.emergency_email)}
+      ${kv('契約委託人', cd.agent_name ? `${cd.agent_name}（${cd.agent_relation || '—'}）` : '即產婦本人')}
+      ${kv('委託人身分證字號', cd.agent_id_no)}${kv('委託人出生年月日', cd.agent_birth)}
+      ${kv('委託人電話', cd.agent_phone)}${kv('委託人地址', cd.agent_address)}
+      ${kv('嬰兒姓名', cd.baby_name)}${kv('嬰兒與甲方關係', cd.baby_relation)}
+      ${kv('嬰兒進住方式', cd.baby_stay_type)}
     </div>
     <h3>合約明細（銷售房型）</h3>
     <table><thead><tr><th style="width:44px">項次</th><th>銷售品名</th><th style="width:80px">天數</th><th style="width:110px">單價（/日）</th><th style="width:110px">小計</th></tr></thead>
@@ -11064,6 +11148,13 @@ async function viewCustomers() {
     const $q = id => $('#cust-extra').querySelector(id);
     const gv = id => { const el = $q(id); return el ? el.value.trim() : ''; };
 
+    // 勾選式欄位（疾病史／飲食禁忌）：勾選項＋其他自填，合併為單一欄位
+    const checkValue = (sel, otherSel) => {
+      const picked = [...$('#cust-extra').querySelectorAll(`${sel}:checked`)].map(el => el.value);
+      const other = gv(otherSel);
+      if (other) picked.push(other);
+      return picked.join('、');
+    };
     const ctPayload = () => {
       const babies = $('#cust-extra').querySelector('input[name="ctr-babies"]:checked');
       const cd = (d.contract && d.contract.data) || {};
@@ -11073,9 +11164,26 @@ async function viewCustomers() {
         parity_no: gv('#ct-parity'), baby_count: babies ? babies.value : '',
         delivery_mode: gv('#ct-delmode'), checkup_hospital: gv('#ct-ckhosp'), checkup_doctor: gv('#ct-ckdoc'),
         birth_hospital: gv('#ct-bhosp'), birth_date: gv('#ct-bdate'), birth_mode: gv('#ct-bmode'),
-        butler: gv('#ct-butler'), diet_ban: gv('#ct-dietban'), note: gv('#ct-note'),
-        mother_phone: gv('#ct-mphone'),
-        emergency_name: gv('#ct-emname'), emergency_relation: gv('#ct-emrel'), emergency_phone: gv('#ct-emphone')
+        butler: gv('#ct-butler'), diet_ban: checkValue('.ct-dietban', '#ct-dietban-other'), note: gv('#ct-note'),
+        mother_phone: gv('#ct-mphone'), mother_id_no: gv('#ct-idno'), mother_birth_date: gv('#ct-mbirth'),
+        emergency_name: gv('#ct-emname'), emergency_relation: gv('#ct-emrel'), emergency_phone: gv('#ct-emphone'),
+        // 訂房確認單欄位
+        phone_home: gv('#ct-phhome'), phone_company: gv('#ct-phcomp'),
+        mother_email: gv('#ct-email'), mother_address: gv('#ct-addr'),
+        book_date: gv('#ct-bookdate'), review_deadline: gv('#ct-review'), csection_date: gv('#ct-csec'),
+        gift_days: gv('#ct-giftdays'), diet_type: gv('#ct-diettype'), meal_plan: gv('#ct-mealplan'),
+        deposit_method: gv('#ct-depmethod'), referrer: gv('#ct-referrer'),
+        receptionist: gv('#ct-recept'), reviewer: gv('#ct-reviewer'),
+        disease_history: checkValue('.ct-disease', '#ct-disease-other'),
+        pdpa_agree: gv('#ct-pdpa'), portrait_agree: gv('#ct-portrait'),
+        // 服務契約書當事人
+        agent_is_mother: (($('#cust-extra').querySelector('input[name="ctr-agent"]:checked') || {}).value || ''),
+        agent_name: gv('#ct-agname'), agent_relation: gv('#ct-agrel'), agent_id_no: gv('#ct-agid'),
+        agent_birth: gv('#ct-agbirth'), agent_address: gv('#ct-agaddr'), agent_phone: gv('#ct-agphone'),
+        agent_phone_home: gv('#ct-aghome'), agent_phone_company: gv('#ct-agcomp'), agent_email: gv('#ct-agemail'),
+        baby_name: gv('#ct-babyname'), baby_relation: gv('#ct-babyrel'), baby_stay_type: gv('#ct-babystay'),
+        emergency_address: gv('#ct-emaddr'), emergency_phone_home: gv('#ct-emhome'),
+        emergency_phone_company: gv('#ct-emcomp'), emergency_email: gv('#ct-ememail')
       };
       // 禮券／折扣／贈品：主存檔一併帶入（有變更才蓋存檔人）
       for (const [sel, key, byKey] of [['#ct-voucher', 'voucher_amount', 'voucher_by'],
@@ -11091,6 +11199,7 @@ async function viewCustomers() {
         ['#ct-handler', '經手人'], ['#ct-sign', '簽約日期'], ['#ct-due', '預產期'],
         ['#ct-expin', '預計入住日'], ['#ct-parity', '生產胎次'], ['#ct-mphone', '媽媽手機'],
         ['#ct-emname', '緊急聯絡人姓名'], ['#ct-emrel', '緊急聯絡人關係'], ['#ct-emphone', '緊急聯絡人電話'],
+        ['#ct-idno', '身分證字號'], ['#ct-mbirth', '出生年月日'],
         ['#ct-voucher', '商品禮券金額'], ['#ct-cashdisc', '現金折扣金額'], ['#ct-gift', '贈品內容']
       ];
       const missing = need.filter(([sel]) => !gv(sel)).map(([, label]) => label);
@@ -11116,6 +11225,13 @@ async function viewCustomers() {
       const days = Number(expIn.dataset.days) || 0;
       if (!expIn.value || !days) return;
       $q('#ct-expout').value = new Date(new Date(expIn.value + 'T00:00:00Z').getTime() + days * 86400000)
+        .toISOString().slice(0, 10);
+    };
+    // 訂房日期改變 → 契約審閱截止日自動帶入（訂房日＋14 天，法定審閱期）
+    const bookDate = $q('#ct-bookdate');
+    if (bookDate) bookDate.onchange = () => {
+      if (!bookDate.value) return;
+      $q('#ct-review').value = new Date(new Date(bookDate.value + 'T00:00:00Z').getTime() + 14 * 86400000)
         .toISOString().slice(0, 10);
     };
     // 寶寶報喜：實際生產醫院／日期／方式皆填寫後才可按下；先存檔再開啟填寫視窗（入住通知單）
@@ -12089,7 +12205,56 @@ async function viewCustomers() {
           <div class="field"><label>緊急聯絡人姓名 <b class="req">*</b></label><input id="ct-emname" maxlength="50" value="${esc(cd.emergency_name || '')}"></div>
           <div class="field"><label>緊急聯絡人關係 <b class="req">*</b></label><input id="ct-emrel" maxlength="20" value="${esc(cd.emergency_relation || '')}" placeholder="例：先生"></div>
           <div class="field"><label>緊急聯絡人電話 <b class="req">*</b></label><input id="ct-emphone" maxlength="20" value="${esc(cd.emergency_phone || '')}"></div>
-          <div class="field full"><label style="color:var(--danger)">媽媽飲食禁忌</label><textarea id="ct-dietban" maxlength="500" rows="3" placeholder="請填入媽媽飲食禁忌">${esc(cd.diet_ban !== undefined ? cd.diet_ban : (m.diet_notes || ''))}</textarea></div>
+          <div class="field full"><label style="font-weight:700;color:var(--primary)">訂房確認單欄位（電子簽約時自動帶入）</label></div>
+          <div class="field"><label>身分證字號 <b class="req">*</b><small>（同步住客主檔）</small></label><input id="ct-idno" maxlength="10" value="${esc(m.id_no || '')}"></div>
+          <div class="field"><label>出生年月日 <b class="req">*</b><small>（同步住客主檔）</small></label><input type="date" id="ct-mbirth" value="${esc(m.birth_date || '')}"></div>
+          <div class="field"><label>住家電話</label><input id="ct-phhome" maxlength="20" value="${esc(cd.phone_home || '')}"></div>
+          <div class="field"><label>公司電話</label><input id="ct-phcomp" maxlength="20" value="${esc(cd.phone_company || '')}"></div>
+          <div class="field"><label>電子郵件</label><input id="ct-email" maxlength="100" value="${esc(cd.mother_email || p.email || '')}"></div>
+          <div class="field full"><label>通訊地址</label><input id="ct-addr" maxlength="120" value="${esc(cd.mother_address || '')}"></div>
+          <div class="field"><label>訂房日期</label><input type="date" id="ct-bookdate" value="${esc(cd.book_date || cd.sign_date || '')}"></div>
+          <div class="field"><label>契約審閱截止日<small>（訂房日 +14 天，可改）</small></label><input type="date" id="ct-review" value="${esc(cd.review_deadline || '')}"></div>
+          <div class="field"><label>預計剖腹日</label><input type="date" id="ct-csec" value="${esc(cd.csection_date || '')}"></div>
+          <div class="field"><label>贈送天數</label><input type="number" min="0" max="99" id="ct-giftdays" value="${esc(cd.gift_days || '0')}"></div>
+          <div class="field"><label>飲食餐別</label><select id="ct-diettype"><option value="">--請選擇--</option>${['葷食', '全素', '奶蛋素'].map(o => `<option ${cd.diet_type === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>月子餐別</label><input id="ct-mealplan" maxlength="50" value="${esc(cd.meal_plan || '')}"></div>
+          <div class="field"><label>訂金支付方式</label><select id="ct-depmethod"><option value="">--請選擇--</option>${['現金', '匯款'].map(o => `<option ${cd.deposit_method === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>介紹人</label><input id="ct-referrer" maxlength="50" value="${esc(cd.referrer || '')}"></div>
+          <div class="field"><label>接待人員</label><input id="ct-recept" maxlength="50" value="${esc(cd.receptionist || '')}"></div>
+          <div class="field"><label>覆核</label><input id="ct-reviewer" maxlength="50" value="${esc(cd.reviewer || '')}"></div>
+          <div class="field full"><label>疾病史</label>
+            <div class="row" style="gap:14px;flex-wrap:wrap;padding-top:6px">${DISEASE_OPTS.map(o =>
+              `<label class="bna-chk"><input type="checkbox" class="ct-disease" value="${o}" ${(cd.disease_history || '').split('、').includes(o) ? 'checked' : ''}> ${o}</label>`).join('')}
+              <label class="bna-chk">其他：<input id="ct-disease-other" maxlength="60" style="max-width:180px" value="${esc(listOther(cd.disease_history, DISEASE_OPTS))}"></label></div>
+            <small style="color:var(--muted)">未勾選任何項目時，訂房確認單印為「無」。</small></div>
+          <div class="field"><label>個資提供合作廠商</label><select id="ct-pdpa"><option value="">--未確認--</option>${['同意', '不同意'].map(o => `<option ${cd.pdpa_agree === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>肖像權使用（住房須知）</label><select id="ct-portrait"><option value="">--未確認--</option>${['同意', '不同意'].map(o => `<option ${cd.portrait_agree === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field full"><label style="font-weight:700;color:var(--primary)">服務契約書當事人欄位</label></div>
+          <div class="field full"><label>立契約書人（甲方）</label>
+            <div class="row" style="gap:14px;padding-top:6px">${['即產婦本人', '由契約委託人簽訂'].map(o =>
+              `<label class="bna-chk"><input type="radio" name="ctr-agent" value="${o}" ${(cd.agent_is_mother || '即產婦本人') === o ? 'checked' : ''}> ${o}</label>`).join('')}</div>
+            <small style="color:var(--muted)">選「由契約委託人簽訂」時，請填寫下列委託人資料；留空則契約以產婦本人資料列印。</small></div>
+          <div class="field"><label>委託人姓名</label><input id="ct-agname" maxlength="50" value="${esc(cd.agent_name || '')}"></div>
+          <div class="field"><label>與產婦之關係</label><input id="ct-agrel" maxlength="20" value="${esc(cd.agent_relation || '')}" placeholder="例：配偶"></div>
+          <div class="field"><label>委託人身分證字號</label><input id="ct-agid" maxlength="20" value="${esc(cd.agent_id_no || '')}"></div>
+          <div class="field"><label>委託人出生年月日</label><input type="date" id="ct-agbirth" value="${esc(cd.agent_birth || '')}"></div>
+          <div class="field"><label>委託人行動電話</label><input id="ct-agphone" maxlength="20" value="${esc(cd.agent_phone || '')}"></div>
+          <div class="field"><label>委託人住家電話</label><input id="ct-aghome" maxlength="20" value="${esc(cd.agent_phone_home || '')}"></div>
+          <div class="field"><label>委託人公司電話</label><input id="ct-agcomp" maxlength="20" value="${esc(cd.agent_phone_company || '')}"></div>
+          <div class="field"><label>委託人電子郵件</label><input id="ct-agemail" maxlength="100" value="${esc(cd.agent_email || '')}"></div>
+          <div class="field full"><label>委託人地址</label><input id="ct-agaddr" maxlength="120" value="${esc(cd.agent_address || '')}"></div>
+          <div class="field"><label>嬰兒姓名</label><input id="ct-babyname" maxlength="50" value="${esc(cd.baby_name || '')}" placeholder="尚未命名可留空"></div>
+          <div class="field"><label>嬰兒與甲方之關係</label><input id="ct-babyrel" maxlength="20" value="${esc(cd.baby_relation || '')}" placeholder="例：子／女"></div>
+          <div class="field"><label>嬰兒進住方式</label><select id="ct-babystay"><option value="">--請選擇--</option>${['隨同產婦進住', '單獨托嬰'].map(o => `<option ${cd.baby_stay_type === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>緊急聯絡人住家電話</label><input id="ct-emhome" maxlength="20" value="${esc(cd.emergency_phone_home || '')}"></div>
+          <div class="field"><label>緊急聯絡人公司電話</label><input id="ct-emcomp" maxlength="20" value="${esc(cd.emergency_phone_company || '')}"></div>
+          <div class="field"><label>緊急聯絡人電子郵件</label><input id="ct-ememail" maxlength="100" value="${esc(cd.emergency_email || '')}"></div>
+          <div class="field full"><label>緊急聯絡人地址</label><input id="ct-emaddr" maxlength="120" value="${esc(cd.emergency_address || '')}"></div>
+          <div class="field full"><label style="color:var(--danger)">媽媽飲食禁忌</label>
+            <div class="row" style="gap:14px;flex-wrap:wrap;padding-top:6px">${DIET_BAN_OPTS.map(o =>
+              `<label class="bna-chk"><input type="checkbox" class="ct-dietban" value="${o}" ${(cd.diet_ban !== undefined ? cd.diet_ban : (m.diet_notes || '')).split('、').includes(o) ? 'checked' : ''}> ${o}</label>`).join('')}
+              <label class="bna-chk">其他：<input id="ct-dietban-other" maxlength="120" style="max-width:220px" value="${esc(listOther(cd.diet_ban !== undefined ? cd.diet_ban : (m.diet_notes || ''), DIET_BAN_OPTS))}"></label></div>
+            <small style="color:var(--muted)">未勾選任何項目時，訂房確認單印為「無」。</small></div>
           <div class="field full"><label>合約備註</label><textarea id="ct-note" maxlength="600" rows="3" placeholder="請填入合約備註">${esc(cd.note || '')}</textarea></div>
           <div class="field full"><label>潛在客戶備註</label><div style="padding:6px 0;color:#555">${esc(p.note || '—')}</div></div>
           <div class="field full"><label>預約參觀備註</label><div style="padding:6px 0;color:#555">${lastTour ? `最後參觀日期：${esc(lastTour)}` : '—'}</div></div>

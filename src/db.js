@@ -1,6 +1,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const { PACKET_TEMPLATES, DOC_KIND_LABELS } = require('./contract-docs');
 
 // 預設正式資料庫；測試／其他環境可用 MAMACARE_DB 覆寫，不影響線上預設
 const DB_PATH = process.env.MAMACARE_DB || path.join(__dirname, '..', 'data', 'mamacare.db');
@@ -1193,6 +1194,23 @@ function init() {
   if (!ctCols.includes('handler')) db.exec("ALTER TABLE contracts ADD COLUMN handler TEXT DEFAULT ''");
   // 合約明細/總額實質變更後標示「需重簽」（人工按重新簽署後清除）
   if (!ctCols.includes('needs_resign')) db.exec('ALTER TABLE contracts ADD COLUMN needs_resign INTEGER NOT NULL DEFAULT 0');
+  // 合約包：一次簽約應完整附上的多份文件共用一組 packet_id（＝主文件 id），
+  // 由同一份手寫簽名一次完成；sign_required=0 者為閱讀確認文件（記 ack_at）
+  if (!ctCols.includes('packet_id')) db.exec('ALTER TABLE contracts ADD COLUMN packet_id INTEGER');
+  if (!ctCols.includes('doc_kind')) db.exec("ALTER TABLE contracts ADD COLUMN doc_kind TEXT NOT NULL DEFAULT 'other'");
+  if (!ctCols.includes('sign_required')) db.exec('ALTER TABLE contracts ADD COLUMN sign_required INTEGER NOT NULL DEFAULT 1');
+  if (!ctCols.includes('sort_order')) db.exec('ALTER TABLE contracts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+  if (!ctCols.includes('ack_at')) db.exec("ALTER TABLE contracts ADD COLUMN ack_at TEXT DEFAULT ''");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_contracts_packet ON contracts(packet_id)');
+  // 舊資料：單份合約自成一包
+  db.exec('UPDATE contracts SET packet_id = id WHERE packet_id IS NULL');
+
+  // 合約範本：標註文件種類與是否須手寫簽名，供「完整合約包」一次帶入
+  const ctpCols = db.prepare('PRAGMA table_info(contract_templates)').all().map(c => c.name);
+  if (!ctpCols.includes('doc_kind')) db.exec("ALTER TABLE contract_templates ADD COLUMN doc_kind TEXT NOT NULL DEFAULT 'other'");
+  if (!ctpCols.includes('sign_required')) db.exec('ALTER TABLE contract_templates ADD COLUMN sign_required INTEGER NOT NULL DEFAULT 1');
+  if (!ctpCols.includes('sort_order')) db.exec('ALTER TABLE contract_templates ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+  if (!ctpCols.includes('in_packet')) db.exec('ALTER TABLE contract_templates ADD COLUMN in_packet INTEGER NOT NULL DEFAULT 0');
 
   // 應收帳款催收：記錄最後催收時間
   const bkCols = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
@@ -1897,6 +1915,23 @@ function ensureContractTemplate() {
   for (const [name, body] of DEFAULT_TEMPLATES) {
     if (has.get(name).c === 0) ins.run(name, body);
   }
+  // 簽約必附的 5 份正式文件：首次建立並標記為合約包成員；
+  // 已存在者只補種類/簽名別/順序，不覆寫機構自行修改過的內文
+  const insPacket = db.prepare(`INSERT INTO contract_templates
+    (name, body, active, doc_kind, sign_required, sort_order, in_packet) VALUES (?,?,1,?,?,?,1)`);
+  const updPacket = db.prepare(`UPDATE contract_templates
+    SET doc_kind=?, sign_required=?, sort_order=?, in_packet=1 WHERE id=?`);
+  const find = db.prepare('SELECT id, body FROM contract_templates WHERE name = ?');
+  const usedBy = db.prepare('SELECT COUNT(*) c FROM contracts WHERE template_id = ?');
+  const updBody = db.prepare('UPDATE contract_templates SET body = ? WHERE id = ?');
+  for (const t of PACKET_TEMPLATES) {
+    const cur = find.get(t.name);
+    if (!cur) { insPacket.run(t.name, t.body, t.doc_kind, t.sign_required, t.sort_order); continue; }
+    updPacket.run(t.doc_kind, t.sign_required, t.sort_order, cur.id);
+    // 還沒用來產生過合約的範本，隨系統版本更新內文；一旦用過就不再覆寫，
+    // 以免蓋掉機構自行修訂的條文
+    if (cur.body !== t.body && usedBy.get(cur.id).c === 0) updBody.run(t.body, cur.id);
+  }
 }
 
 // 營運參數一律存 settings，程式內不得寫死業務數值
@@ -2274,5 +2309,6 @@ if (process.argv.includes('--seed')) {
 module.exports = {
   db, hashPassword, verifyPassword, genAccessCode, seed,
   getSettings, setSetting, DEFAULT_SETTINGS,
-  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE
+  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE,
+  DOC_KIND_LABELS
 };
