@@ -1,7 +1,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
-const { PACKET_TEMPLATES, DOC_KIND_LABELS } = require('./contract-docs');
+const { PACKET_TEMPLATES, DOC_KIND_LABELS, PARTY_FIELDS, partyBlock } = require('./contract-docs');
 
 // 預設正式資料庫；測試／其他環境可用 MAMACARE_DB 覆寫，不影響線上預設
 const DB_PATH = process.env.MAMACARE_DB || path.join(__dirname, '..', 'data', 'mamacare.db');
@@ -1201,6 +1201,8 @@ function init() {
   if (!ctCols.includes('sign_required')) db.exec('ALTER TABLE contracts ADD COLUMN sign_required INTEGER NOT NULL DEFAULT 1');
   if (!ctCols.includes('sort_order')) db.exec('ALTER TABLE contracts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
   if (!ctCols.includes('ack_at')) db.exec("ALTER TABLE contracts ADD COLUMN ack_at TEXT DEFAULT ''");
+  // 服務契約書當事人區：由產婦本人於簽署時填寫，另存不動凍結全文
+  if (!ctCols.includes('party_data')) db.exec("ALTER TABLE contracts ADD COLUMN party_data TEXT DEFAULT ''");
   db.exec('CREATE INDEX IF NOT EXISTS idx_contracts_packet ON contracts(packet_id)');
   // 舊資料：單份合約自成一包
   db.exec('UPDATE contracts SET packet_id = id WHERE packet_id IS NULL');
@@ -1937,6 +1939,12 @@ function ensureContractTemplate() {
 // 營運參數一律存 settings，程式內不得寫死業務數值
 const DEFAULT_SETTINGS = {
   center_name: 'MamaCare 產後護理之家',
+  // 機構聯絡資訊（服務契約書乙方欄位；於系統設定維護）
+  center_rep: '',
+  center_address: '',
+  center_phone: '',
+  center_fax: '',
+  center_email: '',
   nurse_baby_ratio: '5',
   temp_high: '37.5',
   temp_low: '36.0',
@@ -2310,5 +2318,5 @@ module.exports = {
   db, hashPassword, verifyPassword, genAccessCode, seed,
   getSettings, setSetting, DEFAULT_SETTINGS,
   DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE,
-  DOC_KIND_LABELS
+  DOC_KIND_LABELS, PARTY_FIELDS, partyBlock
 };

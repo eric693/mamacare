@@ -34,6 +34,82 @@ function renderSigned(c) {
     ${docs.map((d, i) => docCard(d, i, docs.length, false)).join('')}`;
 }
 
+// 服務契約書當事人區：依契約原件由產婦本人填寫（客服已建的資料先帶入，可自行修改）
+function partyForm(pre) {
+  const p = pre || {};
+  const t = (k, label, type) => `<div class="field"><label>${label}</label>
+    <input id="pf-${k}" type="${type || 'text'}" value="${esc(p[k] || '')}"></div>`;
+  const req = (k, label, type) => t(k, `${label} <b class="req">*</b>`, type);
+  return `
+    <div class="card">
+      <h3>契約當事人資料</h3>
+      <p class="sig-hint">本區依契約原件應由<strong>產婦本人填寫</strong>。已知資料先為您帶入，請確認並補齊，送出後會列入服務契約書。</p>
+      <h4>產婦</h4>
+      <div class="form-grid">
+        ${req('mother_name', '產婦姓名')}
+        <div class="field"><label>與立契約書人甲方之關係</label>
+          <div class="row" style="gap:14px;padding-top:8px">
+            <label><input type="radio" name="pf-isparty" value="是" ${p.mother_is_party !== '否' ? 'checked' : ''}> 即立契約書人甲方</label>
+            <label><input type="radio" name="pf-isparty" value="否" ${p.mother_is_party === '否' ? 'checked' : ''}> 另有甲方，關係：</label>
+          </div>
+          <input id="pf-mother_relation" value="${esc(p.mother_relation || '')}" placeholder="例如：配偶／母親">
+        </div>
+        ${req('mother_id_no', '身分證字號')}
+        ${req('mother_birth', '出生年月日', 'date')}
+        ${req('mother_address', '地址')}
+        ${req('mother_phone', '行動電話')}
+        ${t('mother_phone_home', '住家電話')}
+        ${t('mother_phone_company', '公司電話')}
+        ${t('mother_email', '電子郵件信箱', 'email')}
+      </div>
+      <h4>嬰兒</h4>
+      <div class="form-grid">
+        ${t('baby_name', '嬰兒姓名')}
+        ${t('baby_relation', '與甲方之關係')}
+        <div class="field"><label>進住方式</label>
+          <div class="row" style="gap:14px;padding-top:8px">
+            ${['隨同產婦進住', '單獨托嬰'].map(o =>
+              `<label><input type="radio" name="pf-stay" value="${o}" ${p.baby_stay_type === o ? 'checked' : ''}> ${o}</label>`).join('')}
+          </div></div>
+      </div>
+      <h4>緊急聯絡人</h4>
+      <div class="form-grid">
+        ${req('emergency_name', '姓名')}
+        ${t('emergency_relation', '與產婦或嬰兒之關係')}
+        ${t('emergency_address', '地址')}
+        ${req('emergency_phone', '行動電話')}
+        ${t('emergency_phone_home', '住家電話')}
+        ${t('emergency_phone_company', '公司電話')}
+        ${t('emergency_email', '電子郵件信箱', 'email')}
+      </div>
+      <h4>契約當事人（甲方）</h4>
+      <div class="form-grid">
+        ${req('party_name', '甲方姓名')}
+        ${t('party_id_no', '身分證字號')}
+        ${t('party_birth', '出生年月日', 'date')}
+        ${t('party_address', '地址')}
+        ${t('party_phone', '行動電話')}
+        ${t('party_phone_company', '公司電話')}
+        ${t('party_phone_home', '住家電話')}
+        ${t('party_email', '電子郵件信箱', 'email')}
+      </div>
+    </div>`;
+}
+
+// 收集產婦填寫的當事人資料
+function collectParty(fields) {
+  const out = {};
+  for (const f of fields) {
+    const el = document.getElementById(`pf-${f.key}`);
+    if (el) out[f.key] = el.value.trim();
+  }
+  const isParty = document.querySelector('input[name="pf-isparty"]:checked');
+  if (isParty) out.mother_is_party = isParty.value;
+  const stay = document.querySelector('input[name="pf-stay"]:checked');
+  if (stay) out.baby_stay_type = stay.value;
+  return out;
+}
+
 function renderSign(c) {
   document.getElementById('brand').textContent = c.center_name || '合約電子簽署';
   const docs = docsOf(c);
@@ -44,6 +120,7 @@ function renderSign(c) {
       <ol class="doc-list">${docs.map(d => `<li>${esc(d.title)}${d.sign_required ? '' : '（閱讀確認）'}</li>`).join('')}</ol>
     </div>
     ${docs.map((d, i) => docCard(d, i, docs.length, true)).join('')}
+    ${docs.some(d => d.needs_party) ? partyForm(c.party_prefill) : ''}
     <div class="card">
       <div class="form-grid">
         <div class="field"><label>簽署人姓名</label><input id="sg-name" placeholder="請填寫本人姓名"></div>
@@ -105,6 +182,7 @@ function setupPad() {
 
   document.getElementById('sg-clear').onclick = resize;
   document.getElementById('sg-submit').onclick = async () => {
+    const partyFields = (loaded && loaded.party_fields) || [];
     const errEl = document.getElementById('sg-err');
     errEl.textContent = '';
     const name = document.getElementById('sg-name').value.trim();
@@ -122,6 +200,7 @@ function setupPad() {
         method: 'POST',
         body: {
           acks: boxes.map(b => Number(b.value)),
+          party: partyFields.length ? collectParty(partyFields) : undefined,
           signer_name: name,
           signer_relation: document.getElementById('sg-rel').value.trim(),
           signer_id_last4: document.getElementById('sg-id').value.trim(),
@@ -133,10 +212,12 @@ function setupPad() {
   };
 }
 
+let loaded = null;
 async function load() {
   if (!token) { renderError('簽署連結無效'); return; }
   try {
     const c = await api(`/sign/${encodeURIComponent(token)}`);
+    loaded = c;
     if (c.status === 'signed') renderSigned(c);
     else if (c.status === 'void') renderError('此合約已作廢，無法簽署。');
     else renderSign(c);

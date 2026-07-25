@@ -7,7 +7,7 @@ const multer = require('multer');
 const {
   db, hashPassword, verifyPassword, genAccessCode, seed,
   getSettings, setSetting, DEFAULT_SETTINGS,
-  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE, DOC_KIND_LABELS
+  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE, DOC_KIND_LABELS, PARTY_FIELDS, partyBlock
 } = require('./db');
 const notify = require('./notify');
 const { buildWorkbook } = require('./xlsx');
@@ -6947,6 +6947,11 @@ function contractContext(bookingId) {
     bk, cd,
     map: {
       center_name: getSettings().center_name || '',
+      center_rep: getSettings().center_rep || blank(8),
+      center_address: getSettings().center_address || blank(24),
+      center_phone: getSettings().center_phone || blank(12),
+      center_fax: getSettings().center_fax || blank(12),
+      center_email: getSettings().center_email || blank(18),
       mother_name: bk.mother_name || '',
       mother_phone: bk.mother_phone || '',
       room_name: bk.room_name || '',
@@ -7216,7 +7221,7 @@ app.get('/api/contracts/:id/packet', requireStaff, (req, res) => {
     LEFT JOIN rooms r ON r.id = bk.room_id WHERE bk.id = ?`).get(c.booking_id) || {};
   res.json({
     mother_name: info.mother_name || '', room_name: info.room_name || '',
-    docs: packetDocs(c).map(d => ({ ...d, kind_label: DOC_KIND_LABELS[d.doc_kind] || '' }))
+    docs: packetDocs(c).map(d => ({ ...d, body: withParty(d), kind_label: DOC_KIND_LABELS[d.doc_kind] || '' }))
   });
 });
 
@@ -7316,6 +7321,14 @@ app.delete('/api/contracts/:id', requireAdmin, (req, res) => {
 });
 
 // ---- 公開簽署（持簽署連結即可，無須登入）----
+// 服務契約書當事人區由產婦本人填寫：凍結全文保留 {{party_block}} 佔位，
+// 檢視／簽署／列印時才依已填內容組出（未填則印空白欄供手寫）
+function withParty(doc) {
+  let party = null;
+  try { party = doc.party_data ? JSON.parse(doc.party_data) : null; } catch (e) { party = null; }
+  return String(doc.body || '').split('{{party_block}}').join(partyBlock(party));
+}
+
 // 審閱起始日留白的合約：簽署當下以簽署日（及 +14 日）回填凍結全文
 function fillSignDates(body, on) {
   const d = on || today();
@@ -7339,12 +7352,40 @@ app.get('/api/sign/:token', (req, res) => {
     signer_name: c.signer_name, signer_relation: c.signer_relation,
     signed_at: c.signed_at, signature_data: c.status === 'signed' ? c.signature_data : '',
     docs: docs.map(d => ({
-      id: d.id, title: d.title, body: d.body, status: d.status,
+      id: d.id, title: d.title, body: withParty(d), status: d.status,
       doc_kind: d.doc_kind, kind_label: DOC_KIND_LABELS[d.doc_kind] || '',
-      sign_required: d.sign_required
-    }))
+      sign_required: d.sign_required,
+      // 服務契約書的當事人區須由產婦本人填寫
+      needs_party: d.body.includes('{{party_block}}') ? 1 : 0
+    })),
+    party_fields: PARTY_FIELDS.map(([key, label]) => ({ key, label })),
+    party_prefill: docs.some(d => d.body.includes('{{party_block}}')) ? partyPrefill(c.booking_id) : null
   });
 });
+
+// 當事人表單預帶值：以客服已建的合約資料與住客主檔為底，產婦可自行修改
+function partyPrefill(bookingId) {
+  const ctx = contractContext(bookingId);
+  if (!ctx) return null;
+  const cd = ctx.cd || {}, bk = ctx.bk;
+  return {
+    mother_name: bk.mother_name || '', mother_id_no: bk.mother_id_no || '',
+    mother_birth: bk.mother_birth || '', mother_address: cd.mother_address || '',
+    mother_phone: bk.mother_phone || '', mother_phone_home: cd.phone_home || '',
+    mother_phone_company: cd.phone_company || '', mother_email: cd.mother_email || '',
+    mother_is_party: cd.agent_name ? '否' : '是', mother_relation: cd.agent_relation || '',
+    baby_name: cd.baby_name || '', baby_relation: cd.baby_relation || '',
+    baby_stay_type: cd.baby_stay_type || '',
+    emergency_name: cd.emergency_name || '', emergency_address: cd.emergency_address || '',
+    emergency_phone: cd.emergency_phone || '', emergency_phone_home: cd.emergency_phone_home || '',
+    emergency_phone_company: cd.emergency_phone_company || '', emergency_email: cd.emergency_email || '',
+    emergency_relation: cd.emergency_relation || '',
+    party_name: cd.agent_name || bk.mother_name || '', party_id_no: cd.agent_id_no || bk.mother_id_no || '',
+    party_birth: cd.agent_birth || bk.mother_birth || '', party_address: cd.agent_address || cd.mother_address || '',
+    party_phone: cd.agent_phone || bk.mother_phone || '', party_phone_company: cd.agent_phone_company || '',
+    party_phone_home: cd.agent_phone_home || '', party_email: cd.agent_email || cd.mother_email || ''
+  };
+}
 
 app.post('/api/sign/:token', (req, res) => {
   const c = db.prepare('SELECT * FROM contracts WHERE sign_token = ?').get(req.params.token);
@@ -7378,7 +7419,26 @@ app.post('/api/sign/:token', (req, res) => {
   const args = [name, (b.signer_relation || '').trim(),
     (b.signer_id_last4 || '').replace(/\D/g, '').slice(-4),
     sig, req.ip || '', (req.headers['user-agent'] || '').slice(0, 300)];
-  db.transaction(() => { for (const d of docs) upd.run(...args, fillSignDates(d.body), d.id); })();
+  // 當事人區須由產婦本人填寫；缺必填欄位則不予簽署
+  const needParty = docs.filter(d => String(d.body).includes('{{party_block}}'));
+  const party = (b.party && typeof b.party === 'object') ? b.party : null;
+  if (needParty.length) {
+    const required = [['mother_name', '產婦姓名'], ['mother_id_no', '產婦身分證字號'],
+      ['mother_birth', '產婦出生年月日'], ['mother_address', '產婦地址'],
+      ['mother_phone', '產婦行動電話'], ['party_name', '甲方姓名'],
+      ['emergency_name', '緊急聯絡人'], ['emergency_phone', '緊急聯絡人行動電話']];
+    const miss = required.filter(([k]) => !party || !String(party[k] || '').trim()).map(([, l]) => l);
+    if (miss.length) return res.status(400).json({ error: `請填寫契約當事人資料：${miss.join('、')}` });
+  }
+  const partyJson = party
+    ? JSON.stringify(Object.fromEntries(PARTY_FIELDS
+      .map(([k]) => [k, String(party[k] ?? '').slice(0, 200)])))
+    : '';
+  const setParty = db.prepare('UPDATE contracts SET party_data = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const d of docs) upd.run(...args, fillSignDates(d.body), d.id);
+    for (const d of needParty) setParty.run(partyJson, d.id);
+  })();
   logAudit(req, { action: 'sign', entity: 'contracts', entity_id: c.packet_id || c.id,
     summary: `簽署人:${name}（合約包 ${docs.length} 份文件）` });
   res.json({ ok: true });

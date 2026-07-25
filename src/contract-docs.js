@@ -186,31 +186,12 @@ const TPL_SERVICE_CONTRACT = `{{center_name}} 服務契約書
 第十八條 契約書之收執
 　本契約書壹式貳份，由甲、乙雙方各執壹份。附件：{{center_name}}服務內容。
 
-── 契約當事人 ──
-產婦姓名：{{mother_name}}　與甲方之關係：{{agent_relation}}
-　身分證字號：{{mother_id_no}}　出生年月日：{{mother_birth}}
-　地址：{{mother_address}}
-　行動電話：{{mother_phone}}　住家電話：{{phone_home}}　公司電話：{{phone_company}}
-　電子郵件信箱：{{mother_email}}
-
-嬰兒姓名：{{baby_name}}　與甲方之關係：{{baby_relation}}
-　進住方式：{{baby_stay_type}}
-
-緊急聯絡人：{{emergency_name}}　與產婦或嬰兒之關係：{{emergency_relation}}
-　地址：{{emergency_address}}
-　行動電話：{{emergency_phone}}　住家電話：{{emergency_phone_home}}　公司電話：{{emergency_phone_company}}
-　電子郵件信箱：{{emergency_email}}
-
-甲方（立契約書人）：{{agent_name}}
-　身分證字號：{{agent_id_no}}　出生年月日：{{agent_birth}}
-　地址：{{agent_address}}
-　行動電話：{{agent_phone}}　住家電話：{{agent_phone_home}}　公司電話：{{agent_phone_company}}
-　電子郵件信箱：{{agent_email}}
+{{party_block}}
 
 乙方：{{center_name}}
-　代表人：＿＿＿＿＿　承辦人：{{handler}}
-　地址：＿＿＿＿＿＿＿＿＿＿＿＿＿＿＿
-　電話：＿＿＿＿＿＿　傳真：＿＿＿＿＿＿　電子郵件信箱：＿＿＿＿＿＿＿＿＿
+　代表人：{{center_rep}}　承辦人：{{handler}}
+　地址：{{center_address}}
+　電話：{{center_phone}}　傳真：{{center_fax}}　電子郵件信箱：{{center_email}}
 
 中華民國 {{today}}`;
 
@@ -322,3 +303,57 @@ const DOC_KIND_LABELS = {
 };
 
 module.exports = { PACKET_TEMPLATES, DOC_KIND_LABELS };
+
+// 服務契約書當事人區：由產婦本人填寫（紙本手寫／電子簽署時於簽署頁填）
+// 未填寫前印出空白欄位，簽署時以產婦填寫的內容取代
+const PARTY_FIELDS = [
+  ['mother_name', '產婦姓名'], ['mother_is_party', '產婦是否即立契約書人甲方'],
+  ['mother_relation', '產婦與甲方之關係'], ['mother_id_no', '產婦身分證字號'],
+  ['mother_birth', '產婦出生年月日'], ['mother_address', '產婦地址'],
+  ['mother_phone', '產婦行動電話'], ['mother_phone_home', '產婦住家電話'],
+  ['mother_phone_company', '產婦公司電話'], ['mother_email', '產婦電子郵件信箱'],
+  ['baby_name', '嬰兒姓名'], ['baby_relation', '嬰兒與甲方之關係'],
+  ['baby_stay_type', '嬰兒進住方式'],
+  ['emergency_name', '緊急聯絡人'], ['emergency_address', '緊急聯絡人地址'],
+  ['emergency_phone', '緊急聯絡人行動電話'], ['emergency_phone_home', '緊急聯絡人住家電話'],
+  ['emergency_phone_company', '緊急聯絡人公司電話'], ['emergency_email', '緊急聯絡人電子郵件信箱'],
+  ['emergency_relation', '緊急聯絡人與產婦或嬰兒之關係'],
+  ['party_name', '甲方姓名'], ['party_id_no', '甲方身分證字號'], ['party_birth', '甲方出生年月日'],
+  ['party_address', '甲方地址'], ['party_phone', '甲方行動電話'],
+  ['party_phone_company', '甲方公司電話'], ['party_phone_home', '甲方住家電話'],
+  ['party_email', '甲方電子郵件信箱']
+];
+
+// 依產婦填寫的內容組出當事人區；p 為空時輸出空白填寫欄（供紙本手寫）
+function partyBlock(p) {
+  const d = p || {};
+  const v = (k, n) => d[k] || '＿'.repeat(n);
+  const box = (on, label) => `${on ? '■' : '□'}${label}`;
+  const isParty = d.mother_is_party === '是';
+  return `── 契約當事人（由產婦本人填寫）──
+產婦姓名：${v('mother_name', 6)}
+　${box(isParty, '即立契約書人甲方')}　${box(!!d.mother_relation, '與甲方之關係')}：${v('mother_relation', 6)}
+　身分證字號：${v('mother_id_no', 6)}　出生年月日：${v('mother_birth', 6)}
+　地址：${v('mother_address', 16)}
+　行動電話：${v('mother_phone', 7)}　住家電話：${v('mother_phone_home', 7)}　公司電話：${v('mother_phone_company', 7)}
+　電子郵件信箱：${v('mother_email', 12)}
+
+嬰兒姓名：${v('baby_name', 6)}　與甲方之關係：${v('baby_relation', 5)}
+　${box(d.baby_stay_type === '隨同產婦進住', '隨同產婦進住')}　${box(d.baby_stay_type === '單獨托嬰', '單獨托嬰')}
+
+緊急聯絡人：${v('emergency_name', 6)}
+　地址：${v('emergency_address', 16)}
+　行動電話：${v('emergency_phone', 7)}　住家電話：${v('emergency_phone_home', 7)}　公司電話：${v('emergency_phone_company', 7)}
+　電子郵件信箱：${v('emergency_email', 12)}
+　與產婦或嬰兒之關係：${v('emergency_relation', 5)}
+
+契約當事人
+　甲方：${v('party_name', 6)}
+　身分證字號：${v('party_id_no', 6)}　出生年月日：${v('party_birth', 6)}
+　地址：${v('party_address', 16)}
+　行動電話：${v('party_phone', 7)}　公司電話：${v('party_phone_company', 7)}　住家電話：${v('party_phone_home', 7)}
+　電子郵件信箱：${v('party_email', 12)}`;
+}
+
+module.exports.PARTY_FIELDS = PARTY_FIELDS;
+module.exports.partyBlock = partyBlock;

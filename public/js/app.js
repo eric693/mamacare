@@ -4207,6 +4207,11 @@ async function viewSettings() {
     <div class="card">
       <div class="form-grid">
         <div class="field full"><label>機構名稱</label><input id="st-name" value="${esc(s.center_name)}"></div>
+        <div class="field"><label>負責人／代表人<small>（服務契約書乙方欄位）</small></label><input id="st-rep" value="${esc(s.center_rep || '')}"></div>
+        <div class="field"><label>機構電話</label><input id="st-phone" value="${esc(s.center_phone || '')}"></div>
+        <div class="field"><label>機構傳真</label><input id="st-fax" value="${esc(s.center_fax || '')}"></div>
+        <div class="field"><label>機構電子郵件</label><input id="st-email" value="${esc(s.center_email || '')}"></div>
+        <div class="field full"><label>機構地址</label><input id="st-address" value="${esc(s.center_address || '')}"></div>
         <div class="field">
           <label>護理人力比（1 名護理人員照護嬰兒數）</label>
           <input type="number" id="st-ratio" min="1" max="20" value="${esc(s.nurse_baby_ratio)}">
@@ -4347,6 +4352,11 @@ async function viewSettings() {
         method: 'PUT',
         body: {
           center_name: $('#st-name').value.trim(),
+          center_rep: $('#st-rep').value.trim(),
+          center_address: $('#st-address').value.trim(),
+          center_phone: $('#st-phone').value.trim(),
+          center_fax: $('#st-fax').value.trim(),
+          center_email: $('#st-email').value.trim(),
           nurse_baby_ratio: Number($('#st-ratio').value),
           jaundice_alert: $('#st-jaundice').value,
           temp_high: $('#st-temp-high').value,
@@ -4727,7 +4737,7 @@ async function openTemplateManager() {
     <p>範本內容可使用占位符，產生合約時自動帶入訂房資料：<br>
       <small>${esc('{{center_name}} {{mother_name}} {{mother_phone}} {{room_name}} {{room_type}} {{check_in}} {{check_out}} {{days}} {{total_amount}} {{deposit}} {{balance}} {{today}}')}</small><br>
       訂房確認單／服務契約書當事人欄位：<br>
-      <small>${esc('{{mother_id_no}} {{mother_birth}} {{mother_address}} {{mother_email}} {{phone_home}} {{phone_company}} {{due_date}} {{parity_no}} {{baby_count}} {{birth_hospital}} {{birth_mode}} {{csection_date}} {{diet_type}} {{meal_plan}} {{diet_ban}} {{disease_history}} {{book_date}} {{review_start}} {{review_deadline}} {{gift_days}} {{deposit_method}} {{referrer}} {{receptionist}} {{reviewer}} {{handler}} {{emergency_name}} {{emergency_relation}} {{emergency_phone}} {{pdpa_agree}} {{portrait_agree}}')}</small></p>
+      <small>${esc('{{mother_id_no}} {{mother_birth}} {{mother_address}} {{mother_email}} {{phone_home}} {{phone_company}} {{due_date}} {{parity_no}} {{baby_count}} {{birth_hospital}} {{birth_mode}} {{csection_date}} {{diet_type}} {{meal_plan}} {{diet_ban}} {{disease_history}} {{book_date}} {{review_start}} {{review_deadline}} {{gift_days}} {{deposit_method}} {{referrer}} {{receptionist}} {{reviewer}} {{handler}} {{emergency_name}} {{emergency_relation}} {{emergency_phone}} {{pdpa_agree}} {{portrait_agree}} {{center_rep}} {{center_address}} {{center_phone}} {{center_fax}} {{center_email}} {{party_block}}')}</small></p>
     <div class="table-wrap"><table class="data stack"><tbody>${list}</tbody></table></div>
     <div class="row mt"><button class="btn" id="tpl-new">新增範本</button></div>`, body => {
     body.querySelector('#tpl-new').onclick = () => openTemplateEditor(null);

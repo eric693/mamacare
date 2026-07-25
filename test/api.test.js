@@ -163,13 +163,27 @@ test('簽約文件包：缺件被擋、齊全才可建立，一次簽名涵蓋�
   // 未逐份確認閱讀 → 400
   assert.strictEqual((await req('POST', `/api/sign/${tok}`,
     { signer_name: '王小美', signature_data: goodPng, acks: [] }, false)).status, 400);
-  // 全部確認 → 整包簽署完成
+  // 服務契約書當事人區未填 → 400（該區依契約原件由產婦本人填寫）
+  const acks = page.data.docs.map(d => d.id);
+  assert.ok(page.data.docs.some(d => d.needs_party), '服務契約書應要求填寫當事人資料');
+  assert.strictEqual((await req('POST', `/api/sign/${tok}`,
+    { signer_name: '王小美', signature_data: goodPng, acks }, false)).status, 400);
+  // 全部確認並填妥當事人資料 → 整包簽署完成
+  const party = { mother_name: '王小美', mother_id_no: 'A223456789', mother_birth: '1994-03-02',
+    mother_address: '台北市中山區測試路1號', mother_phone: '0911222333', party_name: '王小美',
+    emergency_name: '陳先生', emergency_phone: '0955666777', emergency_relation: '配偶',
+    baby_stay_type: '隨同產婦進住' };
   const ok = await req('POST', `/api/sign/${tok}`,
-    { signer_name: '王小美', signature_data: goodPng, acks: page.data.docs.map(d => d.id) }, false);
+    { signer_name: '王小美', signature_data: goodPng, acks, party }, false);
   assert.strictEqual(ok.status, 200);
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
   const pk = (await req('GET', `/api/contracts/${full.data.id}/packet`)).data;
   assert.ok(pk.docs.every(d => d.status === 'signed' && d.signature_data));
+  // 當事人區以產婦填寫的內容呈現，且不再殘留占位符
+  const contractDoc = pk.docs.find(d => d.doc_kind === 'contract');
+  assert.ok(contractDoc.body.includes('台北市中山區測試路1號'), '契約應含產婦填寫的地址');
+  assert.ok(contractDoc.body.includes('陳先生'), '契約應含產婦填寫的緊急聯絡人');
+  assert.ok(!contractDoc.body.includes('{{party_block}}'), '不應殘留當事人區占位符');
 });
 
 test('電子簽署：公開頁免登入可讀（pending）', async () => {
