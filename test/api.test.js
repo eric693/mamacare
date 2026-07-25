@@ -145,7 +145,14 @@ test('電子簽署：由訂房＋單份選用範本建立合約', async () => {
 
 test('簽約文件包：缺件被擋、齊全才可建立，一次簽名涵蓋全部文件', async () => {
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
-  const bk = (await req('GET', '/api/bookings')).data[0].id;
+  // 自建一組客戶與訂房，避免動到其他測試共用的種子資料
+  const base = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const D = n => new Date(base + n * 86400000).toISOString().slice(0, 10);
+  const mom = (await req('POST', '/api/mothers', { name: '合約包測試媽', phone: '0900111222' })).data;
+  await req('PUT', `/api/customers/${mom.id}/contract`, { handler: '王主任', expected_check_in: D(200) });
+  const room = (await req('GET', '/api/rooms')).data.find(r => r.active && r.room_type === '標準房');
+  const bk = (await req('POST', '/api/bookings', { mother_id: mom.id, room_id: room.id,
+    check_in: D(200), check_out: D(210), deposit: 0, total_amount: 100000 })).data.id;
   const packet = (await req('GET', '/api/contract-templates')).data.filter(t => t.active && t.in_packet);
   assert.ok(packet.length >= 2, '應有合約包必附範本');
   // 少附一份 → 400
@@ -169,16 +176,16 @@ test('簽約文件包：缺件被擋、齊全才可建立，一次簽名涵蓋�
   assert.strictEqual((await req('POST', `/api/sign/${tok}`,
     { signer_name: '王小美', signature_data: goodPng, acks }, false)).status, 400);
   // 全部確認並填妥當事人資料 → 整包簽署完成
-  const party = { mother_name: '王小美', mother_id_no: 'A223456789', mother_birth: '1994-03-02',
-    mother_address: '台北市中山區測試路1號', mother_phone: '0911222333', party_name: '王小美',
+  const party = { mother_name: '合約包測試媽', mother_id_no: 'A277000111', mother_birth: '1994-03-02',
+    mother_address: '台北市中山區測試路1號', mother_phone: '0977000111', party_name: '合約包測試媽',
     emergency_name: '陳先生', emergency_phone: '0955666777', emergency_relation: '配偶',
     baby_stay_type: '隨同產婦進住',
     // 訂房確認單同由媽媽本人填寫
     due_date: '2026-12-01', parity_no: '第1胎', birth_mode: '自然產', diet_type: '葷食',
     diet_ban: '牛肉、羊肉', disease_history: '', pdpa_agree: '同意',
-    booker_name: '王小美', booker_id_no: 'A223456789', booker_phone: '0911222333' };
+    booker_name: '合約包測試媽', booker_id_no: 'A277000111', booker_phone: '0977000111' };
   const ok = await req('POST', `/api/sign/${tok}`,
-    { signer_name: '王小美', signature_data: goodPng, acks, party }, false);
+    { signer_name: '合約包測試媽', signature_data: goodPng, acks, party }, false);
   assert.strictEqual(ok.status, 200);
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
   const pk = (await req('GET', `/api/contracts/${full.data.id}/packet`)).data;
@@ -192,8 +199,14 @@ test('簽約文件包：缺件被擋、齊全才可建立，一次簽名涵蓋�
   const formDoc = pk.docs.find(d => d.doc_kind === 'booking');
   assert.ok(formDoc.body.includes('■自然產') && formDoc.body.includes('■牛肉'), '勾選項應正確呈現');
   assert.ok(formDoc.body.includes('■同意'), '個資同意應正確呈現');
-  assert.ok(formDoc.body.includes('訂房人：王小美'), '訂房人應為媽媽填寫的內容');
+  assert.ok(formDoc.body.includes('訂房人：合約包測試媽'), '訂房人應為媽媽填寫的內容');
   assert.ok(!/\{\{(mom|booker)_block\}\}/.test(formDoc.body), '不應殘留媽媽填寫區占位符');
+  // 媽媽填寫的資料須回寫住客主檔與合約資料（飲食禁忌要讓月子餐看得到）
+  const cust = (await req('GET', `/api/customers/${mom.id}`)).data;
+  assert.strictEqual(cust.mother.diet_notes, '牛肉、羊肉', '飲食禁忌應同步住客主檔');
+  assert.strictEqual(cust.mother.id_no, 'A277000111', '身分證字號應同步住客主檔');
+  assert.strictEqual(cust.contract.data.diet_type, '葷食', '飲食餐別應同步合約資料');
+  assert.strictEqual(cust.contract.data.emergency_phone, '0955666777', '緊急聯絡人應同步合約資料');
 });
 
 test('電子簽署：公開頁免登入可讀（pending）', async () => {

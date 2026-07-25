@@ -7397,6 +7397,69 @@ app.get('/api/sign/:token', (req, res) => {
   });
 });
 
+// 簽署時媽媽填寫的資料 → 住客主檔與合約資料（僅覆寫有填的欄位，不清空既有資料）
+// 飲食禁忌同步 mothers.diet_notes，月子餐與護理才看得到
+function syncPartyToCustomer(bookingId, party) {
+  const bk = db.prepare('SELECT mother_id FROM bookings WHERE id = ?').get(bookingId);
+  if (!bk) return [];
+  const val = k => String(party[k] ?? '').trim();
+  const changed = [];
+  // 住客主檔
+  const mother = db.prepare('SELECT * FROM mothers WHERE id = ?').get(bk.mother_id);
+  if (!mother) return [];
+  for (const [key, col, label] of [['mother_id_no', 'id_no', '身分證字號'],
+    ['mother_birth', 'birth_date', '出生年月日'], ['mother_phone', 'phone', '手機'],
+    ['due_date', 'due_date', '預產期'], ['birth_mode', 'delivery_type', '生產方式'],
+    ['diet_ban', 'diet_notes', '飲食禁忌']]) {
+    const v = val(key);
+    if (v && v !== String(mother[col] ?? '')) {
+      db.prepare(`UPDATE mothers SET ${col} = ? WHERE id = ?`).run(v.slice(0, 500), mother.id);
+      changed.push(label);
+    }
+  }
+  // 合約資料（客戶管理→合約資料）
+  const cc = db.prepare("SELECT * FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(mother.id);
+  if (cc) {
+    let data = {};
+    try { data = JSON.parse(cc.data || '{}'); } catch (e) { data = {}; }
+    const map = [['mother_phone_home', 'phone_home', '住家電話'], ['mother_phone_company', 'phone_company', '公司電話'],
+      ['mother_address', 'mother_address', '通訊地址'], ['mother_email', 'mother_email', '電子郵件'],
+      ['parity_no', 'parity_no', '生產胎次'], ['birth_hospital', 'birth_hospital', '生產醫院'],
+      ['birth_mode', 'birth_mode', '生產方式'], ['csection_date', 'csection_date', '預計剖腹日'],
+      ['diet_type', 'diet_type', '飲食餐別'], ['meal_plan', 'meal_plan', '月子餐別'],
+      ['diet_ban', 'diet_ban', '飲食禁忌'], ['disease_history', 'disease_history', '疾病史'],
+      ['pdpa_agree', 'pdpa_agree', '個資同意'],
+      ['emergency_name', 'emergency_name', '緊急聯絡人'], ['emergency_relation', 'emergency_relation', '緊急聯絡人關係'],
+      ['emergency_phone', 'emergency_phone', '緊急聯絡人電話'], ['emergency_address', 'emergency_address', '緊急聯絡人地址'],
+      ['emergency_phone_home', 'emergency_phone_home', '緊急聯絡人住家電話'],
+      ['emergency_phone_company', 'emergency_phone_company', '緊急聯絡人公司電話'],
+      ['emergency_email', 'emergency_email', '緊急聯絡人電子郵件'],
+      ['baby_name', 'baby_name', '嬰兒姓名'], ['baby_relation', 'baby_relation', '嬰兒與甲方關係'],
+      ['baby_stay_type', 'baby_stay_type', '嬰兒進住方式']];
+    let dirty = false;
+    for (const [key, field, label] of map) {
+      const v = val(key);
+      if (v && v !== String(data[field] ?? '')) { data[field] = v; dirty = true; changed.push(label); }
+    }
+    // 甲方非產婦本人時，把甲方資料存為契約委託人
+    if (val('mother_is_party') === '否' && val('party_name')) {
+      for (const [key, field] of [['party_name', 'agent_name'], ['mother_relation', 'agent_relation'],
+        ['party_id_no', 'agent_id_no'], ['party_birth', 'agent_birth'], ['party_address', 'agent_address'],
+        ['party_phone', 'agent_phone'], ['party_phone_home', 'agent_phone_home'],
+        ['party_phone_company', 'agent_phone_company'], ['party_email', 'agent_email']]) {
+        const v = val(key);
+        if (v && v !== String(data[field] ?? '')) { data[field] = v; dirty = true; }
+      }
+      changed.push('契約委託人');
+    }
+    if (dirty) {
+      db.prepare(`UPDATE customer_contracts SET data = ?, updated_at = datetime('now','localtime')
+        WHERE id = ?`).run(JSON.stringify(data).slice(0, 12000), cc.id);
+    }
+  }
+  return [...new Set(changed)];
+}
+
 // 當事人表單預帶值：以客服已建的合約資料與住客主檔為底，產婦可自行修改
 function partyPrefill(bookingId) {
   const ctx = contractContext(bookingId);
@@ -7487,8 +7550,10 @@ app.post('/api/sign/:token', (req, res) => {
     for (const d of docs) upd.run(...args, fillSignDates(d.body), d.id);
     for (const d of needParty) setParty.run(partyJson, d.id);
   })();
+  // 媽媽於簽署頁填寫的資料回寫住客主檔與合約資料，避免飲食禁忌等資訊只留在合約裡
+  const synced = party ? syncPartyToCustomer(c.booking_id, party) : [];
   logAudit(req, { action: 'sign', entity: 'contracts', entity_id: c.packet_id || c.id,
-    summary: `簽署人:${name}（合約包 ${docs.length} 份文件）` });
+    summary: `簽署人:${name}（合約包 ${docs.length} 份文件）${synced.length ? `；同步客戶資料：${synced.join('、')}` : ''}` });
   res.json({ ok: true });
 });
 
