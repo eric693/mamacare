@@ -58,14 +58,7 @@ const TPL_BRIEF = `{{center_name}} 服務說明書
 // 二、訂房確認單（11412）
 const TPL_BOOKING_FORM = `{{center_name}} 訂 房 確 認 單
 
-一、準媽媽基本資料
-　姓名：{{mother_name}}　　身分證字號：{{mother_id_no}}
-　出生年月日：{{mother_birth}}　　預產期：{{due_date}}　　胎次：{{parity_no}}
-　生產醫院/診所：{{birth_hospital}}　　生產方式：{{birth_mode}}　　預計剖腹日：{{csection_date}}
-　聯絡電話　手機：{{mother_phone}}　住家：{{phone_home}}　公司：{{phone_company}}
-　飲食餐別：{{diet_type}}　　月子餐別：{{meal_plan}}
-　飲食禁忌：{{diet_ban}}
-　疾病史：{{disease_history}}
+{{mom_block}}
 
 二、預定相關資料
 　訂房日期：{{book_date}}　　14天契約審閱期限：{{review_deadline}}
@@ -75,18 +68,14 @@ const TPL_BOOKING_FORM = `{{center_name}} 訂 房 確 認 單
 　　．媽媽寶寶需實際住滿指定天數方可享有贈送內容。
 　　．第二位寶寶起每日加收照護費$2,500。
 　　．房間配置設計格局及位置，依現場房況安排為主，恕難指定敬請見諒。
-　費用總額：新臺幣 {{total_amount}} 元整
-　訂　　金：新臺幣 {{deposit}} 元整（{{deposit_method}}）
-　餘　　款：新臺幣 {{balance}} 元整
+{{gift_remark}}
+　費用總額：新臺幣 {{total_amount}} 元整（未扣除現金折扣）
+　訂　　金：新臺幣 {{deposit}} 元整（總額 10%）　{{deposit_method}}
+　餘　　款：新臺幣 {{balance}} 元整（未扣除現金折扣）
 　介紹人：{{referrer}}　　接待人員：{{receptionist}}　　覆核：{{reviewer}}
 
-※本人 {{pdpa_agree}} 提供相關服務之必要範圍內，將本人之個人資料提供予其合作廠商使用。
+{{booker_block}}
 
-三、訂房附件資料均為服務契約的一部分，包括：
-　1. 服務說明書　2. 訂房確認單　3. 服務契約書　4. 服務內容　5. 住房須知暨同意書
-
-　訂房人：{{mother_name}}　　身分證字號：{{mother_id_no}}
-　聯絡電話：{{mother_phone}}
 　{{center_name}}　客服承辦人：{{handler}}　　日期：{{today}}`;
 
 // 三、服務契約書（03，114.11 版）
@@ -357,3 +346,63 @@ function partyBlock(p) {
 
 module.exports.PARTY_FIELDS = PARTY_FIELDS;
 module.exports.partyBlock = partyBlock;
+
+// 訂房確認單「一、準媽媽基本資料」與「訂房人」：依表單原件由媽媽本人填寫
+const MOM_FIELDS = [
+  ['mother_name', '姓名'], ['mother_id_no', '身分證字號'], ['due_date', '預產期'],
+  ['parity_no', '第幾胎'], ['mother_birth', '出生年月日'], ['birth_hospital', '醫院／診所'],
+  ['birth_mode', '生產方式'], ['csection_date', '預計剖腹日'],
+  ['mother_phone', '手機'], ['mother_phone_home', '住家電話'], ['mother_phone_company', '公司電話'],
+  ['diet_type', '飲食餐別'], ['meal_plan', '月子餐別'], ['diet_ban', '飲食禁忌'],
+  ['disease_history', '疾病史'], ['pdpa_agree', '個資提供合作廠商'],
+  ['booker_name', '訂房人姓名'], ['booker_id_no', '訂房人身分證字號'], ['booker_phone', '訂房人聯絡電話']
+];
+// 訂房確認單勾選項（與紙本一致）
+const DIET_TYPES = ['葷食', '全素', '奶蛋素'];
+const DIET_BANS = ['牛肉', '羊肉', '內臟', '帶殼海鮮', '堅果類'];
+const DISEASES = ['心臟疾病', '高血壓', '糖尿病', '甲狀腺亢進/低下', '貧血', '氣喘',
+  'B型肝炎', 'C型肝炎', '自體免疫疾病'];
+
+// 勾選欄：已選打■，其餘留□；「其他」自填內容附在後面
+function checkLine(value, options, noneLabel, filled) {
+  const picked = String(value || '').split('、').filter(Boolean);
+  const other = picked.filter(x => !options.includes(x)).join('、');
+  const boxes = options.map(o => `${picked.includes(o) ? '■' : '□'}${o}`);
+  // 空白表單（尚未填寫）一律留空框，填寫後未勾任何項目才視為「無」
+  const none = noneLabel ? [`${filled && !picked.length ? '■' : '□'}${noneLabel}`] : [];
+  return [...none, ...boxes, `${other ? '■' : '□'}其他：${other || '＿＿＿＿＿'}`].join('　');
+}
+
+// 訂房確認單準媽媽基本資料區（未填時印空白欄供手寫）
+function momBlock(p) {
+  const d = p || {};
+  const filled = !!p;
+  const v = (k, n) => d[k] || '＿'.repeat(n);
+  const box = (on, label) => `${on ? '■' : '□'}${label}`;
+  return `一、準媽媽基本資料（由媽媽本人填寫）
+　姓名：${v('mother_name', 6)}　身分證字號：${v('mother_id_no', 6)}　預產期：${v('due_date', 6)}　第 ${String(d.parity_no || '').replace(/第|胎/g, '') || '＿'} 胎
+　出生年月日：${v('mother_birth', 6)}　醫院／診所：${v('birth_hospital', 8)}
+　${box(d.birth_mode === '自然產', '自然產')}　${box(d.birth_mode === '剖腹產', '剖腹產')}　預計剖腹日：${v('csection_date', 6)}
+　聯絡電話　手機：${v('mother_phone', 7)}　住家：${v('mother_phone_home', 7)}　公司：${v('mother_phone_company', 7)}
+　飲食餐別：${DIET_TYPES.map(o => box(d.diet_type === o, o)).join('　')}　月子餐別：${v('meal_plan', 8)}
+　飲食禁忌：${checkLine(d.diet_ban, DIET_BANS, '無', filled)}
+　疾病史：${checkLine(d.disease_history, DISEASES, '無', filled)}`;
+}
+
+// 個資同意與訂房人（同由媽媽本人填寫）
+function bookerBlock(p) {
+  const d = p || {};
+  const v = (k, n) => d[k] || '＿'.repeat(n);
+  const box = (on, label) => `${on ? '■' : '□'}${label}`;
+  return `※本人 ${box(d.pdpa_agree === '同意', '同意')}　${box(d.pdpa_agree === '不同意', '不同意')} 提供相關服務之必要範圍內，將本人之個人資料提供予其合作廠商使用。
+
+三、訂房附件資料均為服務契約的一部分，包括：
+　1. 服務說明書　2. 訂房確認單　3. 服務契約書　4. 服務內容　5. 住房須知暨同意書
+
+　訂房人：${v('booker_name', 6)}　身分證字號：${v('booker_id_no', 6)}
+　聯絡電話：${v('booker_phone', 7)}`;
+}
+
+module.exports.MOM_FIELDS = MOM_FIELDS;
+module.exports.momBlock = momBlock;
+module.exports.bookerBlock = bookerBlock;

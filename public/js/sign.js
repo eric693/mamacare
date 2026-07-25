@@ -96,6 +96,64 @@ function partyForm(pre) {
     </div>`;
 }
 
+// 訂房確認單「一、準媽媽基本資料」與訂房人：依表單原件由媽媽本人填寫
+function momForm(pre) {
+  const p = pre || {};
+  const t = (k, label, type) => `<div class="field"><label>${label}</label>
+    <input id="pf-${k}" type="${type || 'text'}" value="${esc(p[k] || '')}"></div>`;
+  const req = (k, label, type) => t(k, `${label} <b class="req">*</b>`, type);
+  const pick = (name, key, opts) => `<div class="row" style="gap:14px;flex-wrap:wrap;padding-top:8px">${opts.map(o =>
+    `<label><input type="radio" name="${name}" value="${o}" ${p[key] === o ? 'checked' : ''}> ${o}</label>`).join('')}</div>`;
+  const checks = (cls, key, opts) => `<div class="row" style="gap:12px;flex-wrap:wrap;padding-top:6px">${opts.map(o =>
+    `<label><input type="checkbox" class="${cls}" value="${o}" ${(p[key] || '').split('、').includes(o) ? 'checked' : ''}> ${o}</label>`).join('')}</div>`;
+  return `
+    <div class="card">
+      <h3>訂房確認單－準媽媽基本資料</h3>
+      <p class="sig-hint">本區依表單原件應由<strong>媽媽本人填寫</strong>，請確認並補齊。</p>
+      <div class="form-grid">
+        ${req('mother_name', '姓名')}
+        ${req('mother_id_no', '身分證字號')}
+        ${req('due_date', '預產期', 'date')}
+        ${t('parity_no', '第幾胎')}
+        ${req('mother_birth', '出生年月日', 'date')}
+        ${t('birth_hospital', '醫院／診所')}
+        <div class="field"><label>生產方式</label>${pick('pf-birthmode', 'birth_mode', ['自然產', '剖腹產'])}</div>
+        ${t('csection_date', '預計剖腹日', 'date')}
+        ${req('mother_phone', '手機')}
+        ${t('mother_phone_home', '住家電話')}
+        ${t('mother_phone_company', '公司電話')}
+        <div class="field"><label>飲食餐別</label>${pick('pf-diettype', 'diet_type', ['葷食', '全素', '奶蛋素'])}</div>
+        ${t('meal_plan', '月子餐別')}
+        <div class="field full"><label>飲食禁忌（未勾選視為無）</label>
+          ${checks('pf-dietban', 'diet_ban', ['牛肉', '羊肉', '內臟', '帶殼海鮮', '堅果類'])}
+          <input id="pf-dietban-other" placeholder="其他：請填寫" value="${esc(otherOf(p.diet_ban, ['牛肉', '羊肉', '內臟', '帶殼海鮮', '堅果類']))}"></div>
+        <div class="field full"><label>疾病史（未勾選視為無）</label>
+          ${checks('pf-disease', 'disease_history', DISEASE_OPTS)}
+          <input id="pf-disease-other" placeholder="其他：請填寫" value="${esc(otherOf(p.disease_history, DISEASE_OPTS))}"></div>
+        <div class="field full"><label>個人資料提供合作廠商 <b class="req">*</b></label>
+          ${pick('pf-pdpa', 'pdpa_agree', ['同意', '不同意'])}</div>
+      </div>
+      <h4>訂房人</h4>
+      <div class="form-grid">
+        ${req('booker_name', '訂房人姓名')}
+        ${t('booker_id_no', '身分證字號')}
+        ${req('booker_phone', '聯絡電話')}
+      </div>
+    </div>`;
+}
+
+const DISEASE_OPTS = ['心臟疾病', '高血壓', '糖尿病', '甲狀腺亢進/低下', '貧血', '氣喘',
+  'B型肝炎', 'C型肝炎', '自體免疫疾病'];
+function otherOf(v, opts) {
+  return (v || '').split('、').filter(x => x && !opts.includes(x)).join('、');
+}
+function checkedValue(cls, otherId) {
+  const picked = [...document.querySelectorAll(`.${cls}:checked`)].map(el => el.value);
+  const other = document.getElementById(otherId);
+  if (other && other.value.trim()) picked.push(other.value.trim());
+  return picked.join('、');
+}
+
 // 收集產婦填寫的當事人資料
 function collectParty(fields) {
   const out = {};
@@ -107,6 +165,16 @@ function collectParty(fields) {
   if (isParty) out.mother_is_party = isParty.value;
   const stay = document.querySelector('input[name="pf-stay"]:checked');
   if (stay) out.baby_stay_type = stay.value;
+  for (const [name, key] of [['pf-birthmode', 'birth_mode'], ['pf-diettype', 'diet_type'], ['pf-pdpa', 'pdpa_agree']]) {
+    const el = document.querySelector(`input[name="${name}"]:checked`);
+    if (el) out[key] = el.value;
+  }
+  if (document.querySelector('.pf-dietban') || document.getElementById('pf-dietban-other')) {
+    out.diet_ban = checkedValue('pf-dietban', 'pf-dietban-other');
+  }
+  if (document.querySelector('.pf-disease') || document.getElementById('pf-disease-other')) {
+    out.disease_history = checkedValue('pf-disease', 'pf-disease-other');
+  }
   return out;
 }
 
@@ -120,6 +188,7 @@ function renderSign(c) {
       <ol class="doc-list">${docs.map(d => `<li>${esc(d.title)}${d.sign_required ? '' : '（閱讀確認）'}</li>`).join('')}</ol>
     </div>
     ${docs.map((d, i) => docCard(d, i, docs.length, true)).join('')}
+    ${docs.some(d => d.needs_mom) ? momForm(c.party_prefill) : ''}
     ${docs.some(d => d.needs_party) ? partyForm(c.party_prefill) : ''}
     <div class="card">
       <div class="form-grid">

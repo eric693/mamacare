@@ -10969,6 +10969,7 @@ async function viewCustomers() {
   const deepId = Number((location.hash.split('?m=')[1] || '').split('&')[0]) || null;
   const sel = (id, opts, val) => `<select id="${id}"><option value="">--請選擇--</option>${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
   let editId = null;
+  let staffNames = null;   // 帳號清單快取（客服承辦人選單用）
 
   main().innerHTML = `
     <div class="page-title">客戶管理 <small style="font-weight:400;color:var(--muted);font-size:.9rem">潛在客戶與媽媽資料查詢</small></div>
@@ -11089,6 +11090,8 @@ async function viewCustomers() {
   async function selectCustomer(id) {
     let d;
     try { d = await api(`/customers/${id}`); } catch (e) { alert(e.message); return; }
+    // 客服承辦人（經手人）改為選單，直接抓帳號清單
+    if (!staffNames) { try { staffNames = await api('/users'); } catch (e) { staffNames = []; } }
     editId = id;
     const m = d.mother;
     $('#cust-banner').innerHTML = `
@@ -12194,7 +12197,8 @@ async function viewCustomers() {
         <div class="form-grid">
           <div class="field"><label>媽媽姓名</label><input value="${esc(m.name)}" readonly></div>
           <div class="field"><label>合約編號</label><input value="${ct ? esc(ct.contract_no) : ''}" readonly placeholder="存檔後自動編號"></div>
-          <div class="field"><label>經手人 <b class="req">*</b></label><input id="ct-handler" maxlength="50" value="${esc(cd.handler || '')}"></div>
+          <div class="field"><label>客服承辦人（經手人） <b class="req">*</b></label>
+            <select id="ct-handler">${handlerSelectOptions(staffNames, cd.handler || '')}</select></div>
           <div class="field"><label>合約總額</label><input value="$${total.toLocaleString()}" readonly></div>
           <div class="field"><label>簽約日期 <b class="req">*</b></label><input type="date" id="ct-sign" value="${esc(cd.sign_date || todayStr())}"></div>
           <div class="field"><label>預產期 <b class="req">*</b></label><input type="date" id="ct-due" value="${esc(m.due_date || '')}"></div>

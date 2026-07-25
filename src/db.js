@@ -1,7 +1,8 @@
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
-const { PACKET_TEMPLATES, DOC_KIND_LABELS, PARTY_FIELDS, partyBlock } = require('./contract-docs');
+const { PACKET_TEMPLATES, DOC_KIND_LABELS, PARTY_FIELDS, partyBlock,
+  MOM_FIELDS, momBlock, bookerBlock } = require('./contract-docs');
 
 // 預設正式資料庫；測試／其他環境可用 MAMACARE_DB 覆寫，不影響線上預設
 const DB_PATH = process.env.MAMACARE_DB || path.join(__dirname, '..', 'data', 'mamacare.db');
@@ -2318,5 +2319,5 @@ module.exports = {
   db, hashPassword, verifyPassword, genAccessCode, seed,
   getSettings, setSetting, DEFAULT_SETTINGS,
   DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE,
-  DOC_KIND_LABELS, PARTY_FIELDS, partyBlock
+  DOC_KIND_LABELS, PARTY_FIELDS, partyBlock, MOM_FIELDS, momBlock, bookerBlock
 };

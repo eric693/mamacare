@@ -172,7 +172,11 @@ test('簽約文件包：缺件被擋、齊全才可建立，一次簽名涵蓋�
   const party = { mother_name: '王小美', mother_id_no: 'A223456789', mother_birth: '1994-03-02',
     mother_address: '台北市中山區測試路1號', mother_phone: '0911222333', party_name: '王小美',
     emergency_name: '陳先生', emergency_phone: '0955666777', emergency_relation: '配偶',
-    baby_stay_type: '隨同產婦進住' };
+    baby_stay_type: '隨同產婦進住',
+    // 訂房確認單同由媽媽本人填寫
+    due_date: '2026-12-01', parity_no: '第1胎', birth_mode: '自然產', diet_type: '葷食',
+    diet_ban: '牛肉、羊肉', disease_history: '', pdpa_agree: '同意',
+    booker_name: '王小美', booker_id_no: 'A223456789', booker_phone: '0911222333' };
   const ok = await req('POST', `/api/sign/${tok}`,
     { signer_name: '王小美', signature_data: goodPng, acks, party }, false);
   assert.strictEqual(ok.status, 200);
@@ -184,6 +188,12 @@ test('簽約文件包：缺件被擋、齊全才可建立，一次簽名涵蓋�
   assert.ok(contractDoc.body.includes('台北市中山區測試路1號'), '契約應含產婦填寫的地址');
   assert.ok(contractDoc.body.includes('陳先生'), '契約應含產婦填寫的緊急聯絡人');
   assert.ok(!contractDoc.body.includes('{{party_block}}'), '不應殘留當事人區占位符');
+  // 訂房確認單：媽媽填寫區帶入且勾選正確，備註與金額齊全
+  const formDoc = pk.docs.find(d => d.doc_kind === 'booking');
+  assert.ok(formDoc.body.includes('■自然產') && formDoc.body.includes('■牛肉'), '勾選項應正確呈現');
+  assert.ok(formDoc.body.includes('■同意'), '個資同意應正確呈現');
+  assert.ok(formDoc.body.includes('訂房人：王小美'), '訂房人應為媽媽填寫的內容');
+  assert.ok(!/\{\{(mom|booker)_block\}\}/.test(formDoc.body), '不應殘留媽媽填寫區占位符');
 });
 
 test('電子簽署：公開頁免登入可讀（pending）', async () => {

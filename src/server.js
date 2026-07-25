@@ -7,7 +7,8 @@ const multer = require('multer');
 const {
   db, hashPassword, verifyPassword, genAccessCode, seed,
   getSettings, setSetting, DEFAULT_SETTINGS,
-  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE, DOC_KIND_LABELS, PARTY_FIELDS, partyBlock
+  DIAPER_RASH_LEVELS, RASH_OCCURRED, RASH_SEVERE, DOC_KIND_LABELS,
+  PARTY_FIELDS, partyBlock, MOM_FIELDS, momBlock, bookerBlock
 } = require('./db');
 const notify = require('./notify');
 const { buildWorkbook } = require('./xlsx');
@@ -6924,15 +6925,14 @@ function contractContext(bookingId) {
   let cd = {};
   try { cd = JSON.parse((db.prepare("SELECT data FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id) || {}).data || '{}'); }
   catch (e) { cd = {}; }
-  // 訂房日期未填時以簽約日／今日為準
-  const bookDate = cd.book_date || cd.sign_date || today();
   // 契約金額以「合約資料明細」為準（整份合約），訂房金額僅作為未建明細時的退路
   let ccItems = [];
   try { ccItems = JSON.parse((db.prepare("SELECT items FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(bk.mother_id) || {}).items || '[]'); }
   catch (e) { ccItems = []; }
   const ccTotal = ccItems.reduce((sum, it) => sum + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
   const totalAmount = ccTotal || bk.total_amount || 0;
-  const depositAmount = bk.deposit || Math.round(totalAmount * 0.1);
+  // 訂金依契約約定為總額 10%（不扣現金折扣），現金／匯款由客服於合約資料勾選
+  const depositAmount = Math.round(totalAmount * 0.1);
   // 預約進住日期同樣以合約資料的預計入住／出住日為準，未填才回退到實際排房
   const checkIn = cd.expected_check_in || bk.check_in || '';
   const checkOut = cd.expected_check_out || bk.check_out || '';
@@ -6987,11 +6987,13 @@ function contractContext(bookingId) {
       meal_plan: cd.meal_plan || blank(10),
       diet_ban: cd.diet_ban || '無',
       disease_history: cd.disease_history || '無',
-      book_date: bookDate,
+      book_date: reviewStart,
       review_deadline: reviewEnd,
       review_start: reviewStart,
       gift_days: cd.gift_days || '0',
-      deposit_method: cd.deposit_method || blank(6),
+      deposit_method: `${cd.deposit_method === '現金' ? '■' : '□'}現金　${cd.deposit_method === '匯款' ? '■' : '□'}匯款`,
+      // 相關備註：固定條款外再帶入商品禮券／現金折扣／贈品內容
+      gift_remark: giftRemark(cd),
       referrer: cd.referrer || blank(8),
       receptionist: cd.receptionist || cd.handler || blank(8),
       reviewer: cd.reviewer || blank(8),
@@ -7021,6 +7023,15 @@ function contractContext(bookingId) {
     }
   };
 }
+// 訂房確認單「相關備註」：商品禮券＋現金折扣＋贈品內容（合約資料存檔帶入）
+function giftRemark(cd) {
+  const rows = [];
+  if (Number(cd.voucher_amount)) rows.push(`　　．商品禮券：${money(Number(cd.voucher_amount))} 元（限折抵商城商品，出住日後歸零）`);
+  if (Number(cd.cash_discount)) rows.push(`　　．現金折扣：${money(Number(cd.cash_discount))} 元（訂金仍以合約總額 10% 計算）`);
+  if (cd.gift_content) rows.push(`　　．贈品內容：${cd.gift_content}`);
+  return rows.join('\n');
+}
+
 // 未填欄位印成底線空格，讓列印出的紙本仍可手寫補填
 function blank(n) { return '＿'.repeat(Math.max(2, Math.round(n / 2))); }
 // 同意/不同意單選：未勾選時印出兩個方框供紙本勾選
@@ -7034,7 +7045,8 @@ const AUTO_SIGN_DATE = '［簽署日自動帶入］';
 const AUTO_SIGN_DEADLINE = '［簽署日＋14 日自動帶入］';
 // 審閱起始日：訂金入帳日（取最早一筆訂金收款）或雙方約定日；都無法判定則留待簽署回填
 function reviewStartDate(cd, motherId) {
-  if (cd.review_start_basis === '雙方約定') return cd.review_start_date || AUTO_SIGN_DATE;
+  // 雙方約定：優先取約定日，其次取合約資料的訂房日期（兩者即紙本第 1 頁的日期）
+  if (cd.review_start_basis === '雙方約定') return cd.review_start_date || cd.book_date || AUTO_SIGN_DATE;
   if (cd.review_start_basis === '訂金入帳日' || !cd.review_start_basis) {
     const paid = db.prepare(`SELECT MIN(p.paid_on) AS d FROM payments p
       JOIN bookings bk ON bk.id = p.booking_id
@@ -7127,7 +7139,7 @@ app.get('/api/contracts', requireStaff, (req, res) => {
 function renderContractBody(tpl, ctx) {
   let body = renderTemplate(tpl.body, ctx.map);
   // 範本未自行放入優惠欄位時，自動附上合約資料頁存檔的優惠明細（避免重複附加）
-  if (!/\{\{(voucher_amount|cash_discount|gift_content)\}\}/.test(tpl.body || '')) {
+  if (!/\{\{(voucher_amount|cash_discount|gift_content|gift_remark)\}\}/.test(tpl.body || '')) {
     body += discountBlock(ctx.cd || {});
   }
   return body;
@@ -7326,7 +7338,15 @@ app.delete('/api/contracts/:id', requireAdmin, (req, res) => {
 function withParty(doc) {
   let party = null;
   try { party = doc.party_data ? JSON.parse(doc.party_data) : null; } catch (e) { party = null; }
-  return String(doc.body || '').split('{{party_block}}').join(partyBlock(party));
+  return String(doc.body || '')
+    .split('{{party_block}}').join(partyBlock(party))
+    .split('{{mom_block}}').join(momBlock(party))
+    .split('{{booker_block}}').join(bookerBlock(party));
+}
+// 文件是否含由媽媽本人填寫的區塊
+const FILL_TOKENS = ['{{party_block}}', '{{mom_block}}', '{{booker_block}}'];
+function needsFill(body) {
+  return FILL_TOKENS.some(t => String(body || '').includes(t));
 }
 
 // 審閱起始日留白的合約：簽署當下以簽署日（及 +14 日）回填凍結全文
@@ -7355,11 +7375,12 @@ app.get('/api/sign/:token', (req, res) => {
       id: d.id, title: d.title, body: withParty(d), status: d.status,
       doc_kind: d.doc_kind, kind_label: DOC_KIND_LABELS[d.doc_kind] || '',
       sign_required: d.sign_required,
-      // 服務契約書的當事人區須由產婦本人填寫
-      needs_party: d.body.includes('{{party_block}}') ? 1 : 0
+      // 由媽媽本人填寫的區塊：服務契約書當事人區／訂房確認單基本資料
+      needs_party: d.body.includes('{{party_block}}') ? 1 : 0,
+      needs_mom: (d.body.includes('{{mom_block}}') || d.body.includes('{{booker_block}}')) ? 1 : 0
     })),
-    party_fields: PARTY_FIELDS.map(([key, label]) => ({ key, label })),
-    party_prefill: docs.some(d => d.body.includes('{{party_block}}')) ? partyPrefill(c.booking_id) : null
+    party_fields: [...PARTY_FIELDS, ...MOM_FIELDS].map(([key, label]) => ({ key, label })),
+    party_prefill: docs.some(d => needsFill(d.body)) ? partyPrefill(c.booking_id) : null
   });
 });
 
@@ -7383,7 +7404,15 @@ function partyPrefill(bookingId) {
     party_name: cd.agent_name || bk.mother_name || '', party_id_no: cd.agent_id_no || bk.mother_id_no || '',
     party_birth: cd.agent_birth || bk.mother_birth || '', party_address: cd.agent_address || cd.mother_address || '',
     party_phone: cd.agent_phone || bk.mother_phone || '', party_phone_company: cd.agent_phone_company || '',
-    party_phone_home: cd.agent_phone_home || '', party_email: cd.agent_email || cd.mother_email || ''
+    party_phone_home: cd.agent_phone_home || '', party_email: cd.agent_email || cd.mother_email || '',
+    // 訂房確認單準媽媽基本資料
+    due_date: bk.mother_due || '', parity_no: cd.parity_no || '',
+    birth_hospital: cd.birth_hospital || cd.checkup_hospital || '',
+    birth_mode: cd.birth_mode || bk.delivery_type || '', csection_date: cd.csection_date || '',
+    diet_type: cd.diet_type || '', meal_plan: cd.meal_plan || '',
+    diet_ban: cd.diet_ban || '', disease_history: cd.disease_history || '',
+    pdpa_agree: cd.pdpa_agree || '',
+    booker_name: bk.mother_name || '', booker_id_no: bk.mother_id_no || '', booker_phone: bk.mother_phone || ''
   };
 }
 
@@ -7420,18 +7449,24 @@ app.post('/api/sign/:token', (req, res) => {
     (b.signer_id_last4 || '').replace(/\D/g, '').slice(-4),
     sig, req.ip || '', (req.headers['user-agent'] || '').slice(0, 300)];
   // 當事人區須由產婦本人填寫；缺必填欄位則不予簽署
-  const needParty = docs.filter(d => String(d.body).includes('{{party_block}}'));
+  const needParty = docs.filter(d => needsFill(d.body));
   const party = (b.party && typeof b.party === 'object') ? b.party : null;
   if (needParty.length) {
-    const required = [['mother_name', '產婦姓名'], ['mother_id_no', '產婦身分證字號'],
-      ['mother_birth', '產婦出生年月日'], ['mother_address', '產婦地址'],
-      ['mother_phone', '產婦行動電話'], ['party_name', '甲方姓名'],
-      ['emergency_name', '緊急聯絡人'], ['emergency_phone', '緊急聯絡人行動電話']];
+    const hasParty = docs.some(d => String(d.body).includes('{{party_block}}'));
+    const hasMom = docs.some(d => String(d.body).includes('{{mom_block}}'));
+    const required = [
+      ['mother_name', '產婦姓名'], ['mother_id_no', '身分證字號'],
+      ['mother_birth', '出生年月日'], ['mother_phone', '行動電話'],
+      ...(hasParty ? [['mother_address', '產婦地址'], ['party_name', '甲方姓名'],
+        ['emergency_name', '緊急聯絡人'], ['emergency_phone', '緊急聯絡人行動電話']] : []),
+      ...(hasMom ? [['due_date', '預產期'], ['booker_name', '訂房人姓名'],
+        ['booker_phone', '訂房人聯絡電話'], ['pdpa_agree', '個資提供合作廠商是否同意']] : [])
+    ];
     const miss = required.filter(([k]) => !party || !String(party[k] || '').trim()).map(([, l]) => l);
-    if (miss.length) return res.status(400).json({ error: `請填寫契約當事人資料：${miss.join('、')}` });
+    if (miss.length) return res.status(400).json({ error: `請填寫應由媽媽填寫的欄位：${miss.join('、')}` });
   }
   const partyJson = party
-    ? JSON.stringify(Object.fromEntries(PARTY_FIELDS
+    ? JSON.stringify(Object.fromEntries([...PARTY_FIELDS, ...MOM_FIELDS]
       .map(([k]) => [k, String(party[k] ?? '').slice(0, 200)])))
     : '';
   const setParty = db.prepare('UPDATE contracts SET party_data = ? WHERE id = ?');
