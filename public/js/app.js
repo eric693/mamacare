@@ -4465,6 +4465,18 @@ function handlerSelectOptions(users, selected) {
 
 // 另開視窗列印／另存 PDF：凍結全文 + 簽名圖 + 簽署存證
 // 合約包檢視／列印：整包文件依附件順序連續印出，每份各自分頁，共用同一份簽名存證
+// 須簽署的文件（訂房確認單／服務契約書／住房須知）各自於文末顯示簽名
+function docSign(d, main0) {
+  if (!d.sign_required) return '';
+  if (d.status !== 'signed' || !main0.signature_data) {
+    return '<div class="doc-sign"><div class="unsigned">簽名：＿＿＿＿＿＿＿＿＿＿（尚未簽署）</div></div>';
+  }
+  return `<div class="doc-sign">
+    <img src="${main0.signature_data}" alt="簽名">
+    <div class="sig-line">簽名：${esc(main0.signer_name)}${main0.signer_relation ? `（${esc(main0.signer_relation)}）` : ''}　簽署日期：${esc((main0.signed_at || '').slice(0, 10))}</div>
+  </div>`;
+}
+
 function printPacket(pk) {
   const docs = pk.docs || [];
   if (!docs.length) return;
@@ -4481,7 +4493,7 @@ function printPacket(pk) {
         ${main0.signer_id_last4 ? `身分證末四碼：${esc(main0.signer_id_last4)}<br>` : ''}
         簽署來源 IP：${esc(main0.signed_ip || '-')}<br>
         簽署裝置：${esc(main0.signed_ua || '-')}<br>
-        本簽名同時適用本次簽約之全部 ${docs.length} 份文件。
+        本簽名同時適用本次簽約之全部 ${docs.length} 份文件（其中 ${docs.filter(d => d.sign_required).length} 份須簽署）。
       </div>
     </div>` : '<div class="sign-block"><div class="unsigned">— 本次簽約文件尚未完成簽署 —</div></div>';
   const win = window.open('', '_blank');
@@ -4494,6 +4506,8 @@ function printPacket(pk) {
       h2{font-size:17px;border-bottom:2px solid #2a7f78;padding-bottom:6px;margin:0 0 10px}
       pre{white-space:pre-wrap;font-family:inherit;font-size:15px;margin:12px 0 28px}
       .doc{page-break-after:always}
+      .doc-sign{margin:-12px 0 24px}
+      .doc-sign img{max-width:240px;max-height:100px;border-bottom:1px solid #333}
       .doc:last-of-type{page-break-after:auto}
       .toc{background:#f2f7f6;border-radius:8px;padding:12px 18px;margin-bottom:20px}
       .toc li{line-height:1.9}
@@ -4508,7 +4522,7 @@ function printPacket(pk) {
     <div class="toc"><b>${esc(pk.mother_name || '')}　${esc(pk.room_name || '')} 房　本次簽約文件（${docs.length} 份）</b>
       <ol>${docs.map(d => `<li>${esc(d.title)}${d.sign_required ? '' : '（閱讀確認）'}</li>`).join('')}</ol></div>
     ${main0.handler ? `<div style="font-size:13px;color:#555;margin-bottom:6px">經手人：${esc(main0.handler)}</div>` : ''}
-    ${docs.map(d => `<div class="doc"><h2>${esc(d.title)}</h2><pre>${esc(d.body)}</pre></div>`).join('')}
+    ${docs.map(d => `<div class="doc"><h2>${esc(d.title)}</h2><pre>${esc(d.body)}</pre>${docSign(d, main0)}</div>`).join('')}
     ${proof}
     <div class="noprint" style="margin-top:24px;text-align:center">
       <button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button>

@@ -53,7 +53,7 @@ const TPL_BRIEF = `{{center_name}} 服務說明書
 六、聯絡資訊
 如有任何疑問，請於每日上午10:00至晚上19:30來電洽詢。
 
-　　閱讀人：{{mother_name}}　　說明日期：{{today}}`;
+　（本說明書僅供閱讀了解，無須簽名。）`;
 
 // 二、訂房確認單（11412）
 const TPL_BOOKING_FORM = `{{center_name}} 訂 房 確 認 單
@@ -217,7 +217,7 @@ const TPL_SERVICE_CONTENT = `{{center_name}} 服務內容（服務契約書附�
 　收費方式：進住時全部繳清。付款方式：現金、匯款。計費方式：每日計費。
 　本次契約總金額：新臺幣 {{total_amount}} 元整；訂金：新臺幣 {{deposit}} 元整；餘款：新臺幣 {{balance}} 元整。
 
-　閱讀人：{{mother_name}}　　日期：{{today}}`;
+　（本服務內容為服務契約書附件，隨服務契約書一併生效，無須另行簽名。）`;
 
 // 五、住房須知暨同意書（11503）
 const TPL_HOUSE_RULES = `{{center_name}} 住房須知暨同意書
@@ -275,8 +275,10 @@ const TPL_HOUSE_RULES = `{{center_name}} 住房須知暨同意書
 【肖像權使用】
 入住期間內，本人 {{portrait_agree}} 產婦、寶寶及家人肖像權使用，僅做為官方網路平台活動紀錄使用。
 
-上述聲明經由本機構客服人員說明解釋，本人已了解並同意。
-　住房同意人(產婦)：{{mother_name}}　　簽訂日期：{{today}}`;
+□上述聲明經由本機構客服人員說明解釋，本人已了解並同意。
+
+　住房同意人（產婦）簽名：
+　簽訂日期：{{today}}`;
 
 // 完整合約包：順序即訂房確認單所列附件順序
 const PACKET_TEMPLATES = [

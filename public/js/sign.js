@@ -10,12 +10,13 @@ function renderError(msg) {
 function docsOf(c) {
   return (c.docs && c.docs.length) ? c.docs : [{ id: 0, title: c.title, body: c.body, sign_required: 1 }];
 }
-function docCard(d, i, total, withAck) {
-  const tag = d.sign_required ? '<span class="badge red">須簽署</span>' : '<span class="badge gray">須閱讀確認</span>';
+function docCard(d, i, total, withAck, sig) {
+  const tag = d.sign_required ? '<span class="badge red">須簽署</span>' : '<span class="badge gray">閱讀確認，無須簽名</span>';
   return `
     <div class="card">
       <h3>${esc(d.title)} <small style="color:var(--muted)">（第 ${i + 1} / ${total} 份）</small> ${tag}</h3>
       <div class="contract-body">${esc(d.body)}</div>
+      ${d.sign_required && sig ? `<div class="doc-sign"><img src="${sig}" alt="簽名"></div>` : ''}
       ${withAck ? `<label class="ack-line"><input type="checkbox" class="doc-ack" value="${d.id}"> 我已詳細閱讀並同意本份「${esc(d.title)}」內容</label>` : ''}
     </div>`;
 }
@@ -31,7 +32,7 @@ function renderSigned(c) {
       <p>簽署人：${esc(c.signer_name)}${c.signer_relation ? `（${esc(c.signer_relation)}）` : ''}</p>
       ${c.signature_data ? `<div style="margin-top:12px"><img src="${c.signature_data}" alt="簽名" style="max-width:260px;border-bottom:1px solid #333"></div>` : ''}
     </div>
-    ${docs.map((d, i) => docCard(d, i, docs.length, false)).join('')}`;
+    ${docs.map((d, i) => docCard(d, i, docs.length, false, c.signature_data)).join('')}`;
 }
 
 // 服務契約書當事人區：依契約原件由產婦本人填寫（客服已建的資料先帶入，可自行修改）
