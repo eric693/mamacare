@@ -2667,3 +2667,31 @@ test('寶寶護理指導單：評量項目條列、逐項產婦簽名（符號�
   assert.strictEqual((await req('GET', '/api/baby-guidance-items')).status, 403);
   cookie = adminCookie;
 });
+
+test('住客管理看板：今日應入住的房回傳整組營運按鈕所需欄位（與入住中一致）', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const base = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const D = n => new Date(base + n * 86400000).toISOString().slice(0, 10);
+  // 找一間今天沒人也沒排定的房，建立「今日入住」的預約（不辦入住）
+  const st0 = (await req('GET', '/api/room-status/mothers')).data;
+  const freeRoom = st0.rooms.find(r => r.state === 'vacant' && r.room_type !== '托嬰');
+  assert.ok(freeRoom, '需有空房可測');
+  const c = (await req('POST', '/api/customers', { name: `今日應入住${Date.now() % 100000}`, due_date: D(0) })).data;
+  const bk = await req('POST', '/api/bookings', {
+    mother_id: c.id, room_id: freeRoom.id, check_in: D(0), check_out: D(10)
+  });
+  assert.strictEqual(bk.status, 200);
+  const room = (await req('GET', '/api/room-status/mothers')).data.rooms.find(r => r.id === freeRoom.id);
+  assert.strictEqual(room.state, 'due_in');
+  const n = room.next_booking;
+  assert.ok(n, '今日應入住的房須帶 next_booking 供卡片渲染營運按鈕');
+  // 收費帳務／合約資料／設備清點／退房完成所需欄位（與入住中卡片同一組）
+  assert.strictEqual(n.booking_id, bk.data.id);
+  assert.strictEqual(n.mother_id, c.id);
+  assert.ok(n.mother_name && n.check_in && n.check_out);
+  // 這些營運功能對未入住的預約同樣可用
+  assert.strictEqual((await req('GET', `/api/bookings/${n.booking_id}/billing`)).status, 200);
+  assert.strictEqual((await req('GET', `/api/bookings/${n.booking_id}/equip-check`)).status, 200);
+  // 還原：取消此預約，避免影響其他測試
+  await req('PUT', `/api/bookings/${n.booking_id}/status`, { status: 'cancelled' });
+});
