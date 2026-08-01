@@ -136,6 +136,7 @@ const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolat
 // 路由 → 模組對照（依序比對，先精準後一般）；未命中者視為基礎共用端點，任何登入員工皆可存取
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
+  [/^\/api\/guidance-items/, 'mother_care'],
   [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake|handovers|handover-profile|closure)/, 'mother_care'],
   [/^\/api\/(mother-records|mother-nursing|mother-scales|mother-guidance|mother-health-problems|mother-breast-photos|mother-handovers|mother-closures)/, 'mother_care'],
   [/^\/api\/babies\/\d+\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
@@ -2206,6 +2207,118 @@ app.post('/api/mothers/:id/guidance', requireStaff, (req, res) => {
 });
 app.delete('/api/mother-guidance/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM mother_guidance_logs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 產婦護理衛教指導單（逐項指導日期／產婦簽名／評量結果／再評量） ----------
+const MGS_RESULTS = ['能瞭解', '部分瞭解需再指導', '無法瞭解'];
+
+app.get('/api/guidance-items', requireStaff, (req, res) => {
+  res.json(db.prepare('SELECT id, category, name, options, sort FROM mother_guidance_items WHERE active = 1 ORDER BY sort, id').all());
+});
+
+// 整批覆寫評量項目（順序即畫面順序）；未出現在清單中的既有項目改為停用
+app.put('/api/guidance-items', requireAdmin, (req, res) => {
+  const rows = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  const clean = rows.map(r => ({
+    id: Number(r.id) || 0,
+    category: String(r.category || '').trim().slice(0, 30),
+    name: String(r.name || '').trim().slice(0, 200),
+    options: String(r.options || '').trim().slice(0, 200)
+  })).filter(r => r.name);
+  if (!clean.length) return res.status(400).json({ error: '至少需保留一個評量項目' });
+  const keep = new Set(clean.map(r => r.id).filter(Boolean));
+  db.transaction(() => {
+    for (const r of db.prepare('SELECT id FROM mother_guidance_items WHERE active = 1').all()) {
+      if (!keep.has(r.id)) db.prepare('UPDATE mother_guidance_items SET active = 0 WHERE id = ?').run(r.id);
+    }
+    clean.forEach((r, i) => {
+      if (r.id && db.prepare('SELECT 1 FROM mother_guidance_items WHERE id = ?').get(r.id)) {
+        db.prepare('UPDATE mother_guidance_items SET category=?, name=?, options=?, sort=?, active=1 WHERE id=?')
+          .run(r.category, r.name, r.options, (i + 1) * 10, r.id);
+      } else {
+        db.prepare('INSERT INTO mother_guidance_items (category, name, options, sort) VALUES (?,?,?,?)')
+          .run(r.category, r.name, r.options, (i + 1) * 10);
+      }
+    });
+  })();
+  logAudit(req, { action: 'update', entity: 'mother_guidance_items', entity_id: 0, summary: `護理指導評量項目維護（${clean.length} 項）` });
+  res.json({ ok: true });
+});
+
+function guidanceSheetFor(motherId) {
+  return db.prepare('SELECT * FROM mother_guidance_sheets WHERE mother_id = ? AND booking_id IN (?, 0) ORDER BY booking_id DESC LIMIT 1')
+    .get(motherId, stayRootForMother(motherId));
+}
+
+app.get('/api/mothers/:id/guidance-sheet', requireStaff, (req, res) => {
+  const mother = db.prepare(`
+    SELECT m.*,
+      (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+        WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+    FROM mothers m WHERE m.id = ?`).get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const row = guidanceSheetFor(mother.id);
+  let data = {};
+  if (row) { try { data = JSON.parse(row.data); } catch (e) { data = {}; } }
+  const items = db.prepare('SELECT id, category, name, options FROM mother_guidance_items WHERE active = 1 ORDER BY sort, id').all();
+  res.json({ mother, items, entries: data.entries || {}, results: MGS_RESULTS,
+    updated_at: row ? row.updated_at : '' });
+});
+
+// 單項存檔（指導簽名／再評量簽名）：日期自動帶入當日，指導者為登入者
+app.put('/api/mothers/:id/guidance-sheet/:itemId', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const item = db.prepare('SELECT id FROM mother_guidance_items WHERE id = ? AND active = 1').get(req.params.itemId);
+  if (!item) return res.status(404).json({ error: '找不到評量項目' });
+  const b = req.body || {};
+  const stage = b.stage === 're' ? 're' : 'guide';   // guide：指導簽名；re：再評量簽名
+  if (b.result && !MGS_RESULTS.includes(b.result)) return res.status(400).json({ error: '評量結果選項不正確' });
+  const row = guidanceSheetFor(mother.id);
+  let data = {};
+  if (row) { try { data = JSON.parse(row.data); } catch (e) { data = {}; } }
+  if (!data.entries) data.entries = {};
+  const cur = data.entries[item.id] || {};
+  const sg = doctorSignature(b.mom_sign, stage === 're' ? cur.re_mom_sign : cur.mom_sign);
+  if (sg.error) return res.status(400).json({ error: sg.error });
+  if (!sg.sig) return res.status(400).json({ error: '請完成產婦手寫簽名' });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : today();
+  const picked = (Array.isArray(b.picks) ? b.picks : []).filter(x => typeof x === 'string').slice(0, 10).map(x => x.slice(0, 40));
+  const entry = { ...cur, picks: picked.length ? picked : cur.picks };
+  if (stage === 'guide') {
+    Object.assign(entry, { guide_date: date, guide_by: req.session.user.name, mom_sign: sg.sig,
+      result: b.result || cur.result || '', note: String(b.note || '').slice(0, 200) });
+  } else {
+    Object.assign(entry, { re_date: date, re_by: req.session.user.name, re_mom_sign: sg.sig,
+      re_result: b.result || cur.re_result || '', re_note: String(b.note || '').slice(0, 200) });
+  }
+  data.entries[item.id] = entry;
+  const json = JSON.stringify(data);
+  if (json.length > 4000000) return res.status(400).json({ error: '指導單資料過大，請聯絡管理員' });
+  if (row) {
+    db.prepare(`UPDATE mother_guidance_sheets SET data=?, updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`)
+      .run(json, req.session.user.id, row.id);
+  } else {
+    db.prepare('INSERT INTO mother_guidance_sheets (mother_id, booking_id, data, updated_by) VALUES (?,?,?,?)')
+      .run(mother.id, stayRootForMother(mother.id), json, req.session.user.id);
+  }
+  logAudit(req, { action: 'update', entity: 'mother_guidance_sheets', entity_id: mother.id,
+    summary: `護理指導單簽名（項目 ${item.id}／${stage === 're' ? '再評量' : '指導'}）` });
+  res.json({ ok: true, entry });
+});
+
+// 清除單項簽名（管理員）
+app.delete('/api/mothers/:id/guidance-sheet/:itemId', requireAdmin, (req, res) => {
+  const row = guidanceSheetFor(req.params.id);
+  if (!row) return res.json({ ok: true });
+  let data = {};
+  try { data = JSON.parse(row.data); } catch (e) { data = {}; }
+  if (data.entries) delete data.entries[req.params.itemId];
+  db.prepare(`UPDATE mother_guidance_sheets SET data=?, updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`)
+    .run(JSON.stringify(data), req.session.user.id, row.id);
+  logAudit(req, { action: 'delete', entity: 'mother_guidance_sheets', entity_id: Number(req.params.id), summary: '護理指導單清除單項簽名' });
   res.json({ ok: true });
 });
 

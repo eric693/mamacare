@@ -1157,6 +1157,45 @@ function init() {
     db.exec("ALTER TABLE mother_doctor_visits ADD COLUMN physician_sign TEXT NOT NULL DEFAULT ''");
     db.exec("ALTER TABLE mother_doctor_visits ADD COLUMN physician_name TEXT NOT NULL DEFAULT ''");
   }
+  // 產婦護理衛教指導單：評量項目主檔＋每位產婦一張指導單（逐項指導日期／產婦簽名／評量結果）
+  db.exec(`CREATE TABLE IF NOT EXISTS mother_guidance_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '',   -- 項目內附勾選（逗號分隔，如餵奶姿勢）
+    sort INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE TABLE IF NOT EXISTS mother_guidance_sheets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    booking_id INTEGER NOT NULL DEFAULT 0,
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id),
+    UNIQUE (mother_id, booking_id)
+  );`);
+  if (!db.prepare('SELECT COUNT(*) c FROM mother_guidance_items').get().c) {
+    const insG = db.prepare('INSERT INTO mother_guidance_items (category, name, options, sort) VALUES (?,?,?,?)');
+    [
+      ['感染管理', '能瞭解洗手時機及接觸新生兒前後需洗手。', ''],
+      ['感染管理', '說明訪客、陪宿管理作業及了解母嬰出入機構之感染管制措施。', ''],
+      ['母乳哺育', '能瞭解母乳哺育好處。', ''],
+      ['母乳哺育', '能瞭解適當餵奶姿勢。', '搖籃式,橄欖球式,修正橄欖球式,臥姿'],
+      ['母乳哺育', '餵奶時機指導－依嬰兒需求餵食。', ''],
+      ['母乳哺育', '能瞭解正確含乳姿勢。', ''],
+      ['母乳哺育', '能瞭解新生兒餵食量是否足夠的表徵。', ''],
+      ['母乳哺育', '能瞭解乳房護理及脹奶之處理方法。', ''],
+      ['母乳哺育', '能瞭解如何預防乳頭破裂及處理方法。', ''],
+      ['母乳哺育', '能瞭解乳房常見問題及處理方法。', ''],
+      ['母乳哺育', '能瞭解正確手擠乳及正確使用電動吸乳器。', ''],
+      ['母乳哺育', '能瞭解促進乳汁分泌方法、飲食注意事項。', ''],
+      ['母乳哺育', '能瞭解母乳收集、儲存及回溫方法。', ''],
+      ['母乳哺育', '母乳諮詢資料介紹。', ''],
+      ['產後護理', '會陰沖洗方法、坐浴指導。', ''],
+      ['產後護理', '傷口之異常、感染及需就醫狀況。', '']
+    ].forEach((r, i) => insG.run(r[0], r[1], r[2], (i + 1) * 10));
+  }
   // 設備清點：項目主檔（可自行增減）＋每筆訂房一張清點單
   db.exec(`CREATE TABLE IF NOT EXISTS equip_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

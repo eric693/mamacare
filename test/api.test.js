@@ -2553,3 +2553,61 @@ test('設備清點：項目主檔可增減、清點單存快照與簽名日期�
   // 空清單擋下
   assert.strictEqual((await req('PUT', '/api/equip-items', { items: [] })).status, 400);
 });
+
+test('護理指導單：評量項目主檔可增減、逐項產婦簽名（日期/指導者自動帶入）與再評量', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mom = await anyCheckedInMother();
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const png = 'data:image/png;base64,' + Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(300)]).toString('base64');
+  const g0 = await req('GET', `/api/mothers/${mom.id}/guidance-sheet`);
+  assert.strictEqual(g0.status, 200);
+  assert.ok(g0.data.items.length >= 10, '評量項目應條列出來');
+  assert.ok(g0.data.items.some(i => i.category === '母乳哺育' && i.options), '餵奶姿勢項目附勾選');
+  const item = g0.data.items[0];
+  // 缺簽名 → 400
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, { result: '能瞭解' })).status, 400);
+  // 指導簽名：日期與指導者自動帶入
+  const put = await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, {
+    stage: 'guide', result: '能瞭解', mom_sign: png, note: '已完成指導'
+  });
+  assert.strictEqual(put.status, 200);
+  const g1 = (await req('GET', `/api/mothers/${mom.id}/guidance-sheet`)).data;
+  const e1 = g1.entries[item.id];
+  assert.strictEqual(e1.guide_date, today);
+  assert.ok(e1.guide_by, '指導者自動帶入登入者');
+  assert.strictEqual(e1.mom_sign, png);
+  assert.strictEqual(e1.result, '能瞭解');
+  // 再評量簽名不覆蓋原指導簽名
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, {
+    stage: 're', result: '能瞭解', mom_sign: png
+  })).status, 200);
+  const e2 = (await req('GET', `/api/mothers/${mom.id}/guidance-sheet`)).data.entries[item.id];
+  assert.strictEqual(e2.re_date, today);
+  assert.strictEqual(e2.mom_sign, png, '原指導簽名保留');
+  // 評量結果與簽名驗證
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, {
+    result: '亂填', mom_sign: png
+  })).status, 400);
+  assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, {
+    mom_sign: 'data:image/png;base64,AAAA'
+  })).status, 400);
+  // 項目主檔維護
+  const before = (await req('GET', '/api/guidance-items')).data;
+  assert.strictEqual((await req('PUT', '/api/guidance-items', {
+    items: before.map(i => ({ id: i.id, category: i.category, name: i.name, options: i.options }))
+      .concat([{ category: '測試', name: '測試指導項目', options: '' }])
+  })).status, 200);
+  const after = (await req('GET', '/api/guidance-items')).data;
+  assert.strictEqual(after.length, before.length + 1);
+  assert.strictEqual((await req('PUT', '/api/guidance-items', { items: [] })).status, 400);
+  // 管理員可清除單項簽名
+  assert.strictEqual((await req('DELETE', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`)).status, 200);
+  assert.strictEqual((await req('GET', `/api/mothers/${mom.id}/guidance-sheet`)).data.entries[item.id], undefined);
+  // RBAC：kit_test（僅 meals）→ 403
+  const adminCookie = cookie;
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  assert.strictEqual((await req('GET', `/api/mothers/${mom.id}/guidance-sheet`)).status, 403);
+  assert.strictEqual((await req('GET', '/api/guidance-items')).status, 403);
+  cookie = adminCookie;
+});
