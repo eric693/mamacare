@@ -1196,6 +1196,55 @@ function init() {
       ['產後護理', '傷口之異常、感染及需就醫狀況。', '']
     ].forEach((r, i) => insG.run(r[0], r[1], r[2], (i + 1) * 10));
   }
+  // 寶寶護理指導單（新生兒護理衛教指導單）：評量項目主檔＋每位寶寶一張指導單
+  db.exec(`CREATE TABLE IF NOT EXISTS baby_guidance_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '',
+    sort INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE TABLE IF NOT EXISTS baby_guidance_sheets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL UNIQUE REFERENCES babies(id),
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id)
+  );`);
+  if (!db.prepare('SELECT COUNT(*) c FROM baby_guidance_items').get().c) {
+    const insB = db.prepare('INSERT INTO baby_guidance_items (category, name, sort) VALUES (?,?,?)');
+    [
+      ['親子同室', '能瞭解親子同室的好處。（註1）'],
+      ['親子同室', '親子同室注意事項及安全與感控護理指導。（註1）'],
+      ['親子同室', '能瞭解預防跌倒及嬰兒掉落的安全措施。（註1）'],
+      ['體溫監測', '新生兒體溫的監測與維持。'],
+      ['體溫監測', '能瞭解體溫異常及處理方法。'],
+      ['黃疸評估', '認識黃疸及正常數值。'],
+      ['黃疸評估', '如何觀察黃疸狀況（活動力、食慾、膚色、排便的顏色等）'],
+      ['更換尿布', '新生兒臀部清潔及預防紅臀方法。'],
+      ['更換尿布', '新生兒穿著紙尿褲注意事項。'],
+      ['新生兒安撫', '能瞭解新生兒哭泣的原因。'],
+      ['新生兒安撫', '能瞭解安撫的技巧方式。'],
+      ['瓶餵及排氣', '能正確執行瓶餵技巧。'],
+      ['瓶餵及排氣', '能正確為新生兒拍背排氣。'],
+      ['瓶餵及排氣', '個案需求－配方奶哺餵及配方奶粉沖泡方法指導。'],
+      ['嗆奶吐奶', '能瞭解嗆奶及吐奶的原因。'],
+      ['嗆奶吐奶', '能瞭解嗆奶及吐奶的處理方法。'],
+      ['新生兒沐浴', '新生兒沐浴用物的準備及注意事項。'],
+      ['新生兒沐浴', '新生兒沐浴之步驟及方法。'],
+      ['口腔護理', '能瞭解口腔清潔及步驟。'],
+      ['口腔護理', '能分辨何謂鵝口瘡症狀。'],
+      ['臍帶護理', '能瞭解或實地操作臍帶護理之步驟。'],
+      ['臍帶護理', '能分辨臍帶異常症狀。'],
+      ['返家照護注意事項', '依健兒手冊瞭解預防注射的時程與反應。'],
+      ['返家照護注意事項', '認識嬰兒發展及行為狀態，促進親子互動（註2）'],
+      ['返家照護注意事項', '需就醫的狀況。'],
+      ['返家照護注意事項', '能瞭解本中心以 LINE@ 發送訊息致產婦進行關懷追蹤。'],
+      ['返家照護注意事項', '能確實得知若有需求或疑問可致電中心進行詢問，且已知中心聯絡方式。'],
+      ['其他', '個案需求－']
+    ].forEach((r, i) => insB.run(r[0], r[1], (i + 1) * 10));
+  }
   // 設備清點：項目主檔（可自行增減）＋每筆訂房一張清點單
   db.exec(`CREATE TABLE IF NOT EXISTS equip_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

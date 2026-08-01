@@ -8293,7 +8293,9 @@ async function viewBabyRooms() {
             ${b.closed || !b.check_out || b.check_out <= data.date
               ? `<a class="btn small ${b.closed ? 'secondary' : ''}" href="#/baby-close?b=${b.id}">產後嬰兒結案${b.closed ? ' ✓' : ''}</a>`
               : `<button class="btn small secondary" disabled title="未到退房日（${esc(b.check_out)}）00:00，暫不可結案" style="opacity:.55;cursor:not-allowed">產後嬰兒結案</button>`}
-            ${canAccess('#/mother-guidance') ? `<a class="btn small" href="#/mother-guidance?m=${b.mother_id}">護理指導</a>` : ''}
+            <a class="btn small" href="#/baby-guidance?b=${b.id}">寶寶護理指導</a>
+            <a class="btn small" href="#/breastfeeding?b=${b.id}">母乳哺育評估</a>
+            ${canAccess('#/mother-guidance') ? `<a class="btn small secondary" href="#/mother-guidance?m=${b.mother_id}">產婦護理指導</a>` : ''}
             <a class="btn small secondary" href="#/baby-care">寶寶照護</a>
           </div>
           <div class="row" style="gap:6px;align-items:center;margin-top:6px">
@@ -9363,6 +9365,7 @@ async function viewBabyNursing() {
         <a class="btn small secondary" href="#/baby-eval?b=${babyId}">寶寶評估單</a>
         ${canAccess('#/baby-doctor') ? `<a class="btn small secondary" href="#/baby-doctor?b=${babyId}">醫師巡診</a>` : ''}
         <a class="btn small secondary" href="#/breastfeeding?b=${babyId}">母乳哺育評估</a>
+        <a class="btn small secondary" href="#/baby-guidance?b=${babyId}">寶寶護理指導</a>
         <a class="btn small secondary" href="#/baby-handover?b=${babyId}">新生兒交班單</a>
         <a class="btn small secondary" href="#/baby-close?b=${babyId}">嬰兒結案</a>
         <a class="btn small secondary" href="#/baby-care">嬰兒照護紀錄</a>
@@ -10807,25 +10810,11 @@ async function viewMotherHandover() {
   });
 }
 
-/* ---------- 護理指導（獨立頁；資料與媽媽護理頁共用） ---------- */
-// 產婦護理衛教指導單：評量項目逐條列出，每條由護理人員按「指導簽名」跳出簽名框給產婦簽
-async function viewMotherGuidance() {
-  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
-  const mothers = await nursingMotherList(want);
-  if (!mothers.length) {
-    main().innerHTML = '<div class="page-title">護理指導</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
-    return;
-  }
-  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
-  const [{ mother, guidance, reminders }, sheet] = await Promise.all([
-    api(`/mothers/${momId}/guidance`), api(`/mothers/${momId}/guidance-sheet`)
-  ]);
-  const kindLabel = k => k === 'care' ? '產婦護理衛教指導單' : '母乳哺育評估單';
-  const isAdmin = currentUser.role === 'admin';
+/* ---------- 護理指導單（產婦／寶寶共用；評量項目條列＋逐項產婦手寫簽名） ---------- */
+// cfg：{ base 指導單 API 前綴, itemsPath 項目主檔 API, title 單名, subjectName 對象姓名, roomName 房號, reload 重新整理 }
+function guidanceSheetHtml(sheet, cfg, isAdmin) {
   const entries = sheet.entries || {};
   const doneCount = sheet.items.filter(it => (entries[it.id] || {}).mom_sign).length;
-
-  // 指導單表格：同一評量項目類別只在第一列顯示（比照紙本的合併欄）
   let lastCat = '';
   const itemRows = sheet.items.map(it => {
     const e = entries[it.id] || {};
@@ -10843,7 +10832,7 @@ async function viewMotherGuidance() {
         <td data-label="產婦簽名">${e.mom_sign
           ? `<img src="${e.mom_sign}" alt="產婦簽名" style="height:38px;background:#fff;border:1px solid var(--line);border-radius:4px">` : '—'}</td>
         <td data-label="評量結果">${esc(e.result || '—')}${e.note ? `<br><small>${esc(e.note)}</small>` : ''}</td>
-        <td data-label="再評量 期／簽名">${e.re_date
+        <td data-label="評量日期／簽名">${e.re_date
           ? `${esc(e.re_date)}<br><small>${esc(e.re_by || '')}</small>${e.re_mom_sign
             ? `<br><img src="${e.re_mom_sign}" alt="產婦簽名" style="height:34px;background:#fff;border:1px solid var(--line);border-radius:4px">` : ''}
              ${e.re_result ? `<br><small>${esc(e.re_result)}</small>` : ''}` : '—'}</td>
@@ -10855,76 +10844,43 @@ async function viewMotherGuidance() {
         </td>
       </tr>`;
   }).join('');
-
-  main().innerHTML = `
-    <div class="page-title">護理指導 <small style="font-weight:400;color:var(--muted);font-size:.9rem">產婦護理衛教指導單／母乳哺育評估單</small></div>
-    <div class="card no-print">
-      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
-          <select id="mgl-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
-        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
-        <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
-        <button class="btn small secondary" id="mgl-print">列印指導單</button>
-        ${isAdmin ? '<button class="btn small secondary" id="mgl-items">維護評量項目</button>' : ''}
-      </div>
-      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
-        <button class="btn" data-guide-btn="care">登錄護理指導執行</button>
-        <button class="btn" data-guide-btn="breastfeeding">登錄母乳哺育評估</button>
-      </div>
-    </div>
+  return `
     <div class="card">
-      <div class="sec-hd">產婦護理衛教指導單（已完成 ${doneCount}／${sheet.items.length} 項）</div>
+      <div class="sec-hd">${esc(cfg.title)}（已完成 ${doneCount}／${sheet.items.length} 項）</div>
       <div class="row" style="gap:6px 18px;flex-wrap:wrap;font-size:.95rem;margin-bottom:8px">
-        <span><b>房號：</b>${esc(mother.room_name || '—')}</span>
-        <span><b>產婦：</b>${esc(mother.name)}</span>
+        <span><b>房號：</b>${esc(cfg.roomName || '—')}</span>
+        <span><b>${esc(cfg.subjectLabel)}：</b>${esc(cfg.subjectName)}</span>
         ${sheet.updated_at ? `<span><b>最後更新：</b>${esc(sheet.updated_at)}</span>` : ''}
       </div>
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th>評量項目</th><th>護理衛教指導內容</th><th>指導日期／簽名</th><th>產婦簽名</th><th>評量結果</th><th>再評量 期／簽名</th><th class="no-print">狀態</th><th class="no-print"></th></tr></thead>
+          <thead><tr><th>評量項目</th><th>護理衛教指導內容</th><th>指導日期／簽名</th><th>產婦簽名</th><th>評量結果</th><th>評量日期／簽名</th><th class="no-print">狀態</th><th class="no-print"></th></tr></thead>
           <tbody>${itemRows || '<tr><td colspan="8"><div class="empty">尚未建立評量項目</div></td></tr>'}</tbody>
         </table>
       </div>
-    </div>
-    <div class="card">
-      <div class="sec-hd">護理指導單提醒（入住第 1／3／7／10 天）</div>
-      <div class="row" style="gap:6px 18px;flex-wrap:wrap;font-size:.95rem;margin-bottom:8px">
-        ${mother.check_in ? `<span><b>入住：</b>${esc(mother.check_in)}</span>` : ''}
-        ${mother.check_out ? `<span><b>預退：</b>${esc(mother.check_out)}</span>` : ''}
-      </div>
-      <div class="table-wrap">
-        <table class="data stack">
-          <thead><tr><th>排程</th><th>提醒日期</th><th>執行日期</th><th>執行人</th></tr></thead>
-          <tbody>${reminders.map(r => `
-            <tr>
-              <td data-label="排程">${esc(r.day_label)}</td>
-              <td data-label="提醒日期">${esc(r.remind_date)}</td>
-              <td data-label="執行日期">${r.done_date ? `${esc(r.done_date)}${r.kind ? `<br><small>${kindLabel(r.kind)}</small>` : ''}` : '<span class="badge yellow">未執行</span>'}</td>
-              <td data-label="執行人">${esc(r.done_by || '—')}</td>
-            </tr>`).join('') || '<tr><td colspan="4"><div class="empty">無入住訂房，無法計算提醒</div></td></tr>'}</tbody>
-        </table>
-      </div>
+      <div style="margin-top:8px;font-size:.82rem;color:var(--muted)">
+        評量結果：${Object.values(sheet.result_labels || {}).map(esc).join('　')}</div>
     </div>`;
+}
 
-  $('#mgl-mom').onchange = () => { location.hash = `#/mother-guidance?m=${$('#mgl-mom').value}`; };
-  $('#mgl-print').onclick = () => printGuidanceSheet(mother, sheet);
-  if (isAdmin) $('#mgl-items').onclick = () => openGuidanceItems(momId);
-
-  // 指導簽名／再評量簽名：跳出簽名框給產婦簽，儲存後該列顯示已完成
+// 綁定指導簽名／再評量簽名／清除；簽名框為產婦手寫，日期與指導者於儲存時自動帶入
+function wireGuidanceSheet(sheet, cfg) {
+  const entries = sheet.entries || {};
   main().querySelectorAll('[data-sign]').forEach(btn => btn.onclick = () => {
     const item = sheet.items.find(i => String(i.id) === btn.dataset.sign);
     const stage = btn.dataset.stage;
     const e = entries[item.id] || {};
     const opts = (item.options || '').split(',').map(s => s.trim()).filter(Boolean);
     const picked = e.picks || [];
-    openModal(`${stage === 're' ? '再評量簽名' : '指導簽名'} — ${esc(mother.name)}`, `
+    const curResult = stage === 're' ? e.re_result : e.result;
+    openModal(`${stage === 're' ? '再評量簽名' : '指導簽名'} — ${esc(cfg.subjectName)}`, `
       <p style="margin:0 0 8px"><b>${esc(item.category)}</b>　${esc(item.name)}</p>
       <div class="form-grid">
-        <div class="field"><label>${stage === 're' ? '再評量' : '指導'}日期</label>
+        <div class="field"><label>${stage === 're' ? '評量' : '指導'}日期</label>
           <input type="date" id="gs-date" value="${todayStr()}"></div>
         <div class="field"><label>評量結果</label>
-          <select id="gs-result">${['', ...sheet.results].map(o =>
-      `<option value="${esc(o)}" ${o === (stage === 're' ? e.re_result : e.result) ? 'selected' : ''}>${o ? esc(o) : '請選擇'}</option>`).join('')}</select></div>
+          <select id="gs-result"><option value="">請選擇</option>${sheet.results.map(o =>
+      `<option value="${esc(o)}" ${o === curResult ? 'selected' : ''}>${esc((sheet.result_labels || {})[o] || o)}</option>`).join('')}</select></div>
         ${opts.length ? `<div class="field full"><label>項目勾選</label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap">${opts.map(o =>
       `<label class="bna-chk"><input type="checkbox" data-gs-pick value="${esc(o)}" ${picked.includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>` : ''}
@@ -10939,56 +10895,35 @@ async function viewMotherGuidance() {
           <span class="error-msg" id="gs-err"></span>
         </div>
       </div>`, body => {
-      let pad = mountSigPad(body.querySelector('#gs-pad'));
+      const pad = mountSigPad(body.querySelector('#gs-pad'));
       body.querySelector('#gs-clear').onclick = () => pad.clear();
       body.querySelector('#gs-save').onclick = async () => {
         const err = body.querySelector('#gs-err');
         err.textContent = '';
         if (!pad.hasInk()) { err.textContent = '請完成產婦手寫簽名'; return; }
         try {
-          await api(`/mothers/${momId}/guidance-sheet/${item.id}`, { method: 'PUT', body: {
+          await api(`${cfg.base}/${item.id}`, { method: 'PUT', body: {
             stage, date: body.querySelector('#gs-date').value,
             result: body.querySelector('#gs-result').value,
             picks: [...body.querySelectorAll('[data-gs-pick]:checked')].map(c => c.value),
             note: body.querySelector('#gs-note').value.trim(),
             mom_sign: pad.dataUrl()
           } });
-          closeModal(); viewMotherGuidance();
+          closeModal(); cfg.reload();
         } catch (e2) { err.textContent = e2.message; }
       };
     });
   });
-
   main().querySelectorAll('[data-clear]').forEach(btn => btn.onclick = async () => {
     if (!confirm('確定清除這一項的簽名與評量紀錄？（會記入稽核軌跡）')) return;
-    await api(`/mothers/${momId}/guidance-sheet/${btn.dataset.clear}`, { method: 'DELETE' });
-    viewMotherGuidance();
-  });
-
-  // 登錄指導執行（沿用護理指導單提醒的執行紀錄）
-  main().querySelectorAll('[data-guide-btn]').forEach(btn => btn.onclick = () => {
-    const kind = btn.dataset.guideBtn;
-    openModal(kindLabel(kind), `
-      <div class="field"><label>執行日期 <b class="req">*</b></label><input type="date" id="gf-date" value="${todayStr()}"></div>
-      <div class="field"><label>指導內容備註<small>（限 300 字）</small></label><textarea id="gf-note" maxlength="300" rows="3"></textarea></div>
-      <div class="row mt"><button class="btn" id="gf-save">資料新增</button><span class="error-msg" id="gf-err"></span></div>`, body => {
-      body.querySelector('#gf-save').onclick = async () => {
-        const date = body.querySelector('#gf-date').value;
-        if (!date) { body.querySelector('#gf-err').textContent = '請填寫執行日期'; return; }
-        try {
-          await api(`/mothers/${momId}/guidance`, { method: 'POST', body: {
-            kind, done_date: date, note: body.querySelector('#gf-note').value.trim()
-          } });
-          closeModal(); viewMotherGuidance();
-        } catch (e) { body.querySelector('#gf-err').textContent = e.message; }
-      };
-    });
+    await api(`${cfg.base}/${btn.dataset.clear}`, { method: 'DELETE' });
+    cfg.reload();
   });
 }
 
 // 評量項目主檔維護（管理員）：可增列、改內容、刪除、調整順序
-async function openGuidanceItems(backToMom) {
-  const list = await api('/guidance-items');
+async function openGuidanceItems(cfg) {
+  const list = await api(cfg.itemsPath);
   const row = it => `
     <tr>
       <td><input value="${esc(it.category || '')}" data-gi-cat style="width:100px"></td>
@@ -11000,7 +10935,7 @@ async function openGuidanceItems(backToMom) {
         <button class="btn small danger" data-gi-del>刪除</button>
       </td>
     </tr>`;
-  openModal('維護護理指導評量項目', `
+  openModal(`維護評量項目 － ${esc(cfg.title)}`, `
     <p style="font-size:.85rem;color:var(--muted);margin:0 0 8px">
       「項目勾選」欄可填逗號分隔的選項（例如餵奶姿勢：搖籃式,橄欖球式,修正橄欖球式,臥姿）。停用的項目不影響已簽名的舊紀錄。</p>
     <div class="table-wrap">
@@ -11035,16 +10970,15 @@ async function openGuidanceItems(backToMom) {
         options: tr.querySelector('[data-gi-opt]').value.trim()
       })).filter(r => r.name);
       try {
-        await api('/guidance-items', { method: 'PUT', body: { items: rows } });
-        closeModal();
-        if (backToMom) viewMotherGuidance();
+        await api(cfg.itemsPath, { method: 'PUT', body: { items: rows } });
+        closeModal(); cfg.reload();
       } catch (e) { body.querySelector('#gi-err').textContent = e.message; }
     };
   });
 }
 
-// 另開視窗列印／另存 PDF：產婦護理衛教指導單（比照紙本表格）
-function printGuidanceSheet(mother, sheet) {
+// 另開視窗列印／另存 PDF：護理衛教指導單（比照紙本表格）
+function printGuidanceSheet(sheet, cfg) {
   const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
   const entries = sheet.entries || {};
   let lastCat = '';
@@ -11065,7 +10999,7 @@ function printGuidanceSheet(mother, sheet) {
   }).join('');
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
-    <title>產婦護理衛教指導單 - ${esc(mother.name)}</title>
+    <title>${esc(cfg.title)} - ${esc(cfg.subjectName)}</title>
     <style>
       body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.5;max-width:900px;margin:24px auto;padding:0 24px}
       h1{font-size:18px;margin:0 0 2px;text-align:center}
@@ -11075,20 +11009,146 @@ function printGuidanceSheet(mother, sheet) {
       th,td{border:1px solid #666;padding:5px 7px;vertical-align:top} th{background:#f2f7f6;text-align:center}
       td.c{text-align:center} .opt{margin-top:2px;color:#444;font-size:12px}
       td img{height:34px;background:#fff}
+      .note{margin-top:10px;font-size:11.5px;color:#333;line-height:1.6}
       @media print{.noprint{display:none}}
     </style></head><body>
     <h1>${esc(center)}</h1>
-    <div class="sub">產婦護理衛教指導單</div>
-    <div class="hd">房號：${esc(mother.room_name || '')}　產婦：${esc(mother.name)}</div>
+    <div class="sub">${esc(cfg.title)}</div>
+    <div class="hd">房號：${esc(cfg.roomName || '')}　${esc(cfg.subjectLabel)}：${esc(cfg.subjectName)}</div>
     <table>
-      <thead><tr><th style="width:70px">評量項目</th><th>護理衛教指導內容</th><th style="width:90px">指導日期／簽名</th><th style="width:90px">產婦簽名</th><th style="width:80px">評量結果</th><th style="width:90px">期／簽名</th></tr></thead>
+      <thead><tr><th style="width:70px">評量項目</th><th>護理衛教指導內容</th><th style="width:90px">指導日期／簽名</th><th style="width:90px">產婦簽名</th><th style="width:70px">評量結果</th><th style="width:90px">評量日期／簽名</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    <div class="note">備註：指導／評值對象「新入住或轉入者之產婦」，指導／評值時間「入住～出住」，採不定期指導／評值。<br>
+      填表說明：學習成效請以號呈現　${Object.values(sheet.result_labels || {}).map(esc).join('；')}</div>
     <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
     </body></html>`);
   win.document.close();
 }
 
+/* ---------- 護理指導（產婦；獨立頁，資料與媽媽護理頁共用） ---------- */
+async function viewMotherGuidance() {
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">護理指導</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const [{ mother, reminders }, sheet] = await Promise.all([
+    api(`/mothers/${momId}/guidance`), api(`/mothers/${momId}/guidance-sheet`)
+  ]);
+  const kindLabel = k => k === 'care' ? '產婦護理衛教指導單' : '母乳哺育評估單';
+  const isAdmin = currentUser.role === 'admin';
+  const cfg = {
+    base: `/mothers/${momId}/guidance-sheet`, itemsPath: '/guidance-items',
+    title: '產婦護理衛教指導單', subjectLabel: '產婦', subjectName: mother.name,
+    roomName: mother.room_name, reload: viewMotherGuidance
+  };
+
+  main().innerHTML = `
+    <div class="page-title">護理指導 <small style="font-weight:400;color:var(--muted);font-size:.9rem">產婦護理衛教指導單／母乳哺育評估單</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mgl-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
+        <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
+        <button class="btn small secondary" id="mgl-print">列印指導單</button>
+        ${isAdmin ? '<button class="btn small secondary" id="mgl-items">維護評量項目</button>' : ''}
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn" data-guide-btn="care">登錄護理指導執行</button>
+        <button class="btn" data-guide-btn="breastfeeding">登錄母乳哺育評估</button>
+      </div>
+    </div>
+    ${guidanceSheetHtml(sheet, cfg, isAdmin)}
+    <div class="card">
+      <div class="sec-hd">護理指導單提醒（入住第 1／3／7／10 天）</div>
+      <div class="row" style="gap:6px 18px;flex-wrap:wrap;font-size:.95rem;margin-bottom:8px">
+        ${mother.check_in ? `<span><b>入住：</b>${esc(mother.check_in)}</span>` : ''}
+        ${mother.check_out ? `<span><b>預退：</b>${esc(mother.check_out)}</span>` : ''}
+      </div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>排程</th><th>提醒日期</th><th>執行日期</th><th>執行人</th></tr></thead>
+          <tbody>${reminders.map(r => `
+            <tr>
+              <td data-label="排程">${esc(r.day_label)}</td>
+              <td data-label="提醒日期">${esc(r.remind_date)}</td>
+              <td data-label="執行日期">${r.done_date ? `${esc(r.done_date)}${r.kind ? `<br><small>${kindLabel(r.kind)}</small>` : ''}` : '<span class="badge yellow">未執行</span>'}</td>
+              <td data-label="執行人">${esc(r.done_by || '—')}</td>
+            </tr>`).join('') || '<tr><td colspan="4"><div class="empty">無入住訂房，無法計算提醒</div></td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  $('#mgl-mom').onchange = () => { location.hash = `#/mother-guidance?m=${$('#mgl-mom').value}`; };
+  $('#mgl-print').onclick = () => printGuidanceSheet(sheet, cfg);
+  if (isAdmin) $('#mgl-items').onclick = () => openGuidanceItems(cfg);
+  wireGuidanceSheet(sheet, cfg);
+
+  // 登錄指導執行（沿用護理指導單提醒的執行紀錄）
+  main().querySelectorAll('[data-guide-btn]').forEach(btn => btn.onclick = () => {
+    const kind = btn.dataset.guideBtn;
+    openModal(kindLabel(kind), `
+      <div class="field"><label>執行日期 <b class="req">*</b></label><input type="date" id="gf-date" value="${todayStr()}"></div>
+      <div class="field"><label>指導內容備註<small>（限 300 字）</small></label><textarea id="gf-note" maxlength="300" rows="3"></textarea></div>
+      <div class="row mt"><button class="btn" id="gf-save">資料新增</button><span class="error-msg" id="gf-err"></span></div>`, body => {
+      body.querySelector('#gf-save').onclick = async () => {
+        const date = body.querySelector('#gf-date').value;
+        if (!date) { body.querySelector('#gf-err').textContent = '請填寫執行日期'; return; }
+        try {
+          await api(`/mothers/${momId}/guidance`, { method: 'POST', body: {
+            kind, done_date: date, note: body.querySelector('#gf-note').value.trim()
+          } });
+          closeModal(); viewMotherGuidance();
+        } catch (e) { body.querySelector('#gf-err').textContent = e.message; }
+      };
+    });
+  });
+}
+
+/* ---------- 寶寶護理指導（新生兒護理衛教指導單；比照產婦頁） ---------- */
+async function viewBabyGuidance() {
+  const list = await api('/room-status/babies');
+  const babies = list.babies;
+  if (!babies.length) {
+    main().innerHTML = '<div class="page-title">寶寶護理指導</div><div class="card"><div class="empty">目前沒有在住寶寶</div></div>';
+    return;
+  }
+  const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
+  const babyId = babies.some(b => b.id === want) ? want : babies[0].id;
+  const sheet = await api(`/babies/${babyId}/guidance-sheet`);
+  const baby = sheet.baby;
+  const isAdmin = currentUser.role === 'admin';
+  const cfg = {
+    base: `/babies/${babyId}/guidance-sheet`, itemsPath: '/baby-guidance-items',
+    title: '新生兒護理衛教指導單', subjectLabel: '寶寶',
+    subjectName: `${baby.name}（媽媽：${baby.mother_name}）`,
+    roomName: baby.room_name, reload: viewBabyGuidance
+  };
+
+  main().innerHTML = `
+    <div class="page-title">寶寶護理指導 <small style="font-weight:400;color:var(--muted);font-size:.9rem">新生兒護理衛教指導單</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:260px;margin:0"><label>選擇寶寶</label>
+          <select id="bgl-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/baby-rooms">回寶寶房況</a>
+        <a class="btn small secondary" href="#/baby-nursing?b=${babyId}">寶寶護理</a>
+        <a class="btn small secondary" href="#/breastfeeding?b=${babyId}">母乳哺育評估</a>
+        <button class="btn small secondary" id="bgl-print">列印指導單</button>
+        ${isAdmin ? '<button class="btn small secondary" id="bgl-items">維護評量項目</button>' : ''}
+      </div>
+    </div>
+    ${guidanceSheetHtml(sheet, cfg, isAdmin)}`;
+
+  $('#bgl-baby').onchange = () => { location.hash = `#/baby-guidance?b=${$('#bgl-baby').value}`; };
+  $('#bgl-print').onclick = () => printGuidanceSheet(sheet, cfg);
+  if (isAdmin) $('#bgl-items').onclick = () => openGuidanceItems(cfg);
+  wireGuidanceSheet(sheet, cfg);
+}
 /* ---------- 產婦結案 ---------- */
 async function viewMotherClosure() {
   const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
@@ -15925,6 +15985,7 @@ const routes = {
   '#/mother-needs': () => viewNursingNeeds('mother'),
   '#/baby-needs': () => viewNursingNeeds('baby'),
   '#/baby-nursing': viewBabyNursing,
+  '#/baby-guidance': viewBabyGuidance,
   '#/baby-eval': viewBabyEval,
   '#/baby-doctor': viewBabyDoctor,
   '#/baby-handover': viewBabyHandover,
@@ -16003,7 +16064,7 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms', '#/mother-arrivals': 'rooms', '#/mother-departures': 'rooms',
   '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family', '#/mother-needs': 'family', '#/baby-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',

@@ -2568,7 +2568,7 @@ test('護理指導單：評量項目主檔可增減、逐項產婦簽名（日�
   assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, { result: '能瞭解' })).status, 400);
   // 指導簽名：日期與指導者自動帶入
   const put = await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, {
-    stage: 'guide', result: '能瞭解', mom_sign: png, note: '已完成指導'
+    stage: 'guide', result: 'O', mom_sign: png, note: '已完成指導'
   });
   assert.strictEqual(put.status, 200);
   const g1 = (await req('GET', `/api/mothers/${mom.id}/guidance-sheet`)).data;
@@ -2576,10 +2576,10 @@ test('護理指導單：評量項目主檔可增減、逐項產婦簽名（日�
   assert.strictEqual(e1.guide_date, today);
   assert.ok(e1.guide_by, '指導者自動帶入登入者');
   assert.strictEqual(e1.mom_sign, png);
-  assert.strictEqual(e1.result, '能瞭解');
+  assert.strictEqual(e1.result, 'O');
   // 再評量簽名不覆蓋原指導簽名
   assert.strictEqual((await req('PUT', `/api/mothers/${mom.id}/guidance-sheet/${item.id}`, {
-    stage: 're', result: '能瞭解', mom_sign: png
+    stage: 're', result: '△', mom_sign: png
   })).status, 200);
   const e2 = (await req('GET', `/api/mothers/${mom.id}/guidance-sheet`)).data.entries[item.id];
   assert.strictEqual(e2.re_date, today);
@@ -2609,5 +2609,61 @@ test('護理指導單：評量項目主檔可增減、逐項產婦簽名（日�
   await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
   assert.strictEqual((await req('GET', `/api/mothers/${mom.id}/guidance-sheet`)).status, 403);
   assert.strictEqual((await req('GET', '/api/guidance-items')).status, 403);
+  cookie = adminCookie;
+});
+
+test('寶寶護理指導單：評量項目條列、逐項產婦簽名（符號評量結果）與項目維護', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const babyId = (await req('GET', '/api/room-status/babies')).data.babies[0].id;
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const png = 'data:image/png;base64,' + Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(300)]).toString('base64');
+  const g0 = await req('GET', `/api/babies/${babyId}/guidance-sheet`);
+  assert.strictEqual(g0.status, 200);
+  assert.ok(g0.data.items.length >= 20, '新生兒指導單項目應條列出來');
+  assert.ok(g0.data.items.some(i => i.category === '親子同室'), '含親子同室類別');
+  assert.ok(g0.data.items.some(i => i.category === '返家照護注意事項'), '含返家照護注意事項類別');
+  assert.deepStrictEqual(g0.data.results, ['O', '△', 'X']);
+  const item = g0.data.items[0];
+  // 缺簽名 → 400
+  assert.strictEqual((await req('PUT', `/api/babies/${babyId}/guidance-sheet/${item.id}`, { result: 'O' })).status, 400);
+  assert.strictEqual((await req('PUT', `/api/babies/${babyId}/guidance-sheet/${item.id}`, {
+    result: '亂填', mom_sign: png
+  })).status, 400);
+  // 指導簽名：日期與指導者自動帶入
+  assert.strictEqual((await req('PUT', `/api/babies/${babyId}/guidance-sheet/${item.id}`, {
+    stage: 'guide', result: 'O', mom_sign: png
+  })).status, 200);
+  const e1 = (await req('GET', `/api/babies/${babyId}/guidance-sheet`)).data.entries[item.id];
+  assert.strictEqual(e1.guide_date, today);
+  assert.ok(e1.guide_by);
+  assert.strictEqual(e1.result, 'O');
+  // 再評量不覆蓋原簽名
+  assert.strictEqual((await req('PUT', `/api/babies/${babyId}/guidance-sheet/${item.id}`, {
+    stage: 're', result: 'X', mom_sign: png
+  })).status, 200);
+  const e2 = (await req('GET', `/api/babies/${babyId}/guidance-sheet`)).data.entries[item.id];
+  assert.strictEqual(e2.re_date, today);
+  assert.strictEqual(e2.mom_sign, png);
+  assert.strictEqual(e2.re_result, 'X');
+  // 項目主檔維護（寶寶與產婦各自獨立）
+  const bItems = (await req('GET', '/api/baby-guidance-items')).data;
+  const mItems = (await req('GET', '/api/guidance-items')).data;
+  assert.notStrictEqual(bItems.length, 0);
+  assert.ok(!mItems.some(i => i.category === '親子同室'), '產婦項目不受寶寶項目影響');
+  assert.strictEqual((await req('PUT', '/api/baby-guidance-items', {
+    items: bItems.map(i => ({ id: i.id, category: i.category, name: i.name, options: i.options }))
+      .concat([{ category: '其他', name: '測試寶寶指導項目', options: '' }])
+  })).status, 200);
+  assert.strictEqual((await req('GET', '/api/baby-guidance-items')).data.length, bItems.length + 1);
+  assert.strictEqual((await req('PUT', '/api/baby-guidance-items', { items: [] })).status, 400);
+  // 管理員可清除單項
+  assert.strictEqual((await req('DELETE', `/api/babies/${babyId}/guidance-sheet/${item.id}`)).status, 200);
+  assert.strictEqual((await req('GET', `/api/babies/${babyId}/guidance-sheet`)).data.entries[item.id], undefined);
+  // RBAC：kit_test（僅 meals）→ 403
+  const adminCookie = cookie;
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  assert.strictEqual((await req('GET', `/api/babies/${babyId}/guidance-sheet`)).status, 403);
+  assert.strictEqual((await req('GET', '/api/baby-guidance-items')).status, 403);
   cookie = adminCookie;
 });
