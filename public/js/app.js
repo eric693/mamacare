@@ -10138,28 +10138,37 @@ function printBabyDoctorSheet(baby, rows) {
   win.document.close();
 }
 
-/* ---------- 產科醫師診視紀錄（醫師巡診；媽媽） ---------- */
-const MDV_OPTS = {
-  mood: ['平穩', '焦慮', '易怒', '亢奮', '憂鬱'],
-  feeding: ['純母乳', '混哺', '親哺', '配方奶'],
-  breast: ['未脹奶', '脹/充盈', '有硬塊', '退奶', '乳腺炎'],
-  ep_wound: ['平整', '疼痛', '紅腫', '滲液'],
-  fundus_height: ['臍上3指', '臍上2指', '臍上1指', '平臍', '臍下1指', '臍下2指', '臍下3指', '已入骨盆腔'],
-  uterus_state: ['硬', '鬆弛柔軟，按摩後變硬', '鬆弛柔軟', '降回骨盆腔'],
-  lochia_amount: ['無', '微量', '少', '中', '多', '血塊'],
-  lochia_color: ['無', '鮮紅', '暗紅', '粉紅', '黃褐', '透明', '咖啡'],
-  urine: ['正常', '失禁', '需加壓', '頻尿', '小便灼熱', '導尿管'],
-  stool: ['正常', '腹瀉', '便祕'],
-  edema_deg: ['+1', '+2', '+3', '+4']
-};
+/* ---------- 產科醫師診視紀錄（婦產科診察紀錄表） ---------- */
+// Items 各區皆為勾選（複選）；欄位與選項比照紙本婦產科診察紀錄表
+const MDV_SECTIONS = [
+  ['breast', 'Breast', ['Soft', 'Filling', 'Firm', 'Engorged', 'Painful', 'Mastitis']],
+  ['contraction', 'Uterus － Contraction', ['Firm', 'Boggy', 'Impalpable']],
+  ['bowel', 'Bowel', ['Abdominal distention', 'Constipation', 'Diarrhea', 'Bowel movement', 'Hemorrhoids']],
+  ['wound_healing', 'Wound － Healing', ['Well', 'Redness', 'Edema', 'Ecchymosis', 'Discharge', 'Pain', 'Others']]
+];
+const MDV_ADVICE = ['無', '續觀察', '建議外出返診'];
+
 function mdvChecks(name, opts, picked = []) {
   return opts.map(o => `<label class="bna-chk"><input type="checkbox" data-ck="${name}" value="${esc(o)}" ${picked.includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('');
 }
 function mdvRadios(name, opts, val = '') {
   return opts.map(o => `<label class="bna-chk"><input type="radio" name="${name}" value="${esc(o)}" ${o === val ? 'checked' : ''}> ${esc(o)}</label>`).join('');
 }
-function mdvSel(id, opts) {
-  return `<select id="${id}"><option value="">--請選擇--</option>${opts.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`;
+// 診察內容摘要（清單與列印共用）
+function mdvItemsText(a) {
+  const out = [];
+  if ((a.breast || []).length) out.push(`Breast：${a.breast.join('、')}`);
+  const uterus = [a.fundus_height ? `Fundus height: U ${a.fundus_height} FB` : '', (a.contraction || []).join('、')].filter(Boolean).join('／');
+  if (uterus) out.push(`Uterus：${uterus}`);
+  if (a.urinary_tract) out.push(`Bladder：Urinary tract ${a.urinary_tract}`);
+  if ((a.bowel || []).length) out.push(`Bowel：${a.bowel.join('、')}`);
+  const lochia = [a.lochia_amount ? `Amount ${a.lochia_amount}` : '', a.lochia_color ? `Color ${a.lochia_color}` : '',
+    a.lochia_others ? `Others ${a.lochia_others}` : ''].filter(Boolean).join('／');
+  if (lochia) out.push(`Lochia：${lochia}`);
+  const wound = [(a.wound_healing || []).join('、'), a.wound_pain ? `Pain ${a.wound_pain}` : '',
+    a.wound_others ? `Others ${a.wound_others}` : ''].filter(Boolean).join('／');
+  if (wound) out.push(`Wound：${wound}`);
+  return out;
 }
 
 async function viewMotherDoctor() {
@@ -10170,34 +10179,33 @@ async function viewMotherDoctor() {
     return;
   }
   const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
-  const { mother, rows } = await api(`/mothers/${momId}/doctor-visits`);
+  const { mother, rows, basic } = await api(`/mothers/${momId}/doctor-visits`);
   const now = new Date();
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  // 生產後天數：自生產日至今
-  const ppDays = mother.delivery_date ? Math.max(0, Math.floor((new Date(todayStr()) - new Date(mother.delivery_date)) / 86400000)) : '';
 
-  const joinArr = a => (a || []).join('、') || '—';
   const listRows = rows.map((r, i) => {
     const a = r.data || {};
-    const edema = a.edema_none ? '無' : [a.edema_right ? `右 ${a.edema_right}` : '', a.edema_left ? `左 ${a.edema_left}` : ''].filter(Boolean).join('／') || '—';
+    const advice = [a.advice || '', a.advice_note || ''].filter(Boolean).join('：');
     return `
       <tr data-filter="${esc(r.visit_date)} ${esc(r.recorded_by_name || '')}">
-        <td data-label="筆數">${i + 1}<br>
+        <td data-label="筆數" class="no-print">${i + 1}<br>
           ${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${r.id}" style="margin:2px 0">刪</button>` : ''}
           <button class="btn small secondary" data-edit="${r.id}" style="margin:2px 0">修</button></td>
-        <td data-label="診視日期">${esc(r.visit_date)}<br><small>${esc(r.visit_time)}</small></td>
-        <td data-label="產後天數/精神"><small>產後 ${esc(a.postpartum_days ?? '—')} 天<br>${esc(a.mood || '—')}${a.epds_score !== undefined && a.epds_score !== '' ? `（EPDS ${esc(a.epds_score)}）` : ''}<br>主訴：${a.complaint === '有' ? esc(a.complaint_text || '有') : '無'}</small></td>
-        <td data-label="哺乳/乳房"><small>${esc(joinArr(a.feeding))}<br>${esc(joinArr(a.breast))}</small></td>
-        <td data-label="EP傷口/宮縮"><small>${esc(a.ep_wound || '—')}${a.ep_med === '有' ? `／用藥：${esc(a.ep_med_text || '有')}` : ''}<br>${esc(a.fundus_height || '—')}／${esc(a.uterus_state || '—')}</small></td>
-        <td data-label="惡露"><small>量：${esc(joinArr(a.lochia_amount))}<br>色：${esc(joinArr(a.lochia_color))}</small></td>
-        <td data-label="二便/痔瘡/水腫"><small>小便：${esc(a.urine || '—')}<br>大便：${esc(a.stool || '—')}${a.laxative ? `／軟便劑${a.laxative_text ? '：' + esc(a.laxative_text) : ''}` : ''}<br>痔瘡：${esc(a.hemorrhoid || '—')}　水腫：${esc(edema)}</small></td>
+        <td data-label="Date">${esc(r.visit_date)}<br><small>${esc(r.visit_time)}</small><br>
+          <small>After Birth ${esc(a.postpartum_days ?? '—')} day</small></td>
+        <td data-label="Items"><small>${mdvItemsText(a).map(esc).join('<br>') || '—'}</small></td>
+        <td data-label="Care Suggestion"><small>${esc(advice || '—')}</small></td>
+        <td data-label="Physician's signature">${r.physician_sign
+          ? `<img src="${r.physician_sign}" alt="醫師簽名" style="height:42px;background:#fff;border:1px solid var(--line);border-radius:4px">`
+          : '<small style="color:var(--muted)">未簽</small>'}
+          ${r.physician_name ? `<br><small>${esc(r.physician_name)}</small>` : ''}</td>
         <td data-label="建檔人">${esc(r.recorded_by_name || '—')}${r.edited_at ? `<br><small title="${esc(r.edited_at)}（${esc(r.edited_by_name || '')}）" style="color:var(--muted)">已修改</small>` : ''}</td>
         <td data-label="敍述"><small>${esc((r.note || '').slice(0, 40))}${(r.note || '').length > 40 ? '…' : ''}</small></td>
       </tr>`;
   }).join('');
 
   main().innerHTML = `
-    <div class="page-title">醫師巡診 <small style="font-weight:400;color:var(--muted);font-size:.9rem">產科醫師診視紀錄</small></div>
+    <div class="page-title">醫師巡診 <small style="font-weight:400;color:var(--muted);font-size:.9rem">婦產科診察紀錄表</small></div>
     <div class="card no-print">
       <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
         <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
@@ -10205,62 +10213,67 @@ async function viewMotherDoctor() {
         <a class="btn small secondary" href="#/mother-rooms">回媽媽房況</a>
         <a class="btn small secondary" href="#/mother-nursing?m=${momId}">媽媽護理</a>
         <a class="btn small secondary" href="#/physician-visits">巡診總覽(SOAP)</a>
-        <button class="btn small secondary" id="mdv-print">資料列印</button>
+        <button class="btn small secondary" id="mdv-print">列印診察紀錄表</button>
       </div>
     </div>
     <div class="card">
-      <div class="sec-hd">產科醫師巡診</div>
+      <div class="sec-hd">婦產科診察紀錄表 － 基本資料<small style="font-weight:400;color:var(--muted)">（自動帶入）</small></div>
       <div class="row" style="gap:6px 18px;flex-wrap:wrap;font-size:.95rem">
-        <span><b>媽媽姓名：</b>${mother.room_name ? `${esc(mother.room_name)}　` : ''}${esc(mother.name)}</span>
-        ${mother.check_in ? `<span><b>入住：</b>${esc(mother.check_in)}</span>` : ''}
-        ${mother.check_out ? `<span><b>預退：</b>${esc(mother.check_out)}</span>` : ''}
-        ${mother.delivery_date ? `<span><b>生產日：</b>${esc(mother.delivery_date)}</span>` : ''}
-        ${mother.delivery_type ? `<span><b>生產方式：</b>${esc(mother.delivery_type)}</span>` : ''}
+        <span><b>房號：</b>${esc(basic.room_name || '—')}</span>
+        <span><b>產婦：</b>${esc(mother.name)}</span>
+        <span><b>生產日期：</b>${esc(basic.delivery_date || '—')}</span>
+        <span><b>產式：</b>${esc(basic.delivery_mode || '—')}</span>
+        <span><b>胎次：</b>${esc(basic.parity || '—')}</span>
+        <span><b>生產醫院：</b>${esc(basic.hospital || '—')}</span>
       </div>
     </div>
     <div class="card no-print" id="mdv-form">
-      <div class="sec-hd">產科醫師診視紀錄 － <span id="mdv-mode">新增</span></div>
+      <div class="sec-hd">診察紀錄 － <span id="mdv-mode">新增</span></div>
       <div class="form-grid">
-        <div class="field"><label>診視日期 <b class="req">*</b></label><input type="date" id="mdv-date" value="${todayStr()}"></div>
-        <div class="field"><label>診視時間 <b class="req">*</b></label><input type="time" id="mdv-time" value="${hhmm}"></div>
-        <div class="field full"><label>基本資料</label>
+        <div class="field"><label>Date（看診日期）<b class="req">*</b></label><input type="date" id="mdv-date" value="${todayStr()}"></div>
+        <div class="field"><label>時間 <b class="req">*</b></label><input type="time" id="mdv-time" value="${hhmm}"></div>
+        <div class="field"><label>After Birth（產後第 N 天）<small>（自動帶入，可異動）</small></label>
+          <input type="number" id="mdv-ppd" min="0" value="${basic.postpartum_days ?? ''}"></div>
+        <div class="field"><label>胎次</label><input id="mdv-parity" maxlength="20" value="${esc(basic.parity || '')}"></div>
+        <div class="field"><label>產式</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvRadios('mdvr-delmode', ['NSD', 'C/S'], basic.delivery_mode || '')}</div></div>
+        <div class="field"><label>生產醫院</label><input id="mdv-hospital" maxlength="60" value="${esc(basic.hospital || '')}"></div>
+        <div class="field full"><label>History<small>（自產婦入住護理評估表帶入，可調整）</small></label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvChecks('mdv-history', basic.history_options, basic.history)}
+            <input id="mdv-history-other" maxlength="200" placeholder="Others" style="min-width:200px" value="${esc(basic.history_other || '')}"></div></div>
+        <div class="full" style="border-top:1px solid var(--line);padding-top:8px;margin-top:2px"><b>Items</b><small style="color:var(--muted)">（勾選）</small></div>
+        <div class="field full"><label>Breast</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-breast', MDV_SECTIONS[0][2])}</div></div>
+        <div class="field full"><label>Uterus</label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
-            生產後天數 <input type="number" id="mdv-ppd" min="0" style="width:90px" value="${ppDays}"> 天
-            胎次 <input id="mdv-parity" maxlength="20" style="width:100px">
-            生產方式 <input id="mdv-delmode" maxlength="30" style="width:140px" value="${esc(mother.delivery_type || '')}">
-          </div></div>
-        <div class="field full"><label>精神情緒狀態</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-mood', MDV_OPTS.mood)}
-            愛丁堡憂鬱量表分數 <input type="number" id="mdv-epds" min="0" max="30" style="width:90px"></div></div>
-        <div class="field full"><label>主訴</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-comp', ['無', '有'])}
-            <input id="mdv-comp-text" maxlength="200" placeholder="有，請填入問題" style="width:320px;max-width:100%"></div></div>
-        <div class="field full"><label>哺乳狀態</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-feeding', MDV_OPTS.feeding)}</div></div>
-        <div class="field full"><label>乳房狀況</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-breast', MDV_OPTS.breast)}</div></div>
-        <div class="field full"><label>EP 傷口</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-ep', MDV_OPTS.ep_wound)}
-            　用藥：${mdvRadios('mdvr-epmed', ['無', '有'])}<input id="mdv-epmed-text" maxlength="100" placeholder="用藥名稱" style="width:180px"></div></div>
-        <div class="field full"><label>宮縮情形</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">宮底高度 ${mdvSel('mdv-fundus', MDV_OPTS.fundus_height)}</div>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center;margin-top:6px">宮縮狀態：${mdvRadios('mdvr-uterus', MDV_OPTS.uterus_state)}</div></div>
-        <div class="field full"><label>惡露 － 量</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-lochia-amt', MDV_OPTS.lochia_amount)}</div></div>
-        <div class="field full"><label>惡露 － 顏色</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-lochia-col', MDV_OPTS.lochia_color)}</div></div>
-        <div class="field full"><label>小便</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvRadios('mdvr-urine', MDV_OPTS.urine)}</div></div>
-        <div class="field full"><label>大便</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-stool', MDV_OPTS.stool)}
-            　<label class="bna-chk"><input type="checkbox" id="mdv-laxative"> 軟便劑</label> 用藥：<input id="mdv-laxative-text" maxlength="100" style="width:180px"></div></div>
-        <div class="field"><label>痔瘡</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-hem', ['無', '有'])}
-            <label class="bna-chk"><input type="checkbox" id="mdv-hem-oint"> 藥膏</label><input id="mdv-hem-text" maxlength="100" style="width:140px"></div></div>
-        <div class="field"><label>下肢水腫</label>
+            Fundus height：U <input id="mdv-fundus" maxlength="20" style="width:90px" placeholder="±指數"> /FB
+            　Contraction：${mdvChecks('mdv-contraction', MDV_SECTIONS[1][2])}</div></div>
+        <div class="field full"><label>Bladder</label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
-            <label class="bna-chk"><input type="checkbox" id="mdv-edema-none"> 無</label>
-            右 ${mdvSel('mdv-edema-r', MDV_OPTS.edema_deg)} 左 ${mdvSel('mdv-edema-l', MDV_OPTS.edema_deg)}</div></div>
+            Urinary tract：<input id="mdv-urinary" maxlength="100" style="min-width:240px"></div></div>
+        <div class="field full"><label>Bowel</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${mdvChecks('mdv-bowel', MDV_SECTIONS[2][2])}</div></div>
+        <div class="field full"><label>Lochia</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
+            Amount <input id="mdv-lochia-amt" maxlength="60" style="width:150px">
+            Color <input id="mdv-lochia-col" maxlength="60" style="width:150px">
+            Others <input id="mdv-lochia-oth" maxlength="100" style="width:200px"></div></div>
+        <div class="field full"><label>Wound</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">Healing：${mdvChecks('mdv-wound', MDV_SECTIONS[3][2])}</div>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center;margin-top:6px">
+            Pain 補述 <input id="mdv-wound-pain" maxlength="100" style="width:200px">
+            Others 補述 <input id="mdv-wound-oth" maxlength="100" style="width:200px"></div></div>
+        <div class="full" style="border-top:1px solid var(--line);padding-top:8px;margin-top:2px"><b>Care Suggestion</b></div>
+        <div class="field full"><label>建議處置</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${mdvRadios('mdvr-advice', MDV_ADVICE)}
+            <input id="mdv-advice-note" maxlength="200" placeholder="補充說明（選填）" style="min-width:240px;flex:1"></div></div>
+        <div class="field full"><label>Physician's signature<small>（婦產科醫師手寫簽名存檔）</small></label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
+            醫師姓名 <input id="mdv-phy-name" maxlength="60" style="width:180px"></div>
+          <div id="mdv-sig-wrap" style="margin-top:6px">
+            <canvas id="mdv-sig-pad" style="width:100%;max-width:420px;height:100px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>
+          </div>
+          <div class="row" style="gap:6px;margin-top:4px"><button class="btn small secondary" id="mdv-sig-clear">清除重簽</button></div></div>
         <div class="field full"><label>敍述性紀錄<small>（限 600 字）</small></label><textarea id="mdv-note" maxlength="600" rows="3"></textarea></div>
         <div class="full row" style="gap:10px">
           <button class="btn" id="mdv-save">資料新增</button>
@@ -10271,25 +10284,34 @@ async function viewMotherDoctor() {
     </div>
     <div class="card">
       <div class="row between no-print">
-        <h3>產科醫師診視紀錄（${rows.length} 筆）</h3>
+        <h3>診察紀錄（${rows.length} 筆）</h3>
       </div>
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th class="no-print">筆數</th><th>診視日期</th><th>產後天數/精神</th><th>哺乳/乳房</th><th>EP傷口/宮縮</th><th>惡露</th><th>二便/痔瘡/水腫</th><th>建檔人</th><th>敍述</th></tr></thead>
-          <tbody>${listRows || '<tr><td colspan="9"><div class="empty">尚無診視紀錄</div></td></tr>'}</tbody>
+          <thead><tr><th class="no-print">筆數</th><th>Date</th><th>Items</th><th>Care Suggestion</th><th>Physician's signature</th><th>建檔人</th><th>敍述</th></tr></thead>
+          <tbody>${listRows || '<tr><td colspan="7"><div class="empty">尚無診察紀錄</div></td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
 
   $('#mdv-mom').onchange = () => { location.hash = `#/mother-doctor?m=${$('#mdv-mom').value}`; };
-  $('#mdv-print').onclick = () => window.print();
+  $('#mdv-print').onclick = () => printMotherDoctorSheet(mother, basic, rows);
 
   const form = $('#mdv-form');
   const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
-  const ck = id => { const el = $(id); return el ? el.checked : false; };
   const ckVals = name => [...form.querySelectorAll(`[data-ck="${name}"]:checked`)].map(c => c.value);
   const radioVal = name => { const el = form.querySelector(`input[name="${name}"]:checked`); return el ? el.value : ''; };
   let editingId = null;
+  let keepSign = false;   // 編輯既有簽名且未重簽時沿用原簽名
+
+  // 醫師手寫簽名板（與設備清點共用 mountSigPad）
+  let pad = mountSigPad($('#mdv-sig-pad'));
+  const resetSigPad = () => {
+    $('#mdv-sig-wrap').innerHTML = '<canvas id="mdv-sig-pad" style="width:100%;max-width:420px;height:100px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>';
+    pad = mountSigPad($('#mdv-sig-pad'));
+    keepSign = false;
+  };
+  $('#mdv-sig-clear').onclick = resetSigPad;
 
   // 「修」：把該筆資料帶回表單改為修改模式
   const setForm = r => {
@@ -10300,22 +10322,24 @@ async function viewMotherDoctor() {
     $('#mdv-cancel').style.display = '';
     $('#mdv-date').value = r.visit_date; $('#mdv-time').value = r.visit_time;
     $('#mdv-ppd').value = a.postpartum_days ?? ''; $('#mdv-parity').value = a.parity || '';
-    $('#mdv-delmode').value = a.delivery_mode || ''; $('#mdv-epds').value = a.epds_score ?? '';
-    $('#mdv-comp-text').value = a.complaint_text || ''; $('#mdv-epmed-text').value = a.ep_med_text || '';
-    $('#mdv-fundus').value = a.fundus_height || '';
-    $('#mdv-laxative').checked = !!a.laxative; $('#mdv-laxative-text').value = a.laxative_text || '';
-    $('#mdv-hem-oint').checked = !!a.hem_ointment; $('#mdv-hem-text').value = a.hem_text || '';
-    $('#mdv-edema-none').checked = !!a.edema_none;
-    $('#mdv-edema-r').value = a.edema_right || ''; $('#mdv-edema-l').value = a.edema_left || '';
+    $('#mdv-hospital').value = a.hospital || ''; $('#mdv-history-other').value = a.history_other || '';
+    $('#mdv-fundus').value = a.fundus_height || ''; $('#mdv-urinary').value = a.urinary_tract || '';
+    $('#mdv-lochia-amt').value = a.lochia_amount || ''; $('#mdv-lochia-col').value = a.lochia_color || '';
+    $('#mdv-lochia-oth').value = a.lochia_others || '';
+    $('#mdv-wound-pain').value = a.wound_pain || ''; $('#mdv-wound-oth').value = a.wound_others || '';
+    $('#mdv-advice-note').value = a.advice_note || ''; $('#mdv-phy-name').value = r.physician_name || '';
     $('#mdv-note').value = r.note || '';
     const setCk = (name, vals) => form.querySelectorAll(`[data-ck="${name}"]`).forEach(c => c.checked = (vals || []).includes(c.value));
-    setCk('mdv-feeding', a.feeding); setCk('mdv-breast', a.breast);
-    setCk('mdv-lochia-amt', a.lochia_amount); setCk('mdv-lochia-col', a.lochia_color);
-    const setRadio = (name, val) => form.querySelectorAll(`input[name="${name}"]`).forEach(c => c.checked = c.value === val);
-    setRadio('mdvr-mood', a.mood); setRadio('mdvr-comp', a.complaint);
-    setRadio('mdvr-ep', a.ep_wound); setRadio('mdvr-epmed', a.ep_med);
-    setRadio('mdvr-uterus', a.uterus_state); setRadio('mdvr-urine', a.urine);
-    setRadio('mdvr-stool', a.stool); setRadio('mdvr-hem', a.hemorrhoid);
+    setCk('mdv-history', a.history);
+    setCk('mdv-breast', a.breast); setCk('mdv-contraction', a.contraction);
+    setCk('mdv-bowel', a.bowel); setCk('mdv-wound', a.wound_healing);
+    form.querySelectorAll('input[name="mdvr-delmode"]').forEach(c => c.checked = c.value === (a.delivery_mode || ''));
+    form.querySelectorAll('input[name="mdvr-advice"]').forEach(c => c.checked = c.value === (a.advice || ''));
+    // 已存簽名先顯示圖片，按「清除重簽」才換回空白簽名板
+    if (r.physician_sign) {
+      $('#mdv-sig-wrap').innerHTML = `<img src="${r.physician_sign}" alt="醫師簽名" style="height:80px;background:#fff;border:1px solid var(--line);border-radius:6px">`;
+      pad = null; keepSign = true;
+    } else { resetSigPad(); }
     form.scrollIntoView({ behavior: 'smooth' });
   };
   $('#mdv-cancel').onclick = () => viewMotherDoctor();
@@ -10323,21 +10347,21 @@ async function viewMotherDoctor() {
   $('#mdv-save').onclick = async () => {
     const err = $('#mdv-err');
     err.textContent = '';
-    if (!v('#mdv-date') || !v('#mdv-time')) { err.textContent = '請填寫診視日期與時間'; return; }
-    if (radioVal('mdvr-comp') === '有' && !v('#mdv-comp-text')) { err.textContent = '主訴勾選「有」時，問題必填'; return; }
+    if (!v('#mdv-date') || !v('#mdv-time')) { err.textContent = '請填寫看診日期與時間'; return; }
     const body = {
       visit_date: v('#mdv-date'), visit_time: v('#mdv-time'),
-      postpartum_days: v('#mdv-ppd'), parity: v('#mdv-parity'), delivery_mode: v('#mdv-delmode'),
-      mood: radioVal('mdvr-mood'), epds_score: v('#mdv-epds'),
-      complaint: radioVal('mdvr-comp'), complaint_text: v('#mdv-comp-text'),
-      feeding: ckVals('mdv-feeding'), breast: ckVals('mdv-breast'),
-      ep_wound: radioVal('mdvr-ep'), ep_med: radioVal('mdvr-epmed'), ep_med_text: v('#mdv-epmed-text'),
-      fundus_height: v('#mdv-fundus'), uterus_state: radioVal('mdvr-uterus'),
-      lochia_amount: ckVals('mdv-lochia-amt'), lochia_color: ckVals('mdv-lochia-col'),
-      urine: radioVal('mdvr-urine'), stool: radioVal('mdvr-stool'),
-      laxative: ck('#mdv-laxative'), laxative_text: v('#mdv-laxative-text'),
-      hemorrhoid: radioVal('mdvr-hem'), hem_ointment: ck('#mdv-hem-oint'), hem_text: v('#mdv-hem-text'),
-      edema_none: ck('#mdv-edema-none'), edema_right: v('#mdv-edema-r'), edema_left: v('#mdv-edema-l'),
+      postpartum_days: v('#mdv-ppd'), parity: v('#mdv-parity'),
+      delivery_mode: radioVal('mdvr-delmode'), delivery_date: basic.delivery_date || '',
+      hospital: v('#mdv-hospital'),
+      history: ckVals('mdv-history'), history_other: v('#mdv-history-other'),
+      breast: ckVals('mdv-breast'),
+      fundus_height: v('#mdv-fundus'), contraction: ckVals('mdv-contraction'),
+      urinary_tract: v('#mdv-urinary'), bowel: ckVals('mdv-bowel'),
+      lochia_amount: v('#mdv-lochia-amt'), lochia_color: v('#mdv-lochia-col'), lochia_others: v('#mdv-lochia-oth'),
+      wound_healing: ckVals('mdv-wound'), wound_pain: v('#mdv-wound-pain'), wound_others: v('#mdv-wound-oth'),
+      advice: radioVal('mdvr-advice'), advice_note: v('#mdv-advice-note'),
+      physician_name: v('#mdv-phy-name'),
+      physician_sign: keepSign ? '__keep__' : (pad && pad.hasInk() ? pad.dataUrl() : ''),
       note: v('#mdv-note')
     };
     try {
@@ -10357,6 +10381,65 @@ async function viewMotherDoctor() {
       viewMotherDoctor();
     };
   });
+}
+
+// 另開視窗列印／另存 PDF：婦產科診察紀錄表（比照紙本，每 4 次診察一頁、逐次一欄）
+function printMotherDoctorSheet(mother, basic, rows) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const asc = rows.slice().reverse();
+  const pages = [];
+  for (let i = 0; i < Math.max(1, asc.length); i += 4) pages.push(asc.slice(i, i + 4));
+  const cell = (r, render) => r ? render(r.data || {}, r) : '　';
+  const hist = (basic.history_options || []).map(o =>
+    `${(basic.history || []).includes(o) ? '■' : '□'}${o}`).join('　') + (basic.history_other ? `　Others：${basic.history_other}` : '');
+  const page = list => {
+    const cols = [0, 1, 2, 3];
+    const row = (label, render) => `<tr><th class="lbl">${label}</th>${cols.map(i => `<td>${cell(list[i], render)}</td>`).join('')}</tr>`;
+    return `
+    <div class="pg">
+      <h1>婦產科診察紀錄表</h1>
+      <div class="sub">${esc(center)}</div>
+      <div class="hd">房號：${esc(basic.room_name || '')}　產婦：${esc(mother.name)}　生產日期：${esc(basic.delivery_date || '')}　產式：${esc(basic.delivery_mode || '')}　胎次：${esc(basic.parity || '')}　生產醫院：${esc(basic.hospital || '')}</div>
+      <div class="hd">History：${esc(hist)}</div>
+      <table>
+        <thead><tr><th class="lbl">Date<br>Items</th>${cols.map(i => `<th>${list[i] ? esc(list[i].visit_date) : '　/　'}<br><small>After Birth ${list[i] ? esc((list[i].data || {}).postpartum_days ?? '') : '＿＿'} day</small></th>`).join('')}</tr></thead>
+        <tbody>
+          ${row('Breast', a => (a.breast || []).map(esc).join('<br>') || '　')}
+          ${row('Uterus', a => [`Fundus height: U ${esc(a.fundus_height || '＿')} /FB`, `Contraction: ${(a.contraction || []).map(esc).join('、')}`].join('<br>'))}
+          ${row('Bladder', a => `Urinary tract：${esc(a.urinary_tract || '')}`)}
+          ${row('Bowel', a => (a.bowel || []).map(esc).join('<br>') || '　')}
+          ${row('Lochia', a => [`Amount ${esc(a.lochia_amount || '')}`, `Color ${esc(a.lochia_color || '')}`, `Others ${esc(a.lochia_others || '')}`].join('<br>'))}
+          ${row('Wound', a => [`Healing：${(a.wound_healing || []).map(esc).join('、')}`,
+    a.wound_pain ? `Pain ${esc(a.wound_pain)}` : '', a.wound_others ? `Others ${esc(a.wound_others)}` : ''].filter(Boolean).join('<br>'))}
+          ${row('Care<br>Suggestion', (a, r) => [esc([a.advice || '', a.advice_note || ''].filter(Boolean).join('：')), r.note ? esc(r.note) : ''].filter(Boolean).join('<br>'))}
+          ${row("Physician's<br>signature", (a, r) => r.physician_sign
+    ? `<img src="${r.physician_sign}" alt="簽名">${r.physician_name ? `<br><small>${esc(r.physician_name)}</small>` : ''}`
+    : (r.physician_name ? esc(r.physician_name) : '　'))}
+        </tbody>
+      </table>
+    </div>`;
+  };
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>婦產科診察紀錄表 - ${esc(mother.name)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.5;max-width:960px;margin:24px auto;padding:0 24px}
+      h1{font-size:18px;margin:0 0 2px;text-align:center}
+      .sub{text-align:center;font-size:13px;margin-bottom:8px}
+      .hd{font-size:12.5px;margin:4px 0}
+      table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+      th,td{border:1px solid #666;padding:5px 7px;vertical-align:top;width:22%}
+      th.lbl{width:12%;background:#f2f7f6;text-align:center;font-weight:700}
+      thead th{background:#f2f7f6;text-align:center}
+      td img{height:44px;background:#fff}
+      .pg{page-break-after:always}
+      .pg:last-child{page-break-after:auto}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    ${pages.map(page).join('')}
+    <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+    </body></html>`);
+  win.document.close();
 }
 
 /* ---------- 新生兒交班單 ---------- */

@@ -1151,6 +1151,12 @@ function init() {
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_hk_progress_task ON housekeeping_progress(task_id, created_at);`);
+  // 婦產科診察紀錄表：醫師簽名（手寫 PNG dataURL）存檔
+  const mdvCols = db.prepare('PRAGMA table_info(mother_doctor_visits)').all().map(c => c.name);
+  if (!mdvCols.includes('physician_sign')) {
+    db.exec("ALTER TABLE mother_doctor_visits ADD COLUMN physician_sign TEXT NOT NULL DEFAULT ''");
+    db.exec("ALTER TABLE mother_doctor_visits ADD COLUMN physician_name TEXT NOT NULL DEFAULT ''");
+  }
   // 設備清點：項目主檔（可自行增減）＋每筆訂房一張清點單
   db.exec(`CREATE TABLE IF NOT EXISTS equip_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

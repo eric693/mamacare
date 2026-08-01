@@ -1145,25 +1145,94 @@ app.delete('/api/baby-doctor-visits/:id', requireAdmin, (req, res) => {
 
 // ---------- 產科醫師診視紀錄（醫師巡診；媽媽） ----------
 // data 僅收白名單欄位；多選以陣列、單選／補述以字串保存
+// 婦產科診察紀錄表：Items 皆為勾選（陣列），其餘為補述字串
+const MDV_ARRAY_FIELDS = ['history', 'breast', 'contraction', 'bowel', 'wound_healing'];
 const MDV_FIELDS = [
-  'postpartum_days', 'parity', 'delivery_mode',
-  'mood', 'epds_score', 'complaint', 'complaint_text',
-  'feeding', 'breast',
-  'ep_wound', 'ep_med', 'ep_med_text',
-  'fundus_height', 'uterus_state',
-  'lochia_amount', 'lochia_color',
-  'urine', 'stool', 'laxative', 'laxative_text',
-  'hemorrhoid', 'hem_ointment', 'hem_text',
-  'edema_none', 'edema_right', 'edema_left'
+  // 基本資料（自動帶入，可異動）
+  'postpartum_days', 'parity', 'delivery_mode', 'delivery_date', 'hospital',
+  'history', 'history_other',
+  // Items
+  'breast', 'fundus_height', 'contraction', 'urinary_tract',
+  'bowel', 'lochia_amount', 'lochia_color', 'lochia_others',
+  'wound_healing', 'wound_pain', 'wound_others',
+  // Care suggestion
+  'advice', 'advice_note'
 ];
+const MDV_ADVICE = ['無', '續觀察', '建議外出返診'];
 function normalizeMotherVisit(b) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(b.visit_date || '') ? b.visit_date : today();
   const time = /^\d{2}:\d{2}/.test(b.visit_time || '') ? b.visit_time.slice(0, 5) : '';
+  if (b.advice && !MDV_ADVICE.includes(b.advice)) return { error: '建議處置選項不正確' };
   const data = {};
   for (const k of MDV_FIELDS) if (b[k] !== undefined) {
-    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+    if (MDV_ARRAY_FIELDS.includes(k)) {
+      data[k] = (Array.isArray(b[k]) ? b[k] : []).filter(x => typeof x === 'string').slice(0, 20).map(x => x.slice(0, 60));
+    } else {
+      data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+    }
   }
   return { date, time, data, note: String(b.note || '').slice(0, 600) };
+}
+
+// 醫師簽名（PNG dataURL）：'__keep__' 表示未重簽，沿用原簽名
+function doctorSignature(v, cur) {
+  const s = String(v || '');
+  if (s === '__keep__') return { sig: cur || '' };
+  if (!s) return { sig: '' };
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(s);
+  if (!m || s.length > 1500000) return { error: '簽名無效，請重新手寫簽名' };
+  const buf = Buffer.from(m[1], 'base64');
+  if (buf.length < 200 || buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47) {
+    return { error: '簽名無效，請重新手寫簽名' };
+  }
+  return { sig: s };
+}
+
+// 婦產科診察紀錄表的基本資料自動帶入：房號／生產資料／胎次／生產醫院／History（入住護理評估表）
+const MDV_HISTORY_OPTS = ['None', 'heart disease', 'H/T', 'DM', 'Thyroid Disease', 'Asthma', 'HBV',
+  'Anemia', 'PIH', 'GDM', 'Placenta Praevia', 'Preeclampsia', 'PPH', 'Others'];
+const MDV_HISTORY_MAP = {
+  無: 'None', 心臟病: 'heart disease', 高血壓: 'H/T', 糖尿病: 'DM',
+  甲狀腺疾病: 'Thyroid Disease', 氣喘: 'Asthma', 貧血: 'Anemia',
+  妊娠高血壓: 'PIH', 妊娠糖尿病: 'GDM', 前置胎盤: 'Placenta Praevia',
+  子癲前症: 'Preeclampsia', 產後出血: 'PPH'
+};
+function motherVisitBasic(mother) {
+  const intake = db.prepare(`SELECT data FROM mother_intake_assessments
+    WHERE mother_id = ? ORDER BY id DESC LIMIT 1`).get(mother.id);
+  let mia = {};
+  if (intake) { try { mia = JSON.parse(intake.data); } catch (e) { mia = {}; } }
+  // History：既往病史／高危妊娠併發症逐項對照英文選項；B 肝表面抗原陽性視為 HBV
+  const src = [].concat(mia.past_history || [], mia.high_risk || []).filter(Boolean);
+  const history = [];
+  for (const s of src) {
+    const en = MDV_HISTORY_MAP[s];
+    if (en && !history.includes(en)) history.push(en);
+  }
+  if (/陽性/.test(mia.hbsag || '') && !history.includes('HBV')) history.push('HBV');
+  if (history.length > 1 && history.includes('None')) history.splice(history.indexOf('None'), 1);
+  const historyOther = [mia.past_history_other, mia.high_risk_other].filter(Boolean).join('、').slice(0, 200);
+  // 胎次：入住評估表優先，其次母乳哺育評估
+  let parity = mia.parity || '';
+  if (!parity) {
+    const bfa = db.prepare(`SELECT a.parity FROM breastfeeding_assessments a
+      JOIN babies b ON b.id = a.baby_id WHERE b.mother_id = ?
+      ORDER BY a.assess_date DESC, a.id DESC LIMIT 1`).get(mother.id);
+    if (bfa) parity = bfa.parity || '';
+  }
+  // 生產醫院：寶寶個案基本資料的出生地點
+  const prof = db.prepare(`SELECT p.data FROM baby_case_profiles p JOIN babies b ON b.id = p.baby_id
+    WHERE b.mother_id = ? ORDER BY b.id LIMIT 1`).get(mother.id);
+  let hospital = '';
+  if (prof) { try { hospital = JSON.parse(prof.data).birth_place || ''; } catch (e) { /* */ } }
+  const dm = mother.delivery_type === '剖腹產' ? 'C/S' : (mother.delivery_type === '自然產' ? 'NSD' : '');
+  const ppDays = mother.delivery_date
+    ? Math.max(0, Math.round((new Date(today()) - new Date(mother.delivery_date)) / 86400000)) : null;
+  return {
+    room_name: mother.room_name || '', delivery_date: mother.delivery_date || '',
+    delivery_mode: dm, parity, hospital, history, history_other: historyOther,
+    postpartum_days: ppDays, history_options: MDV_HISTORY_OPTS
+  };
 }
 
 app.get('/api/mothers/:id/doctor-visits', requireStaff, (req, res) => {
@@ -1185,7 +1254,7 @@ app.get('/api/mothers/:id/doctor-visits', requireStaff, (req, res) => {
     LEFT JOIN users e ON e.id = v.edited_by
     WHERE v.mother_id = ? ORDER BY v.visit_date DESC, v.visit_time DESC, v.id DESC LIMIT 200`).all(mother.id);
   for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
-  res.json({ mother, rows });
+  res.json({ mother, rows, basic: motherVisitBasic(mother) });
 });
 
 app.post('/api/mothers/:id/doctor-visits', requireStaff, (req, res) => {
@@ -1194,11 +1263,14 @@ app.post('/api/mothers/:id/doctor-visits', requireStaff, (req, res) => {
   const b = req.body || {};
   if (!/^\d{2}:\d{2}/.test(b.visit_time || '')) return res.status(400).json({ error: '請填寫診視時間' });
   const v = normalizeMotherVisit(b);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const sg = doctorSignature(b.physician_sign, '');
+  if (sg.error) return res.status(400).json({ error: sg.error });
   const info = db.prepare(`INSERT INTO mother_doctor_visits
-    (mother_id, recorded_by, visit_date, visit_time, data, note)
-    VALUES (?,?,?,?,?,?)`).run(
+    (mother_id, recorded_by, visit_date, visit_time, data, note, physician_sign, physician_name)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
     mother.id, req.session.user.id, v.date, v.time,
-    JSON.stringify(v.data).slice(0, 8000), v.note);
+    JSON.stringify(v.data).slice(0, 8000), v.note, sg.sig, String(b.physician_name || '').slice(0, 60));
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -1208,9 +1280,14 @@ app.put('/api/mother-doctor-visits/:id', requireStaff, (req, res) => {
   const b = req.body || {};
   if (!/^\d{2}:\d{2}/.test(b.visit_time || '')) return res.status(400).json({ error: '請填寫診視時間' });
   const v = normalizeMotherVisit(b);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const sg = doctorSignature(b.physician_sign, cur.physician_sign);
+  if (sg.error) return res.status(400).json({ error: sg.error });
   db.prepare(`UPDATE mother_doctor_visits SET visit_date=?, visit_time=?, data=?, note=?,
+    physician_sign=?, physician_name=?,
     edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
     v.date, v.time, JSON.stringify(v.data).slice(0, 8000), v.note,
+    sg.sig, String(b.physician_name || '').slice(0, 60),
     req.session.user.id, cur.id);
   logAudit(req, { action: 'update', entity: 'mother_doctor_visits', entity_id: cur.id, summary: '產科醫師診視紀錄修改' });
   res.json({ ok: true });
@@ -1784,7 +1861,12 @@ app.get('/api/physician-rounds', requireStaff, (req, res) => {
       WHERE mother_id = ? ORDER BY visit_date DESC, visit_time DESC, id DESC LIMIT 1`).get(m.id);
     let mdvData = {};
     if (mdv) { try { mdvData = JSON.parse(mdv.data); } catch (e) { mdvData = {}; } }
-    if (mdvData.complaint === '有' && mdvData.complaint_text) problems.push(`主訴：${mdvData.complaint_text}`);
+    // 巡診發現的異常（診察表：乳房／宮縮／腸道／傷口勾選中非正常者）
+    for (const k of ['breast', 'contraction', 'bowel', 'wound_healing']) {
+      for (const x of (mdvData[k] || [])) {
+        if (!['Soft', 'Firm', 'Bowel movement', 'Well'].includes(x)) problems.push(`巡診：${x}`);
+      }
+    }
     // 護理評估發現：最近一筆媽媽護理評估摘要
     const mna = db.prepare(`SELECT * FROM mother_nursing_assessments
       WHERE mother_id = ? ORDER BY assess_date DESC, assess_time DESC, id DESC LIMIT 1`).get(m.id);
@@ -1800,7 +1882,7 @@ app.get('/api/physician-rounds', requireStaff, (req, res) => {
       ].filter(Boolean).join('　');
     }
     // 醫師評估記錄：最近巡診（無則留白供手寫）
-    const doctor = mdv ? [`${mdv.visit_date}`, mdvData.mood || '', (mdv.note || '').slice(0, 60)].filter(Boolean).join('　') : '';
+    const doctor = mdv ? [`${mdv.visit_date}`, mdvData.advice || '', (mdv.note || '').slice(0, 60)].filter(Boolean).join('　') : '';
     return {
       room_name: m.room_name, name: m.name, parity,
       delivery_type: m.delivery_type || '', postpartum_days: ppDays,

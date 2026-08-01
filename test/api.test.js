@@ -396,25 +396,38 @@ test('產科醫師巡診：診視紀錄新增→修改→讀取；無 physician 
   // 缺診視時間 → 400
   assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/doctor-visits`, { visit_date: '2026-07-04' })).status, 400);
   // 新增
+  const png = 'data:image/png;base64,' + Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(300)]).toString('base64');
   const ok = await req('POST', `/api/mothers/${mom.id}/doctor-visits`, {
-    visit_date: '2026-07-04', visit_time: '22:45', postpartum_days: 10,
-    mood: '平穩', complaint: '無', feeding: ['純母乳'], breast: ['脹/充盈'],
-    ep_wound: '平整', fundus_height: '平臍', uterus_state: '硬',
-    lochia_amount: ['少'], lochia_color: ['暗紅'], urine: '正常', stool: '正常',
-    hemorrhoid: '無', edema_none: true, note: '恢復良好'
+    visit_date: '2026-07-04', visit_time: '22:45', postpartum_days: 10, parity: 'G2P2',
+    delivery_mode: 'NSD', hospital: '嘉禾醫院', history: ['None'],
+    breast: ['Soft'], fundus_height: '-2', contraction: ['Firm'], urinary_tract: 'clear',
+    bowel: ['Bowel movement'], lochia_amount: 'small', lochia_color: 'dark red',
+    wound_healing: ['Well'], advice: '續觀察', advice_note: '明日再評估',
+    physician_name: '王醫師', physician_sign: png, note: '恢復良好'
   });
   assert.strictEqual(ok.status, 200);
-  // 修改（記錄 edited_by）
+  // 修改（記錄 edited_by）；簽名送 __keep__ 沿用原簽名
   assert.strictEqual((await req('PUT', `/api/mother-doctor-visits/${ok.data.id}`, {
-    visit_date: '2026-07-04', visit_time: '23:00', mood: '焦慮', epds_score: 8,
-    breast: ['脹/充盈', '有硬塊'], note: '乳房輕微硬塊，衛教親餵'
+    visit_date: '2026-07-04', visit_time: '23:00',
+    breast: ['Filling', 'Painful'], wound_healing: ['Well'],
+    physician_name: '王醫師', physician_sign: '__keep__', note: '乳房輕微脹痛，衛教親餵'
   })).status, 200);
   const g = await req('GET', `/api/mothers/${mom.id}/doctor-visits`);
   const row = g.data.rows.find(r => r.id === ok.data.id);
   assert.strictEqual(row.visit_time, '23:00');
-  assert.deepStrictEqual(row.data.breast, ['脹/充盈', '有硬塊']);
-  assert.strictEqual(row.data.mood, '焦慮');
+  assert.deepStrictEqual(row.data.breast, ['Filling', 'Painful']);
+  assert.strictEqual(row.physician_sign, png, '未重簽時沿用原簽名');
   assert.ok(row.edited_at);
+  // 基本資料自動帶入：房號／產式／產後天數／History 選項
+  assert.ok(Array.isArray(g.data.basic.history_options) && g.data.basic.history_options.includes('GDM'));
+  assert.ok(['NSD', 'C/S', ''].includes(g.data.basic.delivery_mode));
+  // 建議處置與簽名的驗證
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/doctor-visits`, {
+    visit_date: '2026-07-04', visit_time: '23:30', advice: '亂填'
+  })).status, 400);
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/doctor-visits`, {
+    visit_date: '2026-07-04', visit_time: '23:30', physician_sign: 'data:image/png;base64,AAAA'
+  })).status, 400);
   // RBAC：kit_test（僅 meals）→ 403
   const adminCookie = cookie;
   cookie = '';
