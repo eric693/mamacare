@@ -15691,6 +15691,340 @@ function openCertForm(c) {
 }
 
 /* ---------- 問卷／滿意度調查 ---------- */
+/* ---------- 自訂表格（機構自行設計表格：欄位可增刪停用、填寫、每月統計） ---------- */
+const CF_TYPE_LABEL = { text: '單行文字', textarea: '多行文字', number: '數值', date: '日期', select: '單選', multi: '複選', bool: '是／否' };
+const CF_SUBJECT_LABEL = { none: '不指定對象', mother: '指定媽媽', baby: '指定寶寶' };
+
+function cfMonthStr(d) { return (d || todayStr()).slice(0, 7); }
+
+async function viewCustomForms() {
+  const isAdmin = currentUser.role === 'admin';
+  const forms = await api(`/custom-forms${isAdmin ? '?all=1' : ''}`);
+  const q = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const formId = Number(q.get('f')) || (forms.find(f => f.active) || forms[0] || {}).id || 0;
+  const month = /^\d{4}-\d{2}$/.test(q.get('m') || '') ? q.get('m') : cfMonthStr();
+
+  main().innerHTML = `
+    <div class="page-title">自訂表格 <small style="font-weight:400;color:var(--muted);font-size:.9rem">自行設計表格欄位、填寫與每月統計</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:280px;margin:0"><label>選擇表格</label>
+          <select id="cf-form">${forms.length
+            ? forms.map(f => `<option value="${f.id}" ${f.id === formId ? 'selected' : ''}>${esc(f.name)}${f.category ? `（${esc(f.category)}）` : ''}${f.active ? '' : '・已停用'}</option>`).join('')
+            : '<option value="">尚未建立表格</option>'}</select></div>
+        <div class="field" style="max-width:160px;margin:0"><label>統計月份</label>
+          <input type="month" id="cf-month" value="${esc(month)}"></div>
+        <button class="btn small secondary" id="cf-reload">查詢</button>
+        ${isAdmin ? '<button class="btn small" id="cf-new">新增表格</button>' : ''}
+        ${isAdmin && formId ? '<button class="btn small secondary" id="cf-edit">設計／修改欄位</button>' : ''}
+        ${isAdmin && formId ? '<button class="btn small danger" id="cf-del">停用／刪除表格</button>' : ''}
+      </div>
+    </div>
+    <div id="cf-body">${forms.length ? '<div class="card"><div class="empty">載入中…</div></div>'
+      : '<div class="card"><div class="empty">尚未建立自訂表格。' + (isAdmin ? '請按「新增表格」開始設計。' : '請洽管理員建立。') + '</div></div>'}</div>`;
+
+  const go = () => { location.hash = `#/custom-forms?f=${$('#cf-form').value}&m=${$('#cf-month').value}`; viewCustomForms(); };
+  $('#cf-form').onchange = go;
+  $('#cf-month').onchange = go;
+  $('#cf-reload').onclick = go;
+  if (isAdmin) {
+    $('#cf-new').onclick = () => openCustomFormEditor(null);
+    if (formId) {
+      $('#cf-edit').onclick = () => openCustomFormEditor(forms.find(f => f.id === formId));
+      $('#cf-del').onclick = async () => {
+        const f = forms.find(x => x.id === formId);
+        if (!confirm(`確定停用／刪除表格「${f.name}」？\n已有填寫紀錄者會改為停用並保留紀錄與統計。`)) return;
+        try {
+          const r = await api(`/custom-forms/${formId}`, { method: 'DELETE' });
+          alert(r.deleted ? '表格已刪除' : `表格已停用（保留 ${r.entries} 筆填寫紀錄）`);
+          location.hash = '#/custom-forms';
+          viewCustomForms();
+        } catch (e) { alert(e.message); }
+      };
+    }
+  }
+  if (formId) renderCustomForm(formId, month);
+}
+
+async function renderCustomForm(formId, month) {
+  const isAdmin = currentUser.role === 'admin';
+  const [{ form, rows, subjects }, stats] = await Promise.all([
+    api(`/custom-forms/${formId}/entries?month=${month}`),
+    api(`/custom-forms/${formId}/stats?month=${month}`)
+  ]);
+  const shown = form.fields.filter(f => f.active);
+  const cell = (f, v) => {
+    if (f.type === 'bool') return v ? '是' : '否';
+    if (f.type === 'multi') return (Array.isArray(v) ? v : []).join('、');
+    return String(v == null ? '' : v);
+  };
+  const entryRows = rows.map(r => `
+    <tr data-filter="${esc(r.fill_date)} ${esc(r.subject_name || '')} ${esc(r.created_name || '')}">
+      <td data-label="填寫日期">${esc(r.fill_date)}</td>
+      ${form.subject === 'none' ? '' : `<td data-label="對象">${esc(r.subject_name || '—')}</td>`}
+      ${shown.map(f => `<td data-label="${esc(f.label)}">${esc(cell(f, r.data[f.key]))}</td>`).join('')}
+      <td data-label="備註"><small>${esc(r.note || '')}</small></td>
+      <td data-label="填寫人">${esc(r.created_name || '—')}${r.edited_at ? '<br><small style="color:var(--muted)">已修改</small>' : ''}</td>
+      <td class="no-print" style="white-space:nowrap">
+        <button class="btn small secondary" data-cf-edit="${r.id}">修改</button>
+        ${isAdmin ? `<button class="btn small danger" data-cf-del="${r.id}">刪除</button>` : ''}</td>
+    </tr>`).join('');
+
+  const statCards = stats.stats.map(s => {
+    if (s.type === 'number') {
+      return `<div class="card" style="padding:10px">
+        <div style="font-weight:600">${esc(s.label)}${s.unit ? `（${esc(s.unit)}）` : ''}</div>
+        <div class="row" style="gap:14px;flex-wrap:wrap;margin-top:4px;font-size:.92rem">
+          <span>筆數 <b>${s.count}</b></span><span>合計 <b>${s.sum}</b></span>
+          <span>平均 <b>${s.avg == null ? '—' : s.avg}</b></span>
+          <span>最小 <b>${s.min == null ? '—' : s.min}</b></span><span>最大 <b>${s.max == null ? '—' : s.max}</b></span>
+        </div></div>`;
+    }
+    if (s.dist) {
+      const total = Object.values(s.dist).reduce((a, b) => a + b, 0);
+      return `<div class="card" style="padding:10px">
+        <div style="font-weight:600">${esc(s.label)}<small style="color:var(--muted);font-weight:400">　已填 ${s.answered} 筆</small></div>
+        <table class="data" style="margin-top:4px">
+          <tbody>${Object.entries(s.dist).map(([k, v]) => `
+            <tr><td>${esc(k)}</td><td style="width:70px;text-align:right">${v}</td>
+              <td style="width:70px;text-align:right">${total ? Math.round(v / total * 1000) / 10 : 0}%</td></tr>`).join('')}
+          </tbody></table></div>`;
+    }
+    return `<div class="card" style="padding:10px">
+      <div style="font-weight:600">${esc(s.label)}</div>
+      <div style="margin-top:4px;font-size:.92rem">已填寫 <b>${s.filled}</b> 筆（文字欄位不做分佈統計）</div></div>`;
+  }).join('');
+
+  $('#cf-body').innerHTML = `
+    <div class="card">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <div>
+          <div class="sec-hd" style="margin:0">${esc(form.name)}</div>
+          <div style="font-size:.88rem;color:var(--muted)">
+            ${esc(CF_SUBJECT_LABEL[form.subject])}${form.category ? `・${esc(form.category)}` : ''}${form.description ? `・${esc(form.description)}` : ''}</div>
+        </div>
+        <div class="row no-print" style="gap:6px">
+          <button class="btn" id="cf-add">填寫表格</button>
+          <button class="btn secondary" id="cf-print">列印月統計</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-hd">${esc(month)} 月統計（共 ${stats.entries} 筆）</div>
+      ${statCards || '<div class="empty">本月尚無填寫紀錄</div>'}
+      ${stats.trend.length ? `<div class="table-wrap" style="margin-top:8px">
+        <table class="data"><thead><tr>${stats.trend.map(t => `<th>${esc(t.ym)}</th>`).join('')}</tr></thead>
+        <tbody><tr>${stats.trend.map(t => `<td style="text-align:center">${t.c}</td>`).join('')}</tr></tbody></table>
+        <small style="color:var(--muted)">近 12 個月填寫筆數</small></div>` : ''}
+    </div>
+    <div class="card">
+      <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
+        <h3 style="margin:0">填寫紀錄（${rows.length} 筆）</h3>
+      </div>
+      ${filterBar({ placeholder: '搜尋填寫日期／對象／填寫人…' })}
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>填寫日期</th>${form.subject === 'none' ? '' : '<th>對象</th>'}
+            ${shown.map(f => `<th>${esc(f.label)}${f.unit ? `（${esc(f.unit)}）` : ''}</th>`).join('')}
+            <th>備註</th><th>填寫人</th><th class="no-print"></th></tr></thead>
+          <tbody>${entryRows || `<tr><td colspan="${shown.length + 4}"><div class="empty">本月尚無填寫紀錄</div></td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  wireFilter(main());
+  $('#cf-add').onclick = () => openCustomFormEntry(form, subjects, null, month);
+  $('#cf-print').onclick = () => printCustomFormStats(form, month, stats);
+  main().querySelectorAll('[data-cf-edit]').forEach(b => b.onclick = () =>
+    openCustomFormEntry(form, subjects, rows.find(r => String(r.id) === b.dataset.cfEdit), month));
+  main().querySelectorAll('[data-cf-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('確定刪除這筆填寫紀錄？（會記入稽核軌跡）')) return;
+    await api(`/custom-form-entries/${b.dataset.cfDel}`, { method: 'DELETE' });
+    renderCustomForm(form.id, month);
+  });
+}
+
+// 填寫／修改一筆紀錄
+function openCustomFormEntry(form, subjects, entry, month) {
+  const d = (entry && entry.data) || {};
+  const shown = form.fields.filter(f => f.active);
+  const fieldHtml = f => {
+    const v = d[f.key];
+    const req = f.required ? ' <b class="req">*</b>' : '';
+    if (f.type === 'textarea') return `<div class="field full"><label>${esc(f.label)}${req}</label><textarea data-cf="${f.key}" rows="3" maxlength="1000">${esc(v || '')}</textarea></div>`;
+    if (f.type === 'number') return `<div class="field"><label>${esc(f.label)}${f.unit ? `（${esc(f.unit)}）` : ''}${req}</label><input type="number" step="any" data-cf="${f.key}" value="${esc(v ?? '')}"></div>`;
+    if (f.type === 'date') return `<div class="field"><label>${esc(f.label)}${req}</label><input type="date" data-cf="${f.key}" value="${esc(v || '')}"></div>`;
+    if (f.type === 'bool') return `<div class="field"><label>${esc(f.label)}${req}</label>
+      <label class="bna-chk"><input type="checkbox" data-cf="${f.key}" ${v ? 'checked' : ''}> 是</label></div>`;
+    if (f.type === 'select') return `<div class="field"><label>${esc(f.label)}${req}</label>
+      <select data-cf="${f.key}"><option value="">請選擇</option>${f.options.map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`;
+    if (f.type === 'multi') return `<div class="field full"><label>${esc(f.label)}${req}</label>
+      <div class="row" style="gap:8px 14px;flex-wrap:wrap">${f.options.map(o =>
+      `<label class="bna-chk"><input type="checkbox" data-cf-multi="${f.key}" value="${esc(o)}" ${(Array.isArray(v) ? v : []).includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div></div>`;
+    return `<div class="field"><label>${esc(f.label)}${req}</label><input data-cf="${f.key}" maxlength="200" value="${esc(v || '')}"></div>`;
+  };
+  openModal(`${entry ? '修改' : '填寫'} — ${esc(form.name)}`, `
+    <div class="form-grid">
+      <div class="field"><label>填寫日期 <b class="req">*</b></label>
+        <input type="date" id="cfe-date" value="${esc((entry && entry.fill_date) || todayStr())}"></div>
+      ${form.subject === 'none' ? '' : `<div class="field"><label>${esc(form.subject === 'baby' ? '寶寶' : '媽媽')} <b class="req">*</b></label>
+        <select id="cfe-subject">${subjects.map(s => `<option value="${s.id}" ${entry && entry.subject_id === s.id ? 'selected' : ''}>${esc(s.name)}${s.room_name ? `（${esc(s.room_name)}）` : ''}${s.mother_name ? `（${esc(s.mother_name)}）` : ''}</option>`).join('')}</select></div>`}
+      ${shown.map(fieldHtml).join('')}
+      <div class="field full"><label>備註</label><input id="cfe-note" maxlength="300" value="${esc((entry && entry.note) || '')}"></div>
+      <div class="full row" style="gap:10px">
+        <button class="btn" id="cfe-save">儲存</button>
+        <span class="error-msg" id="cfe-err"></span>
+      </div>
+    </div>`, body => {
+    body.querySelector('#cfe-save').onclick = async () => {
+      const err = body.querySelector('#cfe-err');
+      err.textContent = '';
+      const data = {};
+      for (const f of shown) {
+        if (f.type === 'multi') {
+          data[f.key] = [...body.querySelectorAll(`[data-cf-multi="${f.key}"]:checked`)].map(c => c.value);
+        } else {
+          const el = body.querySelector(`[data-cf="${f.key}"]`);
+          data[f.key] = f.type === 'bool' ? el.checked : el.value.trim();
+        }
+      }
+      const payload = {
+        fill_date: body.querySelector('#cfe-date').value,
+        note: body.querySelector('#cfe-note').value.trim(), data
+      };
+      if (form.subject !== 'none') payload.subject_id = Number(body.querySelector('#cfe-subject').value) || 0;
+      try {
+        if (entry) await api(`/custom-form-entries/${entry.id}`, { method: 'PUT', body: payload });
+        else await api(`/custom-forms/${form.id}/entries`, { method: 'POST', body: payload });
+        closeModal();
+        renderCustomForm(form.id, month);
+      } catch (e) { err.textContent = e.message; }
+    };
+  });
+}
+
+// 表格設計（管理員）：新增／修改欄位、排序、停用
+function openCustomFormEditor(form) {
+  const fields = form ? form.fields : [];
+  const row = f => `
+    <tr>
+      <td><input value="${esc(f.label || '')}" data-cff-label style="width:100%">
+        <input type="hidden" data-cff-key value="${esc(f.key || '')}"></td>
+      <td><select data-cff-type>${Object.entries(CF_TYPE_LABEL).map(([k, l]) =>
+    `<option value="${k}" ${f.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+      <td><input value="${esc((f.options || []).join(','))}" data-cff-opts placeholder="單／複選時填，逗號分隔" style="width:100%"></td>
+      <td><input value="${esc(f.unit || '')}" data-cff-unit style="width:70px"></td>
+      <td style="text-align:center"><input type="checkbox" data-cff-req ${f.required ? 'checked' : ''}></td>
+      <td style="text-align:center"><input type="checkbox" data-cff-active ${f.active === false ? '' : 'checked'}></td>
+      <td style="white-space:nowrap">
+        <button class="btn small secondary" data-cff-up>上移</button>
+        <button class="btn small danger" data-cff-del>移除</button></td>
+    </tr>`;
+  openModal(form ? `修改表格 — ${esc(form.name)}` : '新增自訂表格', `
+    <div class="form-grid">
+      <div class="field"><label>表格名稱 <b class="req">*</b></label><input id="cff-name" maxlength="60" value="${esc((form && form.name) || '')}"></div>
+      <div class="field"><label>分類<small>（如：評鑑指標／客服品質）</small></label><input id="cff-cat" maxlength="30" value="${esc((form && form.category) || '')}"></div>
+      <div class="field"><label>填寫對象</label>
+        <select id="cff-subject">${Object.entries(CF_SUBJECT_LABEL).map(([k, l]) =>
+      `<option value="${k}" ${(form && form.subject) === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field full"><label>說明</label><input id="cff-desc" maxlength="300" value="${esc((form && form.description) || '')}"></div>
+    </div>
+    <p style="font-size:.85rem;color:var(--muted);margin:8px 0 4px">
+      欄位可隨時新增或停用：停用的欄位不再出現在填寫表單，既有紀錄與統計仍保留（欄位以內部代碼對應，改名不影響舊資料）。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>欄位名稱</th><th style="width:110px">型別</th><th style="width:200px">選項</th><th style="width:80px">單位</th>
+          <th style="width:60px">必填</th><th style="width:60px">啟用</th><th style="width:150px"></th></tr></thead>
+        <tbody id="cff-rows">${(fields.length ? fields : [{ label: '', type: 'text', options: [], active: true }]).map(row).join('')}</tbody>
+      </table>
+    </div>
+    <div class="row" style="gap:6px;margin-top:8px">
+      <button class="btn small secondary" id="cff-add">新增欄位</button>
+      <button class="btn" id="cff-save">儲存</button>
+      <span class="error-msg" id="cff-err"></span>
+    </div>`, body => {
+    const wire = tr => {
+      tr.querySelector('[data-cff-del]').onclick = () => tr.remove();
+      tr.querySelector('[data-cff-up]').onclick = () => {
+        if (tr.previousElementSibling) tr.parentNode.insertBefore(tr, tr.previousElementSibling);
+      };
+    };
+    body.querySelectorAll('#cff-rows tr').forEach(wire);
+    body.querySelector('#cff-add').onclick = () => {
+      const tb = body.querySelector('#cff-rows');
+      tb.insertAdjacentHTML('beforeend', row({ label: '', type: 'text', options: [], active: true }));
+      wire(tb.lastElementChild);
+    };
+    body.querySelector('#cff-save').onclick = async () => {
+      const err = body.querySelector('#cff-err');
+      err.textContent = '';
+      const name = body.querySelector('#cff-name').value.trim();
+      if (!name) { err.textContent = '請填寫表格名稱'; return; }
+      const rows = [...body.querySelectorAll('#cff-rows tr')].map(tr => ({
+        key: tr.querySelector('[data-cff-key]').value,
+        label: tr.querySelector('[data-cff-label]').value.trim(),
+        type: tr.querySelector('[data-cff-type]').value,
+        options: tr.querySelector('[data-cff-opts]').value.trim(),
+        unit: tr.querySelector('[data-cff-unit]').value.trim(),
+        required: tr.querySelector('[data-cff-req]').checked,
+        active: tr.querySelector('[data-cff-active]').checked
+      })).filter(f => f.label);
+      if (!rows.length) { err.textContent = '請至少設定一個欄位'; return; }
+      if (rows.some(f => ['select', 'multi'].includes(f.type) && !f.options)) {
+        err.textContent = '單選／複選欄位請填寫選項（逗號分隔）'; return;
+      }
+      const payload = {
+        name, category: body.querySelector('#cff-cat').value.trim(),
+        subject: body.querySelector('#cff-subject').value,
+        description: body.querySelector('#cff-desc').value.trim(), fields: rows
+      };
+      try {
+        if (form) await api(`/custom-forms/${form.id}`, { method: 'PUT', body: payload });
+        else {
+          const r = await api('/custom-forms', { method: 'POST', body: payload });
+          location.hash = `#/custom-forms?f=${r.id}`;
+        }
+        closeModal();
+        viewCustomForms();
+      } catch (e) { err.textContent = e.message; }
+    };
+  });
+}
+
+// 另開視窗列印／另存 PDF：自訂表格月統計
+function printCustomFormStats(form, month, stats) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const blocks = stats.stats.map(s => {
+    if (s.type === 'number') {
+      return `<tr><td>${esc(s.label)}${s.unit ? `（${esc(s.unit)}）` : ''}</td>
+        <td>筆數 ${s.count}；合計 ${s.sum}；平均 ${s.avg == null ? '—' : s.avg}；最小 ${s.min == null ? '—' : s.min}；最大 ${s.max == null ? '—' : s.max}</td></tr>`;
+    }
+    if (s.dist) {
+      const total = Object.values(s.dist).reduce((a, b) => a + b, 0);
+      return `<tr><td>${esc(s.label)}</td><td>${Object.entries(s.dist)
+        .map(([k, v]) => `${esc(k)} ${v}（${total ? Math.round(v / total * 1000) / 10 : 0}%）`).join('；')}</td></tr>`;
+    }
+    return `<tr><td>${esc(s.label)}</td><td>已填寫 ${s.filled} 筆</td></tr>`;
+  }).join('');
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>${esc(form.name)} - ${esc(month)} 月統計</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.5;max-width:800px;margin:24px auto;padding:0 24px}
+      h1{font-size:18px;margin:0 0 2px;text-align:center}
+      .sub{text-align:center;font-size:13px;margin-bottom:12px}
+      table{width:100%;border-collapse:collapse;font-size:13px}
+      th,td{border:1px solid #666;padding:6px 8px;vertical-align:top} th{background:#f2f7f6}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>${esc(center)}</h1>
+    <div class="sub">${esc(form.name)}　${esc(month)} 月統計（共 ${stats.entries} 筆）</div>
+    <table><thead><tr><th style="width:200px">欄位</th><th>統計結果</th></tr></thead><tbody>${blocks}</tbody></table>
+    <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+    </body></html>`);
+  win.document.close();
+}
+
 async function viewSurveys() {
   const rows = await api('/surveys');
   main().innerHTML = `
@@ -16053,6 +16387,7 @@ const routes = {
   '#/gov': viewGov,
   '#/certifications': viewCerts,
   '#/surveys': viewSurveys,
+  '#/custom-forms': viewCustomForms,
   '#/audit-logs': viewAuditLogs,
   '#/export': viewExport,
   '#/settings': viewSettings,
@@ -16073,7 +16408,7 @@ const ROUTE_PERM = {
   '#/supplies': 'supplies', '#/supply-items': 'supplies', '#/supply-in': 'supplies', '#/supply-out': 'supplies', '#/supply-movements': 'supplies', '#/supply-stocktake': 'supplies', '#/stocktake-detail': 'supplies', '#/programs': 'programs', '#/program-calendar': 'programs', '#/members': 'members', '#/coupons': 'coupons',
   '#/invoices': 'invoices', '#/contracts': 'contracts', '#/meals': 'meals', '#/meal-plan': 'meals',
   '#/tours': 'tours', '#/visitor-reservations': 'visitors', '#/prospects': 'tours', '#/tour-signups': 'tours', '#/tour-cancellations': 'tours', '#/tour-lost': 'tours', '#/contract-amount-up': 'tours', '#/contract-amount-down': 'tours', '#/tour-slots': 'tours', '#/shifts': 'shifts', '#/family': 'family', '#/crm': 'crm', '#/testimonials': 'testimonials', '#/reports': 'reports', '#/quality-report': 'reports',
-  '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys',
+  '#/gov': 'gov', '#/certifications': 'certifications', '#/surveys': 'surveys', '#/custom-forms': 'custom_forms',
   '#/audit-logs': 'audit', '#/export': 'export', '#/settings': 'settings', '#/users': 'users', '#/employees': 'users'
 };
 function canAccess(hash) {

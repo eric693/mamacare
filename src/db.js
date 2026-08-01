@@ -1245,6 +1245,33 @@ function init() {
       ['其他', '個案需求－']
     ].forEach((r, i) => insB.run(r[0], r[1], (i + 1) * 10));
   }
+  // 自訂表格：機構自行設計的表格（欄位可增刪停用）＋填寫紀錄，供每月統計
+  db.exec(`CREATE TABLE IF NOT EXISTS custom_forms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',       -- 分類（如：評鑑指標／客服品質）
+    subject TEXT NOT NULL DEFAULT 'none',    -- none/mother/baby：填寫時是否要指定對象
+    description TEXT NOT NULL DEFAULT '',
+    fields TEXT NOT NULL DEFAULT '[]',       -- 欄位定義 JSON（key/label/type/options/required/unit/active）
+    active INTEGER NOT NULL DEFAULT 1,
+    sort INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id)
+  );
+  CREATE TABLE IF NOT EXISTS custom_form_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id INTEGER NOT NULL REFERENCES custom_forms(id),
+    subject_id INTEGER,                      -- 對象（媽媽或寶寶 id；表格 subject=none 時為 NULL）
+    fill_date TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    edited_at TEXT NOT NULL DEFAULT '',
+    edited_by INTEGER REFERENCES users(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cfe_form ON custom_form_entries(form_id, fill_date);`);
   // 設備清點：項目主檔（可自行增減）＋每筆訂房一張清點單
   db.exec(`CREATE TABLE IF NOT EXISTS equip_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

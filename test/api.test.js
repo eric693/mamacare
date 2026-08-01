@@ -2756,3 +2756,98 @@ test('整批排房：改入住日整串順延不會被自己的舊日期擋下�
   // 還原
   await req('PUT', `/api/bookings/${after.find(b => b.status === 'reserved').id}/status`, { status: 'cancelled' });
 });
+
+test('自訂表格：設計欄位→填寫→月統計；欄位停用不影響舊資料；非管理員不可改設計', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
+  // 建表：數值＋單選＋複選＋是否＋文字
+  const create = await req('POST', '/api/custom-forms', {
+    name: `衛生局指標${Date.now() % 100000}`, category: '評鑑指標', subject: 'none',
+    fields: [
+      { label: '訪視人次', type: 'number', unit: '人', required: true },
+      { label: '結果', type: 'select', options: '合格,待改善,不合格' },
+      { label: '缺失類別', type: 'multi', options: '環境,紀錄,人力' },
+      { label: '是否複查', type: 'bool' },
+      { label: '說明', type: 'text' }
+    ]
+  });
+  assert.strictEqual(create.status, 200);
+  const formId = create.data.id;
+  const forms = (await req('GET', '/api/custom-forms')).data;
+  const form = forms.find(f => f.id === formId);
+  assert.strictEqual(form.fields.length, 5);
+  const key = l => form.fields.find(f => f.label === l).key;
+  // 必填擋下
+  assert.strictEqual((await req('POST', `/api/custom-forms/${formId}/entries`, { data: {} })).status, 400);
+  // 選項驗證
+  assert.strictEqual((await req('POST', `/api/custom-forms/${formId}/entries`, {
+    data: { [key('訪視人次')]: 3, [key('結果')]: '亂填' }
+  })).status, 400);
+  // 兩筆本月資料
+  assert.strictEqual((await req('POST', `/api/custom-forms/${formId}/entries`, {
+    fill_date: `${month}-05`,
+    data: { [key('訪視人次')]: 10, [key('結果')]: '合格', [key('缺失類別')]: ['環境'], [key('是否複查')]: true, [key('說明')]: 'ok' }
+  })).status, 200);
+  assert.strictEqual((await req('POST', `/api/custom-forms/${formId}/entries`, {
+    fill_date: `${month}-20`,
+    data: { [key('訪視人次')]: 20, [key('結果')]: '待改善', [key('缺失類別')]: ['環境', '紀錄'], [key('是否複查')]: false }
+  })).status, 200);
+  // 月統計
+  const st = (await req('GET', `/api/custom-forms/${formId}/stats?month=${month}`)).data;
+  assert.strictEqual(st.entries, 2);
+  const numStat = st.stats.find(x => x.label === '訪視人次');
+  assert.strictEqual(numStat.sum, 30);
+  assert.strictEqual(numStat.avg, 15);
+  assert.strictEqual(numStat.min, 10);
+  assert.strictEqual(numStat.max, 20);
+  const selStat = st.stats.find(x => x.label === '結果');
+  assert.strictEqual(selStat.dist['合格'], 1);
+  assert.strictEqual(selStat.dist['待改善'], 1);
+  assert.strictEqual(selStat.dist['不合格'], 0);
+  const multiStat = st.stats.find(x => x.label === '缺失類別');
+  assert.strictEqual(multiStat.dist['環境'], 2);
+  assert.strictEqual(multiStat.dist['紀錄'], 1);
+  const boolStat = st.stats.find(x => x.label === '是否複查');
+  assert.strictEqual(boolStat.dist['是'], 1);
+  assert.strictEqual(boolStat.dist['否'], 1);
+  // 新增欄位＋停用既有欄位：舊資料仍在，統計仍算得到
+  const upd = await req('PUT', `/api/custom-forms/${formId}`, {
+    fields: form.fields.map(f => ({
+      key: f.key, label: f.label, type: f.type, options: (f.options || []).join(','),
+      unit: f.unit, required: f.required, active: f.label !== '說明'
+    })).concat([{ label: '新增指標', type: 'number', unit: '件' }])
+  });
+  assert.strictEqual(upd.status, 200);
+  const form2 = (await req('GET', '/api/custom-forms')).data.find(f => f.id === formId);
+  assert.strictEqual(form2.fields.length, 6);
+  assert.strictEqual(form2.fields.find(f => f.label === '說明').active, false);
+  const st2 = (await req('GET', `/api/custom-forms/${formId}/stats?month=${month}`)).data;
+  assert.strictEqual(st2.entries, 2);
+  assert.strictEqual(st2.stats.find(x => x.label === '訪視人次').sum, 30, '停用欄位不影響既有統計');
+  // 月份區隔：上個月無資料
+  const prev = new Date(`${month}-01T00:00:00Z`);
+  prev.setUTCMonth(prev.getUTCMonth() - 1);
+  const st3 = (await req('GET', `/api/custom-forms/${formId}/stats?month=${prev.toISOString().slice(0, 7)}`)).data;
+  assert.strictEqual(st3.entries, 0);
+  // 有紀錄的表格刪除 → 改為停用並保留紀錄
+  const del = await req('DELETE', `/api/custom-forms/${formId}`);
+  assert.strictEqual(del.status, 200);
+  assert.strictEqual(del.data.disabled, true);
+  assert.strictEqual(del.data.entries, 2);
+  assert.ok(!(await req('GET', '/api/custom-forms')).data.some(f => f.id === formId), '停用後不列在填寫清單');
+  assert.ok((await req('GET', '/api/custom-forms?all=1')).data.some(f => f.id === formId));
+  // RBAC：一般護理師可填寫但不可改設計；無權限帳號 403
+  const adminCookie = cookie;
+  cookie = '';
+  await req('POST', '/api/login', { username: 'nurse1', password: 'nurse123' });
+  const nurseSee = await req('GET', '/api/custom-forms');
+  assert.ok([200, 403].includes(nurseSee.status));
+  if (nurseSee.status === 200) {
+    assert.strictEqual((await req('POST', '/api/custom-forms', { name: 'x', fields: [{ label: 'a', type: 'text' }] })).status, 403);
+  }
+  cookie = '';
+  await req('POST', '/api/login', { username: 'kit_test', password: 'k12345' });
+  assert.strictEqual((await req('GET', '/api/custom-forms')).status, 403);
+  cookie = adminCookie;
+});

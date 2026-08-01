@@ -123,6 +123,7 @@ const MODULES = [
   { key: 'gov', label: '衛福部通報' },
   { key: 'certifications', label: '員工證照' },
   { key: 'surveys', label: '問卷調查' },
+  { key: 'custom_forms', label: '自訂表格' },
   { key: 'coupons', label: '優惠券' },
   { key: 'audit', label: '稽核軌跡' },
   { key: 'export', label: '資料匯出與備份' },
@@ -136,6 +137,8 @@ const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolat
 // 路由 → 模組對照（依序比對，先精準後一般）；未命中者視為基礎共用端點，任何登入員工皆可存取
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
+  [/^\/api\/custom-forms/, 'custom_forms'],
+  [/^\/api\/custom-form-entries/, 'custom_forms'],
   [/^\/api\/guidance-items/, 'mother_care'],
   [/^\/api\/baby-guidance-items/, 'baby_care'],
   [/^\/api\/babies\/\d+\/guidance-sheet/, 'baby_care'],
@@ -11186,6 +11189,280 @@ app.put('/api/certifications/:id', requireStaff, (req, res) => {
 app.delete('/api/certifications/:id', requireStaff, (req, res) => {
   db.prepare('DELETE FROM staff_certifications WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
+});
+
+// ---------- 自訂表格（機構自行設計的表格：欄位可增刪停用、填寫紀錄、每月統計） ----------
+const CF_TYPES = ['text', 'textarea', 'number', 'date', 'select', 'multi', 'bool'];
+const CF_SUBJECTS = ['none', 'mother', 'baby'];
+
+// 欄位定義正規化；key 用來對應既有填寫紀錄，一旦產生就不再變動
+function normalizeFormFields(input, prevFields) {
+  const prev = Array.isArray(prevFields) ? prevFields : [];
+  const used = new Set();
+  const out = [];
+  for (const f of (Array.isArray(input) ? input : []).slice(0, 60)) {
+    const label = String(f.label || '').trim().slice(0, 60);
+    if (!label) continue;
+    const type = CF_TYPES.includes(f.type) ? f.type : 'text';
+    let key = String(f.key || '').trim().slice(0, 20);
+    if (!key || used.has(key)) {
+      let n = out.length + 1;
+      const taken = new Set([...used, ...prev.map(x => x.key)]);
+      while (taken.has(`f${n}`)) n++;
+      key = `f${n}`;
+    }
+    used.add(key);
+    out.push({
+      key, label, type,
+      options: ['select', 'multi'].includes(type)
+        ? String(f.options || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 40)
+        : [],
+      unit: String(f.unit || '').trim().slice(0, 10),
+      required: !!f.required,
+      active: f.active === undefined ? true : !!f.active
+    });
+  }
+  // 已停用但仍有舊資料的欄位保留定義（統計與檢視需要），不再出現在填寫表單
+  for (const p of prev) {
+    if (!out.some(x => x.key === p.key)) out.push({ ...p, active: false });
+  }
+  return out;
+}
+
+function parseForm(row) {
+  let fields = [];
+  try { fields = JSON.parse(row.fields || '[]'); } catch (e) { fields = []; }
+  return { ...row, fields };
+}
+
+app.get('/api/custom-forms', requireStaff, (req, res) => {
+  const all = req.query.all === '1';
+  const rows = db.prepare(`SELECT f.*,
+      (SELECT COUNT(*) FROM custom_form_entries e WHERE e.form_id = f.id) AS entry_count
+    FROM custom_forms f ${all ? '' : 'WHERE f.active = 1'} ORDER BY f.sort, f.id`).all();
+  res.json(rows.map(parseForm));
+});
+
+app.post('/api/custom-forms', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim().slice(0, 60);
+  if (!name) return res.status(400).json({ error: '請填寫表格名稱' });
+  const subject = CF_SUBJECTS.includes(b.subject) ? b.subject : 'none';
+  const fields = normalizeFormFields(b.fields, []);
+  if (!fields.length) return res.status(400).json({ error: '請至少設定一個欄位' });
+  const maxSort = db.prepare('SELECT COALESCE(MAX(sort), 0) s FROM custom_forms').get().s;
+  const info = db.prepare(`INSERT INTO custom_forms (name, category, subject, description, fields, sort, updated_by)
+    VALUES (?,?,?,?,?,?,?)`).run(name, String(b.category || '').trim().slice(0, 30), subject,
+    String(b.description || '').slice(0, 300), JSON.stringify(fields), maxSort + 10, req.session.user.id);
+  logAudit(req, { action: 'create', entity: 'custom_forms', entity_id: info.lastInsertRowid, summary: `新增自訂表格：${name}` });
+  res.json({ id: info.lastInsertRowid });
+});
+
+// 修改表格（新增／改名／停用欄位皆走這裡；既有填寫紀錄以欄位 key 對應，不會被改壞）
+app.put('/api/custom-forms/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM custom_forms WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到表格' });
+  const b = req.body || {};
+  const name = b.name === undefined ? cur.name : String(b.name).trim().slice(0, 60);
+  if (!name) return res.status(400).json({ error: '請填寫表格名稱' });
+  let fields;
+  try { fields = JSON.parse(cur.fields || '[]'); } catch (e) { fields = []; }
+  if (b.fields !== undefined) {
+    fields = normalizeFormFields(b.fields, fields);
+    if (!fields.filter(f => f.active).length) return res.status(400).json({ error: '請至少保留一個啟用中的欄位' });
+  }
+  db.prepare(`UPDATE custom_forms SET name=?, category=?, subject=?, description=?, fields=?, active=?,
+    updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`).run(
+    name, b.category === undefined ? cur.category : String(b.category).trim().slice(0, 30),
+    CF_SUBJECTS.includes(b.subject) ? b.subject : cur.subject,
+    b.description === undefined ? cur.description : String(b.description).slice(0, 300),
+    JSON.stringify(fields), b.active === undefined ? cur.active : (b.active ? 1 : 0), req.session.user.id, cur.id);
+  logAudit(req, { action: 'update', entity: 'custom_forms', entity_id: cur.id, summary: `修改自訂表格：${name}` });
+  res.json({ ok: true });
+});
+
+// 停用表格（保留填寫紀錄與統計）；已無紀錄者才可真的刪除
+app.delete('/api/custom-forms/:id', requireAdmin, (req, res) => {
+  const cur = db.prepare('SELECT * FROM custom_forms WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到表格' });
+  const cnt = db.prepare('SELECT COUNT(*) c FROM custom_form_entries WHERE form_id = ?').get(cur.id).c;
+  if (cnt) {
+    db.prepare('UPDATE custom_forms SET active = 0 WHERE id = ?').run(cur.id);
+    logAudit(req, { action: 'update', entity: 'custom_forms', entity_id: cur.id, summary: `停用自訂表格：${cur.name}（保留 ${cnt} 筆紀錄）` });
+    return res.json({ ok: true, disabled: true, entries: cnt });
+  }
+  db.prepare('DELETE FROM custom_forms WHERE id = ?').run(cur.id);
+  logAudit(req, { action: 'delete', entity: 'custom_forms', entity_id: cur.id, summary: `刪除自訂表格：${cur.name}` });
+  res.json({ ok: true, deleted: true });
+});
+
+function customFormSubjects(subject) {
+  if (subject === 'mother') {
+    return db.prepare(`SELECT m.id, m.name,
+        (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
+          WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+          ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name
+      FROM mothers m WHERE m.status IN ('checked_in','reserved') ORDER BY m.name`).all();
+  }
+  if (subject === 'baby') {
+    return db.prepare(`SELECT b.id, b.name, m.name AS mother_name FROM babies b
+      JOIN mothers m ON m.id = b.mother_id WHERE m.status IN ('checked_in','reserved') ORDER BY b.id`).all();
+  }
+  return [];
+}
+
+// 填寫紀錄（可依月份／期間查詢）
+app.get('/api/custom-forms/:id/entries', requireStaff, (req, res) => {
+  const form = db.prepare('SELECT * FROM custom_forms WHERE id = ?').get(req.params.id);
+  if (!form) return res.status(404).json({ error: '找不到表格' });
+  const month = String(req.query.month || '');
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from
+    : (/^\d{4}-\d{2}$/.test(month) ? `${month}-01` : '');
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to
+    : (/^\d{4}-\d{2}$/.test(month) ? `${month}-31` : '');
+  const rows = db.prepare(`SELECT e.*, u.name AS created_name, eu.name AS edited_name
+    FROM custom_form_entries e
+    LEFT JOIN users u ON u.id = e.created_by
+    LEFT JOIN users eu ON eu.id = e.edited_by
+    WHERE e.form_id = ? ${from ? 'AND e.fill_date >= ?' : ''} ${to ? 'AND e.fill_date <= ?' : ''}
+    ORDER BY e.fill_date DESC, e.id DESC LIMIT 500`)
+    .all(...[form.id, from, to].filter(x => x !== ''));
+  // 對象名稱（媽媽／寶寶）帶出，供清單顯示
+  const nameOf = id => {
+    if (!id) return '';
+    const t = form.subject === 'baby' ? 'babies' : 'mothers';
+    const r = db.prepare(`SELECT name FROM ${t} WHERE id = ?`).get(id);
+    return r ? r.name : '';
+  };
+  for (const r of rows) {
+    try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; }
+    r.subject_name = nameOf(r.subject_id);
+  }
+  res.json({ form: parseForm(form), rows, subjects: customFormSubjects(form.subject) });
+});
+
+// 依欄位型別正規化填寫值（僅收表格定義中的啟用欄位）
+function normalizeEntryData(fields, body) {
+  const data = {};
+  const missing = [];
+  for (const f of fields) {
+    if (!f.active) continue;
+    const raw = body[f.key];
+    let v;
+    if (f.type === 'multi') {
+      v = (Array.isArray(raw) ? raw : []).filter(x => f.options.includes(x));
+    } else if (f.type === 'number') {
+      v = (raw === '' || raw == null) ? '' : Number(raw);
+      if (v !== '' && !Number.isFinite(v)) return { error: `「${f.label}」需為數字` };
+    } else if (f.type === 'bool') {
+      v = !!raw;
+    } else if (f.type === 'select') {
+      v = String(raw || '');
+      if (v && !f.options.includes(v)) return { error: `「${f.label}」選項不正確` };
+    } else if (f.type === 'date') {
+      v = String(raw || '');
+      if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return { error: `「${f.label}」需為日期` };
+    } else {
+      v = String(raw == null ? '' : raw).slice(0, f.type === 'textarea' ? 1000 : 200);
+    }
+    const empty = f.type === 'multi' ? !v.length : (f.type === 'bool' ? false : v === '');
+    if (f.required && empty) missing.push(f.label);
+    data[f.key] = v;
+  }
+  if (missing.length) return { error: `尚有必填欄位未填寫：${missing.join('、')}` };
+  return { data };
+}
+
+app.post('/api/custom-forms/:id/entries', requireStaff, (req, res) => {
+  const form = db.prepare('SELECT * FROM custom_forms WHERE id = ? AND active = 1').get(req.params.id);
+  if (!form) return res.status(404).json({ error: '找不到表格（或已停用）' });
+  const f = parseForm(form);
+  const b = req.body || {};
+  const fillDate = /^\d{4}-\d{2}-\d{2}$/.test(b.fill_date || '') ? b.fill_date : today();
+  const subjectId = form.subject === 'none' ? null : (Number(b.subject_id) || 0);
+  if (form.subject !== 'none' && !subjectId) {
+    return res.status(400).json({ error: form.subject === 'baby' ? '請選擇寶寶' : '請選擇媽媽' });
+  }
+  const v = normalizeEntryData(f.fields, b.data || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  const info = db.prepare(`INSERT INTO custom_form_entries (form_id, subject_id, fill_date, data, note, created_by)
+    VALUES (?,?,?,?,?,?)`).run(form.id, subjectId, fillDate, JSON.stringify(v.data).slice(0, 20000),
+    String(b.note || '').slice(0, 300), req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/custom-form-entries/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM custom_form_entries WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到填寫紀錄' });
+  const form = parseForm(db.prepare('SELECT * FROM custom_forms WHERE id = ?').get(cur.form_id));
+  const b = req.body || {};
+  const fillDate = /^\d{4}-\d{2}-\d{2}$/.test(b.fill_date || '') ? b.fill_date : cur.fill_date;
+  const v = normalizeEntryData(form.fields, b.data || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  const subjectId = form.subject === 'none' ? null : (Number(b.subject_id) || cur.subject_id);
+  db.prepare(`UPDATE custom_form_entries SET subject_id=?, fill_date=?, data=?, note=?,
+    edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
+    subjectId, fillDate, JSON.stringify(v.data).slice(0, 20000),
+    String(b.note || '').slice(0, 300), req.session.user.id, cur.id);
+  logAudit(req, { action: 'update', entity: 'custom_form_entries', entity_id: cur.id, summary: `修改自訂表格填寫紀錄（${form.name}）` });
+  res.json({ ok: true });
+});
+
+app.delete('/api/custom-form-entries/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM custom_form_entries WHERE id = ?').run(req.params.id);
+  logAudit(req, { action: 'delete', entity: 'custom_form_entries', entity_id: Number(req.params.id), summary: '刪除自訂表格填寫紀錄' });
+  res.json({ ok: true });
+});
+
+// 每月統計：數值欄位給筆數／合計／平均／最大最小，選項與是否欄位給各選項次數與占比
+function customFormStats(form, from, to) {
+  const rows = db.prepare(`SELECT data FROM custom_form_entries
+    WHERE form_id = ? AND fill_date >= ? AND fill_date <= ?`).all(form.id, from, to);
+  const list = rows.map(r => { try { return JSON.parse(r.data); } catch (e) { return {}; } });
+  const stats = form.fields.map(f => {
+    if (f.type === 'number') {
+      const vals = list.map(d => Number(d[f.key])).filter(v => Number.isFinite(v));
+      const sum = vals.reduce((s, v) => s + v, 0);
+      return { key: f.key, label: f.label, type: f.type, unit: f.unit, count: vals.length,
+        sum: Math.round(sum * 100) / 100,
+        avg: vals.length ? Math.round(sum / vals.length * 100) / 100 : null,
+        min: vals.length ? Math.min(...vals) : null, max: vals.length ? Math.max(...vals) : null };
+    }
+    if (f.type === 'select' || f.type === 'multi' || f.type === 'bool') {
+      const dist = {};
+      const opts = f.type === 'bool' ? ['是', '否'] : f.options;
+      for (const o of opts) dist[o] = 0;
+      let answered = 0;
+      for (const d of list) {
+        const v = d[f.key];
+        if (f.type === 'bool') { dist[v ? '是' : '否']++; answered++; continue; }
+        if (f.type === 'multi') {
+          const arr = Array.isArray(v) ? v : [];
+          if (arr.length) answered++;
+          for (const x of arr) if (dist[x] !== undefined) dist[x]++;
+          continue;
+        }
+        if (v) { answered++; if (dist[v] !== undefined) dist[v]++; }
+      }
+      return { key: f.key, label: f.label, type: f.type, answered, dist };
+    }
+    const filled = list.filter(d => String(d[f.key] || '').trim()).length;
+    return { key: f.key, label: f.label, type: f.type, filled };
+  });
+  return { entries: list.length, stats };
+}
+
+app.get('/api/custom-forms/:id/stats', requireStaff, (req, res) => {
+  const row = db.prepare('SELECT * FROM custom_forms WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '找不到表格' });
+  const form = parseForm(row);
+  const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : today().slice(0, 7);
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : `${month}-01`;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : `${month}-31`;
+  // 近 12 個月每月筆數（趨勢用）
+  const trend = db.prepare(`SELECT substr(fill_date, 1, 7) AS ym, COUNT(*) AS c
+    FROM custom_form_entries WHERE form_id = ? GROUP BY ym ORDER BY ym DESC LIMIT 12`).all(form.id).reverse();
+  res.json({ form, month, from, to, trend, ...customFormStats(form, from, to) });
 });
 
 // ---------- 電子問卷／滿意度調查 ----------
