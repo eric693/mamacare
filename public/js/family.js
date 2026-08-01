@@ -267,16 +267,71 @@ async function loadSiblings() {
 
 function setTab(tab) {
   activeTab = tab;
-  ['report', 'rooming', 'timeline', 'photos', 'trends', 'meal', 'shop', 'programs', 'visitors', 'survey', 'messages'].forEach(t =>
+  ['report', 'rooming', 'timeline', 'photos', 'trends', 'meal', 'shop', 'programs', 'visitors', 'forms', 'survey', 'messages'].forEach(t =>
     $(`#tab-${t}`).classList.toggle('active', t === tab));
   if (tab !== 'meal') $('#report-date').removeAttribute('max'); // 月子餐分頁才限制日期至出住日
   if (tab === 'shop') { loadShop(); return; }
   if (tab === 'programs') { loadPrograms(); return; }
   if (tab === 'visitors') { loadVisitors(); return; }
   if (tab === 'meal') { loadConfinementMeal(); return; }
+  if (tab === 'forms') { loadFamilyForms(); return; }
   if (tab === 'survey') { loadSurveys(); return; }
   if (tab === 'rooming') { loadRooming(); return; }
   loadReport();
+}
+
+
+// 待填表單：護理站送出的表單（滿意度問卷／家庭功能表／愛丁堡產後憂鬱量表）
+async function loadFamilyForms() {
+  let d;
+  try { d = await api('/family/forms'); }
+  catch (e) { if (e.status === 401) { showLogin(); return; }
+    $('#panel').innerHTML = `<div class="card"><div class="error-msg">${esc(e.message)}</div></div>`; return; }
+  if (!d.forms.length) {
+    $('#panel').innerHTML = '<div class="card"><h3>待填表單</h3><div class="empty">目前沒有待填寫的表單</div></div>';
+    return;
+  }
+  $('#panel').innerHTML = d.forms.map(f => {
+    if (f.filled) {
+      return `<div class="card"><h3>${esc(f.label)}</h3><div class="badge green">已完成（${esc(f.filled_at || '')}），感謝您的填寫！</div></div>`;
+    }
+    if (f.type === 'survey') {
+      return `<div class="card"><h3>${esc(f.label)}</h3>
+        <p style="font-size:.9rem">請至「滿意度問卷」分頁填寫。</p>
+        <button class="btn" data-goto-survey>前往填寫</button></div>`;
+    }
+    const qs = f.items.map((q, i) => {
+      const opts = f.kind === 'apgar' ? f.options : f.item_options[i];
+      return `<div class="field"><label>${i + 1}、${esc(q)}${f.subs ? `<small style="color:var(--muted)">（${esc(f.subs[i])}）</small>` : ''}</label>
+        <div class="row" style="gap:6px 14px;flex-wrap:wrap">${opts.map(([label, score]) =>
+        `<label style="white-space:normal"><input type="radio" name="${f.kind}_q${i}" value="${score}"> ${esc(label)}</label>`).join('')}</div></div>`;
+    }).join('');
+    return `<div class="card">
+      <h3>${esc(f.label)}</h3>
+      <div class="form-grid">${qs}</div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" data-scale="${f.kind}">送出</button>
+        <span class="error-msg" data-serr="${f.kind}"></span><span style="color:var(--ok)" data-sok="${f.kind}"></span>
+      </div></div>`;
+  }).join('');
+  const goto = $('#panel').querySelector('[data-goto-survey]');
+  if (goto) goto.onclick = () => setTab('survey');
+  $('#panel').querySelectorAll('[data-scale]').forEach(btn => btn.onclick = async () => {
+    const kind = btn.dataset.scale;
+    const form = d.forms.find(f => f.kind === kind);
+    const answers = form.items.map((q, i) => {
+      const el = $('#panel').querySelector(`input[name="${kind}_q${i}"]:checked`);
+      return el ? Number(el.value) : null;
+    });
+    const err = $('#panel').querySelector(`[data-serr="${kind}"]`);
+    err.textContent = '';
+    if (answers.some(a => a === null)) { err.textContent = '請完成全部題目'; return; }
+    try {
+      const r = await api(`/family/scales/${kind}`, { method: 'POST', body: { answers } });
+      $('#panel').querySelector(`[data-sok="${kind}"]`).textContent = r.message || '已送出';
+      setTimeout(loadFamilyForms, 800);
+    } catch (e) { err.textContent = e.message; }
+  });
 }
 
 async function loadSurveys() {
@@ -921,6 +976,7 @@ $('#tab-meal').onclick = () => setTab('meal');
 $('#tab-shop').onclick = () => setTab('shop');
 $('#tab-programs').onclick = () => setTab('programs');
 $('#tab-visitors').onclick = () => setTab('visitors');
+$('#tab-forms').onclick = () => setTab('forms');
 $('#tab-survey').onclick = () => setTab('survey');
 $('#tab-messages').onclick = () => setTab('messages');
 $('#tab-cleaning').onclick = () => openCleaningRequest();

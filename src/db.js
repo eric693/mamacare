@@ -1245,6 +1245,18 @@ function init() {
       ['其他', '個案需求－']
     ].forEach((r, i) => insB.run(r[0], r[1], (i + 1) * 10));
   }
+  // 表單派送（入住期間給產婦填寫的 4 張表：入住／出住滿意度、家庭功能、愛丁堡憂鬱量表）
+  db.exec(`CREATE TABLE IF NOT EXISTS form_dispatches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    booking_id INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL,                  -- checkin_survey/checkout_survey/apgar/epds
+    due_date TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT '',
+    sent_by INTEGER REFERENCES users(id),
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (mother_id, booking_id, kind)
+  );`);
   // 自訂表格：機構自行設計的表格（欄位可增刪停用）＋填寫紀錄，供每月統計
   db.exec(`CREATE TABLE IF NOT EXISTS custom_forms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2191,6 +2203,13 @@ const DEFAULT_SETTINGS = {
   line_staff_alert_id: '',
   // 退房時自動推滿意度問卷給家屬（需有啟用中的問卷）
   survey_on_checkout: '1',
+  // 表單派送排程（入住第 N 天／出住前 N 天；0 或空白＝停用該張表）
+  fd_checkin_survey_day: '2',     // 入住滿意度：入住第 2 天
+  fd_apgar_day: '2',              // 家庭功能表：入住第 2 天
+  fd_epds_day: '3',               // 愛丁堡產後憂鬱量表：入住第 3 天
+  fd_checkout_survey_before: '3', // 出住滿意度：出住前 3 天
+  fd_survey_checkin_id: '',       // 入住滿意度對應的問卷（問卷調查建立後於系統設定指定）
+  fd_survey_checkout_id: '',      // 出住滿意度對應的問卷
   // 線上金流（ECPay 綠界）：未設定 merchant_id 則停用
   payment_provider: '',            // 'ecpay' 啟用
   ecpay_merchant_id: '',

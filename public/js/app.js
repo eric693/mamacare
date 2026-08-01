@@ -1514,6 +1514,56 @@ function readMotherForm(body) {
   };
 }
 
+/* ---------- 表單派送提醒（入住滿意度／出住滿意度／家庭功能表／愛丁堡憂鬱量表） ----------
+   在住客管理／媽媽房況／寶寶房況顯示「未送出／未填寫」提醒；送出或填寫後該筆提醒消失。 */
+async function loadFormDispatchBanner(reload) {
+  const box = $('#fd-banner');
+  if (!box) return;
+  let d;
+  try { d = await api('/form-dispatch'); } catch (e) { box.innerHTML = ''; return; }
+  if (!d.pending.length) { box.innerHTML = ''; return; }
+  const rows = d.pending.map(p => `
+    <tr>
+      <td data-label="房號">${esc(p.room_name || '—')}</td>
+      <td data-label="產婦">${esc(p.mother_name)}</td>
+      <td data-label="表單">${esc(p.label)}</td>
+      <td data-label="應派送日">${esc(p.due_date)}</td>
+      <td data-label="狀態">
+        ${p.sent_at ? `<span class="badge green">已送出 ${esc(p.sent_at.slice(5))}</span>` : '<span class="badge red">未送出</span>'}
+        ${p.filled ? `<span class="badge green">已填寫 ${esc(p.filled_at || '')}</span>` : '<span class="badge yellow">未填寫</span>'}
+      </td>
+      <td class="no-print" style="white-space:nowrap">
+        <button class="btn small" data-fd-send="${p.mother_id}|${p.kind}">${p.sent_at ? '再送一次' : '送出給家屬'}</button>
+        ${p.kind === 'apgar' || p.kind === 'epds'
+          ? `<a class="btn small secondary" href="#/mother-nursing?m=${p.mother_id}">代填</a>` : ''}
+      </td>
+    </tr>`).join('');
+  box.innerHTML = `
+    <div class="card" style="border-left:4px solid var(--warn)">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" style="margin:0">表單提醒（未送出 ${d.stats.unsent}／未填寫 ${d.stats.unfilled}）</div>
+        <button class="btn small secondary" id="fd-refresh">重新整理</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>房號</th><th>產婦</th><th>表單</th><th>應派送日</th><th>狀態</th><th class="no-print"></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <small style="color:var(--muted)">送出後家屬端「待填表單」即可填寫；媽媽或員工填寫儲存後，該筆提醒自動消失。</small>
+    </div>`;
+  $('#fd-refresh').onclick = () => loadFormDispatchBanner(reload);
+  box.querySelectorAll('[data-fd-send]').forEach(btn => btn.onclick = async () => {
+    const [momId, kind] = btn.dataset.fdSend.split('|');
+    btn.disabled = true;
+    try {
+      const r = await api(`/mothers/${momId}/form-dispatch/${kind}/send`, { method: 'POST', body: {} });
+      if (r.warn) alert(r.warn);
+      loadFormDispatchBanner(reload);
+    } catch (e) { alert(e.message); btn.disabled = false; }
+  });
+}
+
 async function viewResidents() {
   const [data, mothers, babies, beds] = await Promise.all([
     api('/room-status/mothers'), api('/mothers'), api('/babies'), api('/baby-beds')]);
@@ -1653,6 +1703,7 @@ async function viewResidents() {
     </div>`).join('');
   main().innerHTML = `
     <div class="page-title">住客管理</div>
+    <div id="fd-banner"></div>
     <div class="stat-grid">
       <div class="stat"><div class="num">${st.total}</div><div class="label">總房數</div></div>
       <div class="stat"><div class="num">${st.occupied}</div><div class="label">入住中</div></div>
@@ -1697,6 +1748,7 @@ async function viewResidents() {
     </div>`;
   $('#rs-refresh').onclick = viewResidents;
   wireBoardFilter(main(), '#rm-grid');
+  loadFormDispatchBanner(viewResidents);
   wireFilter(main());
   // 寶寶尚未登記：卡片上直接登記寶寶
   main().querySelectorAll('#rm-grid [data-add-baby]').forEach(btn =>
@@ -4565,6 +4617,13 @@ async function viewSettings() {
         </div>
         <div class="field"><label>異常通知 LINE 目標（值班 userId / 群組 id）</label><input id="st-line-alert" value="${esc(s.line_staff_alert_id)}" placeholder="體溫/黃疸超標時即時推播"></div>
         <div class="field"><label>退房自動推滿意度問卷</label><select id="st-survey-co"><option value="1" ${s.survey_on_checkout === '1' ? 'selected' : ''}>開啟</option><option value="0" ${s.survey_on_checkout === '0' ? 'selected' : ''}>關閉</option></select></div>
+        <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>入住期間表單派送排程</strong><small style="color:var(--muted)">（填 0 表示停用該張表；提醒顯示於住客管理／媽媽房況／寶寶房況）</small></div>
+        <div class="field"><label>入住滿意度：入住第幾天</label><input type="number" min="0" id="st-fd-cin" value="${esc(s.fd_checkin_survey_day || '')}"></div>
+        <div class="field"><label>家庭功能表：入住第幾天</label><input type="number" min="0" id="st-fd-apgar" value="${esc(s.fd_apgar_day || '')}"></div>
+        <div class="field"><label>愛丁堡產後憂鬱量表：入住第幾天</label><input type="number" min="0" id="st-fd-epds" value="${esc(s.fd_epds_day || '')}"></div>
+        <div class="field"><label>出住滿意度：出住前幾天</label><input type="number" min="0" id="st-fd-cout" value="${esc(s.fd_checkout_survey_before || '')}"></div>
+        <div class="field"><label>入住滿意度對應問卷 ID<small>（問卷調查頁的問卷編號）</small></label><input type="number" min="0" id="st-fd-sin" value="${esc(s.fd_survey_checkin_id || '')}"></div>
+        <div class="field"><label>出住滿意度對應問卷 ID</label><input type="number" min="0" id="st-fd-sout" value="${esc(s.fd_survey_checkout_id || '')}"></div>
         <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>LINE／Facebook 雙向客訊（CRM）</strong>
           <p class="sig-hint" style="color:#6b7c79;margin:4px 0">設定後可在「LINE／FB 客訊」收發訊息。LINE Webhook 指向 <code>/api/webhooks/line</code>、FB 指向 <code>/api/webhooks/facebook</code>。</p></div>
         <div class="field"><label>LINE Channel Secret（驗簽）</label><input id="st-line-secret" value="${esc(s.line_channel_secret)}" placeholder="收訊驗簽用"></div>
@@ -4674,6 +4733,9 @@ async function viewSettings() {
           line_channel_access_token: $('#st-line').value.trim(),
           line_staff_alert_id: $('#st-line-alert').value.trim(),
           survey_on_checkout: $('#st-survey-co').value,
+          fd_checkin_survey_day: $('#st-fd-cin').value, fd_apgar_day: $('#st-fd-apgar').value,
+          fd_epds_day: $('#st-fd-epds').value, fd_checkout_survey_before: $('#st-fd-cout').value,
+          fd_survey_checkin_id: $('#st-fd-sin').value, fd_survey_checkout_id: $('#st-fd-sout').value,
           line_channel_secret: $('#st-line-secret').value.trim(),
           line_liff_id: $('#st-line-liff').value.trim(),
           family_daily_push_time: $('#st-fam-push').value.trim(),
@@ -7932,6 +7994,7 @@ async function viewMotherRooms() {
   }).join('');
   main().innerHTML = `
     <div class="page-title">媽媽房況</div>
+    <div id="fd-banner"></div>
     <div class="stat-grid">
       <div class="stat"><div class="num">${st.occupied}</div><div class="label">入住中</div></div>
       <div class="stat"><div class="num">${st.due_out}</div><div class="label">應退房</div></div>
@@ -7962,6 +8025,7 @@ async function viewMotherRooms() {
     </div>`;
   $('#rs-refresh').onclick = viewMotherRooms;
   wireBoardFilter(main(), '#rs-grid');
+  loadFormDispatchBanner(viewMotherRooms);
   loadNursingReminders('#nr-banner');
   // 寶寶尚未登記：卡片上直接登記寶寶
   main().querySelectorAll('[data-add-baby]').forEach(btn =>
@@ -8356,6 +8420,7 @@ async function viewBabyRooms() {
     </tr>`).join('');
   main().innerHTML = `
     <div class="page-title">寶寶房況</div>
+    <div id="fd-banner"></div>
     <div class="stat-grid">
       <div class="stat"><div class="num">${st.total}</div><div class="label">在住寶寶</div></div>
       <div class="stat"><div class="num" style="color:${st.due_in ? 'var(--warn)' : 'var(--primary)'}">${st.due_in || 0}</div><div class="label">今日入住</div></div>
@@ -8409,6 +8474,7 @@ async function viewBabyRooms() {
     </div>`;
   $('#bs-refresh').onclick = viewBabyRooms;
   wireBoardFilter(main(), '#bs-grid');
+  loadFormDispatchBanner(viewBabyRooms);
   loadNursingReminders('#nr-banner');
   // 狀態切換（嬰兒室／親子同室／隔離室／不在館內；留存異動紀錄）
   main().querySelectorAll('[data-loc-sel]').forEach(sel => {

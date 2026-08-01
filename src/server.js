@@ -137,6 +137,8 @@ const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolat
 // 路由 → 模組對照（依序比對，先精準後一般）；未命中者視為基礎共用端點，任何登入員工皆可存取
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
+  [/^\/api\/form-dispatch/, 'mother_care'],
+  [/^\/api\/mothers\/\d+\/form-dispatch/, 'mother_care'],
   [/^\/api\/custom-forms/, 'custom_forms'],
   [/^\/api\/custom-form-entries/, 'custom_forms'],
   [/^\/api\/guidance-items/, 'mother_care'],
@@ -11191,6 +11193,121 @@ app.delete('/api/certifications/:id', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- 表單派送（入住期間給產婦填寫的 4 張表：送出提醒／填寫追蹤） ----------
+// 排程：入住滿意度＝入住第 N 天、家庭功能＝入住第 N 天、愛丁堡＝入住第 N 天、出住滿意度＝出住前 N 天
+const FD_KINDS = ['checkin_survey', 'checkout_survey', 'apgar', 'epds'];
+const FD_LABEL = {
+  checkin_survey: '入住滿意度', checkout_survey: '出住滿意度',
+  apgar: '家庭功能表', epds: '愛丁堡產後憂鬱量表'
+};
+function fdAddDays(d, n) {
+  return new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
+}
+// 各表的到期日：依系統設定的天數換算（設為 0／空白＝停用）
+function fdDueDate(kind, bk, s) {
+  const n = k => Math.round(Number(s[k]) || 0);
+  if (kind === 'checkin_survey') { const d = n('fd_checkin_survey_day'); return d > 0 ? fdAddDays(bk.check_in, d - 1) : ''; }
+  if (kind === 'apgar') { const d = n('fd_apgar_day'); return d > 0 ? fdAddDays(bk.check_in, d - 1) : ''; }
+  if (kind === 'epds') { const d = n('fd_epds_day'); return d > 0 ? fdAddDays(bk.check_in, d - 1) : ''; }
+  const b = n('fd_checkout_survey_before');
+  return b > 0 ? fdAddDays(bk.check_out, -b) : '';
+}
+// 是否已填寫：滿意度看問卷回覆，量表看媽媽量表紀錄（媽媽自填或員工代填都算）
+function fdFilled(kind, motherId, bk, s) {
+  if (kind === 'apgar' || kind === 'epds') {
+    const r = db.prepare(`SELECT id, fill_date FROM mother_scales
+      WHERE mother_id = ? AND kind = ? AND fill_date >= ? ORDER BY fill_date DESC, id DESC LIMIT 1`)
+      .get(motherId, kind, bk.check_in);
+    return r ? { at: r.fill_date, ref: r.id } : null;
+  }
+  const sid = Number(s[kind === 'checkin_survey' ? 'fd_survey_checkin_id' : 'fd_survey_checkout_id']) || 0;
+  if (!sid) return null;
+  const r = db.prepare(`SELECT id, submitted_at FROM survey_responses
+    WHERE mother_id = ? AND survey_id = ? ORDER BY id DESC LIMIT 1`).get(motherId, sid);
+  return r ? { at: String(r.submitted_at || '').slice(0, 10), ref: r.id } : null;
+}
+// 在住（含今日應入住）媽媽的 4 張表狀態；date 為判斷到期的基準日
+function fdStatusList(date) {
+  const s = getSettings();
+  const stays = db.prepare(`
+    SELECT bk.id AS booking_id, bk.check_in, bk.check_out, m.id AS mother_id, m.name AS mother_name, r.name AS room_name
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'checked_in' OR (bk.status = 'reserved' AND bk.check_in <= ? AND bk.check_out > ?)
+    ORDER BY r.name`).all(date, date);
+  const out = [];
+  for (const st of stays) {
+    for (const kind of FD_KINDS) {
+      const due = fdDueDate(kind, st, s);
+      if (!due) continue;
+      const disp = db.prepare('SELECT * FROM form_dispatches WHERE mother_id = ? AND booking_id = ? AND kind = ?')
+        .get(st.mother_id, st.booking_id, kind);
+      const filled = fdFilled(kind, st.mother_id, st, s);
+      out.push({
+        mother_id: st.mother_id, mother_name: st.mother_name, room_name: st.room_name,
+        booking_id: st.booking_id, check_in: st.check_in, check_out: st.check_out,
+        kind, label: FD_LABEL[kind], due_date: due, due: due <= date,
+        sent_at: disp ? disp.sent_at : '', sent_count: disp ? disp.sent_count : 0,
+        filled_at: filled ? filled.at : '', filled: !!filled,
+        // 提醒條件：已到派送日、且尚未送出或尚未填寫
+        remind: due <= date && (!(disp && disp.sent_at) || !filled)
+      });
+    }
+  }
+  return out;
+}
+
+app.get('/api/form-dispatch', requireStaff, (req, res) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : today();
+  const all = fdStatusList(date);
+  const pending = all.filter(x => x.remind);
+  res.json({
+    date, rows: all, pending,
+    stats: {
+      pending: pending.length,
+      unsent: pending.filter(x => !x.sent_at).length,
+      unfilled: pending.filter(x => !x.filled).length
+    },
+    kinds: FD_KINDS.map(k => ({ kind: k, label: FD_LABEL[k] }))
+  });
+});
+
+// 送出表單給家屬／媽媽：家屬端留言＋（已綁定者）LINE 推播，並記錄送出時間
+app.post('/api/mothers/:id/form-dispatch/:kind/send', requireStaff, (req, res) => {
+  const kind = req.params.kind;
+  if (!FD_KINDS.includes(kind)) return res.status(400).json({ error: '表單類別錯誤' });
+  const mother = db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const bk = db.prepare(`SELECT * FROM bookings WHERE mother_id = ? AND status IN ('checked_in','reserved')
+    ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(mother.id);
+  if (!bk) return res.status(400).json({ error: '此媽媽目前沒有入住中的訂房' });
+  const s = getSettings();
+  const fams = db.prepare(`SELECT f.* FROM family_members f JOIN babies b ON b.id = f.baby_id
+    WHERE b.mother_id = ? AND f.active = 1`).all(mother.id);
+  const token = (s.line_channel_access_token || '').trim();
+  const text = `${s.center_name || '本中心'}邀請您填寫「${FD_LABEL[kind]}」。\n請至家屬入口的「待填表單」分頁填寫，感謝您的協助。`;
+  const insMsg = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body) VALUES (?,?,?,?,?)`);
+  let sent = 0;
+  for (const f of fams) {
+    insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
+    if (token && f.line_user_id) notify.pushText(token, f.line_user_id, text).catch(() => {});
+    sent++;
+  }
+  const now = `${today()} ${new Date().toTimeString().slice(0, 5)}`;
+  const cur = db.prepare('SELECT * FROM form_dispatches WHERE mother_id = ? AND booking_id = ? AND kind = ?')
+    .get(mother.id, bk.id, kind);
+  if (cur) {
+    db.prepare('UPDATE form_dispatches SET sent_at=?, sent_by=?, sent_count=sent_count+1 WHERE id=?')
+      .run(now, req.session.user.id, cur.id);
+  } else {
+    db.prepare(`INSERT INTO form_dispatches (mother_id, booking_id, kind, due_date, sent_at, sent_by, sent_count)
+      VALUES (?,?,?,?,?,?,1)`).run(mother.id, bk.id, kind, fdDueDate(kind, bk, s), now, req.session.user.id);
+  }
+  logAudit(req, { action: 'update', entity: 'form_dispatches', entity_id: mother.id,
+    summary: `送出表單「${FD_LABEL[kind]}」給 ${mother.name}（家屬 ${sent} 位）` });
+  res.json({ ok: true, sent, families: fams.length, sent_at: now,
+    warn: fams.length ? '' : '此媽媽尚無啟用中的家屬帳號，僅記錄送出時間，未實際發送' });
+});
+
 // ---------- 自訂表格（機構自行設計的表格：欄位可增刪停用、填寫紀錄、每月統計） ----------
 const CF_TYPES = ['text', 'textarea', 'number', 'date', 'select', 'multi', 'bool'];
 const CF_SUBJECTS = ['none', 'mother', 'baby'];
@@ -11542,6 +11659,79 @@ app.post('/api/family/surveys/:id', requireFamily, (req, res) => {
   db.prepare('INSERT INTO survey_responses (survey_id, family_id, mother_id, answers) VALUES (?,?,?,?)')
     .run(s.id, fam.id, mid || null, JSON.stringify(answers));
   res.json({ ok: true, message: '已送出，感謝您的回饋！' });
+});
+
+
+// 家屬／媽媽端「待填表單」：顯示已送出的表單並可直接填寫（量表由媽媽自填，員工代填亦可）
+const FD_APGAR_ITEMS = [
+  ['我滿意於當我遇到困難時，可以求助於家人。', '適應度 Adaptation'],
+  ['我滿意於家人和我討論事情及分擔問題的方式。', '合作度 Partnership'],
+  ['我滿意於當我希望從事新活動，或是有新的發展方向時，家人能接受並給予支持。', '成長度 Growth'],
+  ['我滿意於當家人對我表達情感的方式，以及對我的情緒(如憤怒、悲傷、愛)的反應。', '情感度 Affection'],
+  ['我滿意於家人與我共處的方式。', '融洽度 Resolve']
+];
+const FD_APGAR_OPTIONS = [['經常', 2], ['有時', 1], ['幾乎沒有', 0]];
+const FD_EPDS_ITEMS = [
+  ['您能看到事物有趣的一面，並笑得開心', [['同以前一樣', 0], ['沒有以前那麼多', 1], ['肯定比以前少', 2], ['完全不能', 3]]],
+  ['您欣然期待未來的一切', [['同以前一樣', 0], ['沒有以前那麼多', 1], ['肯定比以前少', 2], ['完全不能', 3]]],
+  ['當事情出錯時，您會不必要地責備自己', [['大部分時候這樣', 3], ['有時候這樣', 2], ['不經常這樣', 1], ['沒有這樣', 0]]],
+  ['你無緣無故感到焦慮和擔心', [['一點也沒有', 0], ['極少有', 1], ['有時候這樣', 2], ['經常這樣', 3]]],
+  ['您無緣無故感到害怕和驚慌', [['相當多時候這樣', 3], ['有時候這樣', 2], ['不經常這樣', 1], ['一點也沒有', 0]]],
+  ['很多事情衝著您來時，使您透不過氣', [['大多數時候您都不能應付', 3], ['有時候您不能像平時那樣應付的好', 2], ['大部分時候您都能像平時那樣應付的好', 1], ['您一直都能應付的好', 0]]],
+  ['您很不開心，以致失眠', [['大部分時候這樣', 3], ['有時候這樣', 2], ['不經常這樣', 1], ['一點也沒有', 0]]],
+  ['您感到難過和悲傷', [['大部分時候這樣', 3], ['相當時候這樣', 2], ['不經常這樣', 1], ['一點也沒有', 0]]],
+  ['您不開心到哭泣', [['大部分時候這樣', 3], ['有時候這樣', 2], ['只是偶爾這樣', 1], ['沒有這樣', 0]]],
+  ['您想過要傷害自己', [['相當多時候這樣', 3], ['有時候這樣', 2], ['很少這樣', 1], ['沒有這樣', 0]]]
+];
+
+app.get('/api/family/forms', requireFamily, (req, res) => {
+  const motherId = familyMotherId(req.session.family);
+  if (!motherId) return res.json({ forms: [] });
+  const s = getSettings();
+  const bk = db.prepare(`SELECT * FROM bookings WHERE mother_id = ? AND status IN ('checked_in','reserved')
+    ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(motherId);
+  if (!bk) return res.json({ forms: [] });
+  const forms = [];
+  for (const kind of FD_KINDS) {
+    const disp = db.prepare('SELECT * FROM form_dispatches WHERE mother_id = ? AND booking_id = ? AND kind = ?')
+      .get(motherId, bk.id, kind);
+    if (!disp || !disp.sent_at) continue;          // 未送出者不出現在家屬端
+    const filled = fdFilled(kind, motherId, bk, s);
+    const item = { kind, label: FD_LABEL[kind], sent_at: disp.sent_at, filled: !!filled, filled_at: filled ? filled.at : '' };
+    if (kind === 'apgar') { item.type = 'scale'; item.items = FD_APGAR_ITEMS.map(x => x[0]); item.subs = FD_APGAR_ITEMS.map(x => x[1]); item.options = FD_APGAR_OPTIONS; }
+    else if (kind === 'epds') { item.type = 'scale'; item.items = FD_EPDS_ITEMS.map(x => x[0]); item.item_options = FD_EPDS_ITEMS.map(x => x[1]); }
+    else {
+      item.type = 'survey';
+      item.survey_id = Number(s[kind === 'checkin_survey' ? 'fd_survey_checkin_id' : 'fd_survey_checkout_id']) || 0;
+    }
+    forms.push(item);
+  }
+  res.json({ forms });
+});
+
+// 媽媽自填量表（家庭功能／愛丁堡）：存入與員工端同一張 mother_scales，護理端即可看到
+app.post('/api/family/scales/:kind', requireFamily, (req, res) => {
+  const kind = req.params.kind;
+  if (!['apgar', 'epds'].includes(kind)) return res.status(400).json({ error: '表單類別錯誤' });
+  const motherId = familyMotherId(req.session.family);
+  if (!motherId) return res.status(400).json({ error: '尚未綁定住客資料' });
+  const bk = db.prepare(`SELECT * FROM bookings WHERE mother_id = ? AND status IN ('checked_in','reserved')
+    ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(motherId);
+  if (!bk) return res.status(400).json({ error: '目前沒有入住中的住期' });
+  const disp = db.prepare('SELECT sent_at FROM form_dispatches WHERE mother_id = ? AND booking_id = ? AND kind = ?')
+    .get(motherId, bk.id, kind);
+  if (!disp || !disp.sent_at) return res.status(400).json({ error: '此表單尚未開放填寫' });
+  const arr = (Array.isArray((req.body || {}).answers) ? req.body.answers : []).map(Number);
+  const need = kind === 'apgar' ? 5 : 10;
+  const maxScore = kind === 'apgar' ? 2 : 3;
+  if (arr.length !== need || arr.some(a => !(Number.isInteger(a) && a >= 0 && a <= maxScore))) {
+    return res.status(400).json({ error: `請完成全部 ${need} 題` });
+  }
+  const total = arr.reduce((s2, a) => s2 + a, 0);
+  const stored = kind === 'apgar' ? arr : { a: arr, age: '', result: '' };
+  const info = db.prepare(`INSERT INTO mother_scales (mother_id, nurse_id, kind, fill_date, answers, total, note)
+    VALUES (?,?,?,?,?,?,?)`).run(motherId, null, kind, today(), JSON.stringify(stored), total, '媽媽自填');
+  res.json({ ok: true, id: info.lastInsertRowid, total, message: '已送出，感謝您的填寫！' });
 });
 
 // ---------- 家屬帳號管理（員工端） ----------

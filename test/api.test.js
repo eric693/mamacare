@@ -2851,3 +2851,46 @@ test('自訂表格：設計欄位→填寫→月統計；欄位停用不影響�
   assert.strictEqual((await req('GET', '/api/custom-forms')).status, 403);
   cookie = adminCookie;
 });
+
+test('表單派送：到期提醒未送出／未填寫，送出與填寫後提醒消失', async () => {
+  cookie = '';
+  const lg = await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  assert.strictEqual(lg.status, 200, JSON.stringify(lg.data));
+  const mom = await anyCheckedInMother();
+  // 家庭功能表設為「入住第 1 天」，讓在住者今日即到期，便於驗證提醒流程
+  assert.strictEqual((await req('PUT', '/api/settings', { fd_apgar_day: '1' })).status, 200);
+  const st = await req('GET', '/api/form-dispatch');
+  assert.strictEqual(st.status, 200);
+  assert.deepStrictEqual(st.data.kinds.map(k => k.kind), ['checkin_survey', 'checkout_survey', 'apgar', 'epds']);
+  const mine = st.data.rows.filter(r => r.mother_id === mom.id);
+  assert.ok(mine.length >= 3, '在住媽媽應排入 4 張表（未設定的除外）');
+  const apgar = mine.find(r => r.kind === 'apgar');
+  assert.ok(apgar, '家庭功能表應在派送清單');
+  assert.strictEqual(apgar.due_date, apgar.check_in, '入住第 1 天＝入住日當天到期');
+  // 到期者列入提醒（本測試住客入住已久，家庭功能表必到期）
+  assert.strictEqual(apgar.due, true, JSON.stringify(apgar));
+  assert.strictEqual(apgar.remind, true, JSON.stringify(apgar));
+  assert.strictEqual(apgar.sent_at, '');
+  // 送出：記錄送出時間（無家屬帳號時回 warn 但仍記錄）
+  const send = await req('POST', `/api/mothers/${mom.id}/form-dispatch/apgar/send`, {});
+  assert.strictEqual(send.status, 200);
+  const st2 = (await req('GET', '/api/form-dispatch')).data.rows.find(r => r.mother_id === mom.id && r.kind === 'apgar');
+  assert.ok(st2.sent_at, '送出後應記錄送出時間');
+  assert.strictEqual(st2.filled, false);
+  assert.strictEqual(st2.remind, true, '仍未填寫 → 提醒續留');
+  // 員工代填量表 → 視為已填寫，提醒消失
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/scales`, {
+    kind: 'apgar', answers: [2, 2, 2, 1, 1]
+  })).status, 200);
+  const st3 = (await req('GET', '/api/form-dispatch')).data;
+  const row3 = st3.rows.find(r => r.mother_id === mom.id && r.kind === 'apgar');
+  assert.strictEqual(row3.filled, true);
+  assert.strictEqual(row3.remind, false, '已送出＋已填寫 → 不再提醒');
+  assert.ok(!st3.pending.some(p => p.mother_id === mom.id && p.kind === 'apgar'));
+  // 排程可調：把家庭功能表設為 0 即停用該張表
+  assert.strictEqual((await req('PUT', '/api/settings', { fd_apgar_day: '0' })).status, 200);
+  assert.ok(!(await req('GET', '/api/form-dispatch')).data.rows.some(r => r.kind === 'apgar'), '設 0 停用該表');
+  await req('PUT', '/api/settings', { fd_apgar_day: '2' });
+  // 錯誤類別擋下
+  assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/form-dispatch/xxx/send`, {})).status, 400);
+});
