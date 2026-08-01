@@ -1543,7 +1543,7 @@ async function loadFormDispatchBanner(reload) {
   box.innerHTML = `
     <div class="card" style="border-left:4px solid var(--warn)">
       <div class="row between" style="flex-wrap:wrap;gap:8px">
-        <div class="sec-hd" style="margin:0">表單提醒（未送出 ${d.stats.unsent}／未填寫 ${d.stats.unfilled}）</div>
+        <div class="sec-hd">表單提醒（未送出 ${d.stats.unsent}／未填寫 ${d.stats.unfilled}）</div>
         <button class="btn small secondary" id="fd-refresh">重新整理</button>
       </div>
       <div class="table-wrap">
@@ -8155,7 +8155,7 @@ async function viewCareRecordQuery(kind) {
     </div>
     <div class="card">
       <div class="row between" style="flex-wrap:wrap;gap:8px">
-        <div class="sec-hd" style="margin:0">${title}（查詢結果）</div>
+        <div class="sec-hd">${title}（查詢結果）</div>
         <div class="row" style="gap:6px"><button class="btn small secondary" id="crq-print">資料列印</button><button class="btn small" id="crq-csv">匯出Excel</button></div>
       </div>
       <div id="crq-result"><div class="empty">您輸入的條件，查無資料 …</div></div>
@@ -15867,7 +15867,7 @@ async function renderCustomForm(formId, month) {
     <div class="card">
       <div class="row between" style="flex-wrap:wrap;gap:8px">
         <div>
-          <div class="sec-hd" style="margin:0">${esc(form.name)}</div>
+          <div class="sec-hd">${esc(form.name)}</div>
           <div style="font-size:.88rem;color:var(--muted)">
             ${esc(CF_SUBJECT_LABEL[form.subject])}${form.category ? `・${esc(form.category)}` : ''}${form.description ? `・${esc(form.description)}` : ''}</div>
         </div>

@@ -249,9 +249,29 @@ table.data tr.row-overdue td, table.data tr.row-overdue:hover td { background: #
 
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .row.between { justify-content: space-between; }
-/* 動作鈕列與搜尋／篩選列相鄰時保留間距，避免按鈕與輸入框視覺相黏（焦點外框會蓋到） */
-.row + .flt-bar { margin-top: 10px; }
+/* ---------- 版面防重疊：相鄰區塊一律保留間距，避免按鈕／輸入框／表格互相貼合或被焦點外框蓋到 ---------- */
+.row + .flt-bar,
+.row + .table-wrap,
+.row + table,
+.row + .form-grid,
+.row + .board-grid,
+.row + .stat-grid,
+.row + .empty,
+.flt-bar + .table-wrap,
+.flt-bar + table,
+.sec-hd + .table-wrap,
+.sec-hd + table,
+.sec-hd + .form-grid { margin-top: 10px; }
 .flt-bar .flt-search { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; }
+/* 區段標題放進 flex 列時不再帶自身外距，與同列按鈕對齊 */
+.row > .sec-hd, .row > h3, .row > h4, .row > p { margin: 0; }
+/* 焦點外框往外撐，且不影響版面高度；避免點過的按鈕外框壓到隔壁元件 */
+.btn:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* 卡片內最後一個區塊不留多餘空白 */
+.card > *:last-child { margin-bottom: 0; }
 .mt { margin-top: 12px; }
 
 /* ---------- 標籤與徽章 ---------- */
