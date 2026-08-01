@@ -141,7 +141,7 @@ const MODULE_RULES = [
   [/^\/api\/babies\/\d+\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/physician-visits/, 'physician'],
-  [/^\/api\/babies\/\d+\/doctor-visits/, 'physician'],
+  [/^\/api\/babies\/\d+\/(doctor-visits|doctor-visit-prefill)/, 'physician'],
   [/^\/api\/baby-doctor-visits/, 'physician'],
   [/^\/api\/mothers\/\d+\/doctor-visits/, 'physician'],
   [/^\/api\/mother-doctor-visits/, 'physician'],
@@ -1015,31 +1015,80 @@ app.delete('/api/baby-intake/:id', requireAdmin, (req, res) => {
 });
 
 // ---------- 兒科醫師診視紀錄（醫師巡診） ----------
-// data 僅收白名單欄位；各部位以陣列（多選）／字串（單選、補述）保存
+// 小兒科診察紀錄表：檢查評估八大部位皆為複選（陣列），其他／建議處置為字串
+const BDV_ARRAY_FIELDS = ['head', 'face', 'neck', 'chest', 'abdomen', 'skin', 'resp', 'genital'];
 const BDV_FIELDS = [
-  'gest_weeks', 'birth_days', 'birth_weight_g',
-  'skin', 'skin_other', 'head', 'head_hema_sides', 'fontanelle',
-  'eyes', 'eye_secretion_side', 'eye_secretion_color', 'eye_secretion_amount', 'eye_conj_side',
-  'mouth', 'mouth_other', 'neck', 'neck_side', 'clavicle', 'clavicle_side',
-  'heart', 'lungs', 'lung_note', 'umbilicus', 'umb_other',
-  'genital', 'genital_undescended_side', 'genital_hernia_side', 'genital_other',
-  'buttock', 'rash_w', 'rash_h'
+  'gest_weeks', 'birth_days', 'birth_weight_g', 'jaundice', 'milk_ml',
+  ...BDV_ARRAY_FIELDS, 'other', 'advice', 'advice_note'
 ];
+const BDV_ADVICE = ['無', '續觀察', '建議外出返診'];
 function normalizeDoctorVisit(b) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(b.visit_date || '') ? b.visit_date : today();
   const time = /^\d{2}:\d{2}/.test(b.visit_time || '') ? b.visit_time.slice(0, 5) : '';
   const weight = (b.weight_g === '' || b.weight_g == null) ? null : Number(b.weight_g);
   if (weight != null && !(weight > 0 && weight <= 99999.9)) return { error: '體重需為 0～99999.9（gm）' };
+  if (b.jaundice !== undefined && b.jaundice !== '' && b.jaundice != null) {
+    const j = Number(b.jaundice);
+    if (!(j >= 0 && j <= 99.9)) return { error: '黃疸值需為 0～99.9（mg/dl）' };
+  }
+  if (b.advice && !BDV_ADVICE.includes(b.advice)) return { error: '建議處置選項不正確' };
   const data = {};
   for (const k of BDV_FIELDS) if (b[k] !== undefined) {
-    data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+    if (BDV_ARRAY_FIELDS.includes(k)) {
+      data[k] = (Array.isArray(b[k]) ? b[k] : []).filter(x => typeof x === 'string').slice(0, 20).map(x => x.slice(0, 60));
+    } else {
+      data[k] = (typeof b[k] === 'string') ? b[k].slice(0, 200) : b[k];
+    }
   }
   return { date, time, weight, data, note: String(b.note || '').slice(0, 600) };
 }
 
+// 診察表自動帶入：出生天數（生產日期推算）、前一日體重／黃疸、最近一次餵奶奶量
+function babyVisitPrefill(baby, date) {
+  const prev = new Date(new Date(date).getTime() - 86400000).toISOString().slice(0, 10);
+  const birthDays = baby.birth_date
+    ? Math.max(0, Math.round((new Date(date) - new Date(baby.birth_date)) / 86400000)) : null;
+  // 體重：新生兒護理評估表前一日；同日多筆取最後一筆，無則退回照護紀錄的體重
+  const bnaW = db.prepare(`SELECT weight_g FROM baby_nursing_assessments
+    WHERE baby_id = ? AND assess_date = ? AND weight_g IS NOT NULL
+    ORDER BY assess_time DESC, id DESC LIMIT 1`).get(baby.id, prev);
+  const recW = bnaW ? null : db.prepare(`SELECT value_num FROM baby_records
+    WHERE baby_id = ? AND record_type = 'weight' AND value_num IS NOT NULL AND substr(recorded_at,1,10) = ?
+    ORDER BY recorded_at DESC LIMIT 1`).get(baby.id, prev);
+  // 黃疸：前一日照護紀錄，無則退回當日交班單；都沒有就留空白
+  const recJ = db.prepare(`SELECT value_num FROM baby_records
+    WHERE baby_id = ? AND record_type = 'jaundice' AND value_num IS NOT NULL AND substr(recorded_at,1,10) = ?
+    ORDER BY recorded_at DESC LIMIT 1`).get(baby.id, prev);
+  const hoJ = recJ ? null : db.prepare(`SELECT jaundice FROM baby_handovers
+    WHERE baby_id = ? AND handover_date = ? AND jaundice IS NOT NULL
+    ORDER BY handover_time DESC, id DESC LIMIT 1`).get(baby.id, prev);
+  // 奶量：最近一次餵奶紀錄（不限當日）
+  const feed = db.prepare(`SELECT amount_ml, recorded_at FROM baby_records
+    WHERE baby_id = ? AND record_type = 'feeding' AND amount_ml IS NOT NULL AND substr(recorded_at,1,10) <= ?
+    ORDER BY recorded_at DESC LIMIT 1`).get(baby.id, date);
+  return {
+    prev_date: prev,
+    birth_days: birthDays,
+    weight_g: bnaW ? bnaW.weight_g : (recW ? recW.value_num : null),
+    weight_from: bnaW ? '新生兒護理評估表' : (recW ? '照護紀錄' : ''),
+    jaundice: recJ ? recJ.value_num : (hoJ ? hoJ.jaundice : null),
+    jaundice_from: recJ ? '照護紀錄' : (hoJ ? '交班單' : ''),
+    milk_ml: feed ? feed.amount_ml : null,
+    milk_at: feed ? feed.recorded_at : ''
+  };
+}
+
+app.get('/api/babies/:id/doctor-visit-prefill', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id, birth_date FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : today();
+  res.json(babyVisitPrefill(baby, date));
+});
+
 app.get('/api/babies/:id/doctor-visits', requireStaff, (req, res) => {
   const baby = db.prepare(`
     SELECT b.*, m.name AS mother_name,
+      (SELECT bb.bed_no FROM baby_beds bb WHERE bb.id = b.bed_id) AS bed_name,
       (SELECT r.name FROM bookings bk JOIN rooms r ON r.id = bk.room_id
         WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
@@ -1056,7 +1105,7 @@ app.get('/api/babies/:id/doctor-visits', requireStaff, (req, res) => {
     LEFT JOIN users e ON e.id = v.edited_by
     WHERE v.baby_id = ? ORDER BY v.visit_date DESC, v.visit_time DESC, v.id DESC LIMIT 200`).all(baby.id);
   for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
-  res.json({ baby, rows });
+  res.json({ baby, rows, prefill: babyVisitPrefill(baby, today()) });
 });
 
 app.post('/api/babies/:id/doctor-visits', requireStaff, (req, res) => {

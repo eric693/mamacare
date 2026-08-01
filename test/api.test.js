@@ -353,19 +353,34 @@ test('醫師巡診：診視紀錄新增→修改→讀取；無 physician 權限
   // 新增
   const ok = await req('POST', `/api/babies/${babyId}/doctor-visits`, {
     visit_date: '2026-07-04', visit_time: '20:31', weight_g: 3300,
-    gest_weeks: 39, birth_days: 11, birth_weight_g: 3120,
-    skin: ['正常'], fontanelle: '正常', heart: ['規律'], buttock: ['正常'], note: '一切正常'
+    gest_weeks: 39, birth_days: 11, birth_weight_g: 3120, jaundice: 8.5, milk_ml: 60,
+    head: ['無異常'], face: ['鵝口瘡'], resp: ['呼吸音乾淨'], skin: ['無異常'],
+    advice: '續觀察', advice_note: '明日再評估', note: '一切正常'
   });
   assert.strictEqual(ok.status, 200);
   // 修改（記錄 edited_by）
   assert.strictEqual((await req('PUT', `/api/baby-doctor-visits/${ok.data.id}`, {
-    visit_date: '2026-07-04', visit_time: '20:45', weight_g: 3310, skin: ['正常', '黃疸'], note: '輕微黃疸'
+    visit_date: '2026-07-04', visit_time: '20:45', weight_g: 3310, skin: ['無異常', '紅臀'], note: '輕微紅臀'
   })).status, 200);
   const g = await req('GET', `/api/babies/${babyId}/doctor-visits`);
   const row = g.data.rows.find(r => r.id === ok.data.id);
   assert.strictEqual(row.visit_time, '20:45');
-  assert.deepStrictEqual(row.data.skin, ['正常', '黃疸']);
+  assert.deepStrictEqual(row.data.skin, ['無異常', '紅臀']);
+  assert.strictEqual(row.data.jaundice, undefined, '本次未送黃疸 → 只留本次白名單欄位');
   assert.ok(row.edited_at);
+  // 黃疸值與建議處置的驗證
+  assert.strictEqual((await req('POST', `/api/babies/${babyId}/doctor-visits`, {
+    visit_date: '2026-07-04', visit_time: '21:00', jaundice: 120
+  })).status, 400);
+  assert.strictEqual((await req('POST', `/api/babies/${babyId}/doctor-visits`, {
+    visit_date: '2026-07-04', visit_time: '21:00', advice: '亂填'
+  })).status, 400);
+  // 自動帶入：出生天數由生產日期推算，前一日無紀錄時黃疸留空白
+  const pf = await req('GET', `/api/babies/${babyId}/doctor-visit-prefill?date=2026-07-04`);
+  assert.strictEqual(pf.status, 200);
+  assert.strictEqual(pf.data.prev_date, '2026-07-03');
+  assert.ok(pf.data.birth_days >= 0);
+  assert.ok(pf.data.jaundice === null || typeof pf.data.jaundice === 'number');
   // RBAC：kit_test（僅 meals）→ 403
   const adminCookie = cookie;
   cookie = '';

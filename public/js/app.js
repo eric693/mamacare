@@ -9880,27 +9880,32 @@ async function viewBabyEval() {
   });
 }
 
-/* ---------- 兒科醫師診視紀錄（醫師巡診） ---------- */
-const BDV_OPTS = {
-  skin: ['正常', '發紺', '黃疸', '新生兒坐瘡', '粟粒疹', '蒙古斑', '鮭魚斑', '血管瘤', '毒性紅斑', '脂漏性皮膚炎', '其它'],
-  head: ['正常', '產瘤', '血腫'],
-  fontanelle: ['正常', '膨出', '凹陷'],
-  eyes: ['正常', '不對稱', '分泌物', '結膜出血'],
-  mouth: ['正常', '水泡', '珍珠白點', '破洞', '鵝口瘡', '其它異常'],
-  neck: ['正常', '斜頸'],
-  clavicle: ['正常', '骨折'],
-  heart: ['規律', '心雜音', '心律不整'],
-  lungs: ['正常', '異常'],
-  umbilicus: ['正常', '發炎', '臍疝氣', '其它異常'],
-  genital_m: ['睪丸完全下降', '睪丸未下降', '陰囊水腫', '尿道下裂', '腹股溝疝氣', '其他異常'],
-  genital_f: ['正常', '大陰唇未蓋住小陰唇', '分泌物', '假性月經', '其他異常'],
-  buttock: ['正常', '紅臀']
-};
+/* ---------- 兒科醫師診視紀錄（小兒科診察紀錄表） ---------- */
+// 檢查評估八大部位皆為複選；欄位順序比照紙本診察紀錄表
+const BDV_SECTIONS = [
+  ['head', '1. 頭部', ['無異常', '血腫', '產瘤', '破皮']],
+  ['face', '2. 五官', ['無異常', '鼻淚管阻塞', '臉歪斜', '鵝口瘡', '結膜下出血']],
+  ['neck', '3. 頸部', ['無異常', '鎖骨骨折', '側腫塊']],
+  ['chest', '4. 胸部', ['無異常', '胸凹', '心雜音', '魔乳']],
+  ['abdomen', '5. 腹部', ['無異常', '臍疝氣', '臍瘜肉', '臍部紅/腫', '臍臭', '腹脹', '臍落']],
+  ['skin', '6. 皮膚', ['無異常', '熱疹', '脂漏性皮膚炎', '異位性皮膚炎', '膿疱', '紅臀']],
+  ['resp', '7. 呼吸系統', ['呼吸音乾淨', '鼻塞/呼嚕聲', '支氣管痰音', '喉嚨紅', '噴嚏']],
+  ['genital', '8. 生殖器', ['無異常', '睪丸未降', '陰囊水腫', '腹股溝疝氣', '假性月經']]
+];
+const BDV_ADVICE = ['無', '續觀察', '建議外出返診'];
+
 function bdvChecks(name, opts, picked = []) {
   return opts.map(o => `<label class="bna-chk"><input type="checkbox" data-ck="${name}" value="${esc(o)}" ${picked.includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('');
 }
 function bdvRadios(name, opts, val = '') {
   return opts.map(o => `<label class="bna-chk"><input type="radio" name="${name}" value="${esc(o)}" ${o === val ? 'checked' : ''}> ${esc(o)}</label>`).join('');
+}
+// 檢查評估摘要（清單與列印共用）：只列有勾選的部位
+function bdvEvalText(a) {
+  return BDV_SECTIONS
+    .filter(([k]) => (a[k] || []).length)
+    .map(([k, label]) => `${label.replace(/^\d+\.\s*/, '')}：${a[k].join('、')}`)
+    .concat(a.other ? [`其他：${a.other}`] : []);
 }
 
 async function viewBabyDoctor() {
@@ -9912,120 +9917,86 @@ async function viewBabyDoctor() {
   }
   const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
   const babyId = babies.some(b => b.id === want) ? want : babies[0].id;
-  const { baby, rows } = await api(`/babies/${babyId}/doctor-visits`);
+  const { baby, rows, prefill } = await api(`/babies/${babyId}/doctor-visits`);
   const now = new Date();
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  // 出生天數（自出生日至今）；出生體重預設帶寶寶基本資料
-  const birthDays = baby.birth_date ? Math.max(0, Math.floor((new Date(todayStr()) - new Date(baby.birth_date)) / 86400000)) : '';
+  const bedName = baby.bed_name || '';
   // 體重增加減輕百分比：最近一筆診視體重 vs 出生體重
   const lastW = rows.find(r => r.weight_g != null);
   const bw = (lastW && lastW.data.birth_weight_g) || baby.birth_weight_g;
   const pct = (lastW && bw > 0) ? ((lastW.weight_g - bw) / bw * 100).toFixed(2) : '0.00';
 
-  const joinArr = a => (a || []).join('、') || '—';
   const listRows = rows.map((r, i) => {
     const a = r.data || {};
-    const head = [(a.head || []).join('、'), (a.head || []).includes('血腫') && (a.head_hema_sides || []).length ? `（${a.head_hema_sides.join('、')}）` : ''].join('');
-    const genital = [(a.genital || []).join('、'),
-      a.genital_undescended_side ? `未下降:${a.genital_undescended_side}` : '',
-      a.genital_hernia_side ? `疝氣:${a.genital_hernia_side}` : '', a.genital_other].filter(Boolean).join('；');
+    const advice = [a.advice || '', a.advice_note || ''].filter(Boolean).join('：');
     return `
       <tr data-filter="${esc(r.visit_date)} ${esc(r.recorded_by_name || '')}">
-        <td data-label="筆數">${i + 1}<br>
+        <td data-label="筆數" class="no-print">${i + 1}<br>
           ${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${r.id}" style="margin:2px 0">刪</button>` : ''}
           <button class="btn small secondary" data-edit="${r.id}" style="margin:2px 0">修</button></td>
-        <td data-label="診視日期">${esc(r.visit_date)}<br><small>${esc(r.visit_time)}</small></td>
-        <td data-label="出生週數/天數/體重"><small>${esc(a.gest_weeks || '—')} 週／${esc(a.birth_days ?? '—')} 天<br>${esc(a.birth_weight_g || '—')} gm</small></td>
-        <td data-label="體重/膚色"><small>${r.weight_g != null ? `${r.weight_g} gm` : '—'}<br>${esc(joinArr(a.skin))}${a.skin_other ? `（${esc(a.skin_other)}）` : ''}</small></td>
-        <td data-label="頭部/囟門"><small>${esc(head || '—')}<br>囟門 ${esc(a.fontanelle || '—')}</small></td>
-        <td data-label="眼睛/口腔"><small>${esc(joinArr(a.eyes))}<br>${esc(joinArr(a.mouth))}${a.mouth_other ? `（${esc(a.mouth_other)}）` : ''}</small></td>
-        <td data-label="頸部/鎖骨"><small>${esc(joinArr(a.neck))}${a.neck_side ? `（${esc(a.neck_side)}）` : ''}<br>${esc(joinArr(a.clavicle))}${a.clavicle_side ? `（${esc(a.clavicle_side)}）` : ''}</small></td>
-        <td data-label="心臟/肺部"><small>${esc(joinArr(a.heart))}<br>${esc(joinArr(a.lungs))}${a.lung_note ? `（${esc(a.lung_note)}）` : ''}</small></td>
-        <td data-label="臍部/臀部"><small>${esc(joinArr(a.umbilicus))}${a.umb_other ? `（${esc(a.umb_other)}）` : ''}<br>${esc(joinArr(a.buttock))}${a.rash_w || a.rash_h ? `（${esc(a.rash_w || '?')}×${esc(a.rash_h || '?')}cm）` : ''}</small></td>
-        <td data-label="生殖器"><small>${esc(genital || '—')}</small></td>
+        <td data-label="日期">${esc(r.visit_date)}<br><small>${esc(r.visit_time)}</small></td>
+        <td data-label="項目"><small>
+          出生天數 ${esc(a.birth_days ?? '—')} 天<br>
+          體重 ${r.weight_g != null ? `${r.weight_g} gm` : '—'}<br>
+          黃疸 ${a.jaundice !== '' && a.jaundice != null ? `${esc(a.jaundice)} mg/dl` : ''}<br>
+          奶量 ${a.milk_ml !== '' && a.milk_ml != null ? `${esc(a.milk_ml)} ml` : '—'}</small></td>
+        <td data-label="檢查評估"><small>${bdvEvalText(a).map(esc).join('<br>') || '—'}</small></td>
+        <td data-label="建議處置"><small>${esc(advice || '—')}</small></td>
         <td data-label="建檔人">${esc(r.recorded_by_name || '—')}${r.edited_at ? `<br><small title="${esc(r.edited_at)}（${esc(r.edited_by_name || '')}）" style="color:var(--muted)">已修改</small>` : ''}</td>
         <td data-label="敍述"><small>${esc((r.note || '').slice(0, 40))}${(r.note || '').length > 40 ? '…' : ''}</small></td>
       </tr>`;
   }).join('');
 
-  // 生殖器選項依寶寶性別顯示（未填性別則兩組都列出）
-  const genitalRows = [];
-  if (baby.gender !== 'female') genitalRows.push(['男孩', bdvChecks('bdv-genital-m', BDV_OPTS.genital_m)]);
-  if (baby.gender !== 'male') genitalRows.push(['女孩', bdvChecks('bdv-genital-f', BDV_OPTS.genital_f)]);
-
   main().innerHTML = `
-    <div class="page-title">醫師巡診 <small style="font-weight:400;color:var(--muted);font-size:.9rem">兒科醫師診視紀錄</small></div>
+    <div class="page-title">醫師巡診 <small style="font-weight:400;color:var(--muted);font-size:.9rem">小兒科診察紀錄表</small></div>
     <div class="card no-print">
       <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
         <div class="field" style="max-width:240px;margin:0"><label>選擇寶寶</label>
           <select id="bdv-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
         <a class="btn small secondary" href="#/baby-rooms">回寶寶房況</a>
         <a class="btn small secondary" href="#/physician-visits">巡診總覽(SOAP)</a>
-        <button class="btn small secondary" id="bdv-print">資料列印</button>
+        <button class="btn small secondary" id="bdv-print">列印診察紀錄表</button>
       </div>
     </div>
     <div class="card">
-      <div class="sec-hd">兒科醫師巡診</div>
+      <div class="sec-hd">小兒科診察紀錄表</div>
       <div class="row" style="gap:6px 18px;flex-wrap:wrap;font-size:.95rem">
-        <span><b>媽媽姓名：</b>${baby.room_name ? `${esc(baby.room_name)}　` : ''}${esc(baby.mother_name)}</span>
-        ${baby.mother_check_in ? `<span><b>入住：</b>${esc(baby.mother_check_in)}</span>` : ''}
-        ${baby.mother_check_out ? `<span><b>預退：</b>${esc(baby.mother_check_out)}</span>` : ''}
-        <span><b>寶寶：</b>${esc(baby.name)}${baby.gender ? `（${baby.gender === 'male' ? '男' : '女'}）` : ''}</span>
+        <span><b>床號：</b>${esc(bedName || baby.room_name || '—')}</span>
+        <span><b>媽媽：</b>${esc(baby.mother_name)}</span>
+        <span><b>寶寶：</b>${esc(baby.name)}</span>
+        <span><b>出生日期：</b>${esc(baby.birth_date || '—')}</span>
+        <span><b>出生體重：</b>${esc(baby.birth_weight_g ?? '—')} 公克</span>
+        <span><b>性別：</b>${baby.gender === 'male' ? '男' : baby.gender === 'female' ? '女' : '—'}</span>
         <span><b>體重增加減輕百分比：</b><b style="color:${Number(pct) < 0 ? 'var(--danger)' : 'var(--primary-dark)'}">${pct} %</b></span>
       </div>
     </div>
     <div class="card no-print" id="bdv-form">
-      <div class="sec-hd">兒科醫師診視紀錄 － <span id="bdv-mode">新增</span></div>
+      <div class="sec-hd">診察紀錄 － <span id="bdv-mode">新增</span></div>
       <div class="form-grid">
-        <div class="field"><label>診視日期 <b class="req">*</b></label><input type="date" id="bdv-date" value="${todayStr()}"></div>
-        <div class="field"><label>診視時間 <b class="req">*</b></label><input type="time" id="bdv-time" value="${hhmm}"></div>
-        <div class="field full"><label>寶寶紀錄</label>
+        <div class="field"><label>日期 <b class="req">*</b></label><input type="date" id="bdv-date" value="${todayStr()}"></div>
+        <div class="field"><label>時間 <b class="req">*</b></label><input type="time" id="bdv-time" value="${hhmm}"></div>
+        <div class="field full"><label>項目<small>（自動帶入，可自行修改）</small></label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
-            出生週數 <input type="number" id="bdv-gw" min="0" max="45" style="width:80px">
-            出生天數 <input type="number" id="bdv-bd" min="0" style="width:80px" value="${birthDays}">
+            出生天數 <input type="number" id="bdv-bd" min="0" style="width:80px"> 天
+            體重 <input type="number" step="0.1" id="bdv-w" min="0" style="width:110px"> gm
+            黃疸 <input type="number" step="0.1" id="bdv-j" min="0" max="99.9" style="width:90px"> mg/dl
+            奶量 <input type="number" id="bdv-milk" min="0" style="width:90px"> ml
+          </div>
+          <div id="bdv-src" style="font-size:.8rem;color:var(--muted);margin-top:4px"></div></div>
+        <div class="field full"><label>出生週數／出生體重<small>（列印表頭用）</small></label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">
+            出生週數 <input type="number" id="bdv-gw" min="0" max="45" style="width:80px"> 週
             出生體重 <input type="number" id="bdv-bw" min="0" style="width:110px" value="${esc(baby.birth_weight_g ?? '')}"> gm
           </div></div>
-        <div class="field"><label>體重（gm）</label><input type="number" id="bdv-w" min="0" placeholder="診視當日體重"></div>
-        <div class="field full"><label>皮膚</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks('bdv-skin', BDV_OPTS.skin)}
-            <input id="bdv-skin-other" maxlength="100" placeholder="勾「其它」時必填" style="width:220px"></div></div>
-        <div class="field full"><label>頭部</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks('bdv-head', BDV_OPTS.head)}
-            血腫（${bdvChecks('bdv-head-side', ['左', '右'])}）</div></div>
-        <div class="field full"><label>囟門</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${bdvRadios('bdvr-font', BDV_OPTS.fontanelle)}</div></div>
-        <div class="field full"><label>眼睛</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks('bdv-eyes', BDV_OPTS.eyes)}</div>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center;margin-top:6px">
-            分泌物（${bdvRadios('bdvr-eye-sec', ['左', '右'])}）顏色 <input id="bdv-eye-color" maxlength="50" style="width:110px">
-            量 <input id="bdv-eye-amt" maxlength="50" style="width:110px">
-            　結膜出血（${bdvRadios('bdvr-eye-conj', ['左', '右'])}）</div></div>
-        <div class="field full"><label>口腔</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks('bdv-mouth', BDV_OPTS.mouth)}
-            <input id="bdv-mouth-other" maxlength="100" placeholder="勾「其它異常」時必填" style="width:220px"></div></div>
-        <div class="field"><label>頸部</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${bdvChecks('bdv-neck', BDV_OPTS.neck)} 斜頸（${bdvRadios('bdvr-neck', ['左', '右'])}）</div></div>
-        <div class="field"><label>鎖骨</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${bdvChecks('bdv-clav', BDV_OPTS.clavicle)} 骨折（${bdvRadios('bdvr-clav', ['左', '右'])}）</div></div>
-        <div class="field"><label>心臟</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap">${bdvChecks('bdv-heart', BDV_OPTS.heart)}</div></div>
-        <div class="field"><label>肺部</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks('bdv-lungs', BDV_OPTS.lungs)}
-            <input id="bdv-lung-note" maxlength="100" placeholder="勾「異常」時必填" style="width:180px"></div></div>
-        <div class="field full"><label>臍部</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks('bdv-umb', BDV_OPTS.umbilicus)}
-            <input id="bdv-umb-other" maxlength="100" placeholder="勾「其它異常」時必填" style="width:220px"></div></div>
-        ${genitalRows.map(([who, checks]) => `
-        <div class="field full"><label>生殖器${genitalRows.length > 1 ? `（${who}）` : ''}</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${who === '男孩' ? '男孩，' : '女孩，'}${checks}</div>
-          ${who === '男孩' ? `<div class="row" style="gap:8px 14px;flex-wrap:wrap;margin-top:6px">
-            睪丸未下降（${bdvRadios('bdvr-gen-und', ['左', '右', '雙側'])}）　腹股溝疝氣（${bdvRadios('bdvr-gen-hern', ['左', '右', '雙側'])}）</div>` : ''}
-        </div>`).join('')}
-        <div class="field full"><label>生殖器其他異常補述</label><input id="bdv-gen-other" maxlength="100" placeholder="勾「其他異常」時必填"></div>
-        <div class="field full"><label>臀部</label>
-          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks('bdv-butt', BDV_OPTS.buttock)}
-            紅臀大小 <input type="number" step="0.1" min="0" id="bdv-rash-w" style="width:80px"> ×
-            <input type="number" step="0.1" min="0" id="bdv-rash-h" style="width:80px"> cm</div></div>
+        <div class="full" style="border-top:1px solid var(--line);padding-top:8px;margin-top:2px"><b>檢查評估</b><small style="color:var(--muted)">（皆可複選）</small></div>
+        ${BDV_SECTIONS.map(([k, label, opts]) => `
+        <div class="field full"><label>${label}</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvChecks(`bdv-${k}`, opts)}</div></div>`).join('')}
+        <div class="field full"><label>9. 其他</label><input id="bdv-other" maxlength="200"></div>
+        <div class="full" style="border-top:1px solid var(--line);padding-top:8px;margin-top:2px"><b>建議處置</b></div>
+        <div class="field full"><label>處置</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;align-items:center">${bdvRadios('bdvr-advice', BDV_ADVICE)}
+            <input id="bdv-advice-note" maxlength="200" placeholder="補充說明（選填）" style="min-width:240px;flex:1"></div></div>
         <div class="field full"><label>敍述性紀錄<small>（限 600 字）</small></label><textarea id="bdv-note" maxlength="600" rows="3"></textarea></div>
         <div class="full row" style="gap:10px">
           <button class="btn" id="bdv-save">資料新增</button>
@@ -10036,24 +10007,43 @@ async function viewBabyDoctor() {
     </div>
     <div class="card">
       <div class="row between no-print">
-        <h3>兒科醫師診視紀錄（${rows.length} 筆）</h3>
+        <h3>診察紀錄（${rows.length} 筆）</h3>
       </div>
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th class="no-print">筆數</th><th>診視日期</th><th>出生週數/天數/體重</th><th>體重/膚色</th><th>頭部/囟門</th><th>眼睛/口腔</th><th>頸部/鎖骨</th><th>心臟/肺部</th><th>臍部/臀部</th><th>生殖器</th><th>建檔人</th><th>敍述</th></tr></thead>
-          <tbody>${listRows || '<tr><td colspan="12"><div class="empty">尚無診視紀錄</div></td></tr>'}</tbody>
+          <thead><tr><th class="no-print">筆數</th><th>日期</th><th>項目</th><th>檢查評估</th><th>建議處置</th><th>建檔人</th><th>敍述</th></tr></thead>
+          <tbody>${listRows || '<tr><td colspan="7"><div class="empty">尚無診察紀錄</div></td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
 
   $('#bdv-baby').onchange = () => { location.hash = `#/baby-doctor?b=${$('#bdv-baby').value}`; };
-  $('#bdv-print').onclick = () => window.print();
+  $('#bdv-print').onclick = () => printBabyDoctorSheet(baby, rows);
 
   const form = $('#bdv-form');
   const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
   const ckVals = name => [...form.querySelectorAll(`[data-ck="${name}"]:checked`)].map(c => c.value);
   const radioVal = name => { const el = form.querySelector(`input[name="${name}"]:checked`); return el ? el.value : ''; };
   let editingId = null;
+
+  // 自動帶入：出生天數（生產日期推算）、前一日體重／黃疸、最近一次餵奶奶量；皆可再手動修改
+  const applyPrefill = p => {
+    $('#bdv-bd').value = p.birth_days ?? '';
+    $('#bdv-w').value = p.weight_g ?? '';
+    $('#bdv-j').value = p.jaundice ?? '';
+    $('#bdv-milk').value = p.milk_ml ?? '';
+    $('#bdv-src').textContent = [
+      `前一日（${p.prev_date}）體重${p.weight_from ? `取自${p.weight_from}` : '無紀錄'}`,
+      `黃疸${p.jaundice_from ? `取自${p.jaundice_from}` : '無紀錄，留空白'}`,
+      p.milk_at ? `奶量取自最近一次餵奶 ${p.milk_at}` : '無餵奶紀錄'
+    ].join('　');
+  };
+  applyPrefill(prefill);
+  // 換日期時重新帶入（編輯既有紀錄時不覆蓋已存內容）
+  $('#bdv-date').onchange = async () => {
+    if (editingId || !v('#bdv-date')) return;
+    try { applyPrefill(await api(`/babies/${babyId}/doctor-visit-prefill?date=${v('#bdv-date')}`)); } catch (e) { /* 帶入失敗不影響填寫 */ }
+  };
 
   // 「修」：把該筆資料帶回表單改為修改模式
   const setForm = r => {
@@ -10063,25 +10053,15 @@ async function viewBabyDoctor() {
     $('#bdv-save').textContent = '資料修改';
     $('#bdv-cancel').style.display = '';
     $('#bdv-date').value = r.visit_date; $('#bdv-time').value = r.visit_time;
-    $('#bdv-gw').value = a.gest_weeks ?? ''; $('#bdv-bd').value = a.birth_days ?? '';
-    $('#bdv-bw').value = a.birth_weight_g ?? ''; $('#bdv-w').value = r.weight_g ?? '';
-    $('#bdv-skin-other').value = a.skin_other || ''; $('#bdv-mouth-other').value = a.mouth_other || '';
-    $('#bdv-eye-color').value = a.eye_secretion_color || ''; $('#bdv-eye-amt').value = a.eye_secretion_amount || '';
-    $('#bdv-lung-note').value = a.lung_note || ''; $('#bdv-umb-other').value = a.umb_other || '';
-    $('#bdv-gen-other').value = a.genital_other || '';
-    $('#bdv-rash-w').value = a.rash_w || ''; $('#bdv-rash-h').value = a.rash_h || '';
+    $('#bdv-bd').value = a.birth_days ?? ''; $('#bdv-w').value = r.weight_g ?? '';
+    $('#bdv-j').value = a.jaundice ?? ''; $('#bdv-milk').value = a.milk_ml ?? '';
+    $('#bdv-gw').value = a.gest_weeks ?? ''; $('#bdv-bw').value = a.birth_weight_g ?? '';
+    $('#bdv-other').value = a.other || ''; $('#bdv-advice-note').value = a.advice_note || '';
     $('#bdv-note').value = r.note || '';
+    $('#bdv-src').textContent = '編輯既有紀錄：數值維持原存檔內容';
     const setCk = (name, vals) => form.querySelectorAll(`[data-ck="${name}"]`).forEach(c => c.checked = (vals || []).includes(c.value));
-    setCk('bdv-skin', a.skin); setCk('bdv-head', a.head); setCk('bdv-head-side', a.head_hema_sides);
-    setCk('bdv-eyes', a.eyes); setCk('bdv-mouth', a.mouth); setCk('bdv-neck', a.neck);
-    setCk('bdv-clav', a.clavicle); setCk('bdv-heart', a.heart); setCk('bdv-lungs', a.lungs);
-    setCk('bdv-umb', a.umbilicus); setCk('bdv-butt', a.buttock);
-    setCk('bdv-genital-m', a.genital); setCk('bdv-genital-f', a.genital);
-    const setRadio = (name, val) => form.querySelectorAll(`input[name="${name}"]`).forEach(c => c.checked = c.value === val);
-    setRadio('bdvr-font', a.fontanelle); setRadio('bdvr-eye-sec', a.eye_secretion_side);
-    setRadio('bdvr-eye-conj', a.eye_conj_side); setRadio('bdvr-neck', a.neck_side);
-    setRadio('bdvr-clav', a.clavicle_side); setRadio('bdvr-gen-und', a.genital_undescended_side);
-    setRadio('bdvr-gen-hern', a.genital_hernia_side);
+    BDV_SECTIONS.forEach(([k]) => setCk(`bdv-${k}`, a[k]));
+    form.querySelectorAll('input[name="bdvr-advice"]').forEach(c => c.checked = c.value === (a.advice || ''));
     form.scrollIntoView({ behavior: 'smooth' });
   };
   $('#bdv-cancel').onclick = () => viewBabyDoctor();
@@ -10089,32 +10069,15 @@ async function viewBabyDoctor() {
   $('#bdv-save').onclick = async () => {
     const err = $('#bdv-err');
     err.textContent = '';
-    if (!v('#bdv-date') || !v('#bdv-time')) { err.textContent = '請填寫診視日期與時間'; return; }
-    const skin = ckVals('bdv-skin'), mouth = ckVals('bdv-mouth'), lungs = ckVals('bdv-lungs'), umb = ckVals('bdv-umb');
-    const genital = [...ckVals('bdv-genital-m'), ...ckVals('bdv-genital-f')];
-    if (skin.includes('其它') && !v('#bdv-skin-other')) { err.textContent = '皮膚勾選「其它」時，補述必填'; return; }
-    if (mouth.includes('其它異常') && !v('#bdv-mouth-other')) { err.textContent = '口腔勾選「其它異常」時，補述必填'; return; }
-    if (lungs.includes('異常') && !v('#bdv-lung-note')) { err.textContent = '肺部勾選「異常」時，補述必填'; return; }
-    if (umb.includes('其它異常') && !v('#bdv-umb-other')) { err.textContent = '臍部勾選「其它異常」時，補述必填'; return; }
-    if (genital.includes('其他異常') && !v('#bdv-gen-other')) { err.textContent = '生殖器勾選「其他異常」時，補述必填'; return; }
+    if (!v('#bdv-date') || !v('#bdv-time')) { err.textContent = '請填寫日期與時間'; return; }
     const body = {
       visit_date: v('#bdv-date'), visit_time: v('#bdv-time'), weight_g: v('#bdv-w'),
-      gest_weeks: v('#bdv-gw'), birth_days: v('#bdv-bd'), birth_weight_g: v('#bdv-bw'),
-      skin, skin_other: v('#bdv-skin-other'),
-      head: ckVals('bdv-head'), head_hema_sides: ckVals('bdv-head-side'), fontanelle: radioVal('bdvr-font'),
-      eyes: ckVals('bdv-eyes'), eye_secretion_side: radioVal('bdvr-eye-sec'),
-      eye_secretion_color: v('#bdv-eye-color'), eye_secretion_amount: v('#bdv-eye-amt'),
-      eye_conj_side: radioVal('bdvr-eye-conj'),
-      mouth, mouth_other: v('#bdv-mouth-other'),
-      neck: ckVals('bdv-neck'), neck_side: radioVal('bdvr-neck'),
-      clavicle: ckVals('bdv-clav'), clavicle_side: radioVal('bdvr-clav'),
-      heart: ckVals('bdv-heart'), lungs, lung_note: v('#bdv-lung-note'),
-      umbilicus: umb, umb_other: v('#bdv-umb-other'),
-      genital, genital_undescended_side: radioVal('bdvr-gen-und'),
-      genital_hernia_side: radioVal('bdvr-gen-hern'), genital_other: v('#bdv-gen-other'),
-      buttock: ckVals('bdv-butt'), rash_w: v('#bdv-rash-w'), rash_h: v('#bdv-rash-h'),
+      birth_days: v('#bdv-bd'), jaundice: v('#bdv-j'), milk_ml: v('#bdv-milk'),
+      gest_weeks: v('#bdv-gw'), birth_weight_g: v('#bdv-bw'),
+      other: v('#bdv-other'), advice: radioVal('bdvr-advice'), advice_note: v('#bdv-advice-note'),
       note: v('#bdv-note')
     };
+    BDV_SECTIONS.forEach(([k]) => { body[k] = ckVals(`bdv-${k}`); });
     try {
       if (editingId) await api(`/baby-doctor-visits/${editingId}`, { method: 'PUT', body });
       else await api(`/babies/${babyId}/doctor-visits`, { method: 'POST', body });
@@ -10132,6 +10095,47 @@ async function viewBabyDoctor() {
       viewBabyDoctor();
     };
   });
+}
+
+// 另開視窗列印／另存 PDF：小兒科診察紀錄表（比照紙本；右側留白供醫師手繪位置）
+function printBabyDoctorSheet(baby, rows) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const gw = (rows.find(r => (r.data || {}).gest_weeks) || { data: {} }).data.gest_weeks || '';
+  const bw = (rows.find(r => (r.data || {}).birth_weight_g) || { data: {} }).data.birth_weight_g || baby.birth_weight_g || '';
+  const body = rows.slice().reverse().map(r => {
+    const a = r.data || {};
+    const advice = [a.advice || '', a.advice_note || ''].filter(Boolean).join('：');
+    return `<tr>
+      <td class="c">${esc(r.visit_date)}<br><small>${esc(r.visit_time)}</small></td>
+      <td><small>出生天數：${esc(a.birth_days ?? '')}<br>體重 gm：${r.weight_g != null ? r.weight_g : ''}<br>黃疸 mg/dl：${esc(a.jaundice ?? '')}<br>奶量 ml：${esc(a.milk_ml ?? '')}</small></td>
+      <td><small>${bdvEvalText(a).map(esc).join('<br>') || ''}${r.note ? `<br>敍述：${esc(r.note)}` : ''}</small></td>
+      <td><small>${esc(advice)}</small><div class="draw"></div></td>
+    </tr>`;
+  }).join('') || '<tr><td class="c">　</td><td>　</td><td>　</td><td><div class="draw"></div></td></tr>';
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>小兒科診察紀錄表 - ${esc(baby.name)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.5;max-width:900px;margin:24px auto;padding:0 24px}
+      h1{font-size:19px;margin:0 0 2px;text-align:center}
+      .sub{text-align:center;font-size:14px;margin-bottom:10px}
+      .hd{font-size:13px;margin:10px 0 8px}
+      table{width:100%;border-collapse:collapse;font-size:12.5px}
+      th,td{border:1px solid #666;padding:5px 8px;vertical-align:top} th{background:#f2f7f6;text-align:center}
+      td.c{text-align:center;white-space:nowrap}
+      .draw{height:90px;border:1px dashed #bbb;margin-top:6px}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>兒科醫師巡視</h1>
+    <div class="sub">${esc(center)}<br>小兒科診察紀錄表</div>
+    <div class="hd">床號：${esc(baby.bed_name || baby.room_name || '')}　出生日期：${esc(baby.birth_date || '')}　出生週數：${esc(gw)}　出生體重：${esc(bw)} 公克　性別：${baby.gender === 'male' ? '男' : baby.gender === 'female' ? '女' : ''}　寶寶：${esc(baby.name)}</div>
+    <table>
+      <thead><tr><th style="width:90px">日期</th><th style="width:150px">項目</th><th>檢查評估</th><th style="width:210px">建議處置<br><small>（虛線框供醫師手繪位置）</small></th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+    <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+    </body></html>`);
+  win.document.close();
 }
 
 /* ---------- 產科醫師診視紀錄（醫師巡診；媽媽） ---------- */
