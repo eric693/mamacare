@@ -105,7 +105,9 @@ function filterBar(opts = {}) {
   const sb = opts.search === false ? '' : `<input class="flt-search" placeholder="${esc(ph)}" style="flex:1;min-width:150px">`;
   const btns = (opts.statuses || []).map((s, i) =>
     `<button class="btn small ${i === 0 ? '' : 'secondary'}" data-flt-status="${esc(s.val)}">${esc(s.label)}</button>`).join('');
-  return `<div class="row flt-bar" style="gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">${sb}${btns}<span class="flt-count" style="color:var(--muted);font-size:.85rem"></span></div>`;
+  // actions：右側動作鈕（如「新增問卷」）併入同一列，避免與搜尋列上下相黏而視覺重疊
+  const acts = opts.actions ? `<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">${opts.actions}</span>` : '';
+  return `<div class="row flt-bar" style="gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">${sb}${btns}<span class="flt-count" style="color:var(--muted);font-size:.85rem"></span>${acts}</div>`;
 }
 function wireFilter(scope) {
   scope.querySelectorAll('.flt-bar').forEach(bar => {
@@ -7379,8 +7381,8 @@ async function viewCoupons() {
   main().innerHTML = `
     <div class="page-title">優惠券</div>
     <div class="card">
-      <div class="row" style="justify-content:flex-end"><button class="btn small" id="cp-new">新增優惠券</button></div>
-      ${filterBar({ placeholder: '搜尋優惠碼 / 名稱…', statuses: [{ val: '', label: '全部' }, { val: 'on', label: '啟用' }, { val: 'off', label: '停用' }] })}
+      ${filterBar({ placeholder: '搜尋優惠碼 / 名稱…', statuses: [{ val: '', label: '全部' }, { val: 'on', label: '啟用' }, { val: 'off', label: '停用' }],
+        actions: '<button class="btn small" id="cp-new">新增優惠券</button>' })}
       <div class="table-wrap" style="margin-top:8px"><table class="data stack">
         <thead><tr><th>優惠碼</th><th>折扣</th><th>門檻</th><th>使用</th><th>效期</th><th></th></tr></thead>
         <tbody>${rows.length ? rows.map(c => `
@@ -16096,8 +16098,8 @@ async function viewSurveys() {
   main().innerHTML = `
     <div class="page-title">問卷調查</div>
     <div class="card">
-      <div class="row" style="justify-content:flex-end"><button class="btn small" id="sv-new">新增問卷</button></div>
-      ${filterBar({ placeholder: '搜尋問卷標題…', statuses: [{ val: '', label: '全部' }, { val: 'on', label: '開放中' }, { val: 'off', label: '已關閉' }] })}
+      ${filterBar({ placeholder: '搜尋問卷標題…', statuses: [{ val: '', label: '全部' }, { val: 'on', label: '開放中' }, { val: 'off', label: '已關閉' }],
+        actions: '<button class="btn small" id="sv-new">新增問卷</button>' })}
       <div class="table-wrap" style="margin-top:8px"><table class="data stack">
         <thead><tr><th>標題</th><th>題數</th><th>回應</th><th>狀態</th><th></th></tr></thead>
         <tbody>${rows.length ? rows.map(s => `

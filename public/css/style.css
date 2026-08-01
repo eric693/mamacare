@@ -8,6 +8,7 @@
   --text: #243230;
   --muted: #6b7c79;
   --border: #dde5e3;
+  --line: #dde5e3;   /* --border 的別名：部分元件以 var(--line) 取用框線色 */
   --danger: #c0392b;
   --warn: #b8860b;
   --ok: #2e7d32;
@@ -248,6 +249,9 @@ table.data tr.row-overdue td, table.data tr.row-overdue:hover td { background: #
 
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .row.between { justify-content: space-between; }
+/* 動作鈕列與搜尋／篩選列相鄰時保留間距，避免按鈕與輸入框視覺相黏（焦點外框會蓋到） */
+.row + .flt-bar { margin-top: 10px; }
+.flt-bar .flt-search { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; }
 .mt { margin-top: 12px; }
 
 /* ---------- 標籤與徽章 ---------- */
