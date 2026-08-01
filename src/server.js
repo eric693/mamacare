@@ -3176,27 +3176,25 @@ app.put('/api/bookings/:id/baby-check-in', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
-// 入住前準備：調整房間／床位與起迄日（限尚未退房／取消者），含換房衝突檢查
-app.put('/api/bookings/:id', requireStaff, (req, res) => {
-  const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
-  if (!bk) return res.status(404).json({ error: '找不到訂房' });
-  if (['checked_out', 'cancelled'].includes(bk.status)) {
-    return res.status(400).json({ error: '已退房或已取消的訂房不可調整' });
-  }
-  const b = req.body || {};
-  const roomId = b.room_id || bk.room_id;
-  const checkIn = b.check_in || bk.check_in;
-  const checkOut = b.check_out || bk.check_out;
-  if (checkOut <= checkIn) return res.status(400).json({ error: '退房日需晚於入住日' });
-  const conflict = db.prepare(`
-    SELECT COUNT(*) c FROM bookings
-    WHERE room_id = ? AND id != ? AND status IN ('reserved','checked_in')
-      AND check_in < ? AND check_out > ?`).get(roomId, bk.id, checkOut, checkIn).c;
-  if (conflict) return res.status(409).json({ error: '該房間此期間已有其他訂房' });
-  const total = b.total_amount !== undefined ? Number(b.total_amount) || 0 : bk.total_amount;
+// 房間期間衝突：回傳擋住的那一筆（含住客與房號），排除 excludeIds（同一次調整中的其他段）
+function bookingConflictRow(roomId, checkIn, checkOut, excludeIds = []) {
+  const ids = excludeIds.filter(Boolean);
+  const sql = `SELECT bk.id, bk.check_in, bk.check_out, bk.status, m.name AS mother_name, r.name AS room_name
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.room_id = ? AND bk.status IN ('reserved','checked_in')
+      AND bk.check_in < ? AND bk.check_out > ?
+      ${ids.length ? `AND bk.id NOT IN (${ids.map(() => '?').join(',')})` : ''}
+    ORDER BY bk.check_in LIMIT 1`;
+  return db.prepare(sql).get(roomId, checkOut, checkIn, ...ids) || null;
+}
+function conflictMessage(hit) {
+  return `${hit.room_name} 房 ${hit.check_in}~${hit.check_out} 已有${hit.status === 'checked_in' ? '在住' : '預約'}住客「${hit.mother_name}」，請改期或改排其他房號`;
+}
+
+// 訂房異動的連動處理（訂餐重鋪／請備房任務更名），供單筆調整與整批排房共用
+function applyBookingChange(req, bk, roomId, checkIn, checkOut, total) {
   db.prepare('UPDATE bookings SET room_id = ?, check_in = ?, check_out = ?, total_amount = ? WHERE id = ?')
     .run(roomId, checkIn, checkOut, total, bk.id);
-  // 入住日改期：報喜自動帶入的「住期訂餐」重新鋪滿新住期、「請備房」任務名稱與備註跟著更新
   if (checkIn !== bk.check_in || checkOut !== bk.check_out) {
     // 訂餐：以舊住期任一筆餐別為準，清掉舊住期、依新住期重鋪（入住日午餐～出住日早餐）
     const seed = db.prepare(`SELECT choice, note FROM meal_orders WHERE mother_id = ? AND meal_date >= ? AND meal_date <= ?
@@ -3219,7 +3217,105 @@ app.put('/api/bookings/:id', requireStaff, (req, res) => {
     }
   }
   logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id, summary: `入住前調整：房間#${roomId} ${checkIn}~${checkOut}` });
+}
+
+// 入住前準備：調整房間／床位與起迄日（限尚未退房／取消者），含換房衝突檢查
+app.put('/api/bookings/:id', requireStaff, (req, res) => {
+  const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  if (['checked_out', 'cancelled'].includes(bk.status)) {
+    return res.status(400).json({ error: '已退房或已取消的訂房不可調整' });
+  }
+  const b = req.body || {};
+  const roomId = b.room_id || bk.room_id;
+  const checkIn = b.check_in || bk.check_in;
+  const checkOut = b.check_out || bk.check_out;
+  if (checkOut <= checkIn) return res.status(400).json({ error: '退房日需晚於入住日' });
+  const hit = bookingConflictRow(roomId, checkIn, checkOut, [bk.id]);
+  if (hit) return res.status(409).json({ error: conflictMessage(hit) });
+  const total = b.total_amount !== undefined ? Number(b.total_amount) || 0 : bk.total_amount;
+  applyBookingChange(req, bk, roomId, checkIn, checkOut, total);
   res.json({ ok: true });
+});
+
+// 整批排房（客戶管理「排房資料」用）：一次送出全部段落，於交易內重排。
+// 同一位客戶的各段在本次計畫中互不視為衝突（改入住日只是整串順延，不該被自己的舊日期擋住），
+// 只有撞到「不在本次計畫內」的訂房才擋下，並回報是誰佔住哪一段期間。
+app.post('/api/customers/:motherId/bookings/plan', requireStaff, (req, res) => {
+  const m = db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!m) return res.status(404).json({ error: '找不到客戶' });
+  const b = req.body || {};
+  const start = String(b.start || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return res.status(400).json({ error: '請填寫入住日' });
+  const rows = (Array.isArray(b.rows) ? b.rows : []).map(r => ({
+    booking_id: Number(r.booking_id) || 0,
+    room_id: Number(r.room_id) || 0,
+    days: Math.round(Number(r.days) || 0),
+    price: Math.round(Number(r.price) || 0)
+  }));
+  if (!rows.length) return res.status(400).json({ error: '請至少安排一段房號與天數' });
+  if (rows.some(r => !r.room_id)) return res.status(400).json({ error: '請選擇每一段的房號' });
+  if (rows.some(r => !(r.days > 0))) return res.status(400).json({ error: '請填寫每一段的天數' });
+  const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
+  // 既有段落：本次計畫涵蓋的訂房 id（含要沿用的），供衝突檢查排除
+  const existing = db.prepare(`SELECT * FROM bookings WHERE mother_id = ? AND status IN ('reserved','checked_in')
+    ORDER BY check_in, id`).all(m.id);
+  const planIds = rows.map(r => r.booking_id).filter(Boolean);
+  for (const id of planIds) {
+    const cur = existing.find(x => x.id === id);
+    if (!cur) return res.status(400).json({ error: '排房資料已變更，請重新整理後再試' });
+  }
+  // 逐段接續算出新住期
+  let cursor = start;
+  const plan = rows.map(r => {
+    const seg = { ...r, check_in: cursor, check_out: addDays(cursor, r.days) };
+    cursor = seg.check_out;
+    return seg;
+  });
+  // 本計畫外的訂房才算衝突（同客戶未列入本次計畫的在住段也會被檢查，避免真的重疊）
+  for (const p of plan) {
+    const hit = bookingConflictRow(p.room_id, p.check_in, p.check_out, planIds);
+    if (hit) return res.status(409).json({ error: conflictMessage(hit) });
+  }
+  const deposit = Math.round(Number(b.deposit) || 0);
+  const note = String(b.note || '').slice(0, 200);
+  const created = [];
+  let updated = 0, cancelled = 0;
+  try {
+    db.transaction(() => {
+      let dep = deposit;
+      for (const p of plan) {
+        if (p.booking_id) {
+          const cur = existing.find(x => x.id === p.booking_id);
+          if (cur.room_id !== p.room_id || cur.check_in !== p.check_in || cur.check_out !== p.check_out
+              || cur.total_amount !== p.price * p.days) {
+            applyBookingChange(req, cur, p.room_id, p.check_in, p.check_out, p.price * p.days);
+            updated++;
+          }
+        } else {
+          const info = db.prepare(`INSERT INTO bookings
+            (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
+            VALUES (?,?,?,?,?,?, 'reserved', ?)`).run(
+            m.id, p.room_id, p.check_in, p.check_out, dep, p.price * p.days, note);
+          created.push(info.lastInsertRowid);
+        }
+        dep = 0;   // 訂金僅記於第一段
+      }
+      // 本次計畫未涵蓋的「預約中」段落：視為刪除該段，一併取消（在住段不動）
+      for (const cur of existing) {
+        if (cur.status !== 'reserved' || planIds.includes(cur.id)) continue;
+        db.prepare(`UPDATE bookings SET status = 'cancelled' WHERE id = ?`).run(cur.id);
+        logAudit(req, { action: 'update', entity: 'bookings', entity_id: cur.id,
+          summary: `排房調整連動取消（${cur.check_in}~${cur.check_out}）` });
+        cancelled++;
+      }
+    })();
+  } catch (e) {
+    return res.status(400).json({ error: e.message || '排房未完成' });
+  }
+  logAudit(req, { action: 'update', entity: 'bookings', entity_id: m.id,
+    summary: `整批排房：${m.name} 自 ${start} 起 ${plan.length} 段（新增 ${created.length}／更新 ${updated}／取消 ${cancelled}）` });
+  res.json({ ok: true, created, updated, cancelled });
 });
 
 app.put('/api/bookings/:id/status', requireStaff, (req, res) => {
@@ -8782,13 +8878,21 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
       WHERE mother_id = ? AND booking_id IN (?, 0)`).get(p.mother_id, chainRootIdOf(p.booking_id)).c)
     // 同一位媽媽只留最近一次退房
     .filter((p, i, arr) => arr.findIndex(x => x.mother_id === p.mother_id) === i);
-  // 每房「今日應到」的預約（房況表不顯示未來預約，只顯示當日入住；未來預約請看 7 日內入住／實際入住床表）
+  // 每房「今日應到」的預約（只有當日入住才影響房態／今日入住統計）
   const upcoming = db.prepare(`
     SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out,
            m.id AS mother_id, m.name AS mother_name, m.phone
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
     WHERE bk.status = 'reserved' AND bk.check_out > ? AND bk.check_in <= ?
     ORDER BY bk.check_in`).all(d, d);
+  // 每房「未來已排房但尚未到入住日」的預約：僅供卡片顯示客戶姓名／住期（不佔房、不列入房態與統計），
+  // 讓排房後（未辦理入住）就看得到是誰要住這間，不必等辦理入住才顯示
+  const future = db.prepare(`
+    SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out,
+           m.id AS mother_id, m.name AS mother_name, m.phone
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
+    WHERE bk.status = 'reserved' AND bk.check_in > ?
+    ORDER BY bk.check_in`).all(d);
   // 在住寶寶依媽媽彙總（顯示母嬰同室狀況）
   const babies = db.prepare(`
     SELECT b.mother_id, b.name, b.gender, b.location FROM babies b
@@ -8810,7 +8914,8 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     else if (next) state = 'reserved';
     // 已退房待產婦結案（不影響房態／佔房統計，僅供護理端在原房號完成結案）
     const pending = pendingClosures.filter(p => p.room_id === r.id);
-    return { ...r, state, occupant: occ, next_booking: next, pending_closures: pending };
+    const futureBk = future.find(u => u.room_id === r.id) || null;
+    return { ...r, state, occupant: occ, next_booking: next, future_booking: futureBk, pending_closures: pending };
   });
   const stats = {
     total: list.length,

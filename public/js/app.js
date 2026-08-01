@@ -1567,6 +1567,14 @@ async function viewResidents() {
           <span>${esc(next.mother_name)}${next.phone ? `　${esc(next.phone)}` : ''}</span>
           <span>${esc(next.check_in)} ~ ${esc(next.check_out)}</span>
         </div>`;
+    } else if (r.future_booking) {
+      // 已排房但尚未到入住日：卡片就顯示客戶姓名與住期（不必等辦理入住）
+      body = `
+        <div class="rs-name" style="color:var(--muted)">已預約（尚未到入住日）</div>
+        <div class="rs-kv">
+          <span>${esc(r.future_booking.mother_name)}${r.future_booking.phone ? `　${esc(r.future_booking.phone)}` : ''}</span>
+          <span>${esc(r.future_booking.check_in)} ~ ${esc(r.future_booking.check_out)}</span>
+        </div>`;
     } else {
       body = '<div class="rs-name" style="color:var(--muted)">目前空房，無排定預約</div>';
     }
@@ -7878,6 +7886,14 @@ async function viewMotherRooms() {
           <span>${esc(next.mother_name)}${next.phone ? `　${esc(next.phone)}` : ''}</span>
           <span>${esc(next.check_in)} ~ ${esc(next.check_out)}</span>
         </div>`;
+    } else if (r.future_booking) {
+      // 已排房但尚未到入住日：卡片就顯示客戶姓名與住期（不必等辦理入住）
+      body = `
+        <div class="rs-name" style="color:var(--muted)">已預約（尚未到入住日）</div>
+        <div class="rs-kv">
+          <span>${esc(r.future_booking.mother_name)}${r.future_booking.phone ? `　${esc(r.future_booking.phone)}` : ''}</span>
+          <span>${esc(r.future_booking.check_in)} ~ ${esc(r.future_booking.check_out)}</span>
+        </div>`;
     } else {
       body = '<div class="rs-name" style="color:var(--muted)">目前空房，無排定預約</div>';
     }
@@ -12441,43 +12457,23 @@ async function viewCustomers() {
         const graded = [...bkRows.querySelectorAll('[data-bk-row]')].filter(tr => tr.dataset.grade)
           .map(tr => `${tr.dataset.plannedType || '—'} → ${tr.dataset.type}（${tr.dataset.grade}）`);
         if (graded.length && !confirm(`以下安排房型與預定不同，將以此排房並在床表標示升等／降等：\n\n${graded.join('\n')}\n\n確定排房？`)) return;
-        let cursor = start;
-        let dep = Number($q('#bk-dep').value) || 0;
-        const note = $q('#bk-note').value.trim();
+        // 整批送出：後端於交易內逐段接續重排，本客戶各段互不視為衝突（改入住日＝整串順延）
+        const rows2 = picked.map(r => {
+          // 金額依合約「預定房型」單價計（升等／降等不改價，僅床表標示）；加開列無預定房型則取實際房價
+          const it = d.contract.items.find(i => i.name === (r.planned_type || r.type));
+          const room = roomList.find(x => x.id === r.room_id);
+          return { booking_id: r.booking_id, room_id: r.room_id, days: r.days,
+            price: it ? (it.price || 0) : ((room && room.price_per_day) || 0) };
+        });
         try {
-          for (const r of picked) {
-            const end = new Date(new Date(cursor + 'T00:00:00Z').getTime() + r.days * 86400000).toISOString().slice(0, 10);
-            // 金額依合約「預定房型」單價計（升等／降等不改價，僅床表標示）；加開列無預定房型則取實際房價
-            const it = d.contract.items.find(i => i.name === (r.planned_type || r.type));
-            const room = roomList.find(x => x.id === r.room_id);
-            const price = it ? (it.price || 0) : ((room && room.price_per_day) || 0);
-            // 已排房列：未變更即跳過（防呆不重複排房）；有變更則更新原訂房並重算應收（連動床表／訂餐／房務／收費帳務）
-            if (r.booking_id) {
-              const bk0 = (d.bookings || []).find(b => b.id === r.booking_id) || {};
-              if (r.room_id === r.orig_room && r.days === r.orig_days && cursor === bk0.check_in) {
-                dep = 0;
-                cursor = bk0.check_out || end;
-                continue;
-              }
-              await api(`/bookings/${r.booking_id}`, { method: 'PUT', body: {
-                room_id: r.room_id, check_in: cursor, check_out: end, total_amount: price * r.days
-              } });
-              dep = 0;
-              cursor = end;
-              continue;
-            }
-            await api('/bookings', { method: 'POST', body: {
-              mother_id: editId, room_id: r.room_id, check_in: cursor, check_out: end,
-              deposit: dep, total_amount: price * r.days, notes: note
-            } });
-            dep = 0; // 訂金僅記於第一段
-            cursor = end;
-          }
+          await api(`/customers/${editId}/bookings/plan`, { method: 'POST', body: {
+            start, deposit: Number($q('#bk-dep').value) || 0, note: $q('#bk-note').value.trim(), rows: rows2
+          } });
           selectCustomer(editId);
         } catch (e) {
           // 用 alert 顯示，避免重載頁面把錯誤訊息洗掉（例如房間期間衝突 409）
           alert(`排房未完成：${e.message}`);
-          selectCustomer(editId); // 部分成功時重載，讓已建立的段落顯示於排房紀錄
+          selectCustomer(editId);
         }
       };
     }
@@ -12574,6 +12570,10 @@ async function viewCustomers() {
       };
     });
     // 期間轉房：預定期間（天數不變換房）或入住後轉房；前後段沿用原合約單價、應收總額不變
+    // 入住後加價升等／減價降等：導到該訂房的收費明細（生效日切段計價，並連動排房與床表）
+    $('#cust-extra').querySelectorAll('[data-bkchg]').forEach(btn => {
+      btn.onclick = () => openBillingDetail(btn.dataset.bkchg);
+    });
     $('#cust-extra').querySelectorAll('[data-bktr]').forEach(btn => {
       btn.onclick = async () => {
         const bk = d.bookings.find(b => String(b.id) === btn.dataset.bktr);
@@ -12768,7 +12768,8 @@ async function viewCustomers() {
                 ${b.status === 'reserved' ? `<button class="btn small" data-bkst="${b.id}|checked_in">辦理入住</button>
                   <button class="btn small secondary" data-bkst="${b.id}|cancelled">取消</button>` : ''}
                 ${b.status === 'checked_in' ? `<button class="btn small danger" data-bkst="${b.id}|checked_out">退房</button>` : ''}
-                ${['reserved', 'checked_in'].includes(b.status) ? `<button class="btn small secondary" data-bktr="${b.id}">轉房</button>` : ''}` : ''}
+                ${['reserved', 'checked_in'].includes(b.status) ? `<button class="btn small secondary" data-bktr="${b.id}">轉房</button>` : ''}
+                ${b.status === 'checked_in' && canAccess('#/billing') ? `<button class="btn small secondary" data-bkchg="${b.id}" title="入住後加價升等／減價降等：於收費明細以生效日切段計價">期間變更(升等/降等)</button>` : ''}` : ''}
               </td></tr>`;
           }).join('')}</tbody></table></div>` : '<div class="empty">尚無排房資料</div>'}
       </div>

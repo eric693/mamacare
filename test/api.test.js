@@ -2695,3 +2695,64 @@ test('住客管理看板：今日應入住的房回傳整組營運按鈕所需�
   // 還原：取消此預約，避免影響其他測試
   await req('PUT', `/api/bookings/${n.booking_id}/status`, { status: 'cancelled' });
 });
+
+test('整批排房：改入住日整串順延不會被自己的舊日期擋下；撞到別人回報是誰佔住', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const base = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const D = n => new Date(base + n * 86400000).toISOString().slice(0, 10);
+  const rooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && r.room_type !== '托嬰');
+  const st = (await req('GET', '/api/room-status/mothers')).data;
+  const free = rooms.filter(r => {
+    const row = st.rooms.find(x => x.id === r.id);
+    return row && row.state === 'vacant' && !row.next_booking && !row.future_booking;
+  });
+  assert.ok(free.length >= 1, '需有空房可測');
+  const roomA = free[0];
+  const momName = `整批排房${Date.now() % 100000}`;
+  const mom = (await req('POST', '/api/customers', { name: momName, due_date: D(40) })).data;
+  // 兩段接續：+30~+35、+35~+40（同一房）
+  const bk1 = (await req('POST', '/api/bookings', { mother_id: mom.id, room_id: roomA.id, check_in: D(30), check_out: D(35) })).data;
+  const bk2 = (await req('POST', '/api/bookings', { mother_id: mom.id, room_id: roomA.id, check_in: D(35), check_out: D(40) })).data;
+  // 單筆 PUT 把第一段往後移會撞到自己的第二段（既有行為，訊息要指出是誰）
+  const single = await req('PUT', `/api/bookings/${bk1.id}`, { check_in: D(33), check_out: D(38) });
+  assert.strictEqual(single.status, 409);
+  assert.ok(single.data.error.includes(momName), `衝突訊息應指出住客：${single.data.error}`);
+  // 整批排房：改入住日 +30 → +33，兩段一起順延，不視為自撞
+  const plan = await req('POST', `/api/customers/${mom.id}/bookings/plan`, {
+    start: D(33), rows: [
+      { booking_id: bk1.id, room_id: roomA.id, days: 5, price: 1000 },
+      { booking_id: bk2.id, room_id: roomA.id, days: 5, price: 1000 }
+    ]
+  });
+  assert.strictEqual(plan.status, 200, JSON.stringify(plan.data));
+  const bks = (await req('GET', `/api/customers/${mom.id}`)).data.bookings.filter(b => b.status === 'reserved')
+    .sort((a, b) => (a.check_in < b.check_in ? -1 : 1));
+  assert.strictEqual(bks.length, 2);
+  assert.strictEqual(bks[0].check_in, D(33));
+  assert.strictEqual(bks[0].check_out, D(38));
+  assert.strictEqual(bks[1].check_in, D(38));
+  assert.strictEqual(bks[1].check_out, D(43));
+  assert.strictEqual(bks[0].total_amount, 5000);
+  // 撞到別人：另一位客戶排同房同期間 → 409 且訊息帶對方姓名與期間
+  const other = (await req('POST', '/api/customers', { name: `擋路客${Date.now() % 100000}`, due_date: D(60) })).data;
+  const clash = await req('POST', `/api/customers/${other.id}/bookings/plan`, {
+    start: D(34), rows: [{ booking_id: 0, room_id: roomA.id, days: 3, price: 1000 }]
+  });
+  assert.strictEqual(clash.status, 409);
+  assert.ok(clash.data.error.includes(momName) && clash.data.error.includes(roomA.name), clash.data.error);
+  // 少送一段＝刪除該段：第二段連動取消
+  assert.strictEqual((await req('POST', `/api/customers/${mom.id}/bookings/plan`, {
+    start: D(33), rows: [{ booking_id: bks[0].id, room_id: roomA.id, days: 5, price: 1000 }]
+  })).status, 200);
+  const after = (await req('GET', `/api/customers/${mom.id}`)).data.bookings;
+  assert.strictEqual(after.filter(b => b.status === 'reserved').length, 1);
+  assert.strictEqual(after.filter(b => b.status === 'cancelled').length, 1);
+  // 房況：未到入住日的預約以 future_booking 呈現（不佔房、不列入今日入住）
+  const st2 = (await req('GET', '/api/room-status/mothers')).data;
+  const row = st2.rooms.find(r => r.id === roomA.id);
+  assert.strictEqual(row.state, 'vacant', '未到期預約不佔房');
+  assert.ok(row.future_booking && row.future_booking.mother_name === momName, '排房後即可看到客戶姓名');
+  assert.strictEqual(row.next_booking, null);
+  // 還原
+  await req('PUT', `/api/bookings/${after.find(b => b.status === 'reserved').id}/status`, { status: 'cancelled' });
+});
