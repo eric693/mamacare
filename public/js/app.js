@@ -1695,11 +1695,9 @@ async function viewResidents() {
     btn.onclick = () => openBabyRegister(btn.dataset.addBaby, btn.dataset.mom, viewResidents));
   // 收費帳務：開啟該訂房收費明細
   main().querySelectorAll('[data-bill]').forEach(b => b.onclick = () => openBillingDetail(b.dataset.bill));
-  // 設備清點：清點單規格待提供（Eric 後續製作頁面），先以佔位視窗說明
+  // 設備清點：房內設備入住／出住逐項清點單
   main().querySelectorAll('[data-equip-check]').forEach(btn => {
-    btn.onclick = () => openModal(`設備清點 — ${esc(btn.dataset.room)} 房　${esc(btn.dataset.mom)}`, `
-      <div class="empty">設備清點單建置中<br>
-        <small style="color:var(--muted)">待提供房間設備清點項目後，此處將開放逐項清點與紀錄。</small></div>`);
+    btn.onclick = () => openEquipCheck(btn.dataset.equipCheck);
   });
   // 退房完成：確認退房手續後退房轉空房，並自動建立清潔任務
   main().querySelectorAll('[data-checkout-done]').forEach(btn => {
@@ -1861,6 +1859,274 @@ async function viewResidents() {
       };
     });
   };
+}
+
+/* ---------- 設備清點 ---------- */
+const EQ_BELL_NAME = '緊急叫人鈴檢測及使用教學';
+
+// 簡易手寫簽名板（設備清點的產婦簽名用；回傳 { clear, hasInk, dataUrl }）
+function mountSigPad(canvas) {
+  const ctx = canvas.getContext('2d');
+  const ratio = window.devicePixelRatio || 1;
+  let hasInk = false;
+  function reset() {
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, rect.width * ratio);
+    canvas.height = Math.max(1, rect.height * ratio);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(ratio, ratio);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#15302c';
+    hasInk = false;
+  }
+  reset();
+  let drawing = false;
+  const pos = e => {
+    const rect = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return { x: p.clientX - rect.left, y: p.clientY - rect.top };
+  };
+  const start = e => { e.preventDefault(); drawing = true; const { x, y } = pos(e); ctx.beginPath(); ctx.moveTo(x, y); };
+  const move = e => { if (!drawing) return; e.preventDefault(); const { x, y } = pos(e); ctx.lineTo(x, y); ctx.stroke(); hasInk = true; };
+  const end = () => { drawing = false; };
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  return { clear: reset, hasInk: () => hasInk, dataUrl: () => canvas.toDataURL('image/png') };
+}
+
+async function openEquipCheck(bookingId) {
+  const d = await api(`/bookings/${bookingId}/equip-check`);
+  const bk = d.booking;
+  const c = d.check || {};
+  const isAdmin = currentUser.role === 'admin';
+  // 緊急叫人鈴為固定末列（檢測／教學都在入住當日完成），不列入一般項目
+  const items = d.items.filter(i => i.name !== EQ_BELL_NAME);
+  const sigBlock = (key, label, sig, date) => `
+    <div class="field">
+      <label>${label}${date ? `　<small style="color:var(--muted)">簽署日期 ${esc(date)}</small>` : ''}</label>
+      <div id="eq-${key}-wrap">
+        ${sig ? `<img src="${sig}" alt="簽名" style="max-height:70px;background:#fff;border:1px solid var(--line);border-radius:6px">`
+      : `<canvas id="eq-${key}-pad" style="width:100%;height:90px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>`}
+      </div>
+      <div class="row" style="gap:6px;margin-top:4px">
+        <button class="btn small secondary" data-sig-clear="${key}">${sig ? '重新簽名' : '清除重簽'}</button>
+        <small style="color:var(--muted)">日期於儲存時自動帶入</small>
+      </div>
+    </div>`;
+  const staffOpt = (sel) => `<option value="">未簽</option>` + d.staff.map(u =>
+    `<option value="${u.id}" ${String(sel || '') === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
+  openModal(`設備清點 — ${esc(bk.room_name)} 房　${esc(bk.mother_name)}`, `
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:8px">
+      住期 ${esc(bk.check_in)} ~ ${esc(bk.actual_check_out || bk.check_out)}</div>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>項目</th><th style="width:70px">數量</th><th style="width:90px">入住當日</th><th style="width:90px">出住當日</th></tr></thead>
+        <tbody id="eq-rows">
+          ${items.map((it, i) => `
+            <tr>
+              <td>${esc(it.name)}</td>
+              <td>${esc(it.qty)}</td>
+              <td style="text-align:center"><input type="checkbox" data-eq-in="${i}" ${it.in ? 'checked' : ''}></td>
+              <td style="text-align:center"><input type="checkbox" data-eq-out="${i}" ${it.out ? 'checked' : ''}></td>
+            </tr>`).join('')}
+          <tr>
+            <td>${esc(EQ_BELL_NAME)}</td>
+            <td>1</td>
+            <td style="text-align:center;white-space:nowrap">
+              <label style="display:block"><input type="checkbox" id="eq-bell-test" ${d.bell.test ? 'checked' : ''}> 檢測完成</label>
+              <label style="display:block"><input type="checkbox" id="eq-bell-teach" ${d.bell.teach ? 'checked' : ''}> 教學完成</label>
+            </td>
+            <td style="text-align:center;color:var(--muted)">不需</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="row" style="gap:6px;margin:8px 0">
+      <button class="btn small secondary" id="eq-all-in">入住當日全勾</button>
+      <button class="btn small secondary" id="eq-all-out">出住當日全勾</button>
+      ${isAdmin ? '<button class="btn small secondary" id="eq-items">維護清點項目</button>' : ''}
+    </div>
+    <div class="form-grid">
+      ${sigBlock('momin', '產婦簽名（入住當日）', c.mom_sign_in, c.mom_sign_in_date)}
+      ${sigBlock('momout', '產婦簽名（出住當日）', c.mom_sign_out, c.mom_sign_out_date)}
+      <div class="field"><label>客服簽名（入住當日）${c.staff_in_date ? `　<small style="color:var(--muted)">${esc(c.staff_in_date)}</small>` : ''}</label>
+        <select id="eq-staff-in">${staffOpt(c.staff_in_id)}</select></div>
+      <div class="field"><label>客服簽名（出住當日）${c.staff_out_date ? `　<small style="color:var(--muted)">${esc(c.staff_out_date)}</small>` : ''}</label>
+        <select id="eq-staff-out">${staffOpt(c.staff_out_id)}</select></div>
+      <div class="field full"><label>備註</label><input id="eq-note" value="${esc(c.note || '')}"></div>
+      <div class="full row" style="gap:6px">
+        <button class="btn" id="eq-save">儲存</button>
+        <button class="btn secondary" id="eq-print">列印 / 另存 PDF</button>
+        <span class="error-msg" id="eq-err"></span>
+      </div>
+    </div>`, body => {
+    // 已簽名者顯示圖片，按「重新簽名」才換成空白簽名板
+    const pads = {};
+    const mountPad = key => {
+      const cv = body.querySelector(`#eq-${key}-pad`);
+      if (cv) pads[key] = mountSigPad(cv);
+    };
+    ['momin', 'momout'].forEach(mountPad);
+    body.querySelectorAll('[data-sig-clear]').forEach(b2 => b2.onclick = () => {
+      const key = b2.dataset.sigClear;
+      body.querySelector(`#eq-${key}-wrap`).innerHTML =
+        `<canvas id="eq-${key}-pad" style="width:100%;height:90px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>`;
+      mountPad(key);
+      b2.textContent = '清除重簽';
+    });
+    body.querySelector('#eq-all-in').onclick = () =>
+      body.querySelectorAll('[data-eq-in]').forEach(x => { x.checked = true; });
+    body.querySelector('#eq-all-out').onclick = () =>
+      body.querySelectorAll('[data-eq-out]').forEach(x => { x.checked = true; });
+    const collect = () => ({
+      items: items.map((it, i) => ({
+        name: it.name, qty: it.qty,
+        in: body.querySelector(`[data-eq-in="${i}"]`).checked,
+        out: body.querySelector(`[data-eq-out="${i}"]`).checked
+      })),
+      bell: { test: body.querySelector('#eq-bell-test').checked, teach: body.querySelector('#eq-bell-teach').checked },
+      // 未重簽者送 __keep__ 由後端沿用原簽名與原簽署日期
+      mom_sign_in: pads.momin ? (pads.momin.hasInk() ? pads.momin.dataUrl() : (c.mom_sign_in ? '' : '')) : '__keep__',
+      mom_sign_out: pads.momout ? (pads.momout.hasInk() ? pads.momout.dataUrl() : (c.mom_sign_out ? '' : '')) : '__keep__',
+      staff_in_id: body.querySelector('#eq-staff-in').value,
+      staff_out_id: body.querySelector('#eq-staff-out').value,
+      note: body.querySelector('#eq-note').value.trim()
+    });
+    body.querySelector('#eq-save').onclick = async () => {
+      body.querySelector('#eq-err').textContent = '';
+      try {
+        await api(`/bookings/${bookingId}/equip-check`, { method: 'PUT', body: collect() });
+        closeModal();
+        openEquipCheck(bookingId);
+      } catch (e) { body.querySelector('#eq-err').textContent = e.message; }
+    };
+    body.querySelector('#eq-print').onclick = () => {
+      const f = collect();
+      printEquipCheck(bk, f.items, f.bell, {
+        mom_in: pads.momin && pads.momin.hasInk() ? pads.momin.dataUrl() : (c.mom_sign_in || ''),
+        mom_in_date: c.mom_sign_in_date || '',
+        mom_out: pads.momout && pads.momout.hasInk() ? pads.momout.dataUrl() : (c.mom_sign_out || ''),
+        mom_out_date: c.mom_sign_out_date || '',
+        staff_in: (d.staff.find(u => String(u.id) === f.staff_in_id) || {}).name || '',
+        staff_in_date: c.staff_in_date || '',
+        staff_out: (d.staff.find(u => String(u.id) === f.staff_out_id) || {}).name || '',
+        staff_out_date: c.staff_out_date || '',
+        note: f.note
+      });
+    };
+    if (isAdmin) body.querySelector('#eq-items').onclick = () => openEquipItems(bookingId);
+  });
+}
+
+// 清點項目主檔維護（管理員）：可增列、改名、改數量、刪除、調整順序
+async function openEquipItems(backToBooking) {
+  const list = await api('/equip-items');
+  const row = it => `
+    <tr>
+      <td><input value="${esc(it.name || '')}" data-ei-name style="width:100%"></td>
+      <td><input value="${esc(it.qty || '1')}" data-ei-qty style="width:70px"></td>
+      <td style="white-space:nowrap">
+        <input type="hidden" data-ei-id value="${it.id || ''}">
+        <button class="btn small secondary" data-ei-up>上移</button>
+        <button class="btn small danger" data-ei-del>刪除</button>
+      </td>
+    </tr>`;
+  openModal('維護清點項目', `
+    <p style="font-size:.85rem;color:var(--muted);margin:0 0 8px">
+      項目與數量可自行增減；已存檔的清點單保留當時的項目快照，不受本次調整影響。</p>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>項目</th><th style="width:90px">數量</th><th style="width:150px"></th></tr></thead>
+        <tbody id="ei-rows">${list.map(row).join('')}</tbody>
+      </table>
+    </div>
+    <div class="row" style="gap:6px;margin-top:8px">
+      <button class="btn small secondary" id="ei-add">新增一列</button>
+      <button class="btn" id="ei-save">儲存</button>
+      <span class="error-msg" id="ei-err"></span>
+    </div>`, body => {
+    const wire = tr => {
+      tr.querySelector('[data-ei-del]').onclick = () => tr.remove();
+      tr.querySelector('[data-ei-up]').onclick = () => {
+        if (tr.previousElementSibling) tr.parentNode.insertBefore(tr, tr.previousElementSibling);
+      };
+    };
+    body.querySelectorAll('#ei-rows tr').forEach(wire);
+    body.querySelector('#ei-add').onclick = () => {
+      const tb = body.querySelector('#ei-rows');
+      tb.insertAdjacentHTML('beforeend', row({ name: '', qty: '1' }));
+      wire(tb.lastElementChild);
+    };
+    body.querySelector('#ei-save').onclick = async () => {
+      body.querySelector('#ei-err').textContent = '';
+      const rows = [...body.querySelectorAll('#ei-rows tr')].map(tr => ({
+        id: tr.querySelector('[data-ei-id]').value,
+        name: tr.querySelector('[data-ei-name]').value.trim(),
+        qty: tr.querySelector('[data-ei-qty]').value.trim()
+      })).filter(r => r.name);
+      try {
+        await api('/equip-items', { method: 'PUT', body: { items: rows } });
+        closeModal();
+        if (backToBooking) openEquipCheck(backToBooking);
+      } catch (e) { body.querySelector('#ei-err').textContent = e.message; }
+    };
+  });
+}
+
+// 另開視窗列印／另存 PDF：設備清點單（比照紙本表格）
+function printEquipCheck(bk, items, bell, sig) {
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const tick = v => (v ? '√' : '');
+  const rows = items.map(it => `<tr>
+    <td>${esc(it.name)}</td><td class="c">${esc(it.qty)}</td>
+    <td class="c">${tick(it.in)}</td><td class="c">${tick(it.out)}</td></tr>`).join('');
+  const sigCell = (img, name, date) => img
+    ? `<img src="${img}" alt="簽名"><div class="sl">${esc(date || '')}</div>`
+    : `<div class="bl">${esc(name || '')}</div><div class="sl">${esc(date || '')}</div>`;
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
+    <title>設備清點單 - ${esc(bk.room_name)} ${esc(bk.mother_name)}</title>
+    <style>
+      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.5;max-width:760px;margin:24px auto;padding:0 24px}
+      h1{font-size:17px;margin:0 0 4px;text-align:center}
+      .sub{color:#666;font-size:13px;margin-bottom:12px;text-align:center}
+      table{width:100%;border-collapse:collapse;font-size:13px}
+      th,td{border:1px solid #999;padding:5px 8px} th{background:#f2f7f6;text-align:center}
+      td.c{text-align:center}
+      .sig{margin-top:18px;display:flex;gap:32px;font-size:13px}
+      .sig>div{flex:1} .sig img{height:52px;background:#fff}
+      .bl{border-bottom:1px solid #333;height:52px}
+      .sl{color:#555;font-size:12px;margin-top:2px}
+      .note{margin-top:12px;font-size:13px}
+      @media print{.noprint{display:none}}
+    </style></head><body>
+    <h1>歡迎您入住${esc(center)}，以下為本機構提供您的舒適設備~</h1>
+    <div class="sub">${esc(bk.room_name)} 房　${esc(bk.mother_name)}　住期 ${esc(bk.check_in)} ~ ${esc(bk.actual_check_out || bk.check_out)}</div>
+    <table>
+      <thead><tr><th>項　目</th><th style="width:70px">數量</th><th style="width:110px">入住當日(√)</th><th style="width:110px">出住當日(√)</th></tr></thead>
+      <tbody>${rows}
+        <tr><td>${esc(EQ_BELL_NAME)}</td><td class="c">1</td>
+          <td class="c">檢測完成（${tick(bell.test)}）<br>教學完成（${tick(bell.teach)}）</td>
+          <td class="c">—</td></tr>
+      </tbody>
+    </table>
+    ${sig.note ? `<div class="note">備註：${esc(sig.note)}</div>` : ''}
+    <div class="sig">
+      <div>產婦簽名／日期（入住當日）${sigCell(sig.mom_in, '', sig.mom_in_date)}</div>
+      <div>產婦簽名／日期（出住當日）${sigCell(sig.mom_out, '', sig.mom_out_date)}</div>
+    </div>
+    <div class="sig">
+      <div>客服簽名／日期（入住當日）${sigCell('', sig.staff_in, sig.staff_in_date)}</div>
+      <div>客服簽名／日期（出住當日）${sigCell('', sig.staff_out, sig.staff_out_date)}</div>
+    </div>
+    <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+    </body></html>`);
+  win.document.close();
 }
 
 /* ---------- 房務與訂房 ---------- */

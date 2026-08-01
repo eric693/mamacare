@@ -2475,3 +2475,53 @@ test('入住前合約明細變更連動：改天數/刪除同步排房與訂餐�
   // 還原退房，避免影響其他測試
   await req('PUT', `/api/bookings/${keep.id}/status`, { status: 'checked_out' });
 });
+
+test('設備清點：項目主檔可增減、清點單存快照與簽名日期自動帶入', async () => {
+  const mom = await anyCheckedInMother();
+  const bk = (await req('GET', `/api/customers/${mom.id}`)).data.bookings.find(b => b.status === 'checked_in');
+  assert.ok(bk, '需有入住中訂房');
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  // 未存檔時取現行項目主檔
+  const g0 = await req('GET', `/api/bookings/${bk.id}/equip-check`);
+  assert.strictEqual(g0.status, 200);
+  assert.ok(g0.data.items.length > 5 && g0.data.items.every(i => i.in === false));
+  assert.ok(g0.data.staff.length > 0, '客服簽名下拉須有帳號可選');
+  // 存檔：勾選第一項入住、緊急叫人鈴檢測＋教學、產婦簽名與客服簽名
+  const png = 'data:image/png;base64,' + Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(300)]).toString('base64');
+  const items = g0.data.items.map((it, i) => ({ ...it, in: i === 0 }));
+  const staffId = g0.data.staff[0].id;
+  const put = await req('PUT', `/api/bookings/${bk.id}/equip-check`, {
+    items, bell: { test: true, teach: true }, mom_sign_in: png, staff_in_id: staffId, note: '清點完成'
+  });
+  assert.strictEqual(put.status, 200);
+  const g1 = (await req('GET', `/api/bookings/${bk.id}/equip-check`)).data;
+  assert.strictEqual(g1.items[0].in, true);
+  assert.strictEqual(g1.bell.teach, true);
+  assert.strictEqual(g1.check.mom_sign_in_date, today, '產婦簽名日期自動帶入');
+  assert.strictEqual(g1.check.staff_in_date, today);
+  assert.strictEqual(g1.check.mom_sign_out, '');
+  // 未重簽（送 __keep__）沿用原簽名與原日期
+  const put2 = await req('PUT', `/api/bookings/${bk.id}/equip-check`, {
+    items: g1.items, bell: g1.bell, mom_sign_in: '__keep__', staff_in_id: staffId
+  });
+  assert.strictEqual(put2.status, 200);
+  const g2 = (await req('GET', `/api/bookings/${bk.id}/equip-check`)).data;
+  assert.strictEqual(g2.check.mom_sign_in, png);
+  // 無效簽名擋下
+  assert.strictEqual((await req('PUT', `/api/bookings/${bk.id}/equip-check`, {
+    items: g1.items, mom_sign_out: 'data:image/png;base64,AAAA'
+  })).status, 400);
+  // 項目主檔：新增一項後，既存清點單仍用當時快照
+  const before = (await req('GET', '/api/equip-items')).data;
+  const upd = await req('PUT', '/api/equip-items', {
+    items: before.map(i => ({ id: i.id, name: i.name, qty: i.qty })).concat([{ name: '測試新增品', qty: '3' }])
+  });
+  assert.strictEqual(upd.status, 200);
+  const after = (await req('GET', '/api/equip-items')).data;
+  assert.strictEqual(after.length, before.length + 1);
+  assert.strictEqual(after[after.length - 1].name, '測試新增品');
+  const g3 = (await req('GET', `/api/bookings/${bk.id}/equip-check`)).data;
+  assert.strictEqual(g3.items.length, before.length, '已存檔清點單保留當時項目快照');
+  // 空清單擋下
+  assert.strictEqual((await req('PUT', '/api/equip-items', { items: [] })).status, 400);
+});

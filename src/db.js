@@ -1151,6 +1151,39 @@ function init() {
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_hk_progress_task ON housekeeping_progress(task_id, created_at);`);
+  // 設備清點：項目主檔（可自行增減）＋每筆訂房一張清點單
+  db.exec(`CREATE TABLE IF NOT EXISTS equip_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    qty TEXT NOT NULL DEFAULT '1',
+    sort INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE TABLE IF NOT EXISTS equip_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),
+    data TEXT NOT NULL DEFAULT '{}',
+    mom_sign_in TEXT NOT NULL DEFAULT '',
+    mom_sign_in_date TEXT NOT NULL DEFAULT '',
+    mom_sign_out TEXT NOT NULL DEFAULT '',
+    mom_sign_out_date TEXT NOT NULL DEFAULT '',
+    staff_in_id INTEGER REFERENCES users(id),
+    staff_in_date TEXT NOT NULL DEFAULT '',
+    staff_out_id INTEGER REFERENCES users(id),
+    staff_out_date TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id)
+  );`);
+  if (!db.prepare('SELECT COUNT(*) c FROM equip_items').get().c) {
+    const insEq = db.prepare('INSERT INTO equip_items (name, qty, sort) VALUES (?,?,?)');
+    [['溫奶器', '1'], ['奶瓶消毒鍋', '1'], ['保溫罐', '2'], ['酒精噴瓶', '1'], ['熱水瓶', '1'],
+      ['吹風機', '1'], ['電視遙控器', '1'], ['Apple TV(含遙控器)', '1'],
+      ['電動吸乳器(主機、管線、充電線)', '1'], ['門禁卡', '2'], ['隔離衣', '1'], ['體脂計', '1'],
+      ['臉盆、椅子、置物架', '1'], ['浴室防滑墊', '1'], ['空氣淨化機', '1'], ['哺乳衣', '2'],
+      ['哺乳枕', '1'], ['住房手冊+商品手冊', '1+1'], ['微波爐', '1'], ['電動床遙控器', '2'],
+      ['電動按摩椅', '1']].forEach((r, i) => insEq.run(r[0], r[1], (i + 1) * 10));
+  }
   const famCols = db.prepare('PRAGMA table_info(family_members)').all().map(c => c.name);
   if (!famCols.includes('line_user_id')) {
     db.exec("ALTER TABLE family_members ADD COLUMN line_user_id TEXT NOT NULL DEFAULT ''");

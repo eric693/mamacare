@@ -159,6 +159,8 @@ const MODULE_RULES = [
   [/^\/api\/bookings\/\d+\/contracts/, 'contracts'],
   [/^\/api\/(contracts|contract-templates)/, 'contracts'],
   [/^\/api\/bookings\/\d+\/checkout-complete/, 'residents'],
+  [/^\/api\/bookings\/\d+\/equip-check/, 'residents'],
+  [/^\/api\/equip-items/, 'residents'],
   [/^\/api\/bookings\/\d+\/(billing|charges|payments|refund-quote|dun)/, 'billing'],
   [/^\/api\/(billing|payments|charges)/, 'billing'],
   [/^\/api\/invoices/, 'invoices'],
@@ -1582,6 +1584,127 @@ app.post('/api/bookings/:id/checkout-complete', requireStaff, (req, res) => {
   pushCheckoutSurvey(bk.mother_id); // 退房時自動推滿意度問卷
   logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id, summary: `退房完成（${bk.room_name} ${bk.mother_name}）` });
   res.json({ ok: true, task: `${bk.room_name}房已出住` });
+});
+
+// ---------- 設備清點（房內設備入住／出住逐項清點單） ----------
+// 項目主檔：可自行增減項目與數量；停用不刪除，既有清點單仍保留當時快照
+app.get('/api/equip-items', requireStaff, (req, res) => {
+  res.json(db.prepare('SELECT id, name, qty, sort FROM equip_items WHERE active = 1 ORDER BY sort, id').all());
+});
+
+// 整批覆寫項目清單（順序即畫面順序）；未出現在清單中的既有項目改為停用
+app.put('/api/equip-items', requireAdmin, (req, res) => {
+  const rows = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+  const clean = rows
+    .map(r => ({ id: Number(r.id) || 0, name: String(r.name || '').trim().slice(0, 60), qty: String(r.qty || '').trim().slice(0, 10) || '1' }))
+    .filter(r => r.name);
+  if (!clean.length) return res.status(400).json({ error: '至少需保留一個清點項目' });
+  const keep = new Set(clean.map(r => r.id).filter(Boolean));
+  db.transaction(() => {
+    for (const r of db.prepare('SELECT id FROM equip_items WHERE active = 1').all()) {
+      if (!keep.has(r.id)) db.prepare('UPDATE equip_items SET active = 0 WHERE id = ?').run(r.id);
+    }
+    clean.forEach((r, i) => {
+      if (r.id && db.prepare('SELECT 1 FROM equip_items WHERE id = ?').get(r.id)) {
+        db.prepare('UPDATE equip_items SET name = ?, qty = ?, sort = ?, active = 1 WHERE id = ?').run(r.name, r.qty, (i + 1) * 10, r.id);
+      } else {
+        db.prepare('INSERT INTO equip_items (name, qty, sort) VALUES (?,?,?)').run(r.name, r.qty, (i + 1) * 10);
+      }
+    });
+  })();
+  logAudit(req, { action: 'update', entity: 'equip_items', entity_id: 0, summary: `設備清點項目維護（${clean.length} 項）` });
+  res.json({ ok: true });
+});
+
+function equipBooking(id) {
+  return db.prepare(`SELECT bk.id, bk.check_in, bk.check_out, bk.actual_check_out, bk.status,
+      r.name AS room_name, m.name AS mother_name
+    FROM bookings bk JOIN rooms r ON r.id = bk.room_id JOIN mothers m ON m.id = bk.mother_id
+    WHERE bk.id = ?`).get(id);
+}
+
+app.get('/api/bookings/:id/equip-check', requireStaff, (req, res) => {
+  const bk = equipBooking(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  const row = db.prepare(`SELECT c.*, si.name AS staff_in_name, so.name AS staff_out_name
+    FROM equip_checks c LEFT JOIN users si ON si.id = c.staff_in_id
+    LEFT JOIN users so ON so.id = c.staff_out_id WHERE c.booking_id = ?`).get(bk.id);
+  let data = {};
+  if (row) { try { data = JSON.parse(row.data); } catch (e) { data = {}; } }
+  // 已存檔者用當時快照（項目主檔日後增減不影響歷史單）；未存檔者用現行主檔
+  const items = Array.isArray(data.items) && data.items.length
+    ? data.items
+    : db.prepare('SELECT name, qty FROM equip_items WHERE active = 1 ORDER BY sort, id').all()
+      .map(r => ({ name: r.name, qty: r.qty, in: false, out: false }));
+  res.json({
+    booking: bk,
+    items,
+    bell: data.bell || { test: false, teach: false },
+    check: row ? { ...row, data: undefined } : null,
+    staff: db.prepare(`SELECT id, name FROM users WHERE active = 1 ORDER BY name`).all()
+  });
+});
+
+function equipSig(v, cur) {
+  const s = String(v || '');
+  if (s === '__keep__') return cur || '';   // 前端未重簽時沿用原簽名
+  if (!s) return '';
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(s);
+  if (!m || s.length > 1500000) throw new Error('簽名無效，請重新手寫簽名');
+  const buf = Buffer.from(m[1], 'base64');
+  if (buf.length < 200 || buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47) {
+    throw new Error('簽名無效，請重新手寫簽名');
+  }
+  return s;
+}
+
+app.put('/api/bookings/:id/equip-check', requireStaff, (req, res) => {
+  const bk = equipBooking(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  const b = req.body || {};
+  const items = (Array.isArray(b.items) ? b.items : []).map(r => ({
+    name: String(r.name || '').trim().slice(0, 60),
+    qty: String(r.qty || '').trim().slice(0, 10),
+    in: !!r.in, out: !!r.out
+  })).filter(r => r.name);
+  if (!items.length) return res.status(400).json({ error: '清點項目不可為空' });
+  // 緊急叫人鈴：檢測與使用教學都在入住當日完成，出住日不需再做
+  const bell = { test: !!(b.bell && b.bell.test), teach: !!(b.bell && b.bell.teach) };
+  const staffIn = Number(b.staff_in_id) || null;
+  const staffOut = Number(b.staff_out_id) || null;
+  for (const uid of [staffIn, staffOut]) {
+    if (uid && !db.prepare('SELECT 1 FROM users WHERE id = ?').get(uid)) {
+      return res.status(400).json({ error: '客服簽名帳號不存在' });
+    }
+  }
+  const cur = db.prepare('SELECT * FROM equip_checks WHERE booking_id = ?').get(bk.id);
+  let momIn, momOut;
+  try {
+    momIn = equipSig(b.mom_sign_in, cur && cur.mom_sign_in);
+    momOut = equipSig(b.mom_sign_out, cur && cur.mom_sign_out);
+  } catch (e) { return res.status(400).json({ error: e.message }); }
+  const d = today();
+  // 簽名日期自動帶入：新簽的當下記今天，原本就有的沿用舊日期
+  const dateFor = (sig, prevSig, prevDate) => (sig ? ((sig === prevSig && prevDate) ? prevDate : d) : '');
+  const inDate = dateFor(momIn, cur && cur.mom_sign_in, cur && cur.mom_sign_in_date);
+  const outDate = dateFor(momOut, cur && cur.mom_sign_out, cur && cur.mom_sign_out_date);
+  const stIn = staffIn ? ((cur && cur.staff_in_id === staffIn && cur.staff_in_date) || d) : '';
+  const stOut = staffOut ? ((cur && cur.staff_out_id === staffOut && cur.staff_out_date) || d) : '';
+  const json = JSON.stringify({ items, bell }).slice(0, 20000);
+  const note = String(b.note || '').slice(0, 600);
+  if (cur) {
+    db.prepare(`UPDATE equip_checks SET data=?, mom_sign_in=?, mom_sign_in_date=?, mom_sign_out=?, mom_sign_out_date=?,
+      staff_in_id=?, staff_in_date=?, staff_out_id=?, staff_out_date=?, note=?,
+      updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`)
+      .run(json, momIn, inDate, momOut, outDate, staffIn, stIn, staffOut, stOut, note, req.session.user.id, cur.id);
+  } else {
+    db.prepare(`INSERT INTO equip_checks (booking_id, data, mom_sign_in, mom_sign_in_date, mom_sign_out, mom_sign_out_date,
+      staff_in_id, staff_in_date, staff_out_id, staff_out_date, note, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(bk.id, json, momIn, inDate, momOut, outDate, staffIn, stIn, staffOut, stOut, note, req.session.user.id);
+  }
+  logAudit(req, { action: cur ? 'update' : 'create', entity: 'equip_checks', entity_id: bk.id,
+    summary: `設備清點（${bk.room_name} ${bk.mother_name}）` });
+  res.json({ ok: true });
 });
 
 // ---------- 產科醫師查房清單（在住媽媽工作清單；醫師評估欄留白供手寫） ----------
