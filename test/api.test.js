@@ -795,7 +795,9 @@ test('產後報表：清單／各報表可產出／收款統計分類／Excel', 
   await req('PUT', `/api/bookings/${ecBk.data.id}/status`, { status: 'checked_in' });
   assert.strictEqual((await req('PUT', `/api/bookings/${ecBk.data.id}/status`,
     { status: 'checked_out', reason: '寶寶轉院' })).status, 200);
-  const ec = await req('GET', '/api/pp-reports/early_checkout?from=2026-07-01&to=2026-07-31');
+  // 退房日＝當天寫入 actual_check_out，查詢區間須跟著今天走（否則跨月後失敗）
+  const today = new Date().toLocaleDateString('sv-SE');
+  const ec = await req('GET', `/api/pp-reports/early_checkout?from=${today}&to=${today}`);
   const ecRow = ec.data.rows.find(r => r.mother === '提前退房測試');
   assert.ok(ecRow && ecRow.reason === '寶寶轉院' && ecRow.early_days > 0);
   // 應收帳款：以簽約日查詢（測試潛客甲 2026-07-05 簽約、合約有明細）
