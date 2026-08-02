@@ -1299,6 +1299,11 @@ function init() {
     edited_by INTEGER REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_cfe_form ON custom_form_entries(form_id, fill_date);`);
+  // 產婦入住護理評估表（表單二 115.06 四版）：評估時間與雙簽名另存欄位（簽名圖檔不進 data JSON）
+  const miaCols2 = db.prepare('PRAGMA table_info(mother_intake_assessments)').all().map(c => c.name);
+  if (!miaCols2.includes('assessed_at')) db.exec("ALTER TABLE mother_intake_assessments ADD COLUMN assessed_at TEXT NOT NULL DEFAULT ''");
+  if (!miaCols2.includes('nurse_sign')) db.exec("ALTER TABLE mother_intake_assessments ADD COLUMN nurse_sign TEXT NOT NULL DEFAULT ''");
+  if (!miaCols2.includes('mom_sign')) db.exec("ALTER TABLE mother_intake_assessments ADD COLUMN mom_sign TEXT NOT NULL DEFAULT ''");
   // 產婦新生兒轉診單：可用於產婦或新生兒，一位對象可有多筆轉診紀錄
   db.exec(`CREATE TABLE IF NOT EXISTS referrals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -9538,7 +9538,13 @@ const MIA_OPT = {
   bfIntent: ['純母乳', '混合哺餵', '純配方奶', '未決定'],
   bfPlannedTime: ['1個月', '2個月', '4個月', '6個月', '6個月以上', '其他'],
   familySupport: ['支持', '中立', '不支持'],
-  pain: ['無疼痛', '輕度(1-3)', '中度(4-6)', '重度(7-10)']
+  pain: ['無疼痛', '輕度(1-3)', '中度(4-6)', '重度(7-10)'],
+  // 嘉禾表單二（115.06 四版）
+  fetusCount: ['單胞胎', '雙胞胎', '多胞胎'],
+  sleep: ['正常', '不易入睡', '睡眠易中斷', '失眠', '需使用藥物'],
+  appetite: ['非常好', '尚可', '非常差'],
+  milkSecretion: ['未泌乳', '已泌乳'],
+  gait: ['穩定', '攙扶', '輔具']
 };
 const MIA_MULTI = {
   languages: ['國語', '台語', '其他'],
@@ -9550,7 +9556,11 @@ const MIA_MULTI = {
   emotion_items: ['緊張', '焦慮', '憂慮', '哀傷', '憤怒', '其他'],
   needs: ['獲得休息', '學習哺乳技巧', '獲得營養膳食', '學習照顧新生兒技巧', '婦兒科醫師相關諮詢', '其他'],
   lochia_nature: ['鮮紅', '粉紅', '暗紅', '褐色', '黃色', '無', '血塊'],
-  bf_stop_reasons: ['乳汁不足', '身體虛弱', '工作因素', '嬰兒吸吮能力不好', '乳頭問題', '其他']
+  bf_stop_reasons: ['乳汁不足', '身體虛弱', '工作因素', '嬰兒吸吮能力不好', '乳頭問題', '其他'],
+  // 嘉禾表單二（115.06 四版）
+  delivery_special: ['無', '產後出血', '發燒', '傷口發炎', '其他'],
+  uri_symptoms: ['無', '頭痛', '發燒', '鼻塞', '流鼻水', '咳嗽', '喉嚨痛'],
+  lab_items: ['無異常', 'HBV', 'HIV', 'VDRL', 'GBS', '其他']
 };
 
 async function viewMotherIntake() {
@@ -9718,6 +9728,47 @@ async function viewMotherIntake() {
           </details>
         </div>
       </div>
+      <div class="sec-hd mt">表單二補充項目（產婦入住護理評估表 115.06 四版）</div>
+      <div class="form-grid">
+        ${F('胎數', sel('fetus_count', MIA_OPT.fetusCount, false))}
+        ${F('生產特殊情形（多選）', `<div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:8px">${chks('delivery_special')}</div>` + other('delivery_special_other', '生產特殊情形其他'), { full: true })}
+        ${F('上呼吸道症狀（多選）', `<div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:8px">${chks('uri_symptoms')}</div>`, { full: true })}
+        ${F('陪宿者 14 天內疑似感冒／感染或接觸', `<div class="row" style="gap:14px;padding-top:8px">${rad('companion_infection', ['無', '有'])}</div>` + other('companion_infection_note', '請說明'))}
+        ${F('同住家人或朋友 2 人以上有類似感染症狀', `<div class="row" style="gap:14px;padding-top:8px">${rad('cohabit_infection', ['無', '有'])}</div>` + other('cohabit_infection_note', '請說明'))}
+        ${F('是否曾手術', `<div class="row" style="gap:14px;padding-top:8px">${rad('surgery_hx', ['無', '有'])}</div>` + other('surgery_note', '手術原因'))}
+        ${F('檢查項目（多選）', `<div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:8px">${chks('lab_items')}</div>` + other('lab_other', '檢查項目其他'), { full: true })}
+        ${F('出院用藥', `<textarea id="mi-discharge_meds" maxlength="500" rows="2">${esc(d.discharge_meds ?? '')}</textarea>`, { full: true })}
+        ${F('睡眠狀態', sel('sleep', MIA_OPT.sleep, false))}
+        ${F('食慾', sel('appetite', MIA_OPT.appetite, false))}
+        ${F('乳汁分泌', sel('milk_secretion', MIA_OPT.milkSecretion, false) + `<input id="mi-milk_amount" maxlength="20" placeholder="泌乳量約 ㏄" value="${esc(d.milk_amount ?? '')}" style="margin-top:6px">`)}
+        ${F('痔瘡', `<div class="row" style="gap:14px;padding-top:8px">${rad('hemorrhoid', ['無', '有'])}</div>
+          <input id="mi-hemorrhoid_oint" maxlength="50" placeholder="藥膏" value="${esc(d.hemorrhoid_oint ?? '')}" style="margin-top:6px">
+          <input id="mi-hemorrhoid_sitz" maxlength="20" placeholder="坐浴 次/天" value="${esc(d.hemorrhoid_sitz ?? '')}" style="margin-top:6px">`)}
+        ${F('水腫', `<div class="row" style="gap:14px;padding-top:8px">${rad('edema_flag', ['無', '有'])}</div>
+          <input id="mi-edema_degree" maxlength="30" placeholder="程度" value="${esc(d.edema_degree ?? '')}" style="margin-top:6px">
+          <input id="mi-edema_site" maxlength="50" placeholder="部位" value="${esc(d.edema_site ?? '')}" style="margin-top:6px">`)}
+        ${F('霍曼氏徵象', `<div class="row" style="gap:14px;padding-top:8px">${rad('homans', ['無', '有'])}</div>`)}
+        ${F('步態', sel('gait', MIA_OPT.gait, false) + other('gait_other', '輔具說明'))}
+        ${F('評估日期時間', `<input type="datetime-local" id="mi-assessed_at" value="${esc((record && record.assessed_at) || '')}">`)}
+        <div class="field full">
+          <div class="form-grid" style="margin-top:4px">
+            <div class="field">
+              <label>護理人員簽名</label>
+              <div id="mi-nsig-wrap">${record && record.nurse_sign
+                ? `<img src="${esc(record.nurse_sign)}" style="max-width:100%;height:90px;background:#fff;border:1px solid var(--line);border-radius:6px">`
+                : '<canvas id="mi-nsig-pad" style="width:100%;height:90px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>'}</div>
+              <div class="row no-print" style="gap:6px;margin-top:4px"><button type="button" class="btn small secondary" id="mi-nsig-clear">${record && record.nurse_sign ? '重新簽名' : '清除'}</button></div>
+            </div>
+            <div class="field">
+              <label>媽媽簽名</label>
+              <div id="mi-msig-wrap">${record && record.mom_sign
+                ? `<img src="${esc(record.mom_sign)}" style="max-width:100%;height:90px;background:#fff;border:1px solid var(--line);border-radius:6px">`
+                : '<canvas id="mi-msig-pad" style="width:100%;height:90px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>'}</div>
+              <div class="row no-print" style="gap:6px;margin-top:4px"><button type="button" class="btn small secondary" id="mi-msig-clear">${record && record.mom_sign ? '重新簽名' : '清除'}</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="row" style="gap:10px;align-items:center;margin-top:12px">
         <button type="button" class="btn" id="mi-save">資料存檔</button>
         <span style="color:var(--muted)">（填表人：${esc(currentUser.name)}${record ? `　填表日期：${esc(record.updated_at.slice(0, 10))}` : ''}）</span>
@@ -9734,6 +9785,22 @@ async function viewMotherIntake() {
 
   const form = $('#mi-form');
   const gv = id => { const el = form.querySelector('#' + id); return el ? el.value.trim() : ''; };
+
+  // 表單二雙簽名：已簽者顯示圖檔，按「重新簽名」換回畫布
+  const sigPads = {};
+  const mountSig = (key, padId) => {
+    const pad = $('#' + padId);
+    sigPads[key] = pad ? mountSigPad(pad) : null;
+  };
+  mountSig('nurse_sign', 'mi-nsig-pad');
+  mountSig('mom_sign', 'mi-msig-pad');
+  const resetSig = (key, wrapId, padId) => {
+    if (sigPads[key]) { sigPads[key].clear(); return; }
+    $('#' + wrapId).innerHTML = `<canvas id="${padId}" style="width:100%;height:90px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>`;
+    mountSig(key, padId);
+  };
+  $('#mi-nsig-clear').onclick = () => resetSig('nurse_sign', 'mi-nsig-wrap', 'mi-nsig-pad');
+  $('#mi-msig-clear').onclick = () => resetSig('mom_sign', 'mi-msig-wrap', 'mi-msig-pad');
 
   $('#mi-save').onclick = async () => {
     const err = $('#mi-err');
@@ -9767,7 +9834,7 @@ async function viewMotherIntake() {
     // 組 payload：所有 mi-<key> 值＋多選陣列＋旗標
     const body = {};
     form.querySelectorAll('[id^="mi-"]').forEach(el => {
-      if (el.id === 'mi-mom') return;
+      if (el.id === 'mi-mom' || typeof el.value !== 'string') return;   // 略過媽媽選單與簽名畫布
       body[el.id.slice(3)] = el.value.trim();
     });
     [...new Set([...form.querySelectorAll('[data-ck]')].map(c => c.dataset.ck))].forEach(k => { body[k] = ckVals(k); });
@@ -9776,6 +9843,11 @@ async function viewMotherIntake() {
       body[name.slice(3)] = c ? c.value : '';
     });
     body.recorder_id_no = idNo;
+    // 評估時間與簽名不走 data JSON（另存欄位）；未重簽者不送出，保留原簽名
+    body.assessed_at = gv('mi-assessed_at');
+    for (const key of ['nurse_sign', 'mom_sign']) {
+      if (sigPads[key] && sigPads[key].hasInk()) body[key] = sigPads[key].dataUrl();
+    }
 
     try {
       await api(`/mothers/${momId}/intake`, { method: 'PUT', body });
@@ -12018,10 +12090,29 @@ function viewMotherIntakeBlank() {
         ${it('疼痛分數(0-10)', bl(40))}
         ${it('疼痛部位／性質', bl(70) + '／' + bl(70))}
         ${it('疼痛時間／備註', bl(70) + '／' + bl(110))}
+        ${it('胎數', cks(O.fetusCount))}
+        ${it('生產特殊情形(多選)', cks(M.delivery_special) + ' 其他' + bl(70), true)}
+        ${it('上呼吸道症狀(多選)', cks(M.uri_symptoms), true)}
+        ${it('陪宿者14天內疑似感冒/感染或接觸', cks(['無', '有']) + bl(90), true)}
+        ${it('同住家人或朋友2人以上有類似感染症狀', cks(['無', '有']) + bl(90), true)}
+        ${it('是否曾手術', cks(['無', '有']) + ' 原因' + bl(80))}
+        ${it('檢查項目(多選)', cks(M.lab_items) + ' 其他' + bl(70), true)}
+        ${it('出院用藥', bl(280), true)}
+        ${it('睡眠狀態', cks(O.sleep), true)}
+        ${it('食慾', cks(O.appetite))}
+        ${it('乳汁分泌', cks(O.milkSecretion) + ' 量約' + bl(50) + '㏄')}
+        ${it('痔瘡', cks(['無', '有']) + ' 藥膏' + bl(50) + ' 坐浴' + bl(30) + '次/天', true)}
+        ${it('水腫', cks(['無', '有']) + ' 程度' + bl(50) + ' 部位' + bl(60), true)}
+        ${it('霍曼氏徵象', cks(['無', '有']))}
+        ${it('步態', cks(O.gait) + ' 輔具' + bl(60))}
       </div>
       <div class="bf-grid" style="margin-top:8px">
-        ${it('護理師簽名', bl(140))}${it('主管覆核', bl(140))}${it('日期', bl(120))}
+        ${it('評估日期時間', bl(140))}${it('護理人員簽名', bl(140))}${it('媽媽簽名', bl(140))}
       </div>
+      <div class="bf-grid" style="margin-top:4px">
+        ${it('主管覆核', bl(140))}${it('日期', bl(120))}
+      </div>
+      <div style="text-align:right;color:#666;font-size:.8rem;margin-top:6px">表單二：產婦入住護理評估表　105年12月制訂／115年06月四版</div>
     </div>`;
   $('#mib-print').onclick = () => window.print();
 }

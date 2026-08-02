@@ -2786,8 +2786,19 @@ const MIA_FIELDS = [
   'bf_exp', 'bf_prev_duration', 'bf_stop_reasons', 'bf_stop_other',
   'bf_intent', 'bf_no_reason', 'bf_planned_time', 'bf_planned_other',
   'family_support', 'pain', 'pain_score', 'pain_site', 'pain_nature', 'pain_time', 'pain_note',
-  'report_note'
+  'report_note',
+  // 嘉禾表單二（產婦入住護理評估表 115.06 四版）補充欄位
+  'fetus_count', 'delivery_special', 'delivery_special_other',
+  'uri_symptoms', 'companion_infection', 'companion_infection_note',
+  'cohabit_infection', 'cohabit_infection_note', 'surgery_hx', 'surgery_note',
+  'lab_items', 'lab_other', 'discharge_meds',
+  'sleep', 'appetite', 'milk_secretion', 'milk_amount',
+  'hemorrhoid', 'hemorrhoid_oint', 'hemorrhoid_sitz',
+  'edema_flag', 'edema_degree', 'edema_site', 'homans', 'gait', 'gait_other'
 ];
+
+// 簽名圖檔上限（data URL，約 300KB）
+const SIGN_MAX = 300000;
 
 app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
   const mother = db.prepare(`
@@ -2836,12 +2847,22 @@ app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {
   }
   const json = JSON.stringify(data).slice(0, 16000);
   const stayRoot = stayRootForMother(mother.id);
+  // 評估時間與雙簽名獨立存欄位（簽名為 data URL，不受 data JSON 長度限制）
+  const sign = (v, old) => {
+    if (typeof v !== 'string') return old || '';
+    if (v === '') return '';                       // 明確清除
+    return v.startsWith('data:image/') && v.length <= SIGN_MAX ? v : (old || '');
+  };
+  const assessedAt = typeof b.assessed_at === 'string' ? b.assessed_at.slice(0, 16) : (cur ? cur.assessed_at : '');
   if (cur) {
-    db.prepare(`UPDATE mother_intake_assessments SET nurse_id=?, data=?, booking_id=?, updated_at=datetime('now','localtime') WHERE id=?`)
-      .run(req.session.user.id, json, stayRoot, cur.id);
+    db.prepare(`UPDATE mother_intake_assessments SET nurse_id=?, data=?, booking_id=?, assessed_at=?,
+      nurse_sign=?, mom_sign=?, updated_at=datetime('now','localtime') WHERE id=?`)
+      .run(req.session.user.id, json, stayRoot, assessedAt,
+        sign(b.nurse_sign, cur.nurse_sign), sign(b.mom_sign, cur.mom_sign), cur.id);
   } else {
-    db.prepare('INSERT INTO mother_intake_assessments (mother_id, booking_id, nurse_id, data) VALUES (?,?,?,?)')
-      .run(mother.id, stayRoot, req.session.user.id, json);
+    db.prepare(`INSERT INTO mother_intake_assessments (mother_id, booking_id, nurse_id, data, assessed_at, nurse_sign, mom_sign)
+      VALUES (?,?,?,?,?,?,?)`)
+      .run(mother.id, stayRoot, req.session.user.id, json, assessedAt, sign(b.nurse_sign, ''), sign(b.mom_sign, ''));
   }
   // 身分證號同步回住客資料（媽媽護理等中衛欄位共用）
   if (typeof b.id_no === 'string' && b.id_no.trim()) {
