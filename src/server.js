@@ -163,6 +163,7 @@ const MODULE_RULES = [
   [/^\/api\/breastfeeding/, ['baby_care', 'mother_care']],
   [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|eval|eval-profile|intake-assessments|handovers|closure|breastmilk|home-summary|dev-guidance)/, 'baby_care'],
   [/^\/api\/breastmilk-logs/, 'baby_care'],
+  [/^\/api\/reports\/rooming-bf-register/, 'baby_care'],   // 登記單入口在寶寶護理，權限比照寶寶照護
   [/^\/api\/referrals\/mother/, 'mother_care'],
   [/^\/api\/referrals/, 'baby_care'],
   [/^\/api\/(baby-records|baby-nursing|baby-rooming|baby-intake|baby-handovers|baby-closures)/, 'baby_care'],
