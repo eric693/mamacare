@@ -8465,17 +8465,30 @@ async function openReferral(type, subjectId, subjectName) {
     const d = await api(`/referrals/${type}/${subjectId}`);
     const cur = editing ? d.rows.find(r => r.id === editing) : null;
     const val = k => (cur && cur.data && cur.data[k]) || '';
+    const arr = k => (cur && cur.data && Array.isArray(cur.data[k])) ? cur.data[k] : [];
     const fieldHtml = it => {
-      if (it.type === 'textarea') return `<div class="field full"><label>${esc(it.label)}${it.key === 'reason' ? ' <b class="req">*</b>' : ''}</label><textarea id="rf-${it.key}" rows="2" maxlength="1000">${esc(val(it.key))}</textarea></div>`;
+      if (it.type === 'textarea') return `<div class="field full"><label>${esc(it.label)}</label><textarea id="rf-${it.key}" rows="2" maxlength="1000">${esc(val(it.key))}</textarea></div>`;
+      if (it.type === 'multi') return `<div class="field full"><label>${esc(it.label)}</label>
+        <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">
+          ${it.options.map(o => `<label class="bna-chk"><input type="checkbox" data-rfck="${it.key}" value="${esc(o)}"${arr(it.key).includes(o) ? ' checked' : ''}> ${esc(o)}</label>`).join('')}
+        </div></div>`;
       if (it.type === 'select') return `<div class="field"><label>${esc(it.label)}</label><select id="rf-${it.key}"><option value="">—</option>${it.options.map(o => `<option${val(it.key) === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`;
       return `<div class="field"><label>${esc(it.label)}</label><input id="rf-${it.key}" maxlength="200" value="${esc(val(it.key))}"></div>`;
     };
-    openModal(`${title}：${subjectName}`, `
-      <div class="sec-hd">${cur ? `編輯轉診單（${esc(cur.refer_date)}）` : '新增轉診單'}</div>
+    const secHtml = sec => `
+      <div class="sec-hd mt">${esc(sec)}</div>
+      <div class="form-grid">${d.items.filter(it => it.sec === sec).map(fieldHtml).join('')}</div>`;
+    openModal(`產婦／新生兒轉診單：${subjectName}`, `
+      <div style="font-size:.86rem;color:var(--muted);margin-bottom:6px">
+        ${cur ? `編輯轉診單（${esc(cur.refer_date)}）` : '新增轉診單'}　
+        本單一式二份，一份隨同住民至轉診醫院，一份留存機構
+      </div>
       <div class="form-grid">
         <div class="field"><label>轉診日期 <b class="req">*</b></label><input type="date" id="rf-date" value="${esc(cur ? cur.refer_date : todayStr())}"></div>
         <div class="field"><label>轉診時間 <b class="req">*</b></label><input type="time" id="rf-time" value="${esc(cur ? cur.refer_time : new Date().toTimeString().slice(0, 5))}"></div>
-        ${d.items.map(fieldHtml).join('')}
+      </div>
+      ${d.sections.map(secHtml).join('')}
+      <div class="form-grid mt">
         <div class="field full"><label>備註</label><textarea id="rf-note" rows="2" maxlength="1000">${esc(cur ? cur.note : '')}</textarea></div>
         <div class="full row" style="gap:10px">
           <button class="btn" id="rf-save">${cur ? '儲存修改' : '新增轉診單'}</button>
@@ -8487,23 +8500,25 @@ async function openReferral(type, subjectId, subjectName) {
       <div class="sec-hd mt">轉診紀錄（${d.rows.length} 筆）</div>
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th>轉診日期</th><th>原因</th><th>轉診醫院</th><th>交通方式</th><th>結果</th><th>建檔人</th><th></th></tr></thead>
+          <thead><tr><th>轉診日期</th><th>主訴／主要問題</th><th>轉診醫院</th><th>看診結果</th><th>建檔人</th><th></th></tr></thead>
           <tbody>${d.rows.map(r => `
             <tr>
               <td data-label="轉診日期">${esc(r.refer_date)}<br><small>${esc(r.refer_time)}</small></td>
-              <td data-label="原因"><small>${esc(r.data.reason || '—')}</small></td>
-              <td data-label="轉診醫院">${esc(r.data.hospital || '—')}</td>
-              <td data-label="交通方式">${esc(r.data.transport || '—')}</td>
-              <td data-label="結果"><small>${esc(r.data.result || '—')}</small></td>
+              <td data-label="主訴"><small>${esc(r.data.mom_complaint || r.data.baby_problem || '—')}</small></td>
+              <td data-label="轉診醫院">${esc(r.data.to_hospital || '—')}</td>
+              <td data-label="看診結果"><small>${esc(r.data.diagnosis || '—')}</small></td>
               <td data-label="建檔人">${esc(r.created_by_name || '—')}${r.edited_at ? '<br><small style="color:var(--muted)">已修改</small>' : ''}</td>
               <td><button class="btn small secondary" data-rf-edit="${r.id}">修</button>
                 ${currentUser.role === 'admin' ? `<button class="btn small danger" data-rf-del="${r.id}">刪</button>` : ''}</td>
-            </tr>`).join('') || '<tr><td colspan="7"><div class="empty">尚無轉診紀錄</div></td></tr>'}</tbody>
+            </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚無轉診紀錄</div></td></tr>'}</tbody>
         </table>
       </div>`, body => {
       const collect = () => {
         const data = {};
-        d.items.forEach(it => { data[it.key] = body.querySelector(`#rf-${it.key}`).value.trim(); });
+        d.items.forEach(it => {
+          if (it.type === 'multi') data[it.key] = [...body.querySelectorAll(`[data-rfck="${it.key}"]:checked`)].map(c => c.value);
+          else data[it.key] = body.querySelector(`#rf-${it.key}`).value.trim();
+        });
         return data;
       };
       body.querySelector('#rf-save').onclick = async () => {
@@ -8524,20 +8539,22 @@ async function openReferral(type, subjectId, subjectName) {
       if (cancel) cancel.onclick = () => render();
       body.querySelector('#rf-print').onclick = () => {
         const data = collect();
+        const cell = it => Array.isArray(data[it.key]) ? data[it.key].join('、') : (data[it.key] || '');
         const w = window.open('', '_blank');
         w.document.write(`<meta charset="utf-8"><title>${esc(title)}</title>
           <style>body{font-family:system-ui,"Noto Sans TC",sans-serif;padding:24px;line-height:1.7}
-          h1{font-size:1.3rem}th,td{border:1px solid #999;padding:6px 8px;text-align:left;vertical-align:top}
-          table{border-collapse:collapse;width:100%}th{width:180px;background:#f2f2f2}</style>
-          <h1>產婦新生兒轉診單（${esc(title)}）</h1>
-          <p>對象：${esc(subjectName)}　轉診日期：${esc(body.querySelector('#rf-date').value)} ${esc(body.querySelector('#rf-time').value)}</p>
-          <table>${d.items.map(it => `<tr><th>${esc(it.label)}</th><td>${esc(data[it.key] || '')}</td></tr>`).join('')}
-          <tr><th>備註</th><td>${esc(body.querySelector('#rf-note').value)}</td></tr></table>`);
+          h1{font-size:1.25rem;text-align:center}h2{font-size:1rem;background:#f2f2f2;padding:4px 8px;margin:12px 0 4px}
+          th,td{border:1px solid #999;padding:5px 8px;text-align:left;vertical-align:top;font-size:.9rem}
+          table{border-collapse:collapse;width:100%}th{width:190px;background:#fafafa}</style>
+          <h1>${esc(SETTINGS.center_name || '')}　產婦／新生兒轉診單</h1>
+          <p>對象：${esc(subjectName)}（${type === 'mother' ? '產婦' : '新生兒'}）　轉診日期：${esc(body.querySelector('#rf-date').value)} ${esc(body.querySelector('#rf-time').value)}</p>
+          ${d.sections.map(sec => `<h2>${esc(sec)}</h2><table>${d.items.filter(it => it.sec === sec)
+            .map(it => `<tr><th>${esc(it.label)}</th><td>${esc(cell(it))}</td></tr>`).join('')}</table>`).join('')}
+          <h2>備註</h2><table><tr><td>${esc(body.querySelector('#rf-note').value)}</td></tr></table>
+          <p style="font-size:.85rem;color:#666">本單一式二份，一份隨同住民至轉診醫院，一份留存機構。</p>`);
         w.document.close(); w.print();
       };
-      body.querySelectorAll('[data-rf-edit]').forEach(btn => {
-        btn.onclick = () => render(Number(btn.dataset.rfEdit));
-      });
+      body.querySelectorAll('[data-rf-edit]').forEach(btn => { btn.onclick = () => render(Number(btn.dataset.rfEdit)); });
       body.querySelectorAll('[data-rf-del]').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm('確定刪除這筆轉診單？')) return;
@@ -8548,207 +8565,6 @@ async function openReferral(type, subjectId, subjectName) {
     });
   };
   await render();
-}
-
-/* ---------- 新生兒護理紀錄表（逐筆：奶量／親子同室進出／大便性狀／特殊事項） ---------- */
-const BRL_STOOL_TEX = ['糊', '稀', '軟', '其他'];
-async function viewBabyRecordSheet() {
-  const list = await api('/room-status/babies');
-  const babies = list.babies;
-  if (!babies.length) {
-    main().innerHTML = '<div class="page-title">新生兒護理紀錄表</div><div class="card"><div class="empty">目前沒有在住寶寶</div></div>';
-    return;
-  }
-  const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
-  const babyId = babies.some(b => b.id === want) ? want : babies[0].id;
-  const { baby, rooming } = await api(`/babies/${babyId}/nursing`);
-  const rows = (rooming || []).slice().sort((a, b) =>
-    a.log_date.localeCompare(b.log_date) || (a.log_time || '').localeCompare(b.log_time || ''));
-  const hhmm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
-  const blanks = Math.max(0, 12 - rows.length);
-
-  main().innerHTML = `
-    <div class="page-title no-print">新生兒護理紀錄表 <small style="font-weight:400;color:var(--muted);font-size:.9rem">奶量／親子同室進出／大便性狀／特殊事項</small></div>
-    <div class="card no-print">
-      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div class="field" style="max-width:260px;margin:0"><label>選擇寶寶</label>
-          <select id="brs-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
-        <a class="btn small secondary" href="#/baby-nursing?b=${babyId}">回寶寶護理</a>
-        <a class="btn small secondary" href="#/baby-daily-sheet?b=${babyId}">每日護理評估表</a>
-        <button class="btn small" id="brs-print">開始列印</button>
-      </div>
-    </div>
-    <div class="card no-print">
-      <div class="sec-hd">新增紀錄</div>
-      <div class="form-grid">
-        <div class="field"><label>日期 <b class="req">*</b></label><input type="date" id="brs-date" value="${todayStr()}"></div>
-        <div class="field"><label>時間 <b class="req">*</b></label><input type="time" id="brs-time" value="${hhmm}"></div>
-        <div class="field"><label>班別</label><select id="brs-shift"><option value="">—</option>${['白班', '小夜', '大夜'].map(o => `<option>${o}</option>`).join('')}</select></div>
-        <div class="field"><label>親餵<small>（分鐘）</small></label><input type="number" min="0" id="brs-bf"></div>
-        <div class="field"><label>母奶<small>（ml）</small></label><input type="number" min="0" id="brs-bm"></div>
-        <div class="field"><label>配方<small>（ml）</small></label><input type="number" min="0" id="brs-fm"></div>
-        <div class="field"><label>親子同室－入房時間</label><input type="time" id="brs-out"></div>
-        <div class="field"><label>親子同室－出房時間</label><input type="time" id="brs-ret"></div>
-        <div class="field"><label>大便性狀</label><select id="brs-tex"><option value="">—</option>${BRL_STOOL_TEX.map(o => `<option>${o}</option>`).join('')}</select></div>
-        <div class="field"><label>大便色／量</label><input id="brs-stool" maxlength="50" placeholder="例：黃/中"></div>
-        <div class="field"><label>小便</label><input id="brs-urine" maxlength="50"></div>
-        <div class="field full"><label>特殊事項紀錄</label><textarea id="brs-note" rows="2" maxlength="300"></textarea></div>
-        <div class="full row" style="gap:10px"><button class="btn" id="brs-save">資料新增</button><span class="error-msg" id="brs-err"></span></div>
-      </div>
-    </div>
-    <div class="bf-sheet">
-      <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}</div>
-      <div style="text-align:center;font-weight:700;margin-bottom:6px">新生兒護理紀錄表</div>
-      <div style="font-size:.86rem;margin-bottom:6px">床號：${esc(baby.room_name || '')}　姓名：${esc(baby.name)}（${esc(baby.mother_name)}）</div>
-      <div class="table-wrap">
-        <table class="mds">
-          <thead>
-            <tr><th rowspan="2">日期</th><th rowspan="2">時間</th><th colspan="3">奶量(ml)</th><th colspan="2">親子同室</th>
-              <th rowspan="2">班別</th><th colspan="2">大便</th><th rowspan="2">特殊事項紀錄／簽名</th><th rowspan="2" class="no-print"></th></tr>
-            <tr><th>親餵</th><th>母奶</th><th>配方</th><th>入房</th><th>出房</th><th>性狀</th><th>色／量</th></tr>
-          </thead>
-          <tbody>
-            ${rows.map(r => `<tr>
-              <td>${esc(r.log_date.slice(5))}</td><td>${esc(r.log_time || '')}</td>
-              <td>${r.breastfeed_min != null ? `${r.breastfeed_min} 分` : ''}</td>
-              <td>${r.breast_milk_ml != null ? r.breast_milk_ml : ''}</td>
-              <td>${r.formula_ml != null ? r.formula_ml : ''}</td>
-              <td>${esc(r.out_time || '')}</td><td>${esc(r.return_time || '')}</td>
-              <td>${esc(r.shift || '')}</td>
-              <td>${esc((r.stool || '').split('|')[0] || '')}</td>
-              <td>${esc((r.stool || '').split('|')[1] || '')}</td>
-              <td style="text-align:left;font-size:.72rem">${esc(r.note || '')}${r.nurse_name ? `／${esc(r.nurse_name)}` : ''}</td>
-              <td class="no-print">${currentUser.role === 'admin' ? `<button class="btn small danger" data-brs-del="${r.id}">刪</button>` : ''}</td>
-            </tr>`).join('')}
-            ${Array.from({ length: blanks }, () => '<tr>' + '<td>&nbsp;</td>'.repeat(11) + '<td class="no-print"></td></tr>').join('')}
-          </tbody>
-        </table>
-      </div>
-      <div style="text-align:right;color:#666;font-size:.78rem;margin-top:6px">新生兒護理紀錄表</div>
-    </div>`;
-  $('#brs-baby').onchange = () => { location.hash = `#/baby-record-sheet?b=${$('#brs-baby').value}`; };
-  $('#brs-print').onclick = () => window.print();
-  const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
-  $('#brs-save').onclick = async () => {
-    const err = $('#brs-err');
-    err.textContent = '';
-    if (!v('#brs-date') || !v('#brs-time')) { err.textContent = '請填寫日期與時間'; return; }
-    try {
-      await api(`/babies/${babyId}/rooming-logs`, { method: 'POST', body: {
-        log_date: v('#brs-date'), log_time: v('#brs-time'), shift: v('#brs-shift'),
-        breastfeed_min: v('#brs-bf'), breast_milk_ml: v('#brs-bm'), formula_ml: v('#brs-fm'),
-        out_time: v('#brs-out'), return_time: v('#brs-ret'),
-        // 大便以「性狀|色／量」保存，列印時分兩欄呈現
-        stool: [v('#brs-tex'), v('#brs-stool')].join('|').replace(/^\|$/, ''),
-        urine: v('#brs-urine'), note: v('#brs-note')
-      } });
-      viewBabyRecordSheet();
-    } catch (e) { err.textContent = e.message; }
-  };
-  main().querySelectorAll('[data-brs-del]').forEach(btn => {
-    btn.onclick = async () => {
-      if (!confirm('確定刪除這筆護理紀錄？')) return;
-      await api(`/baby-rooming/${btn.dataset.brsDel}`, { method: 'DELETE' });
-      viewBabyRecordSheet();
-    };
-  });
-}
-
-/* ---------- 表單十二：新生兒每日護理評估表（每日三班橫式；資料取自寶寶護理紀錄） ---------- */
-async function viewBabyDailySheet() {
-  const list = await api('/room-status/babies');
-  const babies = list.babies;
-  if (!babies.length) {
-    main().innerHTML = '<div class="page-title">新生兒每日護理評估表</div><div class="card"><div class="empty">目前沒有在住寶寶</div></div>';
-    return;
-  }
-  const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
-  const babyId = babies.some(b => b.id === want) ? want : babies[0].id;
-  const { baby, rows } = await api(`/babies/${babyId}/nursing`);
-  const page = Math.max(1, Number((location.hash.split('&p=')[1] || '1')) || 1);
-  const start = baby.birth_date || todayStr();
-  const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
-  const SHIFTS = ['白班', '小夜', '大夜'];
-  // 每頁 5 天 ×3 班；班別未填者依紀錄時間推定（08-16 白班／16-24 小夜／00-08 大夜）
-  const guessShift = t => {
-    const h = Number(String(t || '').slice(0, 2));
-    return h >= 8 && h < 16 ? '白班' : h >= 16 ? '小夜' : '大夜';
-  };
-  const days = Array.from({ length: 5 }, (_, i) => {
-    const n = (page - 1) * 5 + i + 1;
-    const date = addDays(start, n - 1);
-    const dayRows = rows.filter(r => r.assess_date === date);
-    const byShift = {};
-    for (const sh of SHIFTS) {
-      byShift[sh] = dayRows.filter(r => ((r.data || {}).shift || guessShift(r.assess_time)) === sh)
-        .sort((a, b) => (b.assess_time || '').localeCompare(a.assess_time || ''))[0] || null;
-    }
-    // 體重／經皮黃疸為每日一次，取當日任一筆有填的值
-    const dayVal = k => { const hit = dayRows.find(r => (r.data || {})[k]); return hit ? hit.data[k] : ''; };
-    const bath = dayRows.some(r => (r.data || {}).bath && r.data.bath !== '未洗');
-    return { n, date, byShift, weight: dayVal('weight_g'), jaundice: dayVal('jaundice_value'), bath };
-  });
-  const D = r => (r && r.data) || {};
-  // 每班列項
-  const shiftItems = [
-    ['體溫 ℃', r => r && r.temperature != null ? r.temperature : ''],
-    ['心跳 次/分', r => D(r).heart_rate || ''],
-    ['呼吸 次/分', r => D(r).respiration || ''],
-    ['活動力', r => D(r).muscle_tone || ''],
-    ['吸吮力', r => D(r).suck || D(r).feeding_status || ''],
-    ['膚色', r => D(r).skin_color || ''],
-    ['皮膚', r => { const d = D(r); return (d.skin_conditions || []).join('、') || (r ? '正常' : ''); }],
-    ['頭部', r => { const d = D(r); return d.head_status === '血腫' ? `血腫 ${d.head_status_note || ''}` : (d.head_status || ''); }],
-    ['五官', r => { const d = D(r); return [d.sense, d.sense_note].filter(Boolean).join(' '); }],
-    ['臍部', r => { const d = D(r); return d.cord || ''; }],
-    ['臀部', r => { const d = D(r); return d.buttock === '紅臀' ? (d.buttock_grade || '紅臀').slice(0, 1) : (d.buttock || ''); }],
-    ['其他', r => D(r).other_note || ''],
-    ['簽名', r => (r && r.nurse_name) || '']
-  ];
-  const colCount = days.length * SHIFTS.length;
-
-  main().innerHTML = `
-    <div class="page-title no-print">新生兒每日護理評估表 <small style="font-weight:400;color:var(--muted);font-size:.9rem">表單十二（109.06 一版）；資料取自寶寶護理紀錄</small></div>
-    <div class="card no-print">
-      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div class="field" style="max-width:260px;margin:0"><label>選擇寶寶</label>
-          <select id="bds-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
-        <div class="field" style="max-width:170px;margin:0"><label>頁次（每頁 5 天）</label>
-          <select id="bds-page">${[1, 2, 3, 4, 5, 6].map(p => `<option value="${p}" ${p === page ? 'selected' : ''}>第 ${p} 頁（第 ${(p - 1) * 5 + 1}-${p * 5} 天）</option>`).join('')}</select></div>
-        <a class="btn small secondary" href="#/baby-nursing?b=${babyId}">回寶寶護理</a>
-        <button class="btn small" id="bds-print">開始列印</button>
-      </div>
-      <small style="color:var(--muted);display:block;margin-top:6px">＊班別未填寫者依紀錄時間推定（08-16 白班／16-24 小夜／00-08 大夜）；同班多筆取最後一筆。</small>
-    </div>
-    <div class="bf-sheet">
-      <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}</div>
-      <div style="text-align:center;font-weight:700;margin-bottom:6px">新生兒每日護理評估表</div>
-      <div style="font-size:.86rem;margin-bottom:6px">床號：${esc(baby.room_name || '')}　姓名：${esc(baby.name)}（${esc(baby.mother_name)}）　出生日期：${esc(baby.birth_date || '')}</div>
-      <div class="table-wrap">
-        <table class="mds">
-          <thead>
-            <tr><th class="mds-h">日期</th>${days.map(d => `<th colspan="3">${esc(d.date.slice(5).replace('-', '／'))}</th>`).join('')}</tr>
-            <tr><th class="mds-h">出生第 N 天</th>${days.map(d => `<th colspan="3">${d.n}</th>`).join('')}</tr>
-            <tr><th class="mds-h">體重／沐浴清潔</th>${days.map(d => `<th colspan="3">${d.weight ? `${esc(String(d.weight))} g` : ''}${d.bath ? ' ✓沐浴' : ''}</th>`).join('')}</tr>
-            <tr><th class="mds-h">經皮黃疸</th>${days.map(d => `<th colspan="3">${d.jaundice ? `${esc(String(d.jaundice))} mg/dl` : ''}</th>`).join('')}</tr>
-            <tr><th class="mds-h">班別</th>${days.map(() => SHIFTS.map(sh => `<th style="font-size:.7rem">${sh}</th>`).join('')).join('')}</tr>
-          </thead>
-          <tbody>
-            ${shiftItems.map(([label, val]) => `<tr>
-              <th class="mds-l">${esc(label)}</th>
-              ${days.map(d => SHIFTS.map(sh => `<td style="font-size:.7rem">${esc(String(val(d.byShift[sh]) || ''))}</td>`).join('')).join('')}
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-      <div style="color:#666;font-size:.78rem;margin-top:6px">
-        備註：1. 紅臀分級 A（紅）／B（紅+紅疹）／C（紅+疹子+破皮）／D（紅+疹子+破皮+潰爛）；微紅請註明肛門口／臀部。2. 特殊情況問題請於「其他」欄記錄。
-        <span style="float:right">表單十二：新生兒每日護理評估表　105年12月制訂／109年06月一版</span></div>
-    </div>`;
-  $('#bds-baby').onchange = () => { location.hash = `#/baby-daily-sheet?b=${$('#bds-baby').value}&p=1`; };
-  $('#bds-page').onchange = () => { location.hash = `#/baby-daily-sheet?b=${babyId}&p=${$('#bds-page').value}`; };
-  $('#bds-print').onclick = () => window.print();
-  void colCount;
 }
 
 /* ---------- 母乳庫存紀錄表（存入／取出／丟棄明細＋冷藏冷凍結存） ---------- */
@@ -9947,6 +9763,7 @@ async function viewMotherNursing() {
           <button class="btn" data-scale="bf_awareness">母乳認知與支持系統評估</button>
           <button class="btn" id="mna-group-plan">團課計畫</button>
           <button class="btn" id="mna-class-survey">媽媽教室課程意願</button>
+          <button class="btn" id="mna-refer">產婦轉診</button>
         </div>
       </div>
     </div>
@@ -10183,6 +10000,8 @@ async function viewMotherNursing() {
   if (gpBtn) gpBtn.onclick = () => openGroupPlan(momId, mother);
   const csBtn = $('#mna-class-survey');
   if (csBtn) csBtn.onclick = () => openClassSurvey(momId, mother);
+  const rfBtn = $('#mna-refer');
+  if (rfBtn) rfBtn.onclick = () => openReferral('mother', momId, mother.name);
 
   const openScale = kind => openMotherScale({ momId, mother, baby_info }, kind, viewMotherNursing);
   main().querySelectorAll('[data-scale]').forEach(btn => btn.onclick = () => openScale(btn.dataset.scale));

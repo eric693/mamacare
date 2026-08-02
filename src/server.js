@@ -749,18 +749,67 @@ app.get('/api/babies/:id/location-logs', requireStaff, (req, res) => {
 
 // ---------- 產婦新生兒轉診單 ----------
 const RF_ITEMS = [
-  { key: 'reason', label: '轉診原因／主訴', type: 'textarea' },
-  { key: 'vitals', label: '轉診前生命徵象', type: 'text' },
-  { key: 'treatment', label: '院內已執行處置', type: 'textarea' },
-  { key: 'hospital', label: '轉診醫院', type: 'text' },
-  { key: 'department', label: '轉診科別／醫師', type: 'text' },
-  { key: 'transport', label: '交通方式', type: 'select', options: ['救護車', '家屬自行接送', '中心車輛', '其他'] },
-  { key: 'escort', label: '陪同人員', type: 'text' },
-  { key: 'family_notified', label: '通知家屬時間', type: 'text' },
-  { key: 'family_name', label: '通知對象／關係', type: 'text' },
-  { key: 'result', label: '轉診結果／後續追蹤', type: 'textarea' },
-  { key: 'nurse', label: '轉診護理師', type: 'text' }
+  // 一、基本資料（產婦姓名／房號等由系統帶入，此處記錄紙本其餘欄位）
+  { key: 'case_no', label: '編號', sec: '一、基本資料', type: 'text' },
+  { key: 'mother_id_no', label: '產婦身分證字號', sec: '一、基本資料', type: 'text' },
+  { key: 'mother_birth', label: '產婦出生日期', sec: '一、基本資料', type: 'text' },
+  { key: 'address', label: '地址', sec: '一、基本資料', type: 'text' },
+  { key: 'phone', label: '電話', sec: '一、基本資料', type: 'text' },
+  { key: 'emergency_name', label: '緊急聯絡人', sec: '一、基本資料', type: 'text' },
+  { key: 'emergency_phone', label: '緊急聯絡人電話', sec: '一、基本資料', type: 'text' },
+  // 二、產婦生產史及主要問題
+  { key: 'gravida', label: 'Gravida（孕次）', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'para', label: 'Para（產次）', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'blood_type', label: '血型', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'hbsag_hbeag', label: 'HBsAg／HBeAg', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'vdrl', label: 'VDRL', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'gbs', label: 'GBS', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'birth_hospital', label: '生產醫院', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'mom_disease', label: '疾病', sec: '二、產婦生產史及主要問題', type: 'multi',
+    options: ['無', 'D.M', '高血壓', '感染症狀', '其他'] },
+  { key: 'mom_disease_note', label: '疾病－其他說明', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'mom_med', label: '產婦用藥情形', sec: '二、產婦生產史及主要問題', type: 'select', options: ['無', '有'] },
+  { key: 'mom_med_note', label: '用藥說明', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'mom_tpr_bp', label: 'TPR & BP', sec: '二、產婦生產史及主要問題', type: 'text' },
+  { key: 'mom_complaint', label: '產婦主訴', sec: '二、產婦生產史及主要問題', type: 'textarea' },
+  { key: 'mom_nursing', label: '護理措施', sec: '二、產婦生產史及主要問題', type: 'textarea' },
+  // 三、新生兒生產狀況
+  { key: 'baby_birth_at', label: '出生時間', sec: '三、新生兒生產狀況', type: 'text' },
+  { key: 'baby_birth_weight', label: '出生體重（gm）', sec: '三、新生兒生產狀況', type: 'text' },
+  { key: 'baby_gest_weeks', label: '懷孕週數', sec: '三、新生兒生產狀況', type: 'text' },
+  { key: 'baby_multiple', label: '胎別', sec: '三、新生兒生產狀況', type: 'select', options: ['單胎', '雙胞胎'] },
+  { key: 'baby_order', label: '雙胞胎順序', sec: '三、新生兒生產狀況', type: 'select', options: ['A', 'B'] },
+  { key: 'baby_delivery', label: '生產方式', sec: '三、新生兒生產狀況', type: 'select', options: ['NSD', 'C/S', 'Vacuum'] },
+  { key: 'baby_special', label: '特殊生產狀況', sec: '三、新生兒生產狀況', type: 'multi',
+    options: ['無', '延遲啼哭', '羊水中有胎便', '胎便吸入症候群', 'TTTS', '鼻翼煽動', '窒息', '肋骨凹陷', '臍繞頸', '呼吸喘', '其他'] },
+  { key: 'baby_special_note', label: '特殊生產狀況－其他', sec: '三、新生兒生產狀況', type: 'text' },
+  // 四、新生兒評估及主要問題
+  { key: 'baby_tpr', label: 'TPR', sec: '四、新生兒評估及主要問題', type: 'text' },
+  { key: 'last_feed_time', label: '最後進食時間', sec: '四、新生兒評估及主要問題', type: 'text' },
+  { key: 'feed_method', label: '餵食方式', sec: '四、新生兒評估及主要問題', type: 'multi',
+    options: ['母乳', '親餵', '瓶餵', '配方奶', '混合奶（母乳＋配方奶）'] },
+  { key: 'formula_brand', label: '配方奶廠牌', sec: '四、新生兒評估及主要問題', type: 'text' },
+  { key: 'baby_problem', label: '新生兒主要問題', sec: '四、新生兒評估及主要問題', type: 'textarea' },
+  { key: 'baby_nursing', label: '護理措施', sec: '四、新生兒評估及主要問題', type: 'textarea' },
+  // 五、相關機構資料
+  { key: 'leave_at', label: '離院時間', sec: '五、相關機構資料', type: 'text' },
+  { key: 'return_at', label: '返院時間', sec: '五、相關機構資料', type: 'text' },
+  { key: 'transfer_nurse', label: '轉出機構護理人員', sec: '五、相關機構資料', type: 'text' },
+  { key: 'filled_at', label: '填表時間', sec: '五、相關機構資料', type: 'text' },
+  { key: 'to_hospital', label: '轉診醫院', sec: '五、相關機構資料', type: 'text' },
+  // 六、後續追蹤事項
+  { key: 'diagnosis', label: '看診結果／診斷', sec: '六、後續追蹤事項', type: 'textarea' },
+  { key: 'followup', label: '後續處理', sec: '六、後續追蹤事項', type: 'select',
+    options: ['門診 F/U', '住院治療', '返家休息', '其他'] },
+  { key: 'followup_time', label: '門診 F/U 時間', sec: '六、後續追蹤事項', type: 'text' },
+  { key: 'followup_note', label: '其他注意事項', sec: '六、後續追蹤事項', type: 'textarea' },
+  { key: 'medication', label: '用藥', sec: '六、後續追蹤事項', type: 'textarea' },
+  { key: 'sign_role', label: '簽名者', sec: '六、後續追蹤事項', type: 'select', options: ['醫師', '護理人員'] },
+  { key: 'sign_name', label: '簽名', sec: '六、後續追蹤事項', type: 'text' },
+  { key: 'sign_time', label: '簽名時間', sec: '六、後續追蹤事項', type: 'text' }
 ];
+const RF_SECTIONS = ['一、基本資料', '二、產婦生產史及主要問題', '三、新生兒生產狀況',
+  '四、新生兒評估及主要問題', '五、相關機構資料', '六、後續追蹤事項'];
 
 function referralSubject(type, id) {
   if (type === 'mother') {
@@ -779,7 +828,7 @@ app.get('/api/referrals/:type/:id', requireStaff, (req, res) => {
     WHERE r.subject_type = ? AND r.subject_id = ?
     ORDER BY r.refer_date DESC, r.refer_time DESC, r.id DESC`).all(type, subject.id);
   for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
-  res.json({ subject, subject_type: type, rows, items: RF_ITEMS });
+  res.json({ subject, subject_type: type, rows, items: RF_ITEMS, sections: RF_SECTIONS });
 });
 
 app.post('/api/referrals/:type/:id', requireStaff, (req, res) => {
@@ -788,8 +837,15 @@ app.post('/api/referrals/:type/:id', requireStaff, (req, res) => {
   if (!subject) return res.status(404).json({ error: '找不到對象' });
   const b = req.body || {};
   const data = {};
-  for (const it of RF_ITEMS) data[it.key] = String((b.data || {})[it.key] ?? '').slice(0, 1000);
-  if (!data.reason.trim()) return res.status(400).json({ error: '轉診原因必填' });
+  for (const it of RF_ITEMS) {
+    const v = (b.data || {})[it.key];
+    data[it.key] = it.type === 'multi'
+      ? (Array.isArray(v) ? v.filter(x => it.options.includes(x)) : [])
+      : String(v ?? '').slice(0, 1000);
+  }
+  if (!data.mom_complaint.trim() && !data.baby_problem.trim()) {
+    return res.status(400).json({ error: '請至少填寫「產婦主訴」或「新生兒主要問題」' });
+  }
   const info = db.prepare(`INSERT INTO referrals
     (subject_type, subject_id, refer_date, refer_time, data, note, created_by) VALUES (?,?,?,?,?,?,?)`).run(
     type, subject.id,
@@ -808,7 +864,12 @@ app.put('/api/referrals/:id', requireStaff, (req, res) => {
   let old = {};
   try { old = JSON.parse(cur.data); } catch (e) { old = {}; }
   const data = {};
-  for (const it of RF_ITEMS) data[it.key] = String((b.data || {})[it.key] ?? old[it.key] ?? '').slice(0, 1000);
+  for (const it of RF_ITEMS) {
+    const v = (b.data || {})[it.key] ?? old[it.key];
+    data[it.key] = it.type === 'multi'
+      ? (Array.isArray(v) ? v.filter(x => it.options.includes(x)) : [])
+      : String(v ?? '').slice(0, 1000);
+  }
   db.prepare(`UPDATE referrals SET refer_date=?, refer_time=?, data=?, note=?,
     edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
     /^\d{4}-\d{2}-\d{2}$/.test(b.refer_date || '') ? b.refer_date : cur.refer_date,
