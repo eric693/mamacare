@@ -2253,7 +2253,9 @@ const MNA_FIELDS = [
   'breast_l', 'breast_l_milk', 'breast_l_mastitis',
   'breast_r', 'breast_r_milk', 'breast_r_mastitis',
   'bf_skill', 'mental', 'activity', 'nurse_id_no',
-  'diet', 'urination', 'sleep', 'education', 'note'   // 非必填欄位（報表用）
+  'diet', 'urination', 'sleep', 'education', 'note',   // 非必填欄位（報表用）
+  // 表單三（產婦每日護理評估表 115.06 三版）補充欄位
+  'nipple', 'lochia_odor', 'hemorrhoid', 'edema', 'edema_site'
 ];
 // 媽媽病歷號：沿用會員編號（M+5 碼，建檔時已產生）
 const motherMedicalNo = m => m.member_no || ('M' + String(m.id).padStart(5, '0'));
@@ -2758,6 +2760,7 @@ app.delete('/api/mother-group-plans/:id', requireStaff, (req, res) => {
 const MIA_FIELDS = [
   // 中衛必要欄位
   'id_no', 'companion_name', 'companion_phone', 'companion_relation',
+  'companion_phone_home', 'companion_occupation',   // 表單一：緊急聯絡人住家電話／職業
   'county', 'district', 'address', 'tel',
   'education', 'education_other', 'languages', 'language_other', 'marital',
   'gravidity', 'parity', 'abortus', 'delivery_modes', 'delivery_other',
@@ -2807,9 +2810,13 @@ app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
         WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
       (SELECT bk.check_in FROM bookings bk WHERE bk.mother_id = m.id AND bk.status = 'checked_in'
-        ORDER BY bk.check_in DESC LIMIT 1) AS check_in
+        ORDER BY bk.check_in DESC LIMIT 1) AS check_in,
+      (SELECT bk.check_out FROM bookings bk WHERE bk.mother_id = m.id AND bk.status IN ('checked_in','reserved')
+        ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS check_out
     FROM mothers m WHERE m.id = ?`).get(req.params.id);
   if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  // 表單一（產婦顧客資料）需列出新生兒出入住
+  const babies = db.prepare('SELECT id, name, birth_date FROM babies WHERE mother_id = ? ORDER BY id').all(mother.id);
   const rec = db.prepare(`
     SELECT a.*, u.name AS nurse_name FROM mother_intake_assessments a
     LEFT JOIN users u ON u.id = a.nurse_id WHERE a.mother_id = ? AND a.booking_id IN (?, 0)
@@ -2819,7 +2826,7 @@ app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
   const scaleRows = db.prepare(`SELECT kind, COUNT(*) c, MAX(fill_date) last FROM mother_scales WHERE mother_id = ? GROUP BY kind`).all(mother.id);
   const scales = {};
   for (const s of scaleRows) scales[s.kind] = { count: s.c, last: s.last };
-  res.json({ mother, medical_no: motherMedicalNo(mother), record: rec || null, scales });
+  res.json({ mother, medical_no: motherMedicalNo(mother), record: rec || null, scales, babies });
 });
 
 app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {

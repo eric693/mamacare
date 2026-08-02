@@ -8139,6 +8139,227 @@ async function viewMotherUpcoming(kind) {
   };
 }
 
+/* ---------- 表單四：產婦護理紀錄單（日期時間＋敘述式護理紀錄，可列印歸檔） ---------- */
+async function viewMotherRecordSheet() {
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">產婦護理紀錄單</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const { mother, problems } = await api(`/mothers/${momId}/nursing`);
+  const rows = (problems || []).slice().sort((a, b) => a.start_date.localeCompare(b.start_date) || a.id - b.id);
+  const line = p => `${esc(p.item)}${p.detail ? `：${esc(p.detail)}` : ''}${p.end_date ? `（${esc(p.end_date)} 結案）` : ''}`;
+  // 空白列補到 20 列，供列印後手寫
+  const blanks = Math.max(0, 20 - rows.length);
+
+  main().innerHTML = `
+    <div class="page-title no-print">產婦護理紀錄單 <small style="font-weight:400;color:var(--muted);font-size:.9rem">表單四（108.05 修）；資料取自媽媽護理的護理紀錄</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mrs-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/mother-nursing?m=${momId}">回媽媽護理（新增護理紀錄）</a>
+        <button class="btn small" id="mrs-print">開始列印</button>
+      </div>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}</div>
+      <div style="text-align:center;font-weight:700;margin-bottom:6px">產婦護理紀錄單</div>
+      <div style="font-size:.86rem;margin-bottom:6px">房號：${esc(mother.room_name || '')}　姓名：${esc(mother.name)}　入住日期：${esc(mother.check_in || '')}</div>
+      <div class="table-wrap">
+        <table class="mds">
+          <thead><tr><th style="width:120px">日期／時間</th><th>護 理 紀 錄</th><th style="width:90px">護理師</th></tr></thead>
+          <tbody>
+            ${rows.map(p => `<tr><td>${esc(p.start_date)}</td><td style="text-align:left;white-space:pre-wrap">${line(p)}</td><td>${esc(p.nurse_name || '')}</td></tr>`).join('')}
+            ${Array.from({ length: blanks }, () => '<tr><td>&nbsp;</td><td></td><td></td></tr>').join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="text-align:right;color:#666;font-size:.78rem;margin-top:6px">表單四：產婦護理紀錄單　105年12月訂／108年05月修</div>
+    </div>`;
+  $('#mrs-mom').onchange = () => { location.hash = `#/mother-record-sheet?m=${$('#mrs-mom').value}`; };
+  $('#mrs-print').onclick = () => window.print();
+}
+
+/* ---------- 表單一：產婦顧客資料（基本資料彙整，可列印歸檔） ---------- */
+async function viewMotherCustomerForm() {
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">產婦顧客資料</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const { mother, record, babies } = await api(`/mothers/${momId}/intake`);
+  const d = (record && record.data) || {};
+  const bl = (w = 120) => `<span class="bf-line" style="min-width:${w}px"></span>`;
+  const v = (val, w = 120) => val ? esc(val) : bl(w);
+  const addr = [d.county, d.district, d.address].filter(Boolean).join('');
+  const babyLines = (babies || []).map(b =>
+    `<div class="bf-item full"><b>新生兒（${esc(b.name || '')}）：</b>入住日期：${v(b.check_in || mother.check_in, 90)}　出住日期：${v(b.check_out || mother.check_out, 90)}</div>`).join('');
+
+  main().innerHTML = `
+    <div class="page-title no-print">產婦顧客資料 <small style="font-weight:400;color:var(--muted);font-size:.9rem">表單一（108.05 修）；資料取自住客管理與入住評估表</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mcf-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/residents">住客管理（維護基本資料）</a>
+        <a class="btn small secondary" href="#/mother-intake?m=${momId}">入住評估表</a>
+        <button class="btn small" id="mcf-print">開始列印</button>
+      </div>
+      <small style="color:var(--muted);display:block;margin-top:6px">＊空白底線為系統尚無資料的欄位，可列印後手寫補齊。</small>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}</div>
+      <div style="text-align:center;font-weight:700;margin-bottom:6px">產婦顧客資料</div>
+      <div style="font-size:.86rem;margin-bottom:6px">房號：${v(mother.room_name, 80)}</div>
+      <div class="bf-sec">產婦</div>
+      <div class="bf-grid">
+        <div class="bf-item"><b>姓名：</b>${v(mother.name, 90)}</div>
+        <div class="bf-item"><b>出生日期：</b>${v(mother.birth_date, 90)}</div>
+        <div class="bf-item"><b>身分證號／居留證號：</b>${v(d.id_no || mother.id_no, 90)}</div>
+        <div class="bf-item full"><b>通訊地址：</b>${addr ? esc(addr) : bl(360)}</div>
+        <div class="bf-item"><b>聯絡電話－住家：</b>${v(d.tel, 90)}</div>
+        <div class="bf-item"><b>聯絡電話－手機：</b>${v(mother.phone, 90)}</div>
+        <div class="bf-item"><b>職業：</b>${v(d.occupation, 90)}</div>
+      </div>
+      <div class="bf-sec">緊急聯絡人</div>
+      <div class="bf-grid">
+        <div class="bf-item"><b>姓名：</b>${v(d.companion_name, 90)}</div>
+        <div class="bf-item"><b>關係：</b>${v(d.companion_relation, 60)}</div>
+        <div class="bf-item"><b>職業：</b>${v(d.companion_occupation, 90)}</div>
+        <div class="bf-item"><b>聯絡電話－住家：</b>${v(d.companion_phone_home, 90)}</div>
+        <div class="bf-item"><b>聯絡電話－手機：</b>${v(d.companion_phone, 90)}</div>
+        <div class="bf-item"><b>備註：</b>${bl(120)}</div>
+      </div>
+      <div class="bf-sec">出入住記錄</div>
+      <div class="bf-grid">
+        <div class="bf-item full"><b>產婦：</b>入住日期：${v(mother.check_in, 90)}　出住日期：${v(mother.check_out, 90)}</div>
+        ${babyLines || `<div class="bf-item full"><b>新生兒：</b>入住日期：${bl(90)}　出住日期：${bl(90)}</div>`}
+      </div>
+      <div style="text-align:right;color:#666;font-size:.78rem;margin-top:8px">表單一：產婦顧客資料　105年12月制訂／108年05月修</div>
+    </div>`;
+  $('#mcf-mom').onchange = () => { location.hash = `#/mother-customer-form?m=${$('#mcf-mom').value}`; };
+  $('#mcf-print').onclick = () => window.print();
+}
+
+/* ---------- 表單三：產婦每日護理評估表（橫式 15 天一頁，資料取自每日護理紀錄） ---------- */
+async function viewMotherDailySheet() {
+  const want = Number((location.hash.split('?m=')[1] || '').split('&')[0]);
+  const mothers = await nursingMotherList(want);
+  if (!mothers.length) {
+    main().innerHTML = '<div class="page-title">產婦每日護理評估表</div><div class="card"><div class="empty">目前沒有在住媽媽</div></div>';
+    return;
+  }
+  const momId = mothers.some(m => m.id === want) ? want : mothers[0].id;
+  const { mother, rows } = await api(`/mothers/${momId}/nursing`);
+  const page = Math.max(1, Number((location.hash.split('&p=')[1] || '1')) || 1);
+  const start = mother.check_in || todayStr();
+  const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
+  const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+  // 每頁 15 天，欄＝入住第 N 天
+  const days = Array.from({ length: 15 }, (_, i) => {
+    const n = (page - 1) * 15 + i + 1;
+    const date = addDays(start, n - 1);
+    // 同日多筆取最新一筆（護理紀錄以最後評估為準）
+    const rec = rows.filter(r => r.assess_date === date).sort((a, b) => (b.assess_time || '').localeCompare(a.assess_time || ''))[0] || null;
+    return { n, date, rec, pp: mother.delivery_date ? dayDiff(mother.delivery_date, date) : null };
+  });
+  const D = r => (r && r.data) || {};
+  const pm = v => v === '有' ? '+' : v === '無' ? '-' : (v || '');
+  const nippleNo = { 正常: '1', 紅腫: '2', 破皮: '3', 結痂: '4' };
+  const uterusNo = { 硬: '1', 可: '2', 差: '3' };
+  const lochiaAmtNo = { 少: '1', 中: '2', 多: '3', 無: '-' };
+  const lochiaColorNo = { 鮮紅: '1', 暗紅: '3', 漿液: '2', 白色: '4' };
+  const activityNo = { 佳: '1', 正常: '1', 差: '2' };
+  // 列定義：label＝表單三項目、val＝取值函式
+  const groups = [
+    ['生命徵象', [
+      ['體溫℃', r => r && r.temperature != null ? r.temperature : ''],
+      ['脈搏 次/分', r => r && r.pulse != null ? r.pulse : ''],
+      ['呼吸 次/分', r => r && r.respiration != null ? r.respiration : ''],
+      ['血壓 mmHg', r => r && r.systolic != null ? `${r.systolic}/${r.diastolic ?? ''}` : '']
+    ]],
+    ['乳房', [
+      ['硬 +/-', r => { const d = D(r); return d.breast_l === '硬塊' || d.breast_r === '硬塊' ? '+' : (r ? '-' : ''); }],
+      ['痛(1-10分)', r => D(r).pain_nrs ?? ''],
+      ['紅腫 +/-', r => { const d = D(r); return d.breast_l_mastitis === '有' || d.breast_r_mastitis === '有' ? '+' : (r ? '-' : ''); }],
+      ['泌乳/㏄', r => { const d = D(r); return [d.breast_l_milk, d.breast_r_milk].filter(Boolean).join('/'); }]
+    ]],
+    ['乳頭', [['1正常 2紅腫<br>3破皮 4結痂', r => nippleNo[D(r).nipple] || '']]],
+    ['宮底', [
+      ['1硬 2軟 3痛<br>4觸摸不到', r => uterusNo[D(r).uterus] || ''],
+      ['高度 u/fb', r => D(r).fundus_note || '']
+    ]],
+    ['產後排出物', [
+      ['量 1少2中3多', r => lochiaAmtNo[D(r).lochia_amount] || ''],
+      ['色 1鮮紅2淡紅<br>3紅褐4淡黃', r => lochiaColorNo[D(r).lochia_color] || ''],
+      ['異味 +/-', r => pm(D(r).lochia_odor)],
+      ['血塊 +/-(cm)', r => { const d = D(r); return d.lochia_clot === '有' ? `+${d.clot_note || ''}` : pm(d.lochia_clot); }]
+    ]],
+    ['傷口', [
+      ['紅 +/-', r => { const d = D(r); return d.wound === '紅腫' ? '+' : (r ? '-' : ''); }],
+      ['腫 +/-', r => { const d = D(r); return d.wound === '紅腫' ? '+' : (r ? '-' : ''); }],
+      ['痛(1-10分)', r => D(r).pain_nrs ?? ''],
+      ['滲液 +/-', r => { const d = D(r); return d.wound === '滲液' ? `+${d.wound_exudate_amount || ''}` : (r ? '-' : ''); }]
+    ]],
+    ['排泄', [
+      ['排尿 +異常/-順暢', r => { const d = D(r); return d.urination ? (/順暢|正常/.test(d.urination) ? '-' : '+') : (r ? '-' : ''); }],
+      ['排便/次數', r => D(r).bowel_count ?? ''],
+      ['痔瘡 +/-', r => pm(D(r).hemorrhoid)]
+    ]],
+    ['水腫', [['+.++.+++/- (部位)', r => { const d = D(r); return d.edema && d.edema !== '無' ? `${d.edema}${d.edema_site ? ` ${d.edema_site}` : ''}` : (r ? '-' : ''); }]]],
+    ['活動', [['1下床活動 2臥床<br>休息 3協助活動', r => activityNo[D(r).activity] || '']]],
+    ['', [['護理師簽名', r => (r && r.nurse_name) || '']]]
+  ];
+  const th = `<th class="mds-h">項目</th>${days.map(d => `<th>${esc(d.date.slice(5))}</th>`).join('')}`;
+  const bodyRows = groups.map(([g, items]) => items.map(([label, val], i) => `
+    <tr>
+      ${i === 0 && g ? `<th class="mds-g" rowspan="${items.length}">${esc(g)}</th>` : ''}
+      <th class="mds-l"${!g ? ' colspan="2"' : ''}>${label}</th>
+      ${days.map(d => `<td>${val(d.rec)}</td>`).join('')}
+    </tr>`).join('')).join('');
+
+  main().innerHTML = `
+    <div class="page-title no-print">產婦每日護理評估表 <small style="font-weight:400;color:var(--muted);font-size:.9rem">表單三（115.06 三版）；資料取自媽媽護理每日紀錄</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:240px;margin:0"><label>選擇媽媽</label>
+          <select id="mds-mom">${mothers.map(m => `<option value="${m.id}" ${m.id === momId ? 'selected' : ''}>${esc(m.name)}${m.room_name ? `（${esc(m.room_name)}）` : ''}</option>`).join('')}</select></div>
+        <div class="field" style="max-width:140px;margin:0"><label>頁次（每頁 15 天）</label>
+          <select id="mds-page">${[1, 2, 3, 4].map(p => `<option value="${p}" ${p === page ? 'selected' : ''}>第 ${p} 頁（第 ${(p - 1) * 15 + 1}-${p * 15} 天）</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/mother-nursing?m=${momId}">回媽媽護理</a>
+        <button class="btn small" id="mds-print">開始列印</button>
+      </div>
+      <small style="color:var(--muted);display:block;margin-top:6px">＊同一天有多筆紀錄時取當日最後一筆；空白欄代表當日尚無護理紀錄。</small>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}</div>
+      <div style="text-align:center;font-weight:700;margin-bottom:6px">產婦每日護理評估表</div>
+      <div style="font-size:.86rem;margin-bottom:6px">
+        房號：${esc(mother.room_name || '')}　姓名：${esc(mother.name)}　入住日期：${esc(mother.check_in || '')}
+        生產日期：${esc(mother.delivery_date || '')}　產式：${mother.delivery_type === '剖腹產' ? '■C/S □NSD' : mother.delivery_type === '自然產' ? '■NSD □C/S' : '□NSD □C/S'}
+      </div>
+      <div class="table-wrap">
+        <table class="mds">
+          <thead>
+            <tr>${th}</tr>
+            <tr><th class="mds-h">入住天數</th>${days.map(d => `<th>${d.n}</th>`).join('')}</tr>
+            <tr><th class="mds-h">產後天數</th>${days.map(d => `<th>${d.pp != null && d.pp >= 0 ? d.pp : ''}</th>`).join('')}</tr>
+          </thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>
+      <div style="text-align:right;color:#666;font-size:.78rem;margin-top:6px">第 ${page} 頁　表單三：產婦每日護理評估表　105年12月制訂／108年05月二版／115年06月三版</div>
+    </div>`;
+  $('#mds-mom').onchange = () => { location.hash = `#/mother-daily-sheet?m=${$('#mds-mom').value}&p=1`; };
+  $('#mds-page').onchange = () => { location.hash = `#/mother-daily-sheet?m=${momId}&p=${$('#mds-page').value}`; };
+  $('#mds-print').onclick = () => window.print();
+}
+
 /* ---------- 產婦新生兒轉診單（產婦或新生兒皆適用；一位對象可多筆） ---------- */
 async function openReferral(type, subjectId, subjectName) {
   const title = type === 'mother' ? '產婦轉診單' : '新生兒轉診單';
@@ -8913,7 +9134,10 @@ const MNA_OPTS = {
   milk: ['無', '少', '中', '多'],
   bf_skill: ['佳', '尚可', '差', '未執行'],
   mental: ['佳', '平穩', '疲倦', '焦慮', '低落'],
-  activity: ['佳', '正常', '差']
+  activity: ['佳', '正常', '差'],
+  // 表單三（產婦每日護理評估表 115.06 三版）
+  nipple: ['正常', '紅腫', '破皮', '結痂'],
+  edema: ['無', '+', '++', '+++']
 };
 // 家庭功能評估 APGAR：5 題，經常 2／有時 1／幾乎沒有 0
 const APGAR_ITEMS = [
@@ -9255,6 +9479,9 @@ async function viewMotherNursing() {
         </div>
         <div class="row no-print" style="gap:6px;flex-wrap:wrap">
           <a class="btn" href="#/mother-guidance?m=${momId}">護理指導</a>
+          <a class="btn" href="#/mother-daily-sheet?m=${momId}">每日護理評估表</a>
+          <a class="btn" href="#/mother-record-sheet?m=${momId}">護理紀錄單</a>
+          <a class="btn" href="#/mother-customer-form?m=${momId}">產婦顧客資料</a>
           ${(babies || []).length
             ? `<a class="btn" href="#/breastfeeding?b=${babies[0].id}">母乳哺育評估</a>`
             : '<button class="btn" id="mna-bfa-none">母乳哺育評估</button>'}
@@ -9290,6 +9517,11 @@ async function viewMotherNursing() {
         <div class="field"><label>傷口滲液顏色<small>（滲液時必填，最多100字）</small></label><input id="mna-wexu-color" maxlength="100"></div>
         ${mnaBreastBlock('l', '左')}
         ${mnaBreastBlock('r', '右')}
+        <div class="field"><label>乳頭狀態<small>（表單三）</small></label>${mnaSel('mna-nipple', MNA_OPTS.nipple)}</div>
+        <div class="field"><label>惡露異味<small>（表單三）</small></label>${mnaSel('mna-lochia-odor', MNA_OPTS.yn)}</div>
+        <div class="field"><label>痔瘡<small>（表單三）</small></label>${mnaSel('mna-hemorrhoid', MNA_OPTS.yn)}</div>
+        <div class="field"><label>水腫<small>（表單三）</small></label>${mnaSel('mna-edema', MNA_OPTS.edema)}</div>
+        <div class="field"><label>水腫部位<small>（有水腫時填）</small></label><input id="mna-edema-site" maxlength="50"></div>
         <div class="field"><label>親餵技巧/執行狀態 <b class="req">*</b></label>${mnaSel('mna-bfskill', MNA_OPTS.bf_skill)}</div>
         <div class="field"><label>精神狀態 <b class="req">*</b></label>${mnaSel('mna-mental', MNA_OPTS.mental)}</div>
         <div class="field"><label>活動力 <b class="req">*</b></label>${mnaSel('mna-activity', MNA_OPTS.activity)}</div>
@@ -9413,7 +9645,9 @@ async function viewMotherNursing() {
         bf_skill: v('#mna-bfskill'), mental: v('#mna-mental'), activity: v('#mna-activity'),
         nurse_id_no: idNo,
         diet: v('#mna-diet'), urination: v('#mna-urine'), sleep: v('#mna-sleep'),
-        education: v('#mna-edu'), note: v('#mna-note')
+        education: v('#mna-edu'), note: v('#mna-note'),
+        nipple: v('#mna-nipple'), lochia_odor: v('#mna-lochia-odor'),
+        hemorrhoid: v('#mna-hemorrhoid'), edema: v('#mna-edema'), edema_site: v('#mna-edema-site')
       } });
       viewMotherNursing();
     } catch (e) { err.textContent = e.message; }
@@ -9442,9 +9676,20 @@ async function viewMotherNursing() {
       <div class="form-grid">
         <div class="field full"><label>問題項目 <b class="req">*</b></label><input id="hp-item" maxlength="200" placeholder="例如：乳腺阻塞、傷口紅腫"></div>
         <div class="field full"><label>詳細說明</label><textarea id="hp-detail" rows="3" maxlength="2000" placeholder="護理措施、觀察與處置經過"></textarea></div>
+        <div class="field full"><button type="button" class="btn small secondary" id="hp-tpl">帶入入住敘述範本（表單四）</button></div>
         <div class="field"><label>開始日期 <b class="req">*</b></label><input type="date" id="hp-start" value="${todayStr()}"></div>
         <div class="full row" style="gap:10px"><button class="btn" id="hp-save">新增護理紀錄</button><span class="error-msg" id="hp-err"></span></div>
       </div>`, body => {
+      // 表單四入住敘述範本：帶入紙本制式文字，供護理師補齊空格
+      body.querySelector('#hp-tpl').onclick = () => {
+        const del = mother.delivery_date || '　　年　　月　　日';
+        const mode = mother.delivery_type || '　　　';
+        body.querySelector('#hp-item').value = body.querySelector('#hp-item').value || '入住護理紀錄';
+        body.querySelector('#hp-detail').value =
+          `Admitted at 　　　 步行入住本機構，系於 ${del} 在 　　　　 醫院採 ${mode} 產式，` +
+          `娩出 　 胞胎 　 嬰，第 　 胎，予產婦做說明：□自我介紹 □環境介紹（含緊急鈴位置及使用、逃生位置及路線），` +
+          '並執行入住身體評估和產後衛教指導，鼓勵母乳哺餵及說明親子同室好處。';
+      };
       body.querySelector('#hp-save').onclick = async () => {
         try {
           await api(`/mothers/${momId}/health-problems`, { method: 'POST', body: {
@@ -9618,6 +9863,8 @@ async function viewMotherIntake() {
         ${F('主要陪伴者姓名', txt('companion_name', '', { req: true, max: 50 }), { req: true })}
         ${F('陪伴者電話', txt('companion_phone', '', { req: true, max: 30 }), { req: true })}
         ${F('陪伴者關係', txt('companion_relation', '', { req: true, max: 30 }), { req: true })}
+        ${F('陪伴者住家電話', txt('companion_phone_home', '', { max: 30 }), { hint: '（表單一）' })}
+        ${F('陪伴者職業', txt('companion_occupation', '', { max: 50 }), { hint: '（表單一）' })}
         ${F('縣市', sel('county', TW_COUNTIES), { req: true })}
         ${F('區域', txt('district', '請輸入鄉鎮市區', { req: true, max: 30 }), { req: true })}
         ${F('巷弄門牌', txt('address', '', { req: true, max: 100 }), { req: true, hint: '（最多100字）' })}
@@ -16860,6 +17107,9 @@ const routes = {
   '#/baby-handover': viewBabyHandover,
   '#/baby-close': viewBabyClosure,
   '#/mother-nursing': viewMotherNursing,
+  '#/mother-daily-sheet': viewMotherDailySheet,
+  '#/mother-customer-form': viewMotherCustomerForm,
+  '#/mother-record-sheet': viewMotherRecordSheet,
   '#/mother-doctor': viewMotherDoctor,
   '#/mother-handover': viewMotherHandover,
   '#/mother-guidance': viewMotherGuidance,
@@ -16934,7 +17184,7 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-daily-sheet': 'mother_care', '#/mother-customer-form': 'mother_care', '#/mother-record-sheet': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms', '#/mother-arrivals': 'rooms', '#/mother-departures': 'rooms', '#/discharge-followup': 'mother_care',
   '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family', '#/mother-needs': 'family', '#/baby-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
