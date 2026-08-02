@@ -929,7 +929,10 @@ const BNA_FIELDS = [
   'skin_color', 'skin_conditions', 'skin_notes', 'rash_left', 'rash_right',
   'stool', 'stool_count_note', 'stool_amount', 'stool_color', 'stool_color_note', 'stool_texture',
   'urine', 'urine_count_note', 'urine_amount', 'urine_note',
-  'rooming', 'rooming_shifts', 'nurse_id_no'
+  'rooming', 'rooming_shifts', 'nurse_id_no',
+  // 表單十二（新生兒每日護理評估表 109.06 一版）補充欄位
+  'shift', 'suck', 'head_status', 'head_status_note', 'sense', 'sense_note',
+  'buttock', 'buttock_grade', 'jaundice_value', 'weight_g', 'other_note'
 ];
 
 app.get('/api/babies/:id/nursing', requireStaff, (req, res) => {
@@ -991,14 +994,16 @@ app.post('/api/babies/:id/rooming-logs', requireStaff, (req, res) => {
   if (!time) return res.status(400).json({ error: '請填寫紀錄時間' });
   const num = v => (v === '' || v == null || isNaN(Number(v))) ? null : Number(v);
   const hhmm = v => /^\d{2}:\d{2}/.test(v || '') ? String(v).slice(0, 5) : '';
+  const SHIFTS = ['白班', '小夜', '大夜'];
   const info = db.prepare(`INSERT INTO baby_rooming_logs
     (baby_id, nurse_id, log_date, log_time, breastfeed_min, breast_milk_ml, formula_ml,
-     stool, urine, out_time, return_time, note)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+     stool, urine, out_time, return_time, note, shift)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     baby.id, req.session.user.id, date, time,
     num(b.breastfeed_min), num(b.breast_milk_ml), num(b.formula_ml),
     String(b.stool || '').slice(0, 50), String(b.urine || '').slice(0, 50),
-    hhmm(b.out_time), hhmm(b.return_time), String(b.note || '').slice(0, 300));
+    hhmm(b.out_time), hhmm(b.return_time), String(b.note || '').slice(0, 300),
+    SHIFTS.includes(b.shift) ? b.shift : '');
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -1089,7 +1094,14 @@ const BCP_FIELDS = [
   'flu_fever', 'flu_cough', 'flu_diarrhea', 'flu_rash',
   'ev_temp', 'ev_mouth_red', 'ev_mouth_blister', 'ev_limb_blister', 'ev_limb_rash',
   'special_care', 'caregiver_id_no',
-  'handover_note', 'swim_count'   // 新生兒交班單頁的重要備註／寶寶游泳次數（同一份個案 profile 保存）
+  'handover_note', 'swim_count',   // 新生兒交班單頁的重要備註／寶寶游泳次數（同一份個案 profile 保存）
+  // 表單十一（新生兒入住身體評估表 109.06 一版）出生基本資料補充
+  'gest_weeks', 'head_circ_birth', 'chest_circ_birth',
+  'discharge_jaundice', 'jaundice_method', 'phototherapy_days', 'revisit_plan',
+  'supplies', 'supplies_note',                       // 二、自備用品與備註
+  'bf_admit', 'bf_predischarge',                     // 三、哺乳方式（入住日／出住前三日）
+  'footprint_in_reason', 'footprint_in_mom', 'footprint_in_nurse',
+  'footprint_out_reason', 'footprint_out_mom', 'footprint_out_nurse'   // 四、入出住蓋腳印
 ];
 // 入住評估白名單欄位
 const BIA_FIELDS = [
@@ -1101,7 +1113,17 @@ const BIA_FIELDS = [
   'skin_color', 'skin_conditions', 'skin_notes', 'rash_left', 'rash_right',
   'chest', 'chest_note', 'resp_rate', 'resp_pattern', 'resp_pattern_note',
   'heart_rate', 'heart_rate_note', 'limb_temp', 'limb_color',
-  'abdomen', 'abdomen_note', 'bowel_sound', 'caregiver_id_no'
+  'abdomen', 'abdomen_note', 'bowel_sound', 'caregiver_id_no',
+  // 表單十一（新生兒入住身體評估表 109.06 一版）補充區段
+  'general_appearance', 'general_appearance_note', 'face', 'face_note',
+  'cord_status', 'cord_note', 'cord_return_date', 'cord_return_sign',
+  'genital_male', 'genital_female', 'genital_note',
+  'buttock', 'buttock_note', 'urination_done', 'bowel_done', 'excretion_note',
+  'bone', 'bone_note', 'limbs', 'limbs_note', 'activity', 'skin_tone',
+  'hearing_left', 'hearing_right', 'us_items', 'us_note',
+  'birth_status', 'birth_status_note',
+  'feed_type', 'feed_brand', 'feed_method', 'last_feed_time', 'feed_amount',
+  'assessed_at', 'nurse_sign_name'
 ];
 // 嬰兒病歷號：系統帶入，依寶寶編號固定產生（沿用於基本資料與入住評估）
 const babyMedicalNo = id => 'B' + String(id).padStart(5, '0');

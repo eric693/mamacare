@@ -8550,6 +8550,207 @@ async function openReferral(type, subjectId, subjectName) {
   await render();
 }
 
+/* ---------- 新生兒護理紀錄表（逐筆：奶量／親子同室進出／大便性狀／特殊事項） ---------- */
+const BRL_STOOL_TEX = ['糊', '稀', '軟', '其他'];
+async function viewBabyRecordSheet() {
+  const list = await api('/room-status/babies');
+  const babies = list.babies;
+  if (!babies.length) {
+    main().innerHTML = '<div class="page-title">新生兒護理紀錄表</div><div class="card"><div class="empty">目前沒有在住寶寶</div></div>';
+    return;
+  }
+  const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
+  const babyId = babies.some(b => b.id === want) ? want : babies[0].id;
+  const { baby, rooming } = await api(`/babies/${babyId}/nursing`);
+  const rows = (rooming || []).slice().sort((a, b) =>
+    a.log_date.localeCompare(b.log_date) || (a.log_time || '').localeCompare(b.log_time || ''));
+  const hhmm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
+  const blanks = Math.max(0, 12 - rows.length);
+
+  main().innerHTML = `
+    <div class="page-title no-print">新生兒護理紀錄表 <small style="font-weight:400;color:var(--muted);font-size:.9rem">奶量／親子同室進出／大便性狀／特殊事項</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:260px;margin:0"><label>選擇寶寶</label>
+          <select id="brs-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/baby-nursing?b=${babyId}">回寶寶護理</a>
+        <a class="btn small secondary" href="#/baby-daily-sheet?b=${babyId}">每日護理評估表</a>
+        <button class="btn small" id="brs-print">開始列印</button>
+      </div>
+    </div>
+    <div class="card no-print">
+      <div class="sec-hd">新增紀錄</div>
+      <div class="form-grid">
+        <div class="field"><label>日期 <b class="req">*</b></label><input type="date" id="brs-date" value="${todayStr()}"></div>
+        <div class="field"><label>時間 <b class="req">*</b></label><input type="time" id="brs-time" value="${hhmm}"></div>
+        <div class="field"><label>班別</label><select id="brs-shift"><option value="">—</option>${['白班', '小夜', '大夜'].map(o => `<option>${o}</option>`).join('')}</select></div>
+        <div class="field"><label>親餵<small>（分鐘）</small></label><input type="number" min="0" id="brs-bf"></div>
+        <div class="field"><label>母奶<small>（ml）</small></label><input type="number" min="0" id="brs-bm"></div>
+        <div class="field"><label>配方<small>（ml）</small></label><input type="number" min="0" id="brs-fm"></div>
+        <div class="field"><label>親子同室－入房時間</label><input type="time" id="brs-out"></div>
+        <div class="field"><label>親子同室－出房時間</label><input type="time" id="brs-ret"></div>
+        <div class="field"><label>大便性狀</label><select id="brs-tex"><option value="">—</option>${BRL_STOOL_TEX.map(o => `<option>${o}</option>`).join('')}</select></div>
+        <div class="field"><label>大便色／量</label><input id="brs-stool" maxlength="50" placeholder="例：黃/中"></div>
+        <div class="field"><label>小便</label><input id="brs-urine" maxlength="50"></div>
+        <div class="field full"><label>特殊事項紀錄</label><textarea id="brs-note" rows="2" maxlength="300"></textarea></div>
+        <div class="full row" style="gap:10px"><button class="btn" id="brs-save">資料新增</button><span class="error-msg" id="brs-err"></span></div>
+      </div>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}</div>
+      <div style="text-align:center;font-weight:700;margin-bottom:6px">新生兒護理紀錄表</div>
+      <div style="font-size:.86rem;margin-bottom:6px">床號：${esc(baby.room_name || '')}　姓名：${esc(baby.name)}（${esc(baby.mother_name)}）</div>
+      <div class="table-wrap">
+        <table class="mds">
+          <thead>
+            <tr><th rowspan="2">日期</th><th rowspan="2">時間</th><th colspan="3">奶量(ml)</th><th colspan="2">親子同室</th>
+              <th rowspan="2">班別</th><th colspan="2">大便</th><th rowspan="2">特殊事項紀錄／簽名</th><th rowspan="2" class="no-print"></th></tr>
+            <tr><th>親餵</th><th>母奶</th><th>配方</th><th>入房</th><th>出房</th><th>性狀</th><th>色／量</th></tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `<tr>
+              <td>${esc(r.log_date.slice(5))}</td><td>${esc(r.log_time || '')}</td>
+              <td>${r.breastfeed_min != null ? `${r.breastfeed_min} 分` : ''}</td>
+              <td>${r.breast_milk_ml != null ? r.breast_milk_ml : ''}</td>
+              <td>${r.formula_ml != null ? r.formula_ml : ''}</td>
+              <td>${esc(r.out_time || '')}</td><td>${esc(r.return_time || '')}</td>
+              <td>${esc(r.shift || '')}</td>
+              <td>${esc((r.stool || '').split('|')[0] || '')}</td>
+              <td>${esc((r.stool || '').split('|')[1] || '')}</td>
+              <td style="text-align:left;font-size:.72rem">${esc(r.note || '')}${r.nurse_name ? `／${esc(r.nurse_name)}` : ''}</td>
+              <td class="no-print">${currentUser.role === 'admin' ? `<button class="btn small danger" data-brs-del="${r.id}">刪</button>` : ''}</td>
+            </tr>`).join('')}
+            ${Array.from({ length: blanks }, () => '<tr>' + '<td>&nbsp;</td>'.repeat(11) + '<td class="no-print"></td></tr>').join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="text-align:right;color:#666;font-size:.78rem;margin-top:6px">新生兒護理紀錄表</div>
+    </div>`;
+  $('#brs-baby').onchange = () => { location.hash = `#/baby-record-sheet?b=${$('#brs-baby').value}`; };
+  $('#brs-print').onclick = () => window.print();
+  const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
+  $('#brs-save').onclick = async () => {
+    const err = $('#brs-err');
+    err.textContent = '';
+    if (!v('#brs-date') || !v('#brs-time')) { err.textContent = '請填寫日期與時間'; return; }
+    try {
+      await api(`/babies/${babyId}/rooming-logs`, { method: 'POST', body: {
+        log_date: v('#brs-date'), log_time: v('#brs-time'), shift: v('#brs-shift'),
+        breastfeed_min: v('#brs-bf'), breast_milk_ml: v('#brs-bm'), formula_ml: v('#brs-fm'),
+        out_time: v('#brs-out'), return_time: v('#brs-ret'),
+        // 大便以「性狀|色／量」保存，列印時分兩欄呈現
+        stool: [v('#brs-tex'), v('#brs-stool')].join('|').replace(/^\|$/, ''),
+        urine: v('#brs-urine'), note: v('#brs-note')
+      } });
+      viewBabyRecordSheet();
+    } catch (e) { err.textContent = e.message; }
+  };
+  main().querySelectorAll('[data-brs-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('確定刪除這筆護理紀錄？')) return;
+      await api(`/baby-rooming/${btn.dataset.brsDel}`, { method: 'DELETE' });
+      viewBabyRecordSheet();
+    };
+  });
+}
+
+/* ---------- 表單十二：新生兒每日護理評估表（每日三班橫式；資料取自寶寶護理紀錄） ---------- */
+async function viewBabyDailySheet() {
+  const list = await api('/room-status/babies');
+  const babies = list.babies;
+  if (!babies.length) {
+    main().innerHTML = '<div class="page-title">新生兒每日護理評估表</div><div class="card"><div class="empty">目前沒有在住寶寶</div></div>';
+    return;
+  }
+  const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
+  const babyId = babies.some(b => b.id === want) ? want : babies[0].id;
+  const { baby, rows } = await api(`/babies/${babyId}/nursing`);
+  const page = Math.max(1, Number((location.hash.split('&p=')[1] || '1')) || 1);
+  const start = baby.birth_date || todayStr();
+  const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
+  const SHIFTS = ['白班', '小夜', '大夜'];
+  // 每頁 5 天 ×3 班；班別未填者依紀錄時間推定（08-16 白班／16-24 小夜／00-08 大夜）
+  const guessShift = t => {
+    const h = Number(String(t || '').slice(0, 2));
+    return h >= 8 && h < 16 ? '白班' : h >= 16 ? '小夜' : '大夜';
+  };
+  const days = Array.from({ length: 5 }, (_, i) => {
+    const n = (page - 1) * 5 + i + 1;
+    const date = addDays(start, n - 1);
+    const dayRows = rows.filter(r => r.assess_date === date);
+    const byShift = {};
+    for (const sh of SHIFTS) {
+      byShift[sh] = dayRows.filter(r => ((r.data || {}).shift || guessShift(r.assess_time)) === sh)
+        .sort((a, b) => (b.assess_time || '').localeCompare(a.assess_time || ''))[0] || null;
+    }
+    // 體重／經皮黃疸為每日一次，取當日任一筆有填的值
+    const dayVal = k => { const hit = dayRows.find(r => (r.data || {})[k]); return hit ? hit.data[k] : ''; };
+    const bath = dayRows.some(r => (r.data || {}).bath && r.data.bath !== '未洗');
+    return { n, date, byShift, weight: dayVal('weight_g'), jaundice: dayVal('jaundice_value'), bath };
+  });
+  const D = r => (r && r.data) || {};
+  // 每班列項
+  const shiftItems = [
+    ['體溫 ℃', r => r && r.temperature != null ? r.temperature : ''],
+    ['心跳 次/分', r => D(r).heart_rate || ''],
+    ['呼吸 次/分', r => D(r).respiration || ''],
+    ['活動力', r => D(r).muscle_tone || ''],
+    ['吸吮力', r => D(r).suck || D(r).feeding_status || ''],
+    ['膚色', r => D(r).skin_color || ''],
+    ['皮膚', r => { const d = D(r); return (d.skin_conditions || []).join('、') || (r ? '正常' : ''); }],
+    ['頭部', r => { const d = D(r); return d.head_status === '血腫' ? `血腫 ${d.head_status_note || ''}` : (d.head_status || ''); }],
+    ['五官', r => { const d = D(r); return [d.sense, d.sense_note].filter(Boolean).join(' '); }],
+    ['臍部', r => { const d = D(r); return d.cord || ''; }],
+    ['臀部', r => { const d = D(r); return d.buttock === '紅臀' ? (d.buttock_grade || '紅臀').slice(0, 1) : (d.buttock || ''); }],
+    ['其他', r => D(r).other_note || ''],
+    ['簽名', r => (r && r.nurse_name) || '']
+  ];
+  const colCount = days.length * SHIFTS.length;
+
+  main().innerHTML = `
+    <div class="page-title no-print">新生兒每日護理評估表 <small style="font-weight:400;color:var(--muted);font-size:.9rem">表單十二（109.06 一版）；資料取自寶寶護理紀錄</small></div>
+    <div class="card no-print">
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="max-width:260px;margin:0"><label>選擇寶寶</label>
+          <select id="bds-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
+        <div class="field" style="max-width:170px;margin:0"><label>頁次（每頁 5 天）</label>
+          <select id="bds-page">${[1, 2, 3, 4, 5, 6].map(p => `<option value="${p}" ${p === page ? 'selected' : ''}>第 ${p} 頁（第 ${(p - 1) * 5 + 1}-${p * 5} 天）</option>`).join('')}</select></div>
+        <a class="btn small secondary" href="#/baby-nursing?b=${babyId}">回寶寶護理</a>
+        <button class="btn small" id="bds-print">開始列印</button>
+      </div>
+      <small style="color:var(--muted);display:block;margin-top:6px">＊班別未填寫者依紀錄時間推定（08-16 白班／16-24 小夜／00-08 大夜）；同班多筆取最後一筆。</small>
+    </div>
+    <div class="bf-sheet">
+      <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}</div>
+      <div style="text-align:center;font-weight:700;margin-bottom:6px">新生兒每日護理評估表</div>
+      <div style="font-size:.86rem;margin-bottom:6px">床號：${esc(baby.room_name || '')}　姓名：${esc(baby.name)}（${esc(baby.mother_name)}）　出生日期：${esc(baby.birth_date || '')}</div>
+      <div class="table-wrap">
+        <table class="mds">
+          <thead>
+            <tr><th class="mds-h">日期</th>${days.map(d => `<th colspan="3">${esc(d.date.slice(5).replace('-', '／'))}</th>`).join('')}</tr>
+            <tr><th class="mds-h">出生第 N 天</th>${days.map(d => `<th colspan="3">${d.n}</th>`).join('')}</tr>
+            <tr><th class="mds-h">體重／沐浴清潔</th>${days.map(d => `<th colspan="3">${d.weight ? `${esc(String(d.weight))} g` : ''}${d.bath ? ' ✓沐浴' : ''}</th>`).join('')}</tr>
+            <tr><th class="mds-h">經皮黃疸</th>${days.map(d => `<th colspan="3">${d.jaundice ? `${esc(String(d.jaundice))} mg/dl` : ''}</th>`).join('')}</tr>
+            <tr><th class="mds-h">班別</th>${days.map(() => SHIFTS.map(sh => `<th style="font-size:.7rem">${sh}</th>`).join('')).join('')}</tr>
+          </thead>
+          <tbody>
+            ${shiftItems.map(([label, val]) => `<tr>
+              <th class="mds-l">${esc(label)}</th>
+              ${days.map(d => SHIFTS.map(sh => `<td style="font-size:.7rem">${esc(String(val(d.byShift[sh]) || ''))}</td>`).join('')).join('')}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="color:#666;font-size:.78rem;margin-top:6px">
+        備註：1. 紅臀分級 A（紅）／B（紅+紅疹）／C（紅+疹子+破皮）／D（紅+疹子+破皮+潰爛）；微紅請註明肛門口／臀部。2. 特殊情況問題請於「其他」欄記錄。
+        <span style="float:right">表單十二：新生兒每日護理評估表　105年12月制訂／109年06月一版</span></div>
+    </div>`;
+  $('#bds-baby').onchange = () => { location.hash = `#/baby-daily-sheet?b=${$('#bds-baby').value}&p=1`; };
+  $('#bds-page').onchange = () => { location.hash = `#/baby-daily-sheet?b=${babyId}&p=${$('#bds-page').value}`; };
+  $('#bds-print').onclick = () => window.print();
+  void colCount;
+}
+
 /* ---------- 母乳庫存紀錄表（存入／取出／丟棄明細＋冷藏冷凍結存） ---------- */
 async function openBreastmilkStock(babyId, babyName) {
   const render = async () => {
@@ -10369,6 +10570,13 @@ async function viewMotherIntake() {
 
 /* ---------- 寶寶護理每日評估（中衛必要欄位－嬰兒日常評估） ---------- */
 const BNA_OPTS = {
+  // 表單十二（新生兒每日護理評估表 109.06 一版）
+  shift: ['白班', '小夜', '大夜'],
+  suck: ['佳', '尚可', '差'],
+  head_status: ['正常', '血腫'],
+  sense: ['正常', '分泌物（眼）', '分泌物（耳）', '分泌物（鼻）', '鵝口瘡'],
+  buttock: ['正常', '微紅', '紅臀'],
+  buttock_grade: ['A（紅）', 'B（紅+紅疹）', 'C（紅+疹子+破皮）', 'D（紅+疹子+破皮+潰爛）'],
   bath: ['盆浴', '擦澡', '未洗'],
   heart_rate: ['正常（100–160次/分）', '過速（>160次/分）', '過緩（<100次/分）'],
   respiration: ['正常（40–60次/分）', '過速（>60次/分）', '費力／胸凹', '過緩（<40次/分）'],
@@ -10453,6 +10661,8 @@ async function viewBabyNursing() {
         <a class="btn small secondary" href="#/baby-handover?b=${babyId}">新生兒交班單</a>
         <a class="btn small secondary" href="#/baby-close?b=${babyId}">嬰兒結案</a>
         <a class="btn small secondary" href="#/baby-care">嬰兒照護紀錄</a>
+        <a class="btn small secondary" href="#/baby-daily-sheet?b=${babyId}">每日護理評估表</a>
+        <a class="btn small secondary" href="#/baby-record-sheet?b=${babyId}">新生兒護理紀錄表</a>
         <button class="btn small secondary" id="bna-refer">寶寶轉診</button>
         <button class="btn small secondary" id="bna-print">資料列印</button>
       </div>
@@ -10504,6 +10714,17 @@ async function viewBabyNursing() {
         <div class="field"><label>有無親子同室 <b class="req">*</b></label>${bnaSel('bna-rooming', ['有', '無'])}</div>
         <div class="field"><label>親子同室時間<small>（大夜 00–08／白天 08–16／小夜 16–24）</small></label><div class="row" style="gap:10px;padding-top:8px">${bnaChecks('shift', BNA_SHIFTS)}</div></div>
         <div class="field full"><label>特殊情況及處理</label><textarea id="bna-special" maxlength="500"></textarea></div>
+        <div class="field full"><div class="sec-hd">表單十二補充欄位（新生兒每日護理評估表 109.06 一版）</div></div>
+        <div class="field"><label>班別</label>${bnaSel('bna-shift', BNA_OPTS.shift, { req: false })}</div>
+        <div class="field"><label>吸吮力</label>${bnaSel('bna-suck', BNA_OPTS.suck, { req: false })}</div>
+        <div class="field"><label>體重<small>（公克）</small></label><input type="number" min="0" id="bna-weight"></div>
+        <div class="field"><label>經皮黃疸<small>（mg/dl）</small></label><input type="number" step="0.1" min="0" id="bna-jaundice"></div>
+        <div class="field"><label>頭部</label>${bnaSel('bna-head', BNA_OPTS.head_status, { req: false })}<input id="bna-head-note" maxlength="100" placeholder="血腫部位／範圍" style="margin-top:6px"></div>
+        <div class="field"><label>五官</label>${bnaSel('bna-sense', BNA_OPTS.sense, { req: false })}<input id="bna-sense-note" maxlength="100" placeholder="補述" style="margin-top:6px"></div>
+        <div class="field"><label>臀部</label>${bnaSel('bna-buttock', BNA_OPTS.buttock, { req: false })}
+          ${bnaSel('bna-buttock-grade', BNA_OPTS.buttock_grade, { req: false })}
+          <small style="color:var(--muted)">紅臀分級 A 紅／B 紅+紅疹／C 紅+疹子+破皮／D 紅+疹子+破皮+潰爛；微紅請於補述註明肛門口／臀部</small></div>
+        <div class="field full"><label>其他</label><input id="bna-other-note" maxlength="200"></div>
         <div class="field"><label>護理人員身分證字號</label><input id="bna-nurseid" maxlength="10"></div>
         <div class="full row" style="gap:10px">
           <button class="btn" id="bna-save">資料新增</button>
@@ -10593,7 +10814,13 @@ async function viewBabyNursing() {
         urine: v('#bna-urine'), urine_count_note: v('#bna-urine-note'),
         urine_amount: v('#bna-urine-amt'), urine_note: v('#bna-urine-desc'),
         rooming: v('#bna-rooming'), rooming_shifts: ckVals('shift'),
-        special_note: v('#bna-special'), nurse_id_no: v('#bna-nurseid')
+        special_note: v('#bna-special'), nurse_id_no: v('#bna-nurseid'),
+        shift: v('#bna-shift'), suck: v('#bna-suck'),
+        weight_g: v('#bna-weight'), jaundice_value: v('#bna-jaundice'),
+        head_status: v('#bna-head'), head_status_note: v('#bna-head-note'),
+        sense: v('#bna-sense'), sense_note: v('#bna-sense-note'),
+        buttock: v('#bna-buttock'), buttock_grade: v('#bna-buttock-grade'),
+        other_note: v('#bna-other-note')
       } });
       viewBabyNursing();
     } catch (e) { err.textContent = e.message; }
@@ -10635,6 +10862,25 @@ const BEV_OPTS = {
   bowel: ['正常', '亢進', '減弱', '無']
 };
 const BEV_MOUTH = ['唇裂', '歪嘴', '大舌頭', '舌苔', '分泌物過多', '上顎珍珠瘤', '其他'];
+// 表單十一（新生兒入住身體評估表 109.06 一版）補充選項
+const BEV11 = {
+  general: ['粟粒疹', '出血點', '血管痣', '脫皮', '破皮', '刮傷', '瘀青', '紅疹', '蒙古斑', '膿疱', '針孔', '毒性紅斑'],
+  face: ['正常', '表情不對稱', '其它'],
+  cord: ['脫落', '未脫落', '分泌物', '滲血', '臍根紅腫', '臍瘜肉'],
+  genital_male: ['正常', '睪丸未下降（左）', '睪丸未下降（右）', '陰囊水腫（左）', '陰囊水腫（右）', '包皮環狀切除', '尿道下裂', '疝氣'],
+  genital_female: ['正常', '陰唇紅腫', '假性月經', '會陰瘜肉', '分泌物'],
+  buttock: ['正常', '泛紅', '破皮', '紅疹', '肛裂', '其他'],
+  bone: ['正常', '鎖骨骨折（左）', '鎖骨骨折（右）', '其他'],
+  limbs: ['正常', '多指', '少指', '足內翻（左）', '足內翻（右）', '足外翻（左）', '足外翻（右）', '其他'],
+  activity: ['佳', '尚可'],
+  skin_tone: ['紅潤', '泛黃', '蒼白'],
+  hearing: ['通過', '不通過'],
+  us: ['腦部', '心臟', '腹部', '髖關節'],
+  birth_status: ['正常', '吸入羊水', '吸入胎便', '臍帶繞頸', '皮膚發紺', '呼吸急促', '呼吸弱', '其他'],
+  feed_type: ['全母乳', '混合乳', '配方奶'],
+  jaundice_method: ['經皮', '足跟血'],
+  bf_way: ['全母乳', '全配方奶', '混合哺乳']
+};
 // 流感／腸病毒症狀（key、標籤）：文字選填，最多 50 字
 const BEV_FLU = [['flu_fever', '流感症狀－發燒'], ['flu_cough', '流感症狀－咳嗽'], ['flu_diarrhea', '流感症狀－腹瀉'], ['flu_rash', '流感症狀－皮疹']];
 const BEV_EV = [['ev_temp', '腸病毒症狀－體溫異常'], ['ev_mouth_red', '腸病毒症狀－口腔泛紅'], ['ev_mouth_blister', '腸病毒症狀－口腔水泡'],
@@ -10656,6 +10902,10 @@ function bevRashBlock(side, label, r = {}) {
     </div>`;
 }
 
+// 表單十一區段複選（key＝欄位名）
+function bev11Checks(key, opts) {
+  return opts.map(o => `<label class="bna-chk"><input type="checkbox" data-ck="bev11-${key}" value="${esc(o)}"> ${esc(o)}</label>`).join(' ');
+}
 async function viewBabyEval() {
   const list = await api('/room-status/babies');
   const babies = list.babies;
@@ -10739,9 +10989,73 @@ async function viewBabyEval() {
         <div class="field"><label>預防注射 <b class="req">*</b></label>${bevSel('bev-vac', BEV_OPTS.yn, d.vaccination || '')}</div>
         <div class="field"><label>HBIG注射日期</label><input type="date" id="bev-hbig" value="${esc(d.hbig_date || '')}"></div>
         <div class="field"><label>HBV注射日期</label><input type="date" id="bev-hbv" value="${esc(d.hbv_date || '')}"></div>
+        <div class="field"><label>出生週數<small>（週）</small></label><input data-bev-a="gest_weeks" maxlength="10" value="${esc(d.gest_weeks || '')}"></div>
+        <div class="field"><label>出生頭圍<small>（cm）</small></label><input data-bev-a="head_circ_birth" maxlength="10" value="${esc(d.head_circ_birth || '')}"></div>
+        <div class="field"><label>出生胸圍<small>（cm）</small></label><input data-bev-a="chest_circ_birth" maxlength="10" value="${esc(d.chest_circ_birth || '')}"></div>
+        <div class="field"><label>出院黃疸<small>（mg/dl）</small></label><input data-bev-a="discharge_jaundice" maxlength="10" value="${esc(d.discharge_jaundice || '')}"></div>
+        <div class="field"><label>黃疸測量方式</label><select data-bev-a="jaundice_method"><option value="">—</option>${BEV11.jaundice_method.map(o => `<option${d.jaundice_method === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
+        <div class="field"><label>照光天數<small>（無照光免填）</small></label><input data-bev-a="phototherapy_days" maxlength="10" value="${esc(d.phototherapy_days || '')}"></div>
+        <div class="field"><label>預計返診</label><input data-bev-a="revisit_plan" maxlength="100" value="${esc(d.revisit_plan || '')}"></div>
+        <div class="field full"><label>自備用品<small>（每行一項，最多 12 項）</small></label><textarea data-bev-a="supplies" rows="3" maxlength="500">${esc(d.supplies || '')}</textarea></div>
+        <div class="field full"><label>自備用品備註</label><input data-bev-a="supplies_note" maxlength="200" value="${esc(d.supplies_note || '')}"></div>
+        <div class="field"><label>哺乳方式－入住日</label><select data-bev-a="bf_admit"><option value="">—</option>${BEV11.bf_way.map(o => `<option${d.bf_admit === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
+        <div class="field"><label>哺乳方式－出住前三日</label><select data-bev-a="bf_predischarge"><option value="">—</option>${BEV11.bf_way.map(o => `<option${d.bf_predischarge === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
+        <div class="field full"><div class="sec-hd">入出住蓋腳印（腳印為紙本蓋印，此處記錄未蓋原因與簽名）</div></div>
+        <div class="field"><label>入住－未蓋腳印原因</label><input data-bev-a="footprint_in_reason" maxlength="100" value="${esc(d.footprint_in_reason || '')}"></div>
+        <div class="field"><label>入住－媽媽簽名</label><input data-bev-a="footprint_in_mom" maxlength="50" value="${esc(d.footprint_in_mom || '')}"></div>
+        <div class="field"><label>入住－護理人員簽名</label><input data-bev-a="footprint_in_nurse" maxlength="50" value="${esc(d.footprint_in_nurse || '')}"></div>
+        <div class="field"><label>出住－未蓋腳印原因</label><input data-bev-a="footprint_out_reason" maxlength="100" value="${esc(d.footprint_out_reason || '')}"></div>
+        <div class="field"><label>出住－媽媽簽名</label><input data-bev-a="footprint_out_mom" maxlength="50" value="${esc(d.footprint_out_mom || '')}"></div>
+        <div class="field"><label>出住－護理人員簽名</label><input data-bev-a="footprint_out_nurse" maxlength="50" value="${esc(d.footprint_out_nurse || '')}"></div>
         ${BEV_FLU.map(([k, label]) => `<div class="field"><label>${label}<small>（最多50字，選填）</small></label><input data-bev-a="${k}" maxlength="50" value="${esc(d[k] || '')}"></div>`).join('')}
         ${BEV_EV.map(([k, label]) => `<div class="field"><label>${label}<small>（最多50字，選填）</small></label><input data-bev-a="${k}" maxlength="50" value="${esc(d[k] || '')}"></div>`).join('')}
         <div class="field"><label>特殊照護需求<small>（最多200字，選填）</small></label><input id="bev-special" maxlength="200" value="${esc(d.special_care || '')}"></div>
+        <div class="field full"><div class="sec-hd">表單十一補充區段（新生兒入住身體評估表 109.06 一版）</div></div>
+        <div class="field full"><label>一般外觀（可複選，勾選後於下欄註明部位）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('general', BEV11.general)}</div>
+          <input id="bev11-general-note" maxlength="200" placeholder="部位／數量說明" style="margin-top:6px"></div>
+        <div class="field"><label>顏面</label>${bevSel('bev11-face', BEV11.face, '', { req: false })}<input id="bev11-face-note" maxlength="100" placeholder="其它說明" style="margin-top:6px"></div>
+        <div class="field"><label>臍帶（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('cord', BEV11.cord)}</div>
+          <input id="bev11-cord-note" maxlength="100" placeholder="分泌物／滲血（多/中/少）" style="margin-top:6px"></div>
+        <div class="field"><label>臍帶交還日期／簽名</label><input type="date" id="bev11-cord-date"><input id="bev11-cord-sign" maxlength="50" placeholder="簽名" style="margin-top:6px"></div>
+        <div class="field full"><label>生殖器－男（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('gm', BEV11.genital_male)}</div></div>
+        <div class="field full"><label>生殖器－女（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('gf', BEV11.genital_female)}</div>
+          <input id="bev11-genital-note" maxlength="100" placeholder="分泌物說明" style="margin-top:6px"></div>
+        <div class="field full"><label>臀部（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('buttock', BEV11.buttock)}</div>
+          <input id="bev11-buttock-note" maxlength="100" placeholder="其他說明" style="margin-top:6px"></div>
+        <div class="field"><label>排泄</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">
+            <label class="bna-chk"><input type="checkbox" id="bev11-urine"> 已解尿</label>
+            <label class="bna-chk"><input type="checkbox" id="bev11-stool"> 已解便</label>
+          </div>
+          <input id="bev11-excretion-note" maxlength="100" placeholder="其他說明" style="margin-top:6px"></div>
+        <div class="field"><label>骨骼（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('bone', BEV11.bone)}</div>
+          <input id="bev11-bone-note" maxlength="100" placeholder="其他說明" style="margin-top:6px"></div>
+        <div class="field"><label>四肢（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('limbs', BEV11.limbs)}</div>
+          <input id="bev11-limbs-note" maxlength="100" placeholder="多/少指部位或其他說明" style="margin-top:6px"></div>
+        <div class="field"><label>活動力</label>${bevSel('bev11-activity', BEV11.activity, '', { req: false })}</div>
+        <div class="field"><label>皮膚</label>${bevSel('bev11-skin-tone', BEV11.skin_tone, '', { req: false })}</div>
+        <div class="field"><label>聽力篩檢－右耳</label>${bevSel('bev11-hear-r', BEV11.hearing, '', { req: false })}</div>
+        <div class="field"><label>聽力篩檢－左耳</label>${bevSel('bev11-hear-l', BEV11.hearing, '', { req: false })}</div>
+        <div class="field full"><label>超音波檢查（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('us', BEV11.us)}</div>
+          <input id="bev11-us-note" maxlength="200" placeholder="檢查結果說明" style="margin-top:6px"></div>
+        <div class="field full"><label>生產狀況（可複選）</label>
+          <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('birth', BEV11.birth_status)}</div>
+          <input id="bev11-birth-note" maxlength="200" placeholder="其他說明" style="margin-top:6px"></div>
+        <div class="field"><label>進食狀況</label>${bevSel('bev11-feed-type', BEV11.feed_type, '', { req: false })}
+          <input id="bev11-feed-brand" maxlength="50" placeholder="配方奶廠牌" style="margin-top:6px"></div>
+        <div class="field"><label>餵奶方式</label><input id="bev11-feed-method" maxlength="50"></div>
+        <div class="field"><label>最近餵食時間</label><input id="bev11-last-feed" maxlength="20" placeholder="HH:MM"></div>
+        <div class="field"><label>奶量<small>（ml/Q3-4H）</small></label><input id="bev11-feed-amount" maxlength="20"></div>
+        <div class="field"><label>評估時間</label><input type="datetime-local" id="bev11-assessed-at"></div>
+        <div class="field"><label>護理師簽名</label><input id="bev11-nurse-sign" maxlength="50" value="${esc(currentUser.name)}"></div>
         <div class="field"><label>照護人員身分證字號 <b class="req">*</b><small>（自動帶入登入者，不可修改）</small></label><input value="${esc(idNo)}" placeholder="${idNo ? '' : '請於帳號管理維護身分證字號'}" disabled></div>
         <div class="full row" style="gap:10px">
           <button class="btn" id="bev-a-save">個案基本資料存檔</button>
@@ -10941,7 +11255,28 @@ async function viewBabyEval() {
         heart_rate: v('#bev-hr-rate'), heart_rate_note: v('#bev-hr-note'),
         limb_temp: v('#bev-limb-t'), limb_color: v('#bev-limb-c'),
         abdomen: abd, abdomen_note: v('#bev-abd-note'), bowel_sound: v('#bev-bowel'),
-        caregiver_id_no: idNo
+        caregiver_id_no: idNo,
+        // 表單十一補充區段
+        general_appearance: ckVals(secB, 'bev11-general'), general_appearance_note: v('#bev11-general-note'),
+        face: v('#bev11-face'), face_note: v('#bev11-face-note'),
+        cord_status: ckVals(secB, 'bev11-cord'), cord_note: v('#bev11-cord-note'),
+        cord_return_date: v('#bev11-cord-date'), cord_return_sign: v('#bev11-cord-sign'),
+        genital_male: ckVals(secB, 'bev11-gm'), genital_female: ckVals(secB, 'bev11-gf'),
+        genital_note: v('#bev11-genital-note'),
+        buttock: ckVals(secB, 'bev11-buttock'), buttock_note: v('#bev11-buttock-note'),
+        urination_done: secB.querySelector('#bev11-urine').checked ? '已解尿' : '',
+        bowel_done: secB.querySelector('#bev11-stool').checked ? '已解便' : '',
+        excretion_note: v('#bev11-excretion-note'),
+        bone: ckVals(secB, 'bev11-bone'), bone_note: v('#bev11-bone-note'),
+        limbs: ckVals(secB, 'bev11-limbs'), limbs_note: v('#bev11-limbs-note'),
+        activity: v('#bev11-activity'), skin_tone: v('#bev11-skin-tone'),
+        hearing_right: v('#bev11-hear-r'), hearing_left: v('#bev11-hear-l'),
+        us_items: ckVals(secB, 'bev11-us'), us_note: v('#bev11-us-note'),
+        birth_status: ckVals(secB, 'bev11-birth'), birth_status_note: v('#bev11-birth-note'),
+        feed_type: v('#bev11-feed-type'), feed_brand: v('#bev11-feed-brand'),
+        feed_method: v('#bev11-feed-method'), last_feed_time: v('#bev11-last-feed'),
+        feed_amount: v('#bev11-feed-amount'),
+        assessed_at: v('#bev11-assessed-at'), nurse_sign_name: v('#bev11-nurse-sign')
       } });
       viewBabyEval();
     } catch (e) { err.textContent = e.message; }
@@ -17364,6 +17699,8 @@ const routes = {
   '#/mother-needs': () => viewNursingNeeds('mother'),
   '#/baby-needs': () => viewNursingNeeds('baby'),
   '#/baby-nursing': viewBabyNursing,
+  '#/baby-daily-sheet': viewBabyDailySheet,
+  '#/baby-record-sheet': viewBabyRecordSheet,
   '#/baby-guidance': viewBabyGuidance,
   '#/baby-eval': viewBabyEval,
   '#/baby-doctor': viewBabyDoctor,
@@ -17448,7 +17785,7 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-daily-sheet': 'mother_care', '#/mother-customer-form': 'mother_care', '#/mother-handover-sheet': 'mother_care', '#/mother-record-sheet': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-daily-sheet': 'baby_care', '#/baby-record-sheet': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-daily-sheet': 'mother_care', '#/mother-customer-form': 'mother_care', '#/mother-handover-sheet': 'mother_care', '#/mother-record-sheet': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms', '#/mother-arrivals': 'rooms', '#/mother-departures': 'rooms', '#/discharge-followup': 'mother_care',
   '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family', '#/mother-needs': 'family', '#/baby-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',

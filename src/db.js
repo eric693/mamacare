@@ -1465,6 +1465,9 @@ function init() {
       ['哺乳枕', '1'], ['住房手冊+商品手冊', '1+1'], ['微波爐', '1'], ['電動床遙控器', '2'],
       ['電動按摩椅', '1']].forEach((r, i) => insEq.run(r[0], r[1], (i + 1) * 10));
   }
+  // 新生兒護理紀錄表：班別欄位（白班／小夜／大夜）
+  const brlCols = db.prepare('PRAGMA table_info(baby_rooming_logs)').all().map(c => c.name);
+  if (!brlCols.includes('shift')) db.exec("ALTER TABLE baby_rooming_logs ADD COLUMN shift TEXT NOT NULL DEFAULT ''");
   // 媽媽教室課程意願計畫（每位媽媽一份）
   db.exec(`CREATE TABLE IF NOT EXISTS mother_class_surveys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
