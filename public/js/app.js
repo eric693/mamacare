@@ -144,6 +144,18 @@ function wireFilter(scope) {
 const $ = sel => document.querySelector(sel);
 const main = () => $('#main');
 
+/* ---------- 列印：指定紙張方向（僅套用於本次列印，不影響其他表單） ---------- */
+function printSheet(orientation = 'portrait') {
+  const st = document.createElement('style');
+  st.id = 'print-orientation';
+  st.textContent = `@page { size: A4 ${orientation}; margin: 8mm; }`;
+  document.head.appendChild(st);
+  const cleanup = () => { st.remove(); window.removeEventListener('afterprint', cleanup); };
+  window.addEventListener('afterprint', cleanup);
+  window.print();
+  setTimeout(cleanup, 3000);   // 部分瀏覽器不觸發 afterprint 時的保險清除
+}
+
 /* ---------- 對話框 ---------- */
 function openModal(title, bodyHtml, onMount) {
   $('#modal-title').textContent = title;
@@ -8278,7 +8290,7 @@ async function viewMotherHandoverSheet() {
     </div>`;
   $('#mhs-mom').onchange = () => { location.hash = `#/mother-handover-sheet?m=${$('#mhs-mom').value}&p=1`; };
   $('#mhs-page').onchange = () => { location.hash = `#/mother-handover-sheet?m=${momId}&p=${$('#mhs-page').value}`; };
-  $('#mhs-print').onclick = () => window.print();
+  $('#mhs-print').onclick = () => printSheet('landscape');
 }
 // 多選欄位（陣列或字串）轉顯示文字
 function d2Text(v, other) {
@@ -8461,7 +8473,7 @@ async function viewMotherDailySheet() {
     </div>`;
   $('#mds-mom').onchange = () => { location.hash = `#/mother-daily-sheet?m=${$('#mds-mom').value}&p=1`; };
   $('#mds-page').onchange = () => { location.hash = `#/mother-daily-sheet?m=${momId}&p=${$('#mds-page').value}`; };
-  $('#mds-print').onclick = () => window.print();
+  $('#mds-print').onclick = () => printSheet('landscape');
 }
 
 /* ---------- 產婦新生兒轉診單（產婦或新生兒皆適用；一位對象可多筆） ---------- */
@@ -8611,7 +8623,7 @@ async function viewRoomingBfRegister() {
       <div style="color:#666;font-size:.78rem;margin-top:6px">單位：人數（每日統計）</div>
     </div>`;
   $('#rbr-ym').onchange = () => { location.hash = `#/rooming-bf-register?ym=${$('#rbr-ym').value}`; };
-  $('#rbr-print').onclick = () => window.print();
+  $('#rbr-print').onclick = () => printSheet('landscape');
 }
 
 /* ---------- 新生兒護理紀錄表（逐筆：奶量／親子同室進出／大便性狀／特殊事項） ---------- */
@@ -8691,7 +8703,7 @@ async function viewBabyRecordSheet() {
       <div style="text-align:right;color:#666;font-size:.78rem;margin-top:6px">新生兒護理紀錄表</div>
     </div>`;
   $('#brs-baby').onchange = () => { location.hash = `#/baby-record-sheet?b=${$('#brs-baby').value}`; };
-  $('#brs-print').onclick = () => window.print();
+  $('#brs-print').onclick = () => printSheet('portrait');
   const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
   $('#brs-save').onclick = async () => {
     const err = $('#brs-err');
@@ -8811,7 +8823,7 @@ async function viewBabyDailySheet() {
     </div>`;
   $('#bds-baby').onchange = () => { location.hash = `#/baby-daily-sheet?b=${$('#bds-baby').value}&p=1`; };
   $('#bds-page').onchange = () => { location.hash = `#/baby-daily-sheet?b=${babyId}&p=${$('#bds-page').value}`; };
-  $('#bds-print').onclick = () => window.print();
+  $('#bds-print').onclick = () => printSheet('landscape');
   void colCount;
 }
 

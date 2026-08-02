@@ -619,10 +619,13 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 .mds .mds-l { background: #fafafa; color: #333; text-align: left; white-space: nowrap; font-weight: 500; min-width: 108px; }
 .mds td { min-width: 40px; height: 24px; }
 @media print {
+  /* 橫式格狀表列印：縮小字級與內距，並取消最小欄寬讓整份表格塞進一頁
+     ＊紙張方向不在此設定（避免影響其他表單），改由頁面按下列印時動態指定 */
   .mds { font-size: 9.5px; }
   .mds th, .mds td { padding: 1px 2px; }
+  .mds td { min-width: 0; height: auto; }
+  .mds .mds-l { min-width: 0; }
   .mds thead th, .mds .mds-g, .mds .mds-l { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  @page { size: A4 landscape; }
 }
 
 /* 預約參觀行事曆／參訪紀錄表 */
