@@ -1412,6 +1412,26 @@ function init() {
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_by INTEGER REFERENCES users(id)
   );`);
+  // 產婦出住返家追蹤單：電訪追蹤紀錄（一張追蹤單可多次電訪）
+  db.exec(`CREATE TABLE IF NOT EXISTS discharge_followup_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    followup_id INTEGER NOT NULL REFERENCES discharge_followups(id),
+    call_date TEXT NOT NULL DEFAULT '',
+    contact_status TEXT NOT NULL DEFAULT '',   -- 聯絡狀況
+    feeding_status TEXT NOT NULL DEFAULT '',   -- 哺育狀況
+    stop_reason TEXT NOT NULL DEFAULT '',      -- 中斷原因
+    stop_reason_note TEXT NOT NULL DEFAULT '',
+    follow_action TEXT NOT NULL DEFAULT '',    -- 後續處理
+    edu_items TEXT NOT NULL DEFAULT '[]',      -- 衛教項目（多選 JSON）
+    edu_note TEXT NOT NULL DEFAULT '',
+    referral TEXT NOT NULL DEFAULT '',         -- 轉介單位
+    referral_note TEXT NOT NULL DEFAULT '',
+    caller TEXT NOT NULL DEFAULT '',           -- 電訪者
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_dfc_followup ON discharge_followup_calls(followup_id, call_date);`);
   // 設備清點：項目主檔（可自行增減）＋每筆訂房一張清點單
   db.exec(`CREATE TABLE IF NOT EXISTS equip_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

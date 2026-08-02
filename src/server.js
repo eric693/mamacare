@@ -139,6 +139,7 @@ const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
   [/^\/api\/form-dispatch/, 'mother_care'],
   [/^\/api\/discharge-followups/, 'mother_care'],
+  [/^\/api\/discharge-followup-calls/, 'mother_care'],
   [/^\/api\/mothers\/\d+\/form-dispatch/, 'mother_care'],
   [/^\/api\/custom-forms/, 'custom_forms'],
   [/^\/api\/custom-form-entries/, 'custom_forms'],
@@ -11582,18 +11583,37 @@ app.post('/api/mothers/:id/form-dispatch/:kind/send', requireStaff, (req, res) =
 
 // ---------- 產婦出住返家追蹤（出住後電訪關懷：以年/月、姓名查詢，未完成／已完成篩選） ----------
 // 追蹤表項目（產科表單／產婦出住返家追蹤）；key 一旦產生就不再變動，維持既有紀錄可讀
+// 追蹤單表頭（產婦出住返家追蹤單原件欄位）
 const DF_ITEMS = [
-  { key: 'lochia', label: '惡露狀況', type: 'select', options: ['正常減少', '量多', '有異味', '已停止', '其他'] },
-  { key: 'wound', label: '傷口狀況', type: 'select', options: ['癒合良好', '疼痛', '紅腫滲液', '其他'] },
-  { key: 'breast', label: '乳房／哺乳狀況', type: 'select', options: ['哺乳順利', '乳汁不足', '脹奶硬塊', '乳頭破皮', '已退奶', '其他'] },
-  { key: 'elimination', label: '排泄狀況', type: 'select', options: ['正常', '便祕', '解尿不適', '其他'] },
-  { key: 'mood', label: '睡眠與情緒', type: 'select', options: ['良好', '睡眠不足', '情緒低落', '需轉介評估', '其他'] },
-  { key: 'baby_status', label: '寶寶照顧狀況', type: 'select', options: ['照顧順利', '餵食問題', '睡眠問題', '黃疸追蹤', '其他'] },
-  { key: 'revisit', label: '產後回診', type: 'select', options: ['已回診', '已預約', '尚未安排', '不需要'] },
-  { key: 'guidance', label: '衛教／協助事項', type: 'textarea' },
-  { key: 'satisfaction', label: '中心服務回饋', type: 'textarea' }
+  { key: 'phone_home', label: '聯絡電話－住家', type: 'text' },
+  { key: 'phone_mobile', label: '聯絡電話－手機', type: 'text' },
+  { key: 'address', label: '聯絡地址', type: 'text' },
+  { key: 'agree_call', label: '同意電訪', type: 'select', options: ['是', '否'] },
+  { key: 'call_period', label: '連絡時段', type: 'select', options: ['上午', '下午', '全時段'] },
+  { key: 'call_time_note', label: '連絡時段（幾點至幾點）', type: 'text' },
+  { key: 'work_status', label: '工作狀況', type: 'select', options: ['無', '全職'] },
+  { key: 'work_pump', label: '工作地方是否有時間擠母乳', type: 'select', options: ['是', '否'] },
+  { key: 'bf_plan', label: '哺餵母乳期間計畫', type: 'select', options: ['嬰兒想吃多久就多久', '一年以上', '半年以上', '坐月子期間', '其它'] },
+  { key: 'bf_plan_other', label: '哺餵期間計畫－其它', type: 'text' },
+  { key: 'family_attitude', label: '家屬對哺乳的態度', type: 'select', options: ['贊成哺餵母乳', '不贊成哺餵母乳', '贊成哺餵母乳＋配方奶'] },
+  { key: 'bf_current', label: '哺餵現況', type: 'select', options: ['純母乳', '混合哺乳', '配方奶'] },
+  { key: 'formula_note', label: '配方奶／添加物', type: 'text' },
+  { key: 'formula_reason', label: '使用配方奶原因', type: 'text' },
+  { key: 'bf_freq', label: '哺餵頻率', type: 'select', options: ['依需求哺餵', '固定時間'] },
+  { key: 'bf_freq_hours', label: '固定時間（幾小時一次）', type: 'text' },
+  { key: 'bf_method', label: '哺餵方式', type: 'select', options: ['親餵', '瓶餵', '兩者都有'] }
 ];
 const DF_METHODS = ['電話', 'LINE', '到院', '其他'];
+// 電訪追蹤欄位代號（依原件填表說明）
+const DF_CALL_OPTS = {
+  contact_status: ['1.本人接聽', '2.家人接聽', '3.無人接聽', '4.空號', '5.號碼錯誤', '6.其他'],
+  feeding_status: ['1.親餵母乳', '2.瓶餵母乳', '3.瓶餵配方奶'],
+  stop_reason: ['1.奶量不足', '2.太累', '3.脹奶不適', '4.母嬰分離', '5.家人反對', '6.上班不便', '7.母親疾病', '8.嬰兒疾病', '9.其他'],
+  follow_action: ['1.加強衛教', '2.轉介母乳諮詢門診', '3.轉介支持團體'],
+  edu_items: ['1.無問題', '2.擠乳方式', '3.維持泌乳方式', '4.母乳保存', '5.乳房問題（乳頭疼痛、破皮、乳腺炎）',
+    '6.脹奶護理', '7.職場哺餵問題', '8.新生兒預防注射時間指導', '9.嬰兒照護', '10.其他'],
+  referral: ['1.健康服務中心', '2.博仁醫院毛心潔醫師哺乳門診', '3.青年診所楊靖瑩醫師哺乳門診', '4.其他']
+};
 
 // 已出住訂房清單（依出住年月）＋對應追蹤紀錄
 app.get('/api/discharge-followups', requireStaff, (req, res) => {
@@ -11619,8 +11639,13 @@ app.get('/api/discharge-followups', requireStaff, (req, res) => {
     }))
     .filter(r => !kw || `${r.mother_name} ${r.room_name} ${r.phone || ''}`.toLowerCase().includes(kw.toLowerCase()))
     .filter(r => status === 'all' || (status === 'done' ? r.completed : !r.completed));
+  // 每張追蹤單的電訪次數（清單顯示追蹤進度）
+  for (const r of out) {
+    r.call_count = r.followup_id
+      ? db.prepare('SELECT COUNT(*) c FROM discharge_followup_calls WHERE followup_id = ?').get(r.followup_id).c : 0;
+  }
   res.json({
-    ym, kw, status, rows: out, items: DF_ITEMS, methods: DF_METHODS,
+    ym, kw, status, rows: out, items: DF_ITEMS, methods: DF_METHODS, call_opts: DF_CALL_OPTS,
     stats: { total: out.length, done: out.filter(r => r.completed).length, todo: out.filter(r => !r.completed).length }
   });
 });
@@ -11649,6 +11674,52 @@ app.put('/api/discharge-followups/:bookingId', requireStaff, (req, res) => {
   }
   logAudit(req, { action: 'update', entity: 'discharge_followups', entity_id: bk.id,
     summary: `${cur ? '修改' : '新增'} ${bk.name} 出住返家追蹤紀錄（${follow}${completed ? '・已完成' : ''}）` });
+  res.json({ ok: true });
+});
+
+// 電訪追蹤紀錄（一張追蹤單多次電訪：出住一週內及每隔一個月）
+function followupIdForBooking(bookingId, userId) {
+  const cur = db.prepare('SELECT id FROM discharge_followups WHERE booking_id = ?').get(bookingId);
+  if (cur) return cur.id;
+  const bk = db.prepare('SELECT id, mother_id FROM bookings WHERE id = ?').get(bookingId);
+  if (!bk) return null;
+  // 尚未建立表頭時自動開單，讓電訪可直接記錄
+  return db.prepare(`INSERT INTO discharge_followups (booking_id, mother_id, follow_date, method, data, note, completed, updated_by)
+    VALUES (?,?,?,?,?,?,0,?)`).run(bk.id, bk.mother_id, today(), '', '{}', '', userId).lastInsertRowid;
+}
+
+app.get('/api/discharge-followups/:bookingId/calls', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT id FROM discharge_followups WHERE booking_id = ?').get(req.params.bookingId);
+  if (!cur) return res.json({ rows: [], opts: DF_CALL_OPTS });
+  const rows = db.prepare(`SELECT c.*, u.name AS created_by_name FROM discharge_followup_calls c
+    LEFT JOIN users u ON u.id = c.created_by
+    WHERE c.followup_id = ? ORDER BY c.call_date, c.id`).all(cur.id);
+  for (const r of rows) { try { r.edu_items = JSON.parse(r.edu_items); } catch (e) { r.edu_items = []; } }
+  res.json({ rows, opts: DF_CALL_OPTS });
+});
+
+app.post('/api/discharge-followups/:bookingId/calls', requireStaff, (req, res) => {
+  const fid = followupIdForBooking(Number(req.params.bookingId), req.session.user.id);
+  if (!fid) return res.status(404).json({ error: '找不到訂房' });
+  const b = req.body || {};
+  const pick = (k, v) => DF_CALL_OPTS[k].includes(v) ? v : '';
+  const edu = (Array.isArray(b.edu_items) ? b.edu_items : []).filter(x => DF_CALL_OPTS.edu_items.includes(x)).slice(0, 10);
+  const info = db.prepare(`INSERT INTO discharge_followup_calls
+    (followup_id, call_date, contact_status, feeding_status, stop_reason, stop_reason_note,
+     follow_action, edu_items, edu_note, referral, referral_note, caller, note, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    fid, /^\d{4}-\d{2}-\d{2}$/.test(b.call_date || '') ? b.call_date : today(),
+    pick('contact_status', b.contact_status), pick('feeding_status', b.feeding_status),
+    pick('stop_reason', b.stop_reason), String(b.stop_reason_note || '').slice(0, 200),
+    pick('follow_action', b.follow_action), JSON.stringify(edu), String(b.edu_note || '').slice(0, 200),
+    pick('referral', b.referral), String(b.referral_note || '').slice(0, 200),
+    String(b.caller || req.session.user.name).slice(0, 50), String(b.note || '').slice(0, 500),
+    req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/discharge-followup-calls/:id', requireStaff, (req, res) => {
+  db.prepare('DELETE FROM discharge_followup_calls WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
