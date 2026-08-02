@@ -9179,7 +9179,22 @@ const BFAW = {
   helpers: ['2位以上', '1位', '無'],
   helpless: ['時常', '偶爾', '幾乎沒有']
 };
-const SCALE_LABEL = { apgar: '家庭功能評估', epds: '愛丁堡憂鬱量表', bf_awareness: '母乳認知與支持系統評估' };
+const SCALE_LABEL = { apgar: '家庭功能評估', epds: '愛丁堡憂鬱量表', bf_awareness: '母乳認知與支持系統評估', social: '社會評估量表' };
+// 表單九：家庭社會功能評估表－社會評估量表（10 題；沒有支持 0～非常支持 3）
+const SOCIAL_ITEMS = [
+  '協助您減輕生理或心理方面的困擾',
+  '協助您減輕育兒方面的困擾',
+  '協助整理清潔居家環境',
+  '協助照顧新生兒',
+  '協助照顧新生兒手足（大寶）；若無請略過',
+  '提供產後坐月子的知識',
+  '提供照顧新生兒知識',
+  '提供自我照顧知識',
+  '給予情緒上的關懷與支持',
+  '贊成哺餵母乳'
+];
+const SOCIAL_OPTIONS = [['沒有支持', 0], ['稍微支持', 1], ['有些支持', 2], ['非常支持', 3]];
+const SOCIAL_HELPERS = ['母親', '公婆', '先生', '其他'];
 
 function mnaSel(id, opts, { req = true } = {}) {
   return `<select id="${id}" ${req ? 'data-req' : ''}><option value="">請選擇</option>${opts.map(o => `<option>${esc(o)}</option>`).join('')}</select>`;
@@ -9212,6 +9227,28 @@ function openMotherScale(ctx, kind, onSaved) {
             ${[2, 1, 0].map(val => `<td style="text-align:center"><input type="radio" name="sc-q${i}" value="${val}"></td>`).join('')}</tr>`).join('')}
         </tbody></table>
         <div style="margin-top:8px;font-size:.92rem">評估結果　總分：<b id="sc-total">—</b> 分<small style="color:var(--muted)">（7~10 家庭功能良好；4~6 中度障礙；0~3 重度障礙）</small></div>`;
+    } else if (kind === 'social') {
+      bodyHtml = `
+        <div style="text-align:center;font-weight:700">${esc(SETTINGS.center_name || '')}<br><span style="font-weight:500">家庭社會功能評估表－社會評估量表</span></div>
+        <div class="row" style="gap:8px 18px;flex-wrap:wrap;align-items:center;font-size:.92rem;margin:8px 0">
+          <span>房號：${esc(mother.room_name || '—')}</span><span>姓名：${esc(mother.name)}</span>
+          <span>入住日期：${esc(mother.check_in || '—')}</span>
+          <span>填表日期：<input type="date" id="sc-date" value="${todayStr()}" style="width:auto"></span>
+        </div>
+        <div class="field"><label>主要協助者</label>
+          <div class="row" style="gap:6px 14px;flex-wrap:wrap">
+            ${SOCIAL_HELPERS.map(h => `<label class="bna-chk"><input type="radio" name="sc-helper" value="${esc(h)}"> ${esc(h)}</label>`).join('')}
+            <input id="sc-helper-other" maxlength="50" placeholder="其他請註明" style="width:180px">
+          </div></div>
+        <div style="font-size:.88rem;margin:6px 0">以下量表想瞭解您在產後期間有關實質上、情緒上及訊息上的支持來源與程度，請依現在狀況勾選最接近您個人情況的答案。</div>
+        <table class="data" style="margin-top:8px">
+          <thead><tr><th>項目</th>${SOCIAL_OPTIONS.map(([l]) => `<th>${esc(l)}</th>`).join('')}<th>略過</th></tr></thead>
+          <tbody>${SOCIAL_ITEMS.map((q, i) => `
+            <tr><td style="white-space:normal">${i + 1}. ${esc(q)}</td>
+              ${SOCIAL_OPTIONS.map(([, v]) => `<td style="text-align:center"><input type="radio" name="sc-q${i}" value="${v}"></td>`).join('')}
+              <td style="text-align:center">${i === 4 ? '<input type="radio" name="sc-q4" value="-1">' : ''}</td></tr>`).join('')}
+          </tbody></table>
+        <div style="margin-top:8px;font-size:.92rem">總分：<b id="sc-total">—</b> 分<small style="color:var(--muted)">（滿分 30 分；略過之題目不計分）</small></div>`;
     } else if (kind === 'epds') {
       bodyHtml = `
         <div style="text-align:center;font-weight:700">產後護理之家<br><span style="font-weight:500">產後憂鬱評量表</span></div>
@@ -9305,7 +9342,7 @@ function openMotherScale(ctx, kind, onSaved) {
       const rd = name => { const c = body.querySelector(`input[name="${name}"]:checked`); return c ? c.value : ''; };
       const cks = name => [...body.querySelectorAll(`[data-bfck="${name}"]:checked`)].map(c => c.value);
       const iv = id => { const el = body.querySelector('#' + id); return el ? el.value.trim() : ''; };
-      const nQ = kind === 'apgar' ? 5 : kind === 'epds' ? 10 : 0;
+      const nQ = kind === 'apgar' ? 5 : (kind === 'epds' || kind === 'social') ? 10 : 0;
       const totalEl = body.querySelector('#sc-total');
       if (totalEl) body.querySelectorAll('input[name^="sc-q"]').forEach(r => r.onchange = () => {
         let sum = 0, done = true;
@@ -9313,6 +9350,14 @@ function openMotherScale(ctx, kind, onSaved) {
           const c = body.querySelector(`input[name="sc-q${i}"]:checked`);
           if (!c) { done = false; continue; }
           sum += Number(c.value);
+        }
+        // 社會評估量表：略過（-1）不計分
+        if (kind === 'social') {
+          sum = 0;
+          for (let i = 0; i < nQ; i++) {
+            const c = body.querySelector(`input[name="sc-q${i}"]:checked`);
+            if (c && Number(c.value) > 0) sum += Number(c.value);
+          }
         }
         totalEl.textContent = done ? sum : `${sum}（未答完）`;
         // EPDS 依總分自動預選判定（<10 正常；10~12 再觀察；>=13 建議進一步評估），可手動改
@@ -9352,6 +9397,7 @@ function openMotherScale(ctx, kind, onSaved) {
           }
           payload.answers = answers;
           if (kind === 'epds') { payload.age = iv('sc-age'); payload.result = rd('sc-result'); }
+          if (kind === 'social') { payload.helper = rd('sc-helper'); payload.helper_other = iv('sc-helper-other'); }
         }
         try {
           await api(`/mothers/${momId}/scales`, { method: 'POST', body: payload });
@@ -9851,6 +9897,7 @@ async function viewMotherIntake() {
         <span style="font-size:.85rem;color:var(--muted);align-self:center">入住評估量表：</span>
         ${scaleBtn('epds', '愛丁堡產後憂鬱量表')}
         ${scaleBtn('apgar', '家庭功能評估表')}
+        ${scaleBtn('social', '社會評估量表')}
       </div>
     </div>
 

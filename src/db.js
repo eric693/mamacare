@@ -1057,7 +1057,7 @@ function init() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mother_id INTEGER NOT NULL REFERENCES mothers(id),
     nurse_id INTEGER REFERENCES users(id),
-    kind TEXT NOT NULL CHECK (kind IN ('apgar','epds','bf_awareness')),
+    kind TEXT NOT NULL CHECK (kind IN ('apgar','epds','bf_awareness','social')),
     fill_date TEXT NOT NULL,
     answers TEXT NOT NULL DEFAULT '[]',  -- 各題答案（JSON 陣列）
     total INTEGER,                       -- 總分（bf_awareness 無總分可為 NULL）
@@ -1210,6 +1210,53 @@ function init() {
       ['產後護理', '會陰沖洗方法、坐浴指導。', ''],
       ['產後護理', '傷口之異常、感染及需就醫狀況。', '']
     ].forEach((r, i) => insG.run(r[0], r[1], r[2], (i + 1) * 10));
+  }
+  // 表單九：社會評估量表（social）納入量表種類，需放寬既有 CHECK 限制
+  const mscSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='mother_scales'").get() || {}).sql || '';
+  if (mscSql && !mscSql.includes("'social'")) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE mother_scales_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER NOT NULL REFERENCES mothers(id),
+        nurse_id INTEGER REFERENCES users(id),
+        kind TEXT NOT NULL CHECK (kind IN ('apgar','epds','bf_awareness','social')),
+        fill_date TEXT NOT NULL,
+        answers TEXT NOT NULL DEFAULT '[]',
+        total INTEGER,
+        note TEXT DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      );
+      INSERT INTO mother_scales_new (id, mother_id, nurse_id, kind, fill_date, answers, total, note, created_at)
+        SELECT id, mother_id, nurse_id, kind, fill_date, answers, total, note, created_at FROM mother_scales;
+      DROP TABLE mother_scales;
+      ALTER TABLE mother_scales_new RENAME TO mother_scales;
+      CREATE INDEX IF NOT EXISTS idx_msc_mother ON mother_scales(mother_id, kind, fill_date);`);
+    db.pragma('foreign_keys = ON');
+  }
+  // 表單五（產婦護理衛教指導單 115.05 四版）：補齊紙本項目；已存在者（依名稱）不重複新增
+  {
+    const hasG = db.prepare('SELECT id FROM mother_guidance_items WHERE name = ?');
+    const insG2 = db.prepare('INSERT INTO mother_guidance_items (category, name, options, sort) VALUES (?,?,?,?)');
+    const maxSort = () => (db.prepare('SELECT MAX(sort) s FROM mother_guidance_items').get().s || 0);
+    // 分類名稱比照紙本（原「產後護理」＝傷口護理）
+    db.prepare("UPDATE mother_guidance_items SET category = '傷口護理' WHERE category = '產後護理'").run();
+    let s = maxSort();
+    for (const [cat, name] of [
+      ['傷口護理', '束腹帶正確的使用方法。'],
+      ['傷口護理', '身體清潔之方式。'],
+      ['產後復原', '觀察宮縮、宮底。'],
+      ['產後復原', '正常的產後排出物變化。'],
+      ['產後復原', '正確執行子宮環形按摩。'],
+      ['產後復原', '產後出血等異常情形需就醫狀況。'],
+      ['產後運動', '依身體狀況漸進式執行產後運動。'],
+      ['親子共讀', '能瞭解親子共讀好處。'],
+      ['返家照護注意事項', '產婦持續哺乳、感染症狀及需就醫的狀況。'],
+      ['其他', '個案需求－退奶指導及飲食衛教。'],
+      ['其他', '個案需求。']
+    ]) {
+      if (!hasG.get(name)) { s += 10; insG2.run(cat, name, '', s); }
+    }
   }
   // 寶寶護理指導單（新生兒護理衛教指導單）：評量項目主檔＋每位寶寶一張指導單
   db.exec(`CREATE TABLE IF NOT EXISTS baby_guidance_items (

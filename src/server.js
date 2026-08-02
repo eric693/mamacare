@@ -2632,7 +2632,7 @@ app.post('/api/mothers/:id/scales', requireStaff, (req, res) => {
   const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
   if (!mother) return res.status(404).json({ error: '找不到媽媽' });
   const b = req.body || {};
-  if (!['apgar', 'epds', 'bf_awareness'].includes(b.kind)) return res.status(400).json({ error: '量表類別錯誤' });
+  if (!['apgar', 'epds', 'bf_awareness', 'social'].includes(b.kind)) return res.status(400).json({ error: '量表類別錯誤' });
   const date = /^\d{4}-\d{2}-\d{2}$/.test(b.fill_date || '') ? b.fill_date : today();
   let total = null, stored;
   if (b.kind === 'apgar') {
@@ -2642,6 +2642,15 @@ app.post('/api/mothers/:id/scales', requireStaff, (req, res) => {
     }
     total = answers.reduce((s, a) => s + a, 0);
     stored = answers;
+  } else if (b.kind === 'social') {
+    // 表單九社會評估量表：10 題，沒有支持 0／稍微支持 1／有些支持 2／非常支持 3；
+    // 第 5 題（照顧大寶）無大寶時可填 -1 代表略過，不計分
+    const arr = Array.isArray(b.answers) ? b.answers : ((b.answers || {}).a || []);
+    if (arr.length !== 10 || arr.some(a => ![-1, 0, 1, 2, 3].includes(a))) {
+      return res.status(400).json({ error: '社會評估量表需回答 10 題（每題 0～3 分，無大寶者第 5 題可略過）' });
+    }
+    total = arr.filter(a => a >= 0).reduce((s, a) => s + a, 0);
+    stored = { a: arr, helper: String(b.helper || '').slice(0, 50), helper_other: String(b.helper_other || '').slice(0, 50) };
   } else if (b.kind === 'epds') {
     // answers 為 10 題分數陣列；另存年齡與判定結果（正常／再觀察／建議進一步評估）
     const arr = Array.isArray(b.answers) ? b.answers : ((b.answers || {}).a || []);
