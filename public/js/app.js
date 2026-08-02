@@ -776,6 +776,8 @@ async function viewBabyCare() {
         <button class="btn secondary" id="bc-report">寶寶日報</button>
         <button class="btn secondary" id="bc-mar">給藥紀錄</button>
         <button class="btn" id="bc-send" style="background:var(--accent)">發送日報給家屬</button>
+        <button class="btn secondary" id="bc-milk">母乳庫存紀錄</button>
+        <button class="btn secondary" id="bc-home">返家照護摘要</button>
       </div>
       <div class="row mt">
         <span style="font-size:.85rem;color:var(--muted)">一鍵記錄：</span>
@@ -947,6 +949,18 @@ async function viewBabyCare() {
   });
 
   $('#bc-round').onclick = () => openBatchRound(list.filter(b => b.mother_status === 'checked_in'), refresh);
+
+  // 母乳庫存紀錄／新生兒返家照護摘要
+  $('#bc-milk').onclick = () => {
+    const babyId = $('#bc-baby').value; if (!babyId) return;
+    const baby = babyById(babyId);
+    openBreastmilkStock(babyId, baby ? baby.name : '寶寶');
+  };
+  $('#bc-home').onclick = () => {
+    const babyId = $('#bc-baby').value; if (!babyId) return;
+    const baby = babyById(babyId);
+    openBabyHomeSummary(babyId, baby ? baby.name : '寶寶');
+  };
 
   // 給藥紀錄：跳出 MAR 視窗（同新生兒醫療分頁），＋給藥儲存後自動關閉
   $('#bc-mar').onclick = () => {
@@ -8123,6 +8137,121 @@ async function viewMotherUpcoming(kind) {
     });
     $('#mu-count').textContent = `共 ${kw ? n : rows.length} 筆`;
   };
+}
+
+/* ---------- 母乳庫存紀錄表（存入／取出／丟棄明細＋冷藏冷凍結存） ---------- */
+async function openBreastmilkStock(babyId, babyName) {
+  const render = async () => {
+    const d = await api(`/babies/${babyId}/breastmilk`);
+    const dirLabel = v => (d.directions.find(x => x.value === v) || {}).label || v;
+    const stLabel = v => (d.storages.find(x => x.value === v) || {}).label || v;
+    const stockLine = d.storages.map(s =>
+      `<span class="badge ${d.stock[s.value].bottles > 0 ? 'teal' : 'gray'}" style="margin-right:6px">${esc(s.label)}：${d.stock[s.value].bottles} 瓶／${d.stock[s.value].ml} ml</span>`).join('');
+    openModal(`母乳庫存紀錄：${babyName}`, `
+      <div style="margin-bottom:8px">目前結存　${stockLine}</div>
+      <div class="form-grid">
+        <div class="field"><label>日期</label><input type="date" id="bml-date" value="${todayStr()}"></div>
+        <div class="field"><label>時間</label><input type="time" id="bml-time" value="${new Date().toTimeString().slice(0, 5)}"></div>
+        <div class="field"><label>異動別</label><select id="bml-dir">${d.directions.map(x => `<option value="${x.value}">${esc(x.label)}</option>`).join('')}</select></div>
+        <div class="field"><label>存放</label><select id="bml-storage">${d.storages.map(x => `<option value="${x.value}">${esc(x.label)}</option>`).join('')}</select></div>
+        <div class="field"><label>瓶數 <b class="req">*</b></label><input type="number" min="1" id="bml-bottles" value="1"></div>
+        <div class="field"><label>每瓶容量<small>（ml）</small></label><input type="number" min="0" id="bml-ml" value="0"></div>
+        <div class="field"><label>擠乳日期</label><input type="date" id="bml-exp"></div>
+        <div class="field full"><label>備註</label><input id="bml-note" maxlength="300"></div>
+        <div class="full row" style="gap:10px"><button class="btn" id="bml-add">新增紀錄</button><span class="error-msg" id="bml-err"></span></div>
+      </div>
+      <div class="sec-hd mt">庫存明細（近 300 筆）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>日期時間</th><th>異動別</th><th>存放</th><th>瓶數</th><th>容量</th><th>擠乳日期</th><th>備註</th><th>登錄人</th><th></th></tr></thead>
+          <tbody>${d.rows.map(r => `
+            <tr>
+              <td data-label="日期時間">${esc(r.log_date)}<br><small>${esc(r.log_time)}</small></td>
+              <td data-label="異動別">${r.direction === 'in' ? '<span class="badge teal">存入</span>' : `<span class="badge yellow">${esc(dirLabel(r.direction))}</span>`}</td>
+              <td data-label="存放">${esc(stLabel(r.storage))}</td>
+              <td data-label="瓶數">${r.bottles}</td>
+              <td data-label="容量">${r.ml_each ? `${r.ml_each} ml` : '—'}</td>
+              <td data-label="擠乳日期">${esc(r.expressed_at || '—')}</td>
+              <td data-label="備註"><small>${esc(r.note || '—')}</small></td>
+              <td data-label="登錄人">${esc(r.nurse_name || '—')}</td>
+              <td><button class="btn small danger" data-bml-del="${r.id}">刪</button></td>
+            </tr>`).join('') || '<tr><td colspan="9"><div class="empty">尚無庫存紀錄</div></td></tr>'}</tbody>
+        </table>
+      </div>`, body => {
+      body.querySelector('#bml-add').onclick = async () => {
+        try {
+          await api(`/babies/${babyId}/breastmilk`, { method: 'POST', body: {
+            log_date: body.querySelector('#bml-date').value,
+            log_time: body.querySelector('#bml-time').value,
+            direction: body.querySelector('#bml-dir').value,
+            storage: body.querySelector('#bml-storage').value,
+            bottles: body.querySelector('#bml-bottles').value,
+            ml_each: body.querySelector('#bml-ml').value,
+            expressed_at: body.querySelector('#bml-exp').value,
+            note: body.querySelector('#bml-note').value.trim()
+          } });
+          render();
+        } catch (e) { body.querySelector('#bml-err').textContent = e.message; }
+      };
+      body.querySelectorAll('[data-bml-del]').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('確定刪除這筆母乳庫存紀錄？')) return;
+          await api(`/breastmilk-logs/${btn.dataset.bmlDel}`, { method: 'DELETE' });
+          render();
+        };
+      });
+    });
+  };
+  await render();
+}
+
+/* ---------- 新生兒返家照護摘要（每位寶寶一張） ---------- */
+async function openBabyHomeSummary(babyId, babyName) {
+  const d = await api(`/babies/${babyId}/home-summary`);
+  const s = d.summary || { summary_date: todayStr(), data: {}, note: '' };
+  const val = k => (s.data && s.data[k]) || '';
+  openModal(`新生兒返家照護摘要：${babyName}`, `
+    <div class="form-grid">
+      <div class="field"><label>填寫日期</label><input type="date" id="bhs-date" value="${esc(s.summary_date || todayStr())}"></div>
+      ${d.items.map(it => `<div class="field full"><label>${esc(it.label)}</label><textarea id="bhs-${it.key}" rows="2" maxlength="1000">${esc(val(it.key))}</textarea></div>`).join('')}
+      <div class="field full"><label>其他備註</label><textarea id="bhs-note" rows="2" maxlength="1000">${esc(s.note || '')}</textarea></div>
+      <div class="full row" style="gap:10px">
+        <button class="btn" id="bhs-save">儲存</button>
+        <button class="btn secondary" id="bhs-print">列印</button>
+        <span class="error-msg" id="bhs-err"></span>
+      </div>
+      ${s.updated_at ? `<div class="full" style="color:var(--muted);font-size:.85rem">最後更新：${esc(s.updated_at)}${s.updated_by_name ? `（${esc(s.updated_by_name)}）` : ''}</div>` : ''}
+    </div>`, body => {
+    const collect = () => {
+      const data = {};
+      d.items.forEach(it => { data[it.key] = body.querySelector(`#bhs-${it.key}`).value; });
+      return data;
+    };
+    body.querySelector('#bhs-save').onclick = async () => {
+      try {
+        await api(`/babies/${babyId}/home-summary`, { method: 'PUT', body: {
+          summary_date: body.querySelector('#bhs-date').value,
+          data: collect(), note: body.querySelector('#bhs-note').value
+        } });
+        const b = body.querySelector('#bhs-save');
+        b.textContent = '已儲存 ✓';
+        setTimeout(() => { b.textContent = '儲存'; }, 1500);
+      } catch (e) { body.querySelector('#bhs-err').textContent = e.message; }
+    };
+    body.querySelector('#bhs-print').onclick = () => {
+      const data = collect();
+      const w = window.open('', '_blank');
+      w.document.write(`<meta charset="utf-8"><title>新生兒返家照護摘要</title>
+        <style>body{font-family:system-ui,"Noto Sans TC",sans-serif;padding:24px;line-height:1.7}
+        h1{font-size:1.3rem}th,td{border:1px solid #999;padding:6px 8px;text-align:left;vertical-align:top}
+        table{border-collapse:collapse;width:100%}th{width:180px;background:#f2f2f2}</style>
+        <h1>新生兒返家照護摘要</h1>
+        <p>寶寶：${esc(babyName)}　填寫日期：${esc(body.querySelector('#bhs-date').value)}</p>
+        <table>${d.items.map(it => `<tr><th>${esc(it.label)}</th><td>${esc(data[it.key] || '')}</td></tr>`).join('')}
+        <tr><th>其他備註</th><td>${esc(body.querySelector('#bhs-note').value)}</td></tr></table>`);
+      w.document.close(); w.print();
+    };
+  });
 }
 
 /* ---------- 團課計畫（媽媽入住期間規劃參加的團體課程；可由課程主檔帶入或自行輸入） ---------- */

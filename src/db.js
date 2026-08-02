@@ -1299,6 +1299,33 @@ function init() {
     edited_by INTEGER REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_cfe_form ON custom_form_entries(form_id, fill_date);`);
+  // 母乳庫存紀錄：每位寶寶的母乳存入／取出／丟棄明細（供結存統計）
+  db.exec(`CREATE TABLE IF NOT EXISTS breastmilk_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    log_date TEXT NOT NULL,
+    log_time TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT 'in',   -- in=存入／out=取出／discard=丟棄
+    bottles INTEGER NOT NULL DEFAULT 0,
+    ml_each INTEGER NOT NULL DEFAULT 0,     -- 每瓶容量(ml)
+    storage TEXT NOT NULL DEFAULT 'fridge', -- fridge=冷藏／freezer=冷凍
+    expressed_at TEXT NOT NULL DEFAULT '',  -- 擠乳日期（效期判斷用）
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_bml_baby ON breastmilk_logs(baby_id, log_date);
+
+  -- 新生兒返家照護摘要：每位寶寶一張（出住返家時交付家屬）
+  CREATE TABLE IF NOT EXISTS baby_home_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL UNIQUE REFERENCES babies(id),
+    summary_date TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id)
+  );`);
   // 護理紀錄（原健康問題列表）：新增「詳細說明」欄位
   const mhpCols = db.prepare('PRAGMA table_info(mother_health_problems)').all().map(c => c.name);
   if (!mhpCols.includes('detail')) {

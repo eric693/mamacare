@@ -160,7 +160,8 @@ const MODULE_RULES = [
   // 母乳哺育評估：以媽媽護理師為主、嬰兒室為輔 → 兩模組其一即可存取
   [/^\/api\/babies\/\d+\/breastfeeding/, ['baby_care', 'mother_care']],
   [/^\/api\/breastfeeding/, ['baby_care', 'mother_care']],
-  [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|eval|eval-profile|intake-assessments|handovers|closure)/, 'baby_care'],
+  [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|eval|eval-profile|intake-assessments|handovers|closure|breastmilk|home-summary)/, 'baby_care'],
+  [/^\/api\/breastmilk-logs/, 'baby_care'],
   [/^\/api\/(baby-records|baby-nursing|baby-rooming|baby-intake|baby-handovers|baby-closures)/, 'baby_care'],
   [/^\/api\/handovers/, 'handover'],
   [/^\/api\/incidents/, 'incidents'],
@@ -741,6 +742,105 @@ app.get('/api/babies/:id/location-logs', requireStaff, (req, res) => {
     LEFT JOIN users u ON u.id = ll.nurse_id
     WHERE ll.baby_id = ? ORDER BY ll.moved_at DESC LIMIT 50`).all(req.params.id);
   res.json(rows);
+});
+
+// ---------- 母乳庫存紀錄（存入／取出／丟棄明細＋結存） ----------
+const BML_DIR = ['in', 'out', 'discard'];
+const BML_DIR_TW = { in: '存入', out: '取出', discard: '丟棄' };
+const BML_STORAGE = ['fridge', 'freezer'];
+const BML_STORAGE_TW = { fridge: '冷藏', freezer: '冷凍' };
+
+app.get('/api/babies/:id/breastmilk', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id, name FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const rows = db.prepare(`SELECT l.*, u.name AS nurse_name FROM breastmilk_logs l
+    LEFT JOIN users u ON u.id = l.created_by
+    WHERE l.baby_id = ? ORDER BY l.log_date DESC, l.log_time DESC, l.id DESC LIMIT 300`).all(baby.id);
+  // 結存：存入為正、取出／丟棄為負，分冷藏／冷凍統計
+  const stock = {};
+  for (const s of BML_STORAGE) stock[s] = { bottles: 0, ml: 0 };
+  for (const r of rows) {
+    const sign = r.direction === 'in' ? 1 : -1;
+    const st = BML_STORAGE.includes(r.storage) ? r.storage : 'fridge';
+    stock[st].bottles += sign * r.bottles;
+    stock[st].ml += sign * r.bottles * r.ml_each;
+  }
+  res.json({
+    baby, rows, stock,
+    directions: BML_DIR.map(d => ({ value: d, label: BML_DIR_TW[d] })),
+    storages: BML_STORAGE.map(s => ({ value: s, label: BML_STORAGE_TW[s] }))
+  });
+});
+
+app.post('/api/babies/:id/breastmilk', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id, name FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const bottles = Math.round(Number(b.bottles) || 0);
+  if (!(bottles > 0)) return res.status(400).json({ error: '瓶數需大於 0' });
+  const info = db.prepare(`INSERT INTO breastmilk_logs
+    (baby_id, log_date, log_time, direction, bottles, ml_each, storage, expressed_at, note, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    baby.id,
+    /^\d{4}-\d{2}-\d{2}$/.test(b.log_date || '') ? b.log_date : today(),
+    /^\d{2}:\d{2}$/.test(b.log_time || '') ? b.log_time : new Date().toTimeString().slice(0, 5),
+    BML_DIR.includes(b.direction) ? b.direction : 'in',
+    bottles, Math.max(0, Math.round(Number(b.ml_each) || 0)),
+    BML_STORAGE.includes(b.storage) ? b.storage : 'fridge',
+    /^\d{4}-\d{2}-\d{2}$/.test(b.expressed_at || '') ? b.expressed_at : '',
+    String(b.note || '').slice(0, 300), req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/breastmilk-logs/:id', requireStaff, (req, res) => {
+  db.prepare('DELETE FROM breastmilk_logs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 新生兒返家照護摘要（每位寶寶一張，返家時交付家屬） ----------
+const BHS_ITEMS = [
+  { key: 'feeding', label: '餵食方式與奶量', type: 'textarea' },
+  { key: 'elimination', label: '大小便情形', type: 'textarea' },
+  { key: 'cord_skin', label: '臍帶與皮膚照護', type: 'textarea' },
+  { key: 'jaundice', label: '黃疸追蹤', type: 'textarea' },
+  { key: 'screening', label: '新生兒篩檢結果', type: 'textarea' },
+  { key: 'vaccination', label: '疫苗接種情形', type: 'textarea' },
+  { key: 'revisit', label: '回診／複檢安排', type: 'textarea' },
+  { key: 'warning', label: '返家注意事項與警訊', type: 'textarea' },
+  { key: 'teach', label: '返家衛教重點', type: 'textarea' }
+];
+
+app.get('/api/babies/:id/home-summary', requireStaff, (req, res) => {
+  const baby = db.prepare(`SELECT b.*, m.name AS mother_name FROM babies b
+    JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const row = db.prepare(`SELECT s.*, u.name AS updated_by_name FROM baby_home_summaries s
+    LEFT JOIN users u ON u.id = s.updated_by WHERE s.baby_id = ?`).get(baby.id);
+  let data = {};
+  if (row) { try { data = JSON.parse(row.data); } catch (e) { data = {}; } }
+  res.json({ baby, items: BHS_ITEMS, summary: row ? { ...row, data } : null });
+});
+
+app.put('/api/babies/:id/home-summary', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id, name FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const data = {};
+  for (const it of BHS_ITEMS) data[it.key] = String((b.data || {})[it.key] ?? '').slice(0, 1000);
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(b.summary_date || '') ? b.summary_date : today();
+  const note = String(b.note || '').slice(0, 1000);
+  const cur = db.prepare('SELECT id FROM baby_home_summaries WHERE baby_id = ?').get(baby.id);
+  if (cur) {
+    db.prepare(`UPDATE baby_home_summaries SET summary_date=?, data=?, note=?,
+      updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`)
+      .run(d, JSON.stringify(data), note, req.session.user.id, cur.id);
+  } else {
+    db.prepare(`INSERT INTO baby_home_summaries (baby_id, summary_date, data, note, updated_by)
+      VALUES (?,?,?,?,?)`).run(baby.id, d, JSON.stringify(data), note, req.session.user.id);
+  }
+  logAudit(req, { action: 'update', entity: 'baby_home_summaries', entity_id: baby.id,
+    summary: `${cur ? '修改' : '新增'} ${baby.name} 新生兒返家照護摘要` });
+  res.json({ ok: true });
 });
 
 // ---------- 寶寶護理每日評估（中衛必要欄位－嬰兒日常評估） ----------
