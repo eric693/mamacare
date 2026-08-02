@@ -8226,6 +8226,7 @@ async function viewMotherHandoverSheet() {
     ['痔瘡', r => { const v = D(r).hemorrhoid; return v === '有' ? '+' : v === '無' ? '-' : ''; }]
   ];
   const babyInfo = intake.babies && intake.babies[0] ? intake.babies[0] : {};
+  const vb = intake.visit_basic || {};
   const ck = (on, label) => `${on ? '■' : '□'}${label}`;
 
   main().innerHTML = `
@@ -8247,8 +8248,8 @@ async function viewMotherHandoverSheet() {
       <div style="font-size:.84rem;line-height:1.9">
         <div>房號：${esc(mother.room_name || '')}　姓名：${esc(mother.name)}　生產日期：${esc(mother.delivery_date || '')}
           產式：${mother.delivery_type === '剖腹產' ? ck(true, 'C/S') + ' ' + ck(false, 'NSD') : mother.delivery_type === '自然產' ? ck(true, 'NSD') + ' ' + ck(false, 'C/S') : '□NSD □C/S'}
-          胎次：${esc(di.parity || '')}　寶寶性別：${babyInfo.gender === 'male' ? '■男 □女' : babyInfo.gender === 'female' ? '□男 ■女' : '□男 □女'}
-          出生體重：${esc(babyInfo.birth_weight_g ? `${babyInfo.birth_weight_g} g` : '')}　生產醫院：${esc(di.birth_hospital || '')}</div>
+          胎次：${esc(vb.parity || di.parity || '')}　寶寶性別：${babyInfo.gender === 'male' ? '■男 □女' : babyInfo.gender === 'female' ? '□男 ■女' : '□男 □女'}
+          出生體重：${esc(babyInfo.birth_weight_g ? `${babyInfo.birth_weight_g} g` : '')}　生產醫院：${esc(vb.hospital || '')}</div>
         <div>疾病史：${esc(d2Text(di.past_history, di.past_history_other) || '□無')}　是否曾手術：${di.surgery_hx === '有' ? `■是，原因：${esc(di.surgery_note || '')}` : di.surgery_hx === '無' ? '■否' : '□否 □是'}</div>
         <div>妊娠合併症：${esc(di.high_risk || '')}${di.high_risk_other ? `（${esc(di.high_risk_other)}）` : ''}</div>
         <div>產後憂鬱量表：第 1 次 日期 ${esc(epds[0] ? epds[0].fill_date : '')} 分數 ${esc(epds[0] ? String(epds[0].total) : '')}；

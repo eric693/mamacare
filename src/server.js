@@ -2885,8 +2885,9 @@ app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS check_out
     FROM mothers m WHERE m.id = ?`).get(req.params.id);
   if (!mother) return res.status(404).json({ error: '找不到媽媽' });
-  // 表單一（產婦顧客資料）需列出新生兒出入住
-  const babies = db.prepare('SELECT id, name, birth_date FROM babies WHERE mother_id = ? ORDER BY id').all(mother.id);
+  // 表單一（產婦顧客資料）需列出新生兒出入住；交班事項表頭需性別與出生體重
+  const babies = db.prepare(`SELECT id, name, birth_date, gender, birth_weight_g
+    FROM babies WHERE mother_id = ? ORDER BY id`).all(mother.id);
   const rec = db.prepare(`
     SELECT a.*, u.name AS nurse_name FROM mother_intake_assessments a
     LEFT JOIN users u ON u.id = a.nurse_id WHERE a.mother_id = ? AND a.booking_id IN (?, 0)
@@ -2896,7 +2897,9 @@ app.get('/api/mothers/:id/intake', requireStaff, (req, res) => {
   const scaleRows = db.prepare(`SELECT kind, COUNT(*) c, MAX(fill_date) last FROM mother_scales WHERE mother_id = ? GROUP BY kind`).all(mother.id);
   const scales = {};
   for (const s of scaleRows) scales[s.kind] = { count: s.c, last: s.last };
-  res.json({ mother, medical_no: motherMedicalNo(mother), record: rec || null, scales, babies });
+  // 交班事項表頭共用婦產科診察的基本資料推導（胎次／生產醫院／History／產後天數）
+  res.json({ mother, medical_no: motherMedicalNo(mother), record: rec || null, scales, babies,
+    visit_basic: motherVisitBasic(mother) });
 });
 
 app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {
