@@ -138,6 +138,7 @@ const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolat
 const MODULE_RULES = [
   [/^\/api\/mothers\/\d+\/meal-diet/, 'meals'],
   [/^\/api\/form-dispatch/, 'mother_care'],
+  [/^\/api\/discharge-followups/, 'mother_care'],
   [/^\/api\/mothers\/\d+\/form-dispatch/, 'mother_care'],
   [/^\/api\/custom-forms/, 'custom_forms'],
   [/^\/api\/custom-form-entries/, 'custom_forms'],
@@ -11306,6 +11307,78 @@ app.post('/api/mothers/:id/form-dispatch/:kind/send', requireStaff, (req, res) =
     summary: `送出表單「${FD_LABEL[kind]}」給 ${mother.name}（家屬 ${sent} 位）` });
   res.json({ ok: true, sent, families: fams.length, sent_at: now,
     warn: fams.length ? '' : '此媽媽尚無啟用中的家屬帳號，僅記錄送出時間，未實際發送' });
+});
+
+// ---------- 產婦出住返家追蹤（出住後電訪關懷：以年/月、姓名查詢，未完成／已完成篩選） ----------
+// 追蹤表項目（產科表單／產婦出住返家追蹤）；key 一旦產生就不再變動，維持既有紀錄可讀
+const DF_ITEMS = [
+  { key: 'lochia', label: '惡露狀況', type: 'select', options: ['正常減少', '量多', '有異味', '已停止', '其他'] },
+  { key: 'wound', label: '傷口狀況', type: 'select', options: ['癒合良好', '疼痛', '紅腫滲液', '其他'] },
+  { key: 'breast', label: '乳房／哺乳狀況', type: 'select', options: ['哺乳順利', '乳汁不足', '脹奶硬塊', '乳頭破皮', '已退奶', '其他'] },
+  { key: 'elimination', label: '排泄狀況', type: 'select', options: ['正常', '便祕', '解尿不適', '其他'] },
+  { key: 'mood', label: '睡眠與情緒', type: 'select', options: ['良好', '睡眠不足', '情緒低落', '需轉介評估', '其他'] },
+  { key: 'baby_status', label: '寶寶照顧狀況', type: 'select', options: ['照顧順利', '餵食問題', '睡眠問題', '黃疸追蹤', '其他'] },
+  { key: 'revisit', label: '產後回診', type: 'select', options: ['已回診', '已預約', '尚未安排', '不需要'] },
+  { key: 'guidance', label: '衛教／協助事項', type: 'textarea' },
+  { key: 'satisfaction', label: '中心服務回饋', type: 'textarea' }
+];
+const DF_METHODS = ['電話', 'LINE', '到院', '其他'];
+
+// 已出住訂房清單（依出住年月）＋對應追蹤紀錄
+app.get('/api/discharge-followups', requireStaff, (req, res) => {
+  const ym = /^\d{4}-\d{2}$/.test(req.query.ym || '') ? req.query.ym : today().slice(0, 7);
+  const kw = String(req.query.kw || '').trim();
+  const status = req.query.status === 'done' || req.query.status === 'todo' ? req.query.status : 'all';
+  const rows = db.prepare(`
+    SELECT bk.id AS booking_id, bk.check_in, bk.check_out, bk.status,
+           m.id AS mother_id, m.name AS mother_name, m.phone, m.birth_date, m.delivery_date, m.delivery_type,
+           r.name AS room_name,
+           f.id AS followup_id, f.follow_date, f.method, f.data, f.note, f.completed, f.updated_at
+    FROM bookings bk
+    JOIN mothers m ON m.id = bk.mother_id
+    JOIN rooms r ON r.id = bk.room_id
+    LEFT JOIN discharge_followups f ON f.booking_id = bk.id
+    WHERE bk.status = 'checked_out' AND substr(bk.check_out, 1, 7) = ?
+    ORDER BY bk.check_out DESC, r.name`).all(ym);
+  const out = rows
+    .map(r => ({
+      ...r, completed: r.completed ? 1 : 0,
+      data: r.data ? JSON.parse(r.data) : {},
+      days: Math.round((new Date(r.check_out) - new Date(r.check_in)) / 86400000)
+    }))
+    .filter(r => !kw || `${r.mother_name} ${r.room_name} ${r.phone || ''}`.toLowerCase().includes(kw.toLowerCase()))
+    .filter(r => status === 'all' || (status === 'done' ? r.completed : !r.completed));
+  res.json({
+    ym, kw, status, rows: out, items: DF_ITEMS, methods: DF_METHODS,
+    stats: { total: out.length, done: out.filter(r => r.completed).length, todo: out.filter(r => !r.completed).length }
+  });
+});
+
+// 新增／更新某筆訂房的返家追蹤紀錄
+app.put('/api/discharge-followups/:bookingId', requireStaff, (req, res) => {
+  const bk = db.prepare(`SELECT bk.id, bk.mother_id, m.name FROM bookings bk
+    JOIN mothers m ON m.id = bk.mother_id WHERE bk.id = ?`).get(req.params.bookingId);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  const b = req.body || {};
+  const data = {};
+  for (const it of DF_ITEMS) data[it.key] = String((b.data || {})[it.key] ?? '').slice(0, 1000);
+  const follow = /^\d{4}-\d{2}-\d{2}$/.test(b.follow_date || '') ? b.follow_date : today();
+  const method = DF_METHODS.includes(b.method) ? b.method : '';
+  const completed = b.completed ? 1 : 0;
+  const note = String(b.note || '').slice(0, 2000);
+  const cur = db.prepare('SELECT id FROM discharge_followups WHERE booking_id = ?').get(bk.id);
+  if (cur) {
+    db.prepare(`UPDATE discharge_followups SET follow_date=?, method=?, data=?, note=?, completed=?,
+      updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`)
+      .run(follow, method, JSON.stringify(data), note, completed, req.session.user.id, cur.id);
+  } else {
+    db.prepare(`INSERT INTO discharge_followups (booking_id, mother_id, follow_date, method, data, note, completed, updated_by)
+      VALUES (?,?,?,?,?,?,?,?)`)
+      .run(bk.id, bk.mother_id, follow, method, JSON.stringify(data), note, completed, req.session.user.id);
+  }
+  logAudit(req, { action: 'update', entity: 'discharge_followups', entity_id: bk.id,
+    summary: `${cur ? '修改' : '新增'} ${bk.name} 出住返家追蹤紀錄（${follow}${completed ? '・已完成' : ''}）` });
+  res.json({ ok: true });
 });
 
 // ---------- 自訂表格（機構自行設計的表格：欄位可增刪停用、填寫紀錄、每月統計） ----------

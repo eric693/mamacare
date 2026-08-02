@@ -1284,6 +1284,20 @@ function init() {
     edited_by INTEGER REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_cfe_form ON custom_form_entries(form_id, fill_date);`);
+  // 產婦出住返家追蹤：每筆已出住訂房一張追蹤紀錄（出院返家後電訪／關懷）
+  db.exec(`CREATE TABLE IF NOT EXISTS discharge_followups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    follow_date TEXT NOT NULL DEFAULT '',    -- 追蹤日期
+    method TEXT NOT NULL DEFAULT '',         -- 追蹤方式：電話／LINE／其他
+    data TEXT NOT NULL DEFAULT '{}',         -- 追蹤項目內容 JSON
+    note TEXT NOT NULL DEFAULT '',
+    completed INTEGER NOT NULL DEFAULT 0,    -- 1＝追蹤完成
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id)
+  );`);
   // 設備清點：項目主檔（可自行增減）＋每筆訂房一張清點單
   db.exec(`CREATE TABLE IF NOT EXISTS equip_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

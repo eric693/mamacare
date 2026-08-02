@@ -8125,6 +8125,123 @@ async function viewMotherUpcoming(kind) {
   };
 }
 
+/* ---------- 出住返家追蹤（以年/月、姓名查詢；未完成／已完成篩選；套用產科表單「產婦出住返家追蹤」） ---------- */
+const DFU_STATE = { ym: '', kw: '', status: 'all' };
+async function viewDischargeFollowup() {
+  const st = DFU_STATE;
+  if (!st.ym) st.ym = todayStr().slice(0, 7);
+  main().innerHTML = `
+    <div class="page-title">出住返家追蹤 <small style="font-weight:400;color:var(--muted);font-size:.85rem">（已出住產婦返家後的關懷追蹤；依出住年月查詢）</small></div>
+    <div class="card">
+      <div class="form-grid" style="align-items:end">
+        <div class="field"><label>出住年月</label><input type="month" id="dfu-ym" value="${esc(st.ym)}"></div>
+        <div class="field"><label>姓名／房號／電話</label><input id="dfu-kw" value="${esc(st.kw)}" placeholder="輸入關鍵字"></div>
+        <div class="field"><label>追蹤狀態</label>
+          <div class="row" style="gap:14px;padding-top:6px">
+            <label><input type="radio" name="dfu-status" value="all" ${st.status === 'all' ? 'checked' : ''}> 全部</label>
+            <label><input type="radio" name="dfu-status" value="todo" ${st.status === 'todo' ? 'checked' : ''}> 未完成</label>
+            <label><input type="radio" name="dfu-status" value="done" ${st.status === 'done' ? 'checked' : ''}> 已完成</label>
+          </div></div>
+        <div class="field"><label>&nbsp;</label><button class="btn" id="dfu-run">送出查詢</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between" style="flex-wrap:wrap;gap:8px">
+        <div class="sec-hd" id="dfu-sum">查詢結果</div>
+        <div class="row" style="gap:6px"><button class="btn small secondary" id="dfu-print">資料列印</button><button class="btn small" id="dfu-csv">匯出Excel</button></div>
+      </div>
+      <div id="dfu-result"><div class="empty">載入中 …</div></div>
+    </div>`;
+  let d = null;
+  const cols = ['房號', '媽媽姓名', '電話', '入住日', '出住日', '總天數', '追蹤日期', '追蹤方式', '狀態', ''];
+  const load = async () => {
+    st.ym = $('#dfu-ym').value || todayStr().slice(0, 7);
+    st.kw = $('#dfu-kw').value.trim();
+    st.status = (main().querySelector('input[name="dfu-status"]:checked') || {}).value || 'all';
+    const p = new URLSearchParams({ ym: st.ym, status: st.status });
+    if (st.kw) p.set('kw', st.kw);
+    d = await api('/discharge-followups?' + p.toString());
+    $('#dfu-sum').textContent = `查詢結果　共 ${d.stats.total} 筆（已完成 ${d.stats.done}、未完成 ${d.stats.todo}）`;
+    $('#dfu-result').innerHTML = d.rows.length ? `
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+        <tbody>${d.rows.map(r => `<tr>
+          <td data-label="房號">${esc(r.room_name || '—')}</td>
+          <td data-label="媽媽姓名">${esc(r.mother_name)}</td>
+          <td data-label="電話">${esc(r.phone || '—')}</td>
+          <td data-label="入住日">${esc(r.check_in)}</td>
+          <td data-label="出住日">${esc(r.check_out)}</td>
+          <td data-label="總天數">${r.days} 天</td>
+          <td data-label="追蹤日期">${esc(r.follow_date || '—')}</td>
+          <td data-label="追蹤方式">${esc(r.method || '—')}</td>
+          <td data-label="狀態">${r.completed ? '<span class="badge teal">已完成</span>' : '<span class="badge yellow">未完成</span>'}</td>
+          <td data-label="操作"><button class="btn small" data-fu="${r.booking_id}">返家追蹤紀錄</button></td>
+        </tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">您輸入的條件，查無資料 …</div>';
+    main().querySelectorAll('[data-fu]').forEach(b => {
+      b.onclick = () => openDischargeFollowup(d.rows.find(r => String(r.booking_id) === b.dataset.fu), d, load);
+    });
+  };
+  $('#dfu-run').onclick = load;
+  $('#dfu-kw').onkeydown = e => { if (e.key === 'Enter') load(); };
+  const toRows = () => d.rows.map(r => ({
+    room: r.room_name || '', name: r.mother_name, phone: r.phone || '',
+    ci: r.check_in, co: r.check_out, days: `${r.days} 天`,
+    fdate: r.follow_date || '', method: r.method || '', status: r.completed ? '已完成' : '未完成'
+  }));
+  const expCols = [{ key: 'room', label: '房號' }, { key: 'name', label: '媽媽姓名' }, { key: 'phone', label: '電話' },
+    { key: 'ci', label: '入住日' }, { key: 'co', label: '出住日' }, { key: 'days', label: '總天數' },
+    { key: 'fdate', label: '追蹤日期' }, { key: 'method', label: '追蹤方式' }, { key: 'status', label: '狀態' }];
+  $('#dfu-print').onclick = () => { if (!d || !d.rows.length) return alert('尚無查詢結果'); printTable(`出住返家追蹤（${st.ym}）`, expCols, toRows()); };
+  $('#dfu-csv').onclick = () => {
+    if (!d || !d.rows.length) return alert('尚無查詢結果');
+    downloadCsv(`出住返家追蹤_${st.ym}.csv`, expCols.map(c => c.label), toRows().map(r => expCols.map(c => r[c.key])));
+  };
+  await load();
+}
+
+/* 產科表單／產婦出住返家追蹤：單筆紀錄表 */
+function openDischargeFollowup(r, d, onDone) {
+  if (!r) return;
+  const val = k => r.data && r.data[k] ? r.data[k] : '';
+  const fieldHtml = it => it.type === 'textarea'
+    ? `<div class="field" style="grid-column:1/-1"><label>${it.label}</label><textarea id="dfu-f-${it.key}" rows="2">${esc(val(it.key))}</textarea></div>`
+    : `<div class="field"><label>${it.label}</label><select id="dfu-f-${it.key}">
+         <option value="">—</option>
+         ${it.options.map(o => `<option${val(it.key) === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}
+       </select></div>`;
+  openModal(`產婦出住返家追蹤：${r.mother_name}`, `
+    <div style="font-size:.86rem;color:var(--muted);margin-bottom:8px">
+      房號 ${esc(r.room_name || '—')}　入住 ${esc(r.check_in)} ～ 出住 ${esc(r.check_out)}（${r.days} 天）　電話 ${esc(r.phone || '—')}
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>追蹤日期</label><input type="date" id="dfu-date" value="${esc(r.follow_date || todayStr())}"></div>
+      <div class="field"><label>追蹤方式</label><select id="dfu-method">
+        <option value="">—</option>${d.methods.map(m => `<option${r.method === m ? ' selected' : ''}>${esc(m)}</option>`).join('')}
+      </select></div>
+      ${d.items.map(fieldHtml).join('')}
+      <div class="field" style="grid-column:1/-1"><label>備註</label><textarea id="dfu-note" rows="2">${esc(r.note || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1">
+        <label><input type="checkbox" id="dfu-done" ${r.completed ? 'checked' : ''}> 追蹤已完成</label>
+      </div>
+    </div>
+    <div class="row mt"><button class="btn" id="dfu-save">儲存</button><span class="error-msg" id="dfu-err"></span></div>`, body => {
+    body.querySelector('#dfu-save').onclick = async () => {
+      const data = {};
+      d.items.forEach(it => { data[it.key] = body.querySelector(`#dfu-f-${it.key}`).value; });
+      try {
+        await api(`/discharge-followups/${r.booking_id}`, { method: 'PUT', body: {
+          follow_date: body.querySelector('#dfu-date').value,
+          method: body.querySelector('#dfu-method').value,
+          data, note: body.querySelector('#dfu-note').value,
+          completed: body.querySelector('#dfu-done').checked ? 1 : 0
+        } });
+        closeModal(); onDone && onDone();
+      } catch (e) { body.querySelector('#dfu-err').textContent = e.message; }
+    };
+  });
+}
+
 /* ---------- 照護紀錄查詢（媽媽／寶寶；僅入住中） ---------- */
 const CRQ_STATE = {};
 async function viewCareRecordQuery(kind) {
@@ -16383,6 +16500,7 @@ const routes = {
   '#/mother-care-query': () => viewCareRecordQuery('mother'),
   '#/mother-arrivals': () => viewMotherUpcoming('in'),
   '#/mother-departures': () => viewMotherUpcoming('out'),
+  '#/discharge-followup': viewDischargeFollowup,
   '#/baby-care-query': () => viewCareRecordQuery('baby'),
   '#/nursing-needs': () => viewNursingNeeds('all'),
   '#/mother-needs': () => viewNursingNeeds('mother'),
@@ -16469,7 +16587,7 @@ const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
   '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
-  '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms', '#/mother-arrivals': 'rooms', '#/mother-departures': 'rooms',
+  '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms', '#/mother-arrivals': 'rooms', '#/mother-departures': 'rooms', '#/discharge-followup': 'mother_care',
   '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family', '#/mother-needs': 'family', '#/baby-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',
   '#/cancellations': 'tours', '#/contract-transfers': 'tours', '#/client-contracts': 'tours', '#/pp-report': 'reports', '#/breastfeeding': ['baby_care', 'mother_care'], '#/bed-planning': 'rooms', '#/housekeeping': 'housekeeping', '#/equipment-repair': 'housekeeping', '#/room-timeline': 'rooms', '#/billing': 'billing', '#/aging': 'billing', '#/analytics': 'reports', '#/shop': 'shop',
