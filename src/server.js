@@ -10552,6 +10552,57 @@ app.get('/api/staffing-check', requireStaff, (req, res) => {
 });
 
 // ---------- 評鑑月報（衛福部產後護理機構評鑑佐證） ----------
+// ---------- 親子同室及母乳哺餵登記單（每月逐日統計：8/12/24HR 與 全母／全配／混哺人數） ----------
+app.get('/api/reports/rooming-bf-register', requireStaff, (req, res) => {
+  const ym = /^\d{4}-\d{2}$/.test(req.query.ym || '') ? req.query.ym : today().slice(0, 7);
+  const [y, m] = ym.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const pad = n => String(n).padStart(2, '0');
+  const days = [];
+  for (let i = 1; i <= lastDay; i++) {
+    const d = `${ym}-${pad(i)}`;
+    // 親子同室時數：以推出／返室時間累計（跨午夜自動補 24 小時）
+    const hours = {};
+    for (const l of db.prepare(`SELECT baby_id, out_time, return_time FROM baby_rooming_logs
+      WHERE log_date = ? AND out_time != '' AND return_time != ''`).all(d)) {
+      const [oh, om] = l.out_time.split(':').map(Number);
+      const [rh, rm] = l.return_time.split(':').map(Number);
+      let h = (rh * 60 + rm - oh * 60 - om) / 60;
+      if (h < 0) h += 24;
+      hours[l.baby_id] = (hours[l.baby_id] || 0) + h;
+    }
+    const hs = Object.values(hours);
+    // 哺餵別：當日寶寶護理紀錄的奶品勾選；無紀錄時以親子同室紀錄的母乳／配方奶量判定
+    const feed = {};
+    for (const r of db.prepare(`SELECT baby_id, data FROM baby_nursing_assessments WHERE assess_date = ?`).all(d)) {
+      let types = [];
+      try { types = JSON.parse(r.data).milk_types || []; } catch (e) { types = []; }
+      const cur = feed[r.baby_id] || { breast: false, formula: false };
+      if (types.includes('母奶') || types.includes('親餵')) cur.breast = true;
+      if (types.includes('配方')) cur.formula = true;
+      feed[r.baby_id] = cur;
+    }
+    for (const l of db.prepare(`SELECT baby_id, breastfeed_min, breast_milk_ml, formula_ml
+      FROM baby_rooming_logs WHERE log_date = ?`).all(d)) {
+      const cur = feed[l.baby_id] || { breast: false, formula: false };
+      if (l.breastfeed_min > 0 || l.breast_milk_ml > 0) cur.breast = true;
+      if (l.formula_ml > 0) cur.formula = true;
+      feed[l.baby_id] = cur;
+    }
+    const fv = Object.values(feed);
+    days.push({
+      date: d, day: i,
+      r8: hs.filter(h => h >= 8 && h < 12).length,
+      r12: hs.filter(h => h >= 12 && h < 24).length,
+      r24: hs.filter(h => h >= 24).length,
+      bf_breast: fv.filter(f => f.breast && !f.formula).length,
+      bf_formula: fv.filter(f => !f.breast && f.formula).length,
+      bf_mixed: fv.filter(f => f.breast && f.formula).length
+    });
+  }
+  res.json({ ym, days });
+});
+
 app.get('/api/reports/monthly', requireStaff, (req, res) => {
   const month = req.query.month || today().slice(0, 7);
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
