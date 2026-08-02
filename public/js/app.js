@@ -10970,28 +10970,7 @@ async function viewMotherHandover() {
         ${hv('宮底高度', header.fundus_now ? `${esc(header.fundus_now.value)}<small>（${esc(header.fundus_now.at)}）</small>` : '—')}
         ${hv('惡露', header.lochia_now ? `${esc(header.lochia_now.value)}<small>（${esc(header.lochia_now.at)}）</small>` : '—')}
       </div>
-      <div class="form-grid no-print" style="margin-top:10px">
-        <div class="field full"><label>飲食禁忌</label><textarea id="mho-diet" maxlength="500" rows="2">${esc(mother.diet_notes || '')}</textarea></div>
-        <div class="field full"><label>重要備註</label><textarea id="mho-imp-note" maxlength="500" rows="2">${esc(header.handover_note)}</textarea></div>
-        <div class="full row" style="gap:10px;align-items:center">
-          <button class="btn" id="mho-note-save">存檔</button>
-          ${header.intake_filled ? '' : '<span style="color:var(--danger);font-size:.9rem">**尚未填寫入住評估單</span>'}
-          <span class="error-msg" id="mho-note-err"></span>
-        </div>
-      </div>
-    </div>
-    <div class="card no-print">
-      <div class="sec-hd warn">特殊飲品及特殊餐</div>
-      <div class="form-grid">
-        <div class="field"><label>生化湯</label><input id="mho-sp-shenghua" maxlength="100" value="${esc(header.sp_shenghua)}"></div>
-        <div class="field"><label>紅豆水</label><input id="mho-sp-redbean" maxlength="100" value="${esc(header.sp_redbean)}"></div>
-        <div class="field"><label>生麥芽水</label><input id="mho-sp-barley" maxlength="100" value="${esc(header.sp_barley)}"></div>
-        <div class="field"><label>退奶餐</label><input id="mho-sp-weaning" maxlength="100" value="${esc(header.sp_weaning)}"></div>
-        <div class="full row" style="gap:10px">
-          <button class="btn" id="mho-sp-save">修改特殊飲品及特殊餐</button>
-          <span class="error-msg" id="mho-sp-err"></span>
-        </div>
-      </div>
+      ${header.intake_filled ? '' : '<div class="no-print" style="color:var(--danger);font-size:.9rem;margin-top:10px">**尚未填寫入住評估單</div>'}
     </div>
     <div class="card no-print" id="mho-form">
       <div class="sec-hd">產婦交班單 － <span id="mho-mode">新增</span></div>
@@ -11026,32 +11005,6 @@ async function viewMotherHandover() {
   const form = $('#mho-form');
   const v = id => { const el = $(id); return el ? el.value.trim() : ''; };
   let editingId = null;
-
-  // 飲食禁忌／重要備註：diet_notes 存住客資料、備註存入住評估 profile
-  $('#mho-note-save').onclick = async () => {
-    const err = $('#mho-note-err');
-    err.textContent = '';
-    try {
-      await api(`/mothers/${momId}/handover-profile`, { method: 'PUT', body: {
-        diet_notes: $('#mho-diet').value.trim(), handover_note: $('#mho-imp-note').value.trim()
-      } });
-      $('#mho-note-save').textContent = '已存檔 ✓';
-      setTimeout(() => { const b = $('#mho-note-save'); if (b) b.textContent = '存檔'; }, 1500);
-    } catch (e) { err.textContent = e.message; }
-  };
-  // 特殊飲品及特殊餐
-  $('#mho-sp-save').onclick = async () => {
-    const err = $('#mho-sp-err');
-    err.textContent = '';
-    try {
-      await api(`/mothers/${momId}/handover-profile`, { method: 'PUT', body: {
-        sp_shenghua: v('#mho-sp-shenghua'), sp_redbean: v('#mho-sp-redbean'),
-        sp_barley: v('#mho-sp-barley'), sp_weaning: v('#mho-sp-weaning')
-      } });
-      $('#mho-sp-save').textContent = '已存檔 ✓';
-      setTimeout(() => { const b = $('#mho-sp-save'); if (b) b.textContent = '修改特殊飲品及特殊餐'; }, 1500);
-    } catch (e) { err.textContent = e.message; }
-  };
 
   const setForm = r => {
     editingId = r.id;
