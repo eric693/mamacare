@@ -1299,6 +1299,21 @@ function init() {
     edited_by INTEGER REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_cfe_form ON custom_form_entries(form_id, fill_date);`);
+  // 產婦新生兒轉診單：可用於產婦或新生兒，一位對象可有多筆轉診紀錄
+  db.exec(`CREATE TABLE IF NOT EXISTS referrals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_type TEXT NOT NULL DEFAULT 'baby',   -- baby=新生兒／mother=產婦
+    subject_id INTEGER NOT NULL,
+    refer_date TEXT NOT NULL DEFAULT '',
+    refer_time TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    edited_at TEXT NOT NULL DEFAULT '',
+    edited_by INTEGER REFERENCES users(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_referrals_subject ON referrals(subject_type, subject_id, refer_date);`);
   // 母乳庫存紀錄：每位寶寶的母乳存入／取出／丟棄明細（供結存統計）
   db.exec(`CREATE TABLE IF NOT EXISTS breastmilk_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

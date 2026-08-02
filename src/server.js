@@ -162,6 +162,8 @@ const MODULE_RULES = [
   [/^\/api\/breastfeeding/, ['baby_care', 'mother_care']],
   [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|eval|eval-profile|intake-assessments|handovers|closure|breastmilk|home-summary)/, 'baby_care'],
   [/^\/api\/breastmilk-logs/, 'baby_care'],
+  [/^\/api\/referrals\/mother/, 'mother_care'],
+  [/^\/api\/referrals/, 'baby_care'],
   [/^\/api\/(baby-records|baby-nursing|baby-rooming|baby-intake|baby-handovers|baby-closures)/, 'baby_care'],
   [/^\/api\/handovers/, 'handover'],
   [/^\/api\/incidents/, 'incidents'],
@@ -742,6 +744,81 @@ app.get('/api/babies/:id/location-logs', requireStaff, (req, res) => {
     LEFT JOIN users u ON u.id = ll.nurse_id
     WHERE ll.baby_id = ? ORDER BY ll.moved_at DESC LIMIT 50`).all(req.params.id);
   res.json(rows);
+});
+
+// ---------- 產婦新生兒轉診單 ----------
+const RF_ITEMS = [
+  { key: 'reason', label: '轉診原因／主訴', type: 'textarea' },
+  { key: 'vitals', label: '轉診前生命徵象', type: 'text' },
+  { key: 'treatment', label: '院內已執行處置', type: 'textarea' },
+  { key: 'hospital', label: '轉診醫院', type: 'text' },
+  { key: 'department', label: '轉診科別／醫師', type: 'text' },
+  { key: 'transport', label: '交通方式', type: 'select', options: ['救護車', '家屬自行接送', '中心車輛', '其他'] },
+  { key: 'escort', label: '陪同人員', type: 'text' },
+  { key: 'family_notified', label: '通知家屬時間', type: 'text' },
+  { key: 'family_name', label: '通知對象／關係', type: 'text' },
+  { key: 'result', label: '轉診結果／後續追蹤', type: 'textarea' },
+  { key: 'nurse', label: '轉診護理師', type: 'text' }
+];
+
+function referralSubject(type, id) {
+  if (type === 'mother') {
+    return db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(id);
+  }
+  return db.prepare(`SELECT b.id, b.name, b.birth_date, b.gender, m.name AS mother_name
+    FROM babies b JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(id);
+}
+
+app.get('/api/referrals/:type/:id', requireStaff, (req, res) => {
+  const type = req.params.type === 'mother' ? 'mother' : 'baby';
+  const subject = referralSubject(type, req.params.id);
+  if (!subject) return res.status(404).json({ error: '找不到對象' });
+  const rows = db.prepare(`SELECT r.*, u.name AS created_by_name FROM referrals r
+    LEFT JOIN users u ON u.id = r.created_by
+    WHERE r.subject_type = ? AND r.subject_id = ?
+    ORDER BY r.refer_date DESC, r.refer_time DESC, r.id DESC`).all(type, subject.id);
+  for (const r of rows) { try { r.data = JSON.parse(r.data); } catch (e) { r.data = {}; } }
+  res.json({ subject, subject_type: type, rows, items: RF_ITEMS });
+});
+
+app.post('/api/referrals/:type/:id', requireStaff, (req, res) => {
+  const type = req.params.type === 'mother' ? 'mother' : 'baby';
+  const subject = referralSubject(type, req.params.id);
+  if (!subject) return res.status(404).json({ error: '找不到對象' });
+  const b = req.body || {};
+  const data = {};
+  for (const it of RF_ITEMS) data[it.key] = String((b.data || {})[it.key] ?? '').slice(0, 1000);
+  if (!data.reason.trim()) return res.status(400).json({ error: '轉診原因必填' });
+  const info = db.prepare(`INSERT INTO referrals
+    (subject_type, subject_id, refer_date, refer_time, data, note, created_by) VALUES (?,?,?,?,?,?,?)`).run(
+    type, subject.id,
+    /^\d{4}-\d{2}-\d{2}$/.test(b.refer_date || '') ? b.refer_date : today(),
+    /^\d{2}:\d{2}$/.test(b.refer_time || '') ? b.refer_time : new Date().toTimeString().slice(0, 5),
+    JSON.stringify(data), String(b.note || '').slice(0, 1000), req.session.user.id);
+  logAudit(req, { action: 'create', entity: 'referrals', entity_id: info.lastInsertRowid,
+    summary: `新增 ${subject.name} 轉診單` });
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/referrals/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM referrals WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到轉診單' });
+  const b = req.body || {};
+  let old = {};
+  try { old = JSON.parse(cur.data); } catch (e) { old = {}; }
+  const data = {};
+  for (const it of RF_ITEMS) data[it.key] = String((b.data || {})[it.key] ?? old[it.key] ?? '').slice(0, 1000);
+  db.prepare(`UPDATE referrals SET refer_date=?, refer_time=?, data=?, note=?,
+    edited_at=datetime('now','localtime'), edited_by=? WHERE id=?`).run(
+    /^\d{4}-\d{2}-\d{2}$/.test(b.refer_date || '') ? b.refer_date : cur.refer_date,
+    /^\d{2}:\d{2}$/.test(b.refer_time || '') ? b.refer_time : cur.refer_time,
+    JSON.stringify(data), String(b.note ?? cur.note).slice(0, 1000), req.session.user.id, cur.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/referrals/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM referrals WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 // ---------- 母乳庫存紀錄（存入／取出／丟棄明細＋結存） ----------

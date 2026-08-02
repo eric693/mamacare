@@ -8139,6 +8139,98 @@ async function viewMotherUpcoming(kind) {
   };
 }
 
+/* ---------- 產婦新生兒轉診單（產婦或新生兒皆適用；一位對象可多筆） ---------- */
+async function openReferral(type, subjectId, subjectName) {
+  const title = type === 'mother' ? '產婦轉診單' : '新生兒轉診單';
+  const render = async (editing) => {
+    const d = await api(`/referrals/${type}/${subjectId}`);
+    const cur = editing ? d.rows.find(r => r.id === editing) : null;
+    const val = k => (cur && cur.data && cur.data[k]) || '';
+    const fieldHtml = it => {
+      if (it.type === 'textarea') return `<div class="field full"><label>${esc(it.label)}${it.key === 'reason' ? ' <b class="req">*</b>' : ''}</label><textarea id="rf-${it.key}" rows="2" maxlength="1000">${esc(val(it.key))}</textarea></div>`;
+      if (it.type === 'select') return `<div class="field"><label>${esc(it.label)}</label><select id="rf-${it.key}"><option value="">—</option>${it.options.map(o => `<option${val(it.key) === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`;
+      return `<div class="field"><label>${esc(it.label)}</label><input id="rf-${it.key}" maxlength="200" value="${esc(val(it.key))}"></div>`;
+    };
+    openModal(`${title}：${subjectName}`, `
+      <div class="sec-hd">${cur ? `編輯轉診單（${esc(cur.refer_date)}）` : '新增轉診單'}</div>
+      <div class="form-grid">
+        <div class="field"><label>轉診日期 <b class="req">*</b></label><input type="date" id="rf-date" value="${esc(cur ? cur.refer_date : todayStr())}"></div>
+        <div class="field"><label>轉診時間 <b class="req">*</b></label><input type="time" id="rf-time" value="${esc(cur ? cur.refer_time : new Date().toTimeString().slice(0, 5))}"></div>
+        ${d.items.map(fieldHtml).join('')}
+        <div class="field full"><label>備註</label><textarea id="rf-note" rows="2" maxlength="1000">${esc(cur ? cur.note : '')}</textarea></div>
+        <div class="full row" style="gap:10px">
+          <button class="btn" id="rf-save">${cur ? '儲存修改' : '新增轉診單'}</button>
+          ${cur ? '<button class="btn secondary" id="rf-cancel">取消編輯</button>' : ''}
+          <button class="btn secondary" id="rf-print">列印</button>
+          <span class="error-msg" id="rf-err"></span>
+        </div>
+      </div>
+      <div class="sec-hd mt">轉診紀錄（${d.rows.length} 筆）</div>
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>轉診日期</th><th>原因</th><th>轉診醫院</th><th>交通方式</th><th>結果</th><th>建檔人</th><th></th></tr></thead>
+          <tbody>${d.rows.map(r => `
+            <tr>
+              <td data-label="轉診日期">${esc(r.refer_date)}<br><small>${esc(r.refer_time)}</small></td>
+              <td data-label="原因"><small>${esc(r.data.reason || '—')}</small></td>
+              <td data-label="轉診醫院">${esc(r.data.hospital || '—')}</td>
+              <td data-label="交通方式">${esc(r.data.transport || '—')}</td>
+              <td data-label="結果"><small>${esc(r.data.result || '—')}</small></td>
+              <td data-label="建檔人">${esc(r.created_by_name || '—')}${r.edited_at ? '<br><small style="color:var(--muted)">已修改</small>' : ''}</td>
+              <td><button class="btn small secondary" data-rf-edit="${r.id}">修</button>
+                ${currentUser.role === 'admin' ? `<button class="btn small danger" data-rf-del="${r.id}">刪</button>` : ''}</td>
+            </tr>`).join('') || '<tr><td colspan="7"><div class="empty">尚無轉診紀錄</div></td></tr>'}</tbody>
+        </table>
+      </div>`, body => {
+      const collect = () => {
+        const data = {};
+        d.items.forEach(it => { data[it.key] = body.querySelector(`#rf-${it.key}`).value.trim(); });
+        return data;
+      };
+      body.querySelector('#rf-save').onclick = async () => {
+        const err = body.querySelector('#rf-err');
+        err.textContent = '';
+        const payload = {
+          refer_date: body.querySelector('#rf-date').value,
+          refer_time: body.querySelector('#rf-time').value,
+          data: collect(), note: body.querySelector('#rf-note').value
+        };
+        try {
+          if (cur) await api(`/referrals/${cur.id}`, { method: 'PUT', body: payload });
+          else await api(`/referrals/${type}/${subjectId}`, { method: 'POST', body: payload });
+          render();
+        } catch (e) { err.textContent = e.message; }
+      };
+      const cancel = body.querySelector('#rf-cancel');
+      if (cancel) cancel.onclick = () => render();
+      body.querySelector('#rf-print').onclick = () => {
+        const data = collect();
+        const w = window.open('', '_blank');
+        w.document.write(`<meta charset="utf-8"><title>${esc(title)}</title>
+          <style>body{font-family:system-ui,"Noto Sans TC",sans-serif;padding:24px;line-height:1.7}
+          h1{font-size:1.3rem}th,td{border:1px solid #999;padding:6px 8px;text-align:left;vertical-align:top}
+          table{border-collapse:collapse;width:100%}th{width:180px;background:#f2f2f2}</style>
+          <h1>產婦新生兒轉診單（${esc(title)}）</h1>
+          <p>對象：${esc(subjectName)}　轉診日期：${esc(body.querySelector('#rf-date').value)} ${esc(body.querySelector('#rf-time').value)}</p>
+          <table>${d.items.map(it => `<tr><th>${esc(it.label)}</th><td>${esc(data[it.key] || '')}</td></tr>`).join('')}
+          <tr><th>備註</th><td>${esc(body.querySelector('#rf-note').value)}</td></tr></table>`);
+        w.document.close(); w.print();
+      };
+      body.querySelectorAll('[data-rf-edit]').forEach(btn => {
+        btn.onclick = () => render(Number(btn.dataset.rfEdit));
+      });
+      body.querySelectorAll('[data-rf-del]').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('確定刪除這筆轉診單？')) return;
+          await api(`/referrals/${btn.dataset.rfDel}`, { method: 'DELETE' });
+          render();
+        };
+      });
+    });
+  };
+  await render();
+}
+
 /* ---------- 母乳庫存紀錄表（存入／取出／丟棄明細＋冷藏冷凍結存） ---------- */
 async function openBreastmilkStock(babyId, babyName) {
   const render = async () => {
@@ -9780,6 +9872,7 @@ async function viewBabyNursing() {
         <a class="btn small secondary" href="#/baby-handover?b=${babyId}">新生兒交班單</a>
         <a class="btn small secondary" href="#/baby-close?b=${babyId}">嬰兒結案</a>
         <a class="btn small secondary" href="#/baby-care">嬰兒照護紀錄</a>
+        <button class="btn small secondary" id="bna-refer">寶寶轉診</button>
         <button class="btn small secondary" id="bna-print">資料列印</button>
       </div>
     </div>
@@ -9871,6 +9964,7 @@ async function viewBabyNursing() {
 
   $('#bna-baby').onchange = () => { location.hash = `#/baby-nursing?b=${$('#bna-baby').value}`; };
   $('#bna-print').onclick = () => window.print();
+  $('#bna-refer').onclick = () => openReferral('baby', babyId, baby.name);
 
   const ckVals = name => [...main().querySelectorAll(`[data-ck="${name}"]:checked`)].map(c => c.value);
   $('#bna-save').onclick = async () => {
