@@ -1037,6 +1037,21 @@ function init() {
   );
   CREATE INDEX IF NOT EXISTS idx_mhp_mother ON mother_health_problems(mother_id);
 
+  -- 團課計畫：每位媽媽入住期間規劃參加的團體課程（可由課程主檔帶入或自行輸入）
+  CREATE TABLE IF NOT EXISTS mother_group_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL REFERENCES mothers(id),
+    program_id INTEGER REFERENCES programs(id),
+    class_name TEXT NOT NULL,
+    class_at TEXT NOT NULL DEFAULT '',   -- 上課時間（YYYY-MM-DD HH:MM 或 YYYY-MM-DD）
+    location TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'planned',  -- planned/attended/absent/leave
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_mgp_mother ON mother_group_plans(mother_id, class_at);
+
   -- 媽媽量表評估（apgar=家庭功能／epds=愛丁堡憂鬱／bf_awareness=母乳認知與支持）
   CREATE TABLE IF NOT EXISTS mother_scales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1284,6 +1299,11 @@ function init() {
     edited_by INTEGER REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_cfe_form ON custom_form_entries(form_id, fill_date);`);
+  // 護理紀錄（原健康問題列表）：新增「詳細說明」欄位
+  const mhpCols = db.prepare('PRAGMA table_info(mother_health_problems)').all().map(c => c.name);
+  if (!mhpCols.includes('detail')) {
+    db.exec("ALTER TABLE mother_health_problems ADD COLUMN detail TEXT NOT NULL DEFAULT ''");
+  }
   // 產婦出住返家追蹤：每筆已出住訂房一張追蹤紀錄（出院返家後電訪／關懷）
   db.exec(`CREATE TABLE IF NOT EXISTS discharge_followups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

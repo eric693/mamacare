@@ -145,8 +145,8 @@ const MODULE_RULES = [
   [/^\/api\/guidance-items/, 'mother_care'],
   [/^\/api\/baby-guidance-items/, 'baby_care'],
   [/^\/api\/babies\/\d+\/guidance-sheet/, 'baby_care'],
-  [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake|handovers|handover-profile|closure)/, 'mother_care'],
-  [/^\/api\/(mother-records|mother-nursing|mother-scales|mother-guidance|mother-health-problems|mother-breast-photos|mother-handovers|mother-closures)/, 'mother_care'],
+  [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake|handovers|handover-profile|closure|group-plan)/, 'mother_care'],
+  [/^\/api\/(mother-records|mother-nursing|mother-scales|mother-guidance|mother-health-problems|mother-breast-photos|mother-handovers|mother-closures|mother-group-plans)/, 'mother_care'],
   [/^\/api\/babies\/\d+\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/physician-visits/, 'physician'],
@@ -2497,9 +2497,9 @@ app.post('/api/mothers/:id/health-problems', requireStaff, (req, res) => {
   const b = req.body || {};
   if (!String(b.item || '').trim()) return res.status(400).json({ error: '問題項目必填' });
   const start = /^\d{4}-\d{2}-\d{2}$/.test(b.start_date || '') ? b.start_date : today();
-  const info = db.prepare(`INSERT INTO mother_health_problems (mother_id, nurse_id, item, start_date, end_date)
-    VALUES (?,?,?,?,?)`).run(mother.id, req.session.user.id,
-    String(b.item).trim().slice(0, 200), start,
+  const info = db.prepare(`INSERT INTO mother_health_problems (mother_id, nurse_id, item, detail, start_date, end_date)
+    VALUES (?,?,?,?,?,?)`).run(mother.id, req.session.user.id,
+    String(b.item).trim().slice(0, 200), String(b.detail || '').trim().slice(0, 2000), start,
     /^\d{4}-\d{2}-\d{2}$/.test(b.end_date || '') ? b.end_date : '');
   res.json({ id: info.lastInsertRowid });
 });
@@ -2507,8 +2507,9 @@ app.put('/api/mother-health-problems/:id', requireStaff, (req, res) => {
   const cur = db.prepare('SELECT * FROM mother_health_problems WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到健康問題' });
   const b = req.body || {};
-  db.prepare('UPDATE mother_health_problems SET item = ?, start_date = ?, end_date = ? WHERE id = ?').run(
+  db.prepare('UPDATE mother_health_problems SET item = ?, detail = ?, start_date = ?, end_date = ? WHERE id = ?').run(
     String(b.item ?? cur.item).trim().slice(0, 200),
+    String(b.detail ?? cur.detail ?? '').trim().slice(0, 2000),
     /^\d{4}-\d{2}-\d{2}$/.test(b.start_date || '') ? b.start_date : cur.start_date,
     b.end_date === '' ? '' : (/^\d{4}-\d{2}-\d{2}$/.test(b.end_date || '') ? b.end_date : cur.end_date),
     cur.id);
@@ -2516,6 +2517,62 @@ app.put('/api/mother-health-problems/:id', requireStaff, (req, res) => {
 });
 app.delete('/api/mother-health-problems/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM mother_health_problems WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 團課計畫（媽媽入住期間規劃參加的團體課程） ----------
+const MGP_STATUS = ['planned', 'attended', 'absent', 'leave'];
+const MGP_STATUS_TW = { planned: '計畫參加', attended: '已參加', absent: '未參加', leave: '請假' };
+
+app.get('/api/mothers/:id/group-plan', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const rows = db.prepare(`SELECT g.*, u.name AS created_by_name FROM mother_group_plans g
+    LEFT JOIN users u ON u.id = g.created_by
+    WHERE g.mother_id = ? ORDER BY g.class_at, g.id`).all(mother.id);
+  // 可帶入的課程：課程主檔中啟用的團體課程（有排定時段者依時間排序）
+  const courses = db.prepare(`SELECT id, name, scheduled_at, location FROM programs
+    WHERE kind = 'course' AND active = 1 ORDER BY scheduled_at, name`).all();
+  res.json({ rows, courses, statuses: MGP_STATUS.map(s => ({ value: s, label: MGP_STATUS_TW[s] })) });
+});
+
+app.post('/api/mothers/:id/group-plan', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  let { class_name = '', class_at = '', location = '' } = b;
+  const pid = Number(b.program_id) || null;
+  if (pid) {
+    const p = db.prepare('SELECT * FROM programs WHERE id = ?').get(pid);
+    if (!p) return res.status(400).json({ error: '找不到課程' });
+    class_name = class_name || p.name;
+    class_at = class_at || p.scheduled_at || '';
+    location = location || p.location || '';
+  }
+  if (!String(class_name).trim()) return res.status(400).json({ error: '課程名稱必填' });
+  const info = db.prepare(`INSERT INTO mother_group_plans
+    (mother_id, program_id, class_name, class_at, location, status, note, created_by) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(mother.id, pid, String(class_name).trim().slice(0, 100), String(class_at || '').slice(0, 20),
+      String(location || '').slice(0, 100), MGP_STATUS.includes(b.status) ? b.status : 'planned',
+      String(b.note || '').slice(0, 500), req.session.user.id);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.put('/api/mother-group-plans/:id', requireStaff, (req, res) => {
+  const cur = db.prepare('SELECT * FROM mother_group_plans WHERE id = ?').get(req.params.id);
+  if (!cur) return res.status(404).json({ error: '找不到團課計畫' });
+  const b = req.body || {};
+  db.prepare(`UPDATE mother_group_plans SET class_name=?, class_at=?, location=?, status=?, note=? WHERE id=?`).run(
+    String(b.class_name ?? cur.class_name).trim().slice(0, 100),
+    String(b.class_at ?? cur.class_at).slice(0, 20),
+    String(b.location ?? cur.location).slice(0, 100),
+    MGP_STATUS.includes(b.status) ? b.status : cur.status,
+    String(b.note ?? cur.note).slice(0, 500), cur.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/mother-group-plans/:id', requireStaff, (req, res) => {
+  db.prepare('DELETE FROM mother_group_plans WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 

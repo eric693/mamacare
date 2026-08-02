@@ -8125,6 +8125,78 @@ async function viewMotherUpcoming(kind) {
   };
 }
 
+/* ---------- 團課計畫（媽媽入住期間規劃參加的團體課程；可由課程主檔帶入或自行輸入） ---------- */
+async function openGroupPlan(momId, mother) {
+  const render = async () => {
+    const d = await api(`/mothers/${momId}/group-plan`);
+    const statusSel = (id, cur) => `<select data-gp-status="${id}">${d.statuses.map(s =>
+      `<option value="${s.value}"${cur === s.value ? ' selected' : ''}>${esc(s.label)}</option>`).join('')}</select>`;
+    openModal(`團課計畫：${mother.name}`, `
+      <div class="table-wrap">
+        <table class="data stack">
+          <thead><tr><th>上課時間</th><th>課程名稱</th><th>地點</th><th>狀態</th><th>備註</th><th></th></tr></thead>
+          <tbody>${d.rows.map(r => `
+            <tr>
+              <td data-label="上課時間">${esc(r.class_at || '—')}</td>
+              <td data-label="課程名稱">${esc(r.class_name)}</td>
+              <td data-label="地點">${esc(r.location || '—')}</td>
+              <td data-label="狀態">${statusSel(r.id, r.status)}</td>
+              <td data-label="備註"><input data-gp-note="${r.id}" value="${esc(r.note || '')}" maxlength="500" style="min-width:120px"></td>
+              <td><button class="btn small danger" data-gp-del="${r.id}">刪</button></td>
+            </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚未安排團課</div></td></tr>'}</tbody>
+        </table>
+      </div>
+      <div class="sec-hd mt">新增團課</div>
+      <div class="form-grid">
+        <div class="field full"><label>由課程主檔帶入</label>
+          <select id="gp-course"><option value="">（自行輸入）</option>${d.courses.map(c =>
+            `<option value="${c.id}">${esc(c.name)}${c.scheduled_at ? `　${esc(c.scheduled_at)}` : ''}${c.location ? `　${esc(c.location)}` : ''}</option>`).join('')}</select></div>
+        <div class="field"><label>課程名稱 <b class="req">*</b></label><input id="gp-name" maxlength="100"></div>
+        <div class="field"><label>上課時間</label><input id="gp-at" maxlength="20" placeholder="2026-08-05 14:00"></div>
+        <div class="field"><label>地點</label><input id="gp-loc" maxlength="100"></div>
+        <div class="field"><label>狀態</label><select id="gp-status">${d.statuses.map(s => `<option value="${s.value}">${esc(s.label)}</option>`).join('')}</select></div>
+        <div class="field full"><label>備註</label><input id="gp-note" maxlength="500"></div>
+        <div class="full row" style="gap:10px"><button class="btn" id="gp-add">加入計畫</button><span class="error-msg" id="gp-err"></span></div>
+      </div>`, body => {
+      const cSel = body.querySelector('#gp-course');
+      cSel.onchange = () => {
+        const c = d.courses.find(x => String(x.id) === cSel.value);
+        if (!c) return;
+        body.querySelector('#gp-name').value = c.name;
+        body.querySelector('#gp-at').value = c.scheduled_at || '';
+        body.querySelector('#gp-loc').value = c.location || '';
+      };
+      body.querySelector('#gp-add').onclick = async () => {
+        try {
+          await api(`/mothers/${momId}/group-plan`, { method: 'POST', body: {
+            program_id: cSel.value || null,
+            class_name: body.querySelector('#gp-name').value.trim(),
+            class_at: body.querySelector('#gp-at').value.trim(),
+            location: body.querySelector('#gp-loc').value.trim(),
+            status: body.querySelector('#gp-status').value,
+            note: body.querySelector('#gp-note').value.trim()
+          } });
+          render();
+        } catch (e) { body.querySelector('#gp-err').textContent = e.message; }
+      };
+      body.querySelectorAll('[data-gp-status]').forEach(sel => {
+        sel.onchange = () => api(`/mother-group-plans/${sel.dataset.gpStatus}`, { method: 'PUT', body: { status: sel.value } }).catch(e => alert(e.message));
+      });
+      body.querySelectorAll('[data-gp-note]').forEach(inp => {
+        inp.onchange = () => api(`/mother-group-plans/${inp.dataset.gpNote}`, { method: 'PUT', body: { note: inp.value } }).catch(e => alert(e.message));
+      });
+      body.querySelectorAll('[data-gp-del]').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('確定刪除這筆團課計畫？')) return;
+          await api(`/mother-group-plans/${btn.dataset.gpDel}`, { method: 'DELETE' });
+          render();
+        };
+      });
+    });
+  };
+  await render();
+}
+
 /* ---------- 出住返家追蹤（以年/月、姓名查詢；未完成／已完成篩選；套用產科表單「產婦出住返家追蹤」） ---------- */
 const DFU_STATE = { ym: '', kw: '', status: 'all' };
 async function viewDischargeFollowup() {
@@ -8966,6 +9038,7 @@ async function viewMotherNursing() {
             ? `<a class="btn" href="#/breastfeeding?b=${babies[0].id}">母乳哺育評估</a>`
             : '<button class="btn" id="mna-bfa-none">母乳哺育評估</button>'}
           <button class="btn" data-scale="bf_awareness">母乳認知與支持系統評估</button>
+          <button class="btn" id="mna-group-plan">團課計畫</button>
         </div>
       </div>
     </div>
@@ -9034,19 +9107,20 @@ async function viewMotherNursing() {
       </div>
       <div class="card" style="margin:0">
         <div class="row between" style="flex-wrap:wrap;gap:8px">
-          <h3>健康問題列表</h3>
-          <button class="btn small no-print" id="mna-hp-add">修改健康問題</button>
+          <h3>護理紀錄</h3>
+          <button class="btn small no-print" id="mna-hp-add">新增護理紀錄</button>
         </div>
         <div class="table-wrap" style="margin-top:8px">
           <table class="data stack">
-            <thead><tr><th>No</th><th>問題項目</th><th>開始日期</th><th>結案日期</th><th class="no-print"></th></tr></thead>
+            <thead><tr><th>No</th><th>問題項目</th><th>詳細說明</th><th>開始日期</th><th>結案日期</th><th class="no-print"></th></tr></thead>
             <tbody>${problems.map((p, i) => `
               <tr><td data-label="No">${i + 1}</td>
                 <td data-label="問題項目">${esc(p.item)}</td>
+                <td data-label="詳細說明" style="white-space:pre-wrap">${esc(p.detail || '—')}</td>
                 <td data-label="開始日期">${esc(p.start_date)}</td>
                 <td data-label="結案日期">${p.end_date ? esc(p.end_date) : '<span class="badge yellow">處理中</span>'}</td>
                 <td data-label="" class="no-print">${!p.end_date ? `<button class="btn small secondary" data-hp-close="${p.id}">結案</button>` : ''} ${currentUser.role === 'admin' ? `<button class="btn small danger" data-hp-del="${p.id}">刪</button>` : ''}</td></tr>`).join('') ||
-              '<tr><td colspan="5"><div class="empty">尚無健康問題</div></td></tr>'}</tbody>
+              '<tr><td colspan="6"><div class="empty">尚無護理紀錄</div></td></tr>'}</tbody>
           </table>
         </div>
       </div>
@@ -9141,18 +9215,21 @@ async function viewMotherNursing() {
     viewMotherNursing();
   };
 
-  // 健康問題：新增／結案／刪除
+  // 護理紀錄（產科表單／04 表單四 產婦護理紀錄）：新增／結案／刪除
   $('#mna-hp-add').onclick = () => {
-    openModal('修改健康問題', `
+    openModal('新增護理紀錄', `
       <div class="form-grid">
         <div class="field full"><label>問題項目 <b class="req">*</b></label><input id="hp-item" maxlength="200" placeholder="例如：乳腺阻塞、傷口紅腫"></div>
+        <div class="field full"><label>詳細說明</label><textarea id="hp-detail" rows="3" maxlength="2000" placeholder="護理措施、觀察與處置經過"></textarea></div>
         <div class="field"><label>開始日期 <b class="req">*</b></label><input type="date" id="hp-start" value="${todayStr()}"></div>
-        <div class="full row" style="gap:10px"><button class="btn" id="hp-save">新增問題</button><span class="error-msg" id="hp-err"></span></div>
+        <div class="full row" style="gap:10px"><button class="btn" id="hp-save">新增護理紀錄</button><span class="error-msg" id="hp-err"></span></div>
       </div>`, body => {
       body.querySelector('#hp-save').onclick = async () => {
         try {
           await api(`/mothers/${momId}/health-problems`, { method: 'POST', body: {
-            item: body.querySelector('#hp-item').value.trim(), start_date: body.querySelector('#hp-start').value
+            item: body.querySelector('#hp-item').value.trim(),
+            detail: body.querySelector('#hp-detail').value.trim(),
+            start_date: body.querySelector('#hp-start').value
           } });
           closeModal(); viewMotherNursing();
         } catch (e) { body.querySelector('#hp-err').textContent = e.message; }
@@ -9169,11 +9246,15 @@ async function viewMotherNursing() {
   });
   main().querySelectorAll('[data-hp-del]').forEach(btn => {
     btn.onclick = async () => {
-      if (!confirm('確定刪除這筆健康問題？')) return;
+      if (!confirm('確定刪除這筆護理紀錄？')) return;
       await api(`/mother-health-problems/${btn.dataset.hpDel}`, { method: 'DELETE' });
       viewMotherNursing();
     };
   });
+
+  // 團課計畫
+  const gpBtn = $('#mna-group-plan');
+  if (gpBtn) gpBtn.onclick = () => openGroupPlan(momId, mother);
 
   const openScale = kind => openMotherScale({ momId, mother, baby_info }, kind, viewMotherNursing);
   main().querySelectorAll('[data-scale]').forEach(btn => btn.onclick = () => openScale(btn.dataset.scale));
