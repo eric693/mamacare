@@ -1465,6 +1465,15 @@ function init() {
       ['哺乳枕', '1'], ['住房手冊+商品手冊', '1+1'], ['微波爐', '1'], ['電動床遙控器', '2'],
       ['電動按摩椅', '1']].forEach((r, i) => insEq.run(r[0], r[1], (i + 1) * 10));
   }
+  // 媽媽教室課程意願計畫（每位媽媽一份）
+  db.exec(`CREATE TABLE IF NOT EXISTS mother_class_surveys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mother_id INTEGER NOT NULL UNIQUE REFERENCES mothers(id),
+    fill_date TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id)
+  );`);
   const famCols = db.prepare('PRAGMA table_info(family_members)').all().map(c => c.name);
   if (!famCols.includes('line_user_id')) {
     db.exec("ALTER TABLE family_members ADD COLUMN line_user_id TEXT NOT NULL DEFAULT ''");

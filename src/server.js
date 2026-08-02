@@ -146,7 +146,7 @@ const MODULE_RULES = [
   [/^\/api\/guidance-items/, 'mother_care'],
   [/^\/api\/baby-guidance-items/, 'baby_care'],
   [/^\/api\/babies\/\d+\/guidance-sheet/, 'baby_care'],
-  [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake|handovers|handover-profile|closure|group-plan)/, 'mother_care'],
+  [/^\/api\/mothers\/\d+\/(records|nursing|guidance|scales|health-problems|breast-photos|intake|handovers|handover-profile|closure|group-plan|class-survey)/, 'mother_care'],
   [/^\/api\/(mother-records|mother-nursing|mother-scales|mother-guidance|mother-health-problems|mother-breast-photos|mother-handovers|mother-closures|mother-group-plans)/, 'mother_care'],
   [/^\/api\/babies\/\d+\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
   [/^\/api\/(meds|screenings|vaccinations|phototherapy)/, 'newborn_medical'],
@@ -2706,6 +2706,66 @@ app.put('/api/mother-health-problems/:id', requireStaff, (req, res) => {
 });
 app.delete('/api/mother-health-problems/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM mother_health_problems WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 媽媽教室課程意願計畫（入住時填寫，供團課計畫排課參考） ----------
+const MCS_ITEMS = [
+  { key: 'parity', label: '是否為', type: 'radio', options: ['第一胎', '第二胎以上'] },
+  { key: 'course_care', label: '有興趣課程－孕期與產後照護', type: 'multi',
+    options: ['安心哺乳・自信育兒', '產後瑜珈', '精油花藝舒壓', '產後不內耗'] },
+  { key: 'course_bf', label: '有興趣課程－母乳與育兒課程', type: 'multi',
+    options: ['產後哺乳', '新生兒沐浴', '寶寶按摩', '嬰幼兒成長與發展', '返家照護'] },
+  { key: 'course_diy', label: '有興趣課程－手作與親子互動', type: 'multi',
+    options: ['媽咪樂活手作', '產後瑜珈', '產後運動與恢復'] },
+  { key: 'course_other', label: '其他想參加課程', type: 'text' },
+  { key: 'topics', label: '最想了解的內容', type: 'multi',
+    options: ['母乳哺育技巧', '泌乳與塞奶問題', '新生兒照護', '親子同室技巧', '寶寶哭鬧安撫', '副食品相關知識',
+      '產後情緒調適', '產後運動與恢復', '寶寶發展與互動', '家屬共同育兒'] },
+  { key: 'topics_other', label: '最想了解的內容－其他', type: 'text' },
+  { key: 'family_join', label: '家屬是否願意共同參與課程', type: 'radio', options: ['願意', '視情況參加', '暫無意願'] },
+  { key: 'time_pref', label: '希望上課時間', type: 'multi', options: ['平日上午', '平日下午', '平日晚間', '假日'] },
+  { key: 'style_pref', label: '較喜歡的上課方式', type: 'multi', options: ['團體課程', '小班制課程', '個別指導', '線上課程', '實作體驗課程'] },
+  { key: 'bf_group', label: '是否願意加入母乳支持團體', type: 'radio', options: ['願意', '視情況參加', '暫無意願'] },
+  { key: 'expectation', label: '對媽媽教室最期待的是', type: 'textarea' }
+];
+
+app.get('/api/mothers/:id/class-survey', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const row = db.prepare(`SELECT s.*, u.name AS updated_by_name FROM mother_class_surveys s
+    LEFT JOIN users u ON u.id = s.updated_by WHERE s.mother_id = ?`).get(mother.id);
+  let data = {};
+  if (row) { try { data = JSON.parse(row.data); } catch (e) { data = {}; } }
+  res.json({ mother, items: MCS_ITEMS, survey: row ? { ...row, data } : null });
+});
+
+app.put('/api/mothers/:id/class-survey', requireStaff, (req, res) => {
+  const mother = db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(req.params.id);
+  if (!mother) return res.status(404).json({ error: '找不到媽媽' });
+  const b = req.body || {};
+  const src = b.data || {};
+  const data = {};
+  for (const it of MCS_ITEMS) {
+    if (it.type === 'multi') {
+      data[it.key] = (Array.isArray(src[it.key]) ? src[it.key] : []).filter(x => it.options.includes(x));
+    } else if (it.type === 'radio') {
+      data[it.key] = it.options.includes(src[it.key]) ? src[it.key] : '';
+    } else {
+      data[it.key] = String(src[it.key] ?? '').slice(0, 500);
+    }
+  }
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(b.fill_date || '') ? b.fill_date : today();
+  const cur = db.prepare('SELECT id FROM mother_class_surveys WHERE mother_id = ?').get(mother.id);
+  if (cur) {
+    db.prepare(`UPDATE mother_class_surveys SET fill_date=?, data=?, updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`)
+      .run(d, JSON.stringify(data), req.session.user.id, cur.id);
+  } else {
+    db.prepare('INSERT INTO mother_class_surveys (mother_id, fill_date, data, updated_by) VALUES (?,?,?,?)')
+      .run(mother.id, d, JSON.stringify(data), req.session.user.id);
+  }
+  logAudit(req, { action: 'update', entity: 'mother_class_surveys', entity_id: mother.id,
+    summary: `${cur ? '修改' : '新增'} ${mother.name} 媽媽教室課程意願計畫` });
   res.json({ ok: true });
 });
 

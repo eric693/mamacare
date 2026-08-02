@@ -8664,6 +8664,56 @@ async function openBabyHomeSummary(babyId, babyName) {
   });
 }
 
+/* ---------- 媽媽教室課程意願計畫（入住時填寫，供團課計畫排課參考） ---------- */
+async function openClassSurvey(momId, mother) {
+  const d = await api(`/mothers/${momId}/class-survey`);
+  const s = d.survey || { fill_date: todayStr(), data: {} };
+  const val = k => (s.data && s.data[k]) || '';
+  const arr = k => (s.data && Array.isArray(s.data[k])) ? s.data[k] : [];
+  const fieldHtml = it => {
+    if (it.type === 'multi') return `<div class="field full"><label>${esc(it.label)}</label>
+      <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">
+        ${it.options.map(o => `<label class="bna-chk"><input type="checkbox" data-mcs="${it.key}" value="${esc(o)}"${arr(it.key).includes(o) ? ' checked' : ''}> ${esc(o)}</label>`).join('')}
+      </div></div>`;
+    if (it.type === 'radio') return `<div class="field"><label>${esc(it.label)}</label>
+      <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">
+        ${it.options.map(o => `<label class="bna-chk"><input type="radio" name="mcs-${it.key}" value="${esc(o)}"${val(it.key) === o ? ' checked' : ''}> ${esc(o)}</label>`).join('')}
+      </div></div>`;
+    if (it.type === 'textarea') return `<div class="field full"><label>${esc(it.label)}</label><textarea id="mcs-${it.key}" rows="2" maxlength="500">${esc(val(it.key))}</textarea></div>`;
+    return `<div class="field"><label>${esc(it.label)}</label><input id="mcs-${it.key}" maxlength="200" value="${esc(val(it.key))}"></div>`;
+  };
+  openModal(`媽媽教室課程意願計畫：${mother.name}`, `
+    <p style="font-size:.86rem;color:var(--muted);margin-bottom:8px">
+      為提供更符合需求之課程內容與照護服務，於入住時邀請媽媽填寫，作為團課計畫排課依據。</p>
+    <div class="form-grid">
+      <div class="field"><label>填表日期</label><input type="date" id="mcs-date" value="${esc(s.fill_date || todayStr())}"></div>
+      <div class="field"><label>入住日期</label><input value="${esc(mother.check_in || '')}" disabled></div>
+      ${d.items.map(fieldHtml).join('')}
+      <div class="full row" style="gap:10px">
+        <button class="btn" id="mcs-save">儲存</button>
+        <a class="btn secondary" id="mcs-plan">前往團課計畫</a>
+        <span class="error-msg" id="mcs-err"></span>
+      </div>
+      ${s.updated_at ? `<div class="full" style="color:var(--muted);font-size:.85rem">最後更新：${esc(s.updated_at)}${s.updated_by_name ? `（${esc(s.updated_by_name)}）` : ''}</div>` : ''}
+    </div>`, body => {
+    body.querySelector('#mcs-save').onclick = async () => {
+      const data = {};
+      d.items.forEach(it => {
+        if (it.type === 'multi') data[it.key] = [...body.querySelectorAll(`[data-mcs="${it.key}"]:checked`)].map(c => c.value);
+        else if (it.type === 'radio') { const c = body.querySelector(`input[name="mcs-${it.key}"]:checked`); data[it.key] = c ? c.value : ''; }
+        else data[it.key] = body.querySelector(`#mcs-${it.key}`).value;
+      });
+      try {
+        await api(`/mothers/${momId}/class-survey`, { method: 'PUT', body: { fill_date: body.querySelector('#mcs-date').value, data } });
+        const b = body.querySelector('#mcs-save');
+        b.textContent = '已儲存 ✓';
+        setTimeout(() => { b.textContent = '儲存'; }, 1500);
+      } catch (e) { body.querySelector('#mcs-err').textContent = e.message; }
+    };
+    body.querySelector('#mcs-plan').onclick = () => { closeModal(); openGroupPlan(momId, mother); };
+  });
+}
+
 /* ---------- 團課計畫（媽媽入住期間規劃參加的團體課程；可由課程主檔帶入或自行輸入） ---------- */
 async function openGroupPlan(momId, mother) {
   const render = async () => {
@@ -9694,6 +9744,7 @@ async function viewMotherNursing() {
             : '<button class="btn" id="mna-bfa-none">母乳哺育評估</button>'}
           <button class="btn" data-scale="bf_awareness">母乳認知與支持系統評估</button>
           <button class="btn" id="mna-group-plan">團課計畫</button>
+          <button class="btn" id="mna-class-survey">媽媽教室課程意願</button>
         </div>
       </div>
     </div>
@@ -9928,6 +9979,8 @@ async function viewMotherNursing() {
   // 團課計畫
   const gpBtn = $('#mna-group-plan');
   if (gpBtn) gpBtn.onclick = () => openGroupPlan(momId, mother);
+  const csBtn = $('#mna-class-survey');
+  if (csBtn) csBtn.onclick = () => openClassSurvey(momId, mother);
 
   const openScale = kind => openMotherScale({ momId, mother, baby_info }, kind, viewMotherNursing);
   main().querySelectorAll('[data-scale]').forEach(btn => btn.onclick = () => openScale(btn.dataset.scale));
