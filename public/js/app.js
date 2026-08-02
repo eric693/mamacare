@@ -778,6 +778,7 @@ async function viewBabyCare() {
         <button class="btn" id="bc-send" style="background:var(--accent)">發送日報給家屬</button>
         <button class="btn secondary" id="bc-milk">母乳庫存紀錄</button>
         <button class="btn secondary" id="bc-home">返家照護摘要</button>
+        <button class="btn secondary" id="bc-devguide">嬰兒發展照護指導單</button>
       </div>
       <div class="row mt">
         <span style="font-size:.85rem;color:var(--muted)">一鍵記錄：</span>
@@ -955,6 +956,11 @@ async function viewBabyCare() {
     const babyId = $('#bc-baby').value; if (!babyId) return;
     const baby = babyById(babyId);
     openBreastmilkStock(babyId, baby ? baby.name : '寶寶');
+  };
+  $('#bc-devguide').onclick = () => {
+    const babyId = $('#bc-baby').value; if (!babyId) return;
+    const baby = babyById(babyId);
+    openBabyDevGuidance(babyId, baby ? baby.name : '寶寶');
   };
   $('#bc-home').onclick = () => {
     const babyId = $('#bc-baby').value; if (!babyId) return;
@@ -8830,6 +8836,7 @@ async function openBreastmilkStock(babyId, babyName) {
         <div class="field full"><label>備註</label><input id="bml-note" maxlength="300"></div>
         <div class="full row" style="gap:10px"><button class="btn" id="bml-add">新增紀錄</button><span class="error-msg" id="bml-err"></span></div>
       </div>
+      <div class="row mt" style="gap:8px"><button class="btn small secondary" id="bml-print">列印母乳庫存紀錄表</button></div>
       <div class="sec-hd mt">庫存明細（近 300 筆）</div>
       <div class="table-wrap">
         <table class="data stack">
@@ -8863,6 +8870,36 @@ async function openBreastmilkStock(babyId, babyName) {
           render();
         } catch (e) { body.querySelector('#bml-err').textContent = e.message; }
       };
+      // 列印：比照紙本「日期／時間／入奶／出奶／餘量」三欄組排版，餘量為逐筆結存
+      body.querySelector('#bml-print').onclick = () => {
+        const asc = d.rows.slice().sort((a, b) =>
+          a.log_date.localeCompare(b.log_date) || (a.log_time || '').localeCompare(b.log_time || '') || a.id - b.id);
+        let bal = 0;
+        const lines = asc.map(r => {
+          const ml = r.bottles * r.ml_each;
+          const inMl = r.direction === 'in' ? ml : 0;
+          const outMl = r.direction === 'in' ? 0 : ml;
+          bal += inMl - outMl;
+          return { date: r.log_date.slice(5), time: r.log_time, in: inMl || '', out: outMl || '', bal };
+        });
+        const perCol = Math.max(20, Math.ceil(lines.length / 3));
+        const cols = [lines.slice(0, perCol), lines.slice(perCol, perCol * 2), lines.slice(perCol * 2)];
+        const rowsN = Math.max(perCol, ...cols.map(c => c.length));
+        const cell = x => x ? `<td>${esc(x.date)}</td><td>${esc(x.time)}</td><td>${x.in}</td><td>${x.out}</td><td>${x.bal}</td>`
+          : '<td></td><td></td><td></td><td></td><td></td>';
+        const w = window.open('', '_blank');
+        w.document.write(`<meta charset="utf-8"><title>母乳庫存紀錄表</title>
+          <style>body{font-family:system-ui,"Noto Sans TC",sans-serif;padding:18px}
+          h1{font-size:1.15rem;text-align:center}table{border-collapse:collapse;width:100%;font-size:.8rem}
+          th,td{border:1px solid #666;padding:2px 4px;text-align:center;height:18px}
+          th{background:#f2f2f2}</style>
+          <h1>${esc(SETTINGS.center_name || '')}　母乳庫存紀錄表</h1>
+          <p style="font-size:.9rem">寶寶：${esc(babyName)}　列印日期：${esc(todayStr())}　單位：ml</p>
+          <table><thead><tr>${'<th>日期</th><th>時間</th><th>入奶</th><th>出奶</th><th>餘量</th>'.repeat(3)}</tr></thead>
+          <tbody>${Array.from({ length: rowsN }, (_, i) =>
+            `<tr>${cols.map(c => cell(c[i])).join('')}</tr>`).join('')}</tbody></table>`);
+        w.document.close(); w.print();
+      };
       body.querySelectorAll('[data-bml-del]').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm('確定刪除這筆母乳庫存紀錄？')) return;
@@ -8875,26 +8912,107 @@ async function openBreastmilkStock(babyId, babyName) {
   await render();
 }
 
-/* ---------- 新生兒返家照護摘要（每位寶寶一張） ---------- */
+/* ---------- 嬰兒發展照護護理指導單（衛教單張＋個別化指導紀錄與家長簽名） ---------- */
+async function openBabyDevGuidance(babyId, babyName) {
+  const d = await api(`/babies/${babyId}/dev-guidance`);
+  const r = d.record || { guide_date: todayStr(), content: '', nurse_name: currentUser.name, parent_sign: '' };
+  const sheet = d.content.map(sec => `
+    <div style="margin-top:8px"><b>${esc(sec.title)}</b>
+      <ul style="margin:4px 0 0 18px;font-size:.88rem;line-height:1.7">
+        ${sec.items.map(x => `<li>${esc(x)}</li>`).join('')}
+      </ul></div>`).join('');
+  openModal(`嬰兒發展照護護理指導單：${babyName}`, `
+    <p style="font-size:.86rem;color:var(--muted)">親愛的家長您好：以下為寶寶出生第一個月的發展與照護重點。</p>
+    <div style="max-height:280px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">${sheet}</div>
+    <div class="sec-hd mt">六、護理人員個別化指導紀錄</div>
+    <div class="form-grid">
+      <div class="field full"><label>指導內容</label><textarea id="bdg-content" rows="3" maxlength="2000">${esc(r.content || '')}</textarea></div>
+      <div class="field"><label>護理人員</label><input id="bdg-nurse" maxlength="50" value="${esc(r.nurse_name || currentUser.name)}"></div>
+      <div class="field"><label>日期</label><input type="date" id="bdg-date" value="${esc(r.guide_date || todayStr())}"></div>
+      <div class="field full"><label>家長簽名</label>
+        <div id="bdg-sig-wrap">${r.parent_sign
+          ? `<img src="${esc(r.parent_sign)}" style="max-width:100%;height:90px;background:#fff;border:1px solid var(--line);border-radius:6px">`
+          : '<canvas id="bdg-sig-pad" style="width:100%;height:90px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>'}</div>
+        <div class="row" style="gap:6px;margin-top:4px"><button type="button" class="btn small secondary" id="bdg-sig-clear">${r.parent_sign ? '重新簽名' : '清除'}</button></div></div>
+      <div class="full row" style="gap:10px">
+        <button class="btn" id="bdg-save">儲存</button>
+        <button class="btn secondary" id="bdg-print">列印指導單</button>
+        <span class="error-msg" id="bdg-err"></span>
+      </div>
+      ${r.updated_at ? `<div class="full" style="color:var(--muted);font-size:.85rem">最後更新：${esc(r.updated_at)}${r.updated_by_name ? `（${esc(r.updated_by_name)}）` : ''}</div>` : ''}
+    </div>`, body => {
+    let pad = body.querySelector('#bdg-sig-pad') ? mountSigPad(body.querySelector('#bdg-sig-pad')) : null;
+    body.querySelector('#bdg-sig-clear').onclick = () => {
+      if (pad) { pad.clear(); return; }
+      body.querySelector('#bdg-sig-wrap').innerHTML = '<canvas id="bdg-sig-pad" style="width:100%;height:90px;background:#fff;border:1px dashed var(--line);border-radius:6px;touch-action:none"></canvas>';
+      pad = mountSigPad(body.querySelector('#bdg-sig-pad'));
+    };
+    body.querySelector('#bdg-save').onclick = async () => {
+      const payload = {
+        guide_date: body.querySelector('#bdg-date').value,
+        content: body.querySelector('#bdg-content').value,
+        nurse_name: body.querySelector('#bdg-nurse').value
+      };
+      if (pad && pad.hasInk()) payload.parent_sign = pad.dataUrl();
+      try {
+        await api(`/babies/${babyId}/dev-guidance`, { method: 'PUT', body: payload });
+        const b = body.querySelector('#bdg-save');
+        b.textContent = '已儲存 ✓';
+        setTimeout(() => { b.textContent = '儲存'; }, 1500);
+      } catch (e) { body.querySelector('#bdg-err').textContent = e.message; }
+    };
+    body.querySelector('#bdg-print').onclick = () => {
+      const w = window.open('', '_blank');
+      w.document.write(`<meta charset="utf-8"><title>嬰兒發展照護護理指導單</title>
+        <style>body{font-family:system-ui,"Noto Sans TC",sans-serif;padding:24px;line-height:1.75}
+        h1{font-size:1.2rem;text-align:center}h2{font-size:.98rem;margin:12px 0 4px}
+        ul{margin:4px 0 0 20px;font-size:.9rem}li{margin-bottom:3px}
+        .sign{margin-top:16px;font-size:.9rem}</style>
+        <h1>${esc(SETTINGS.center_name || '')}　嬰兒發展照護護理指導單</h1>
+        <p style="font-size:.9rem">寶寶：${esc(babyName)}</p>
+        ${d.content.map(sec => `<h2>${esc(sec.title)}</h2><ul>${sec.items.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`).join('')}
+        <h2>六、護理人員個別化指導紀錄</h2>
+        <p style="font-size:.9rem;white-space:pre-wrap;border:1px solid #999;padding:8px;min-height:60px">${esc(body.querySelector('#bdg-content').value)}</p>
+        <div class="sign">家長簽名：${r.parent_sign ? `<img src="${esc(r.parent_sign)}" style="height:60px;vertical-align:middle">` : '＿＿＿＿＿＿＿＿＿'}
+          　護理人員：${esc(body.querySelector('#bdg-nurse').value)}　日期：${esc(body.querySelector('#bdg-date').value)}</div>`);
+      w.document.close(); w.print();
+    };
+  });
+}
+
+/* ---------- 新生兒返家照護摘要（每位寶寶一張；欄位依紙本原件） ---------- */
 async function openBabyHomeSummary(babyId, babyName) {
   const d = await api(`/babies/${babyId}/home-summary`);
   const s = d.summary || { summary_date: todayStr(), data: {}, note: '' };
   const val = k => (s.data && s.data[k]) || '';
+  const arr = k => (s.data && Array.isArray(s.data[k])) ? s.data[k] : [];
+  const fieldHtml = it => {
+    if (it.type === 'multi') return `<div class="field full"><label>${esc(it.label)}</label>
+      <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">
+        ${it.options.map(o => `<label class="bna-chk"><input type="checkbox" data-bhs="${it.key}" value="${esc(o)}"${arr(it.key).includes(o) ? ' checked' : ''}> ${esc(o)}</label>`).join('')}
+      </div></div>`;
+    if (it.type === 'select') return `<div class="field"><label>${esc(it.label)}</label>
+      <select id="bhs-${it.key}"><option value="">—</option>${it.options.map(o => `<option${val(it.key) === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`;
+    return `<div class="field"><label>${esc(it.label)}</label><input id="bhs-${it.key}" maxlength="200" value="${esc(val(it.key))}"></div>`;
+  };
   openModal(`新生兒返家照護摘要：${babyName}`, `
     <div class="form-grid">
       <div class="field"><label>填寫日期</label><input type="date" id="bhs-date" value="${esc(s.summary_date || todayStr())}"></div>
-      ${d.items.map(it => `<div class="field full"><label>${esc(it.label)}</label><textarea id="bhs-${it.key}" rows="2" maxlength="1000">${esc(val(it.key))}</textarea></div>`).join('')}
+      ${d.items.map(fieldHtml).join('')}
       <div class="field full"><label>其他備註</label><textarea id="bhs-note" rows="2" maxlength="1000">${esc(s.note || '')}</textarea></div>
       <div class="full row" style="gap:10px">
         <button class="btn" id="bhs-save">儲存</button>
-        <button class="btn secondary" id="bhs-print">列印</button>
+        <button class="btn secondary" id="bhs-print">列印（含貼心小叮嚀）</button>
         <span class="error-msg" id="bhs-err"></span>
       </div>
       ${s.updated_at ? `<div class="full" style="color:var(--muted);font-size:.85rem">最後更新：${esc(s.updated_at)}${s.updated_by_name ? `（${esc(s.updated_by_name)}）` : ''}</div>` : ''}
     </div>`, body => {
     const collect = () => {
       const data = {};
-      d.items.forEach(it => { data[it.key] = body.querySelector(`#bhs-${it.key}`).value; });
+      d.items.forEach(it => {
+        if (it.type === 'multi') data[it.key] = [...body.querySelectorAll(`[data-bhs="${it.key}"]:checked`)].map(c => c.value);
+        else data[it.key] = body.querySelector(`#bhs-${it.key}`).value;
+      });
       return data;
     };
     body.querySelector('#bhs-save').onclick = async () => {
@@ -8910,15 +9028,20 @@ async function openBabyHomeSummary(babyId, babyName) {
     };
     body.querySelector('#bhs-print').onclick = () => {
       const data = collect();
+      const cell = it => Array.isArray(data[it.key]) ? data[it.key].join('、') : (data[it.key] || '');
       const w = window.open('', '_blank');
       w.document.write(`<meta charset="utf-8"><title>新生兒返家照護摘要</title>
         <style>body{font-family:system-ui,"Noto Sans TC",sans-serif;padding:24px;line-height:1.7}
-        h1{font-size:1.3rem}th,td{border:1px solid #999;padding:6px 8px;text-align:left;vertical-align:top}
-        table{border-collapse:collapse;width:100%}th{width:180px;background:#f2f2f2}</style>
-        <h1>新生兒返家照護摘要</h1>
+        h1{font-size:1.25rem;text-align:center}th,td{border:1px solid #999;padding:5px 8px;text-align:left;vertical-align:top;font-size:.9rem}
+        table{border-collapse:collapse;width:100%}th{width:210px;background:#fafafa}
+        ol{font-size:.88rem;padding-left:20px}li{margin-bottom:4px}</style>
+        <h1>${esc(SETTINGS.center_name || '')}　新生兒返家照護摘要</h1>
         <p>寶寶：${esc(babyName)}　填寫日期：${esc(body.querySelector('#bhs-date').value)}</p>
-        <table>${d.items.map(it => `<tr><th>${esc(it.label)}</th><td>${esc(data[it.key] || '')}</td></tr>`).join('')}
-        <tr><th>其他備註</th><td>${esc(body.querySelector('#bhs-note').value)}</td></tr></table>`);
+        <table>${d.items.map(it => `<tr><th>${esc(it.label)}</th><td>${esc(cell(it))}</td></tr>`).join('')}
+        <tr><th>其他備註</th><td>${esc(body.querySelector('#bhs-note').value)}</td></tr></table>
+        <h3 style="font-size:1rem;margin:14px 0 6px">貼心小叮嚀</h3>
+        <ol>${(d.tips || []).map(t => `<li>${esc(t)}</li>`).join('')}</ol>
+        <p style="font-size:.88rem">${esc(SETTINGS.center_name || '')} 24 小時諮詢專線：${esc(SETTINGS.center_phone || '')}　我們將竭誠為您服務，敬祝闔家安康。</p>`);
       w.document.close(); w.print();
     };
   });

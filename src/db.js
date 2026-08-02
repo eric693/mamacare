@@ -1468,6 +1468,17 @@ function init() {
   // 新生兒護理紀錄表：班別欄位（白班／小夜／大夜）
   const brlCols = db.prepare('PRAGMA table_info(baby_rooming_logs)').all().map(c => c.name);
   if (!brlCols.includes('shift')) db.exec("ALTER TABLE baby_rooming_logs ADD COLUMN shift TEXT NOT NULL DEFAULT ''");
+  // 嬰兒發展照護護理指導單：每位寶寶一份個別化指導紀錄（衛教內容為固定單張）
+  db.exec(`CREATE TABLE IF NOT EXISTS baby_dev_guidance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    baby_id INTEGER NOT NULL UNIQUE REFERENCES babies(id),
+    guide_date TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',      -- 個別化指導內容
+    parent_sign TEXT NOT NULL DEFAULT '',  -- 家長簽名（data URL）
+    nurse_name TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_by INTEGER REFERENCES users(id)
+  );`);
   // 媽媽教室課程意願計畫（每位媽媽一份）
   db.exec(`CREATE TABLE IF NOT EXISTS mother_class_surveys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

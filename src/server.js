@@ -161,7 +161,7 @@ const MODULE_RULES = [
   // 母乳哺育評估：以媽媽護理師為主、嬰兒室為輔 → 兩模組其一即可存取
   [/^\/api\/babies\/\d+\/breastfeeding/, ['baby_care', 'mother_care']],
   [/^\/api\/breastfeeding/, ['baby_care', 'mother_care']],
-  [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|eval|eval-profile|intake-assessments|handovers|closure|breastmilk|home-summary)/, 'baby_care'],
+  [/^\/api\/babies\/\d+\/(records|report|location|photos|trends|nursing|rooming-logs|eval|eval-profile|intake-assessments|handovers|closure|breastmilk|home-summary|dev-guidance)/, 'baby_care'],
   [/^\/api\/breastmilk-logs/, 'baby_care'],
   [/^\/api\/referrals\/mother/, 'mother_care'],
   [/^\/api\/referrals/, 'baby_care'],
@@ -936,17 +936,107 @@ app.delete('/api/breastmilk-logs/:id', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- 嬰兒發展照護護理指導單（衛教單張＋個別化指導紀錄；表單六註2） ----------
+const BDG_CONTENT = [
+  { title: '一、寶寶的發展階段', items: [
+    '寶寶剛出生的前一個月，是適應新環境與建立安全感的重要階段。',
+    '這個階段的寶寶大多以自然反射為主，例如吸吮、抓握、哭泣、對聲音或光線有反應；雖然動作還不多，但這些都是正常的生理表現。'] },
+  { title: '二、認識寶寶的身體與生理特徵', items: [
+    '睡眠型態：新生兒每日睡眠約 16～20 小時；睡眠時間短且不固定，容易日夜顛倒；淺眠時出現微笑、抖動、吸吮動作屬正常現象。',
+    '餵食需求：新生兒胃容量小，需少量多餐；常見飢餓表現為張嘴、找奶、吸手、躁動哭泣；建議依寶寶需求進行餵食，避免過度等待哭鬧才餵奶。',
+    '排泄狀況：新生兒每日排尿約 6 次以上為正常；母乳寶寶排便次數可能較多且偏稀；若出現血便、白便或持續腹瀉應立即告知醫護人員。'] },
+  { title: '三、寶寶暗示行為辨識', items: [
+    '吸手、轉頭尋找 → 肚子餓',
+    '打哈欠、眼神渙散 → 想睡覺',
+    '扭動、皺眉、哭鬧 → 不舒服或需要安撫',
+    '身體僵硬、持續哭泣 → 過度刺激或壓力反應',
+    '安靜凝視、表情放鬆 → 適合互動與陪伴'] },
+  { title: '四、嬰兒發展照護重點', items: [
+    '肌膚接觸：增加安全感與親子依附關係，穩定情緒及生理狀態。',
+    '適度安撫：可透過輕拍、包巾包覆、輕聲說話及擁抱安撫寶寶。',
+    '主導式瓶餵：觀察寶寶吸吮與吞嚥節奏，避免強迫餵食，尊重寶寶飽足訊號。',
+    '感官刺激：適度與寶寶說話、眼神接觸及互動，有助神經與感官發展。',
+    '安全睡眠：採仰睡姿勢，床上避免枕頭、玩偶及厚重棉被。'] },
+  { title: '五、家長照護注意事項', items: [
+    '每位寶寶發展速度不同，請避免過度比較。',
+    '哭泣是寶寶表達需求的重要方式。',
+    '家長需保持情緒穩定，建立正向互動。',
+    '若有持續哭鬧、餵食困難、活動力下降等情形，請立即通知醫護人員。'] }
+];
+
+app.get('/api/babies/:id/dev-guidance', requireStaff, (req, res) => {
+  const baby = db.prepare(`SELECT b.id, b.name, m.name AS mother_name FROM babies b
+    JOIN mothers m ON m.id = b.mother_id WHERE b.id = ?`).get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const row = db.prepare(`SELECT g.*, u.name AS updated_by_name FROM baby_dev_guidance g
+    LEFT JOIN users u ON u.id = g.updated_by WHERE g.baby_id = ?`).get(baby.id);
+  res.json({ baby, content: BDG_CONTENT, record: row || null });
+});
+
+app.put('/api/babies/:id/dev-guidance', requireStaff, (req, res) => {
+  const baby = db.prepare('SELECT id, name FROM babies WHERE id = ?').get(req.params.id);
+  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const b = req.body || {};
+  const cur = db.prepare('SELECT * FROM baby_dev_guidance WHERE baby_id = ?').get(baby.id);
+  const sig = typeof b.parent_sign === 'string'
+    ? (b.parent_sign === '' ? '' : (b.parent_sign.startsWith('data:image/') && b.parent_sign.length <= SIGN_MAX ? b.parent_sign : (cur ? cur.parent_sign : '')))
+    : (cur ? cur.parent_sign : '');
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(b.guide_date || '') ? b.guide_date : today();
+  const content = String(b.content || '').slice(0, 2000);
+  const nurse = String(b.nurse_name || req.session.user.name).slice(0, 50);
+  if (cur) {
+    db.prepare(`UPDATE baby_dev_guidance SET guide_date=?, content=?, parent_sign=?, nurse_name=?,
+      updated_at=datetime('now','localtime'), updated_by=? WHERE id=?`)
+      .run(d, content, sig, nurse, req.session.user.id, cur.id);
+  } else {
+    db.prepare(`INSERT INTO baby_dev_guidance (baby_id, guide_date, content, parent_sign, nurse_name, updated_by)
+      VALUES (?,?,?,?,?,?)`).run(baby.id, d, content, sig, nurse, req.session.user.id);
+  }
+  logAudit(req, { action: 'update', entity: 'baby_dev_guidance', entity_id: baby.id,
+    summary: `${cur ? '修改' : '新增'} ${baby.name} 嬰兒發展照護護理指導單` });
+  res.json({ ok: true });
+});
+
 // ---------- 新生兒返家照護摘要（每位寶寶一張，返家時交付家屬） ----------
 const BHS_ITEMS = [
-  { key: 'feeding', label: '餵食方式與奶量', type: 'textarea' },
-  { key: 'elimination', label: '大小便情形', type: 'textarea' },
-  { key: 'cord_skin', label: '臍帶與皮膚照護', type: 'textarea' },
-  { key: 'jaundice', label: '黃疸追蹤', type: 'textarea' },
-  { key: 'screening', label: '新生兒篩檢結果', type: 'textarea' },
-  { key: 'vaccination', label: '疫苗接種情形', type: 'textarea' },
-  { key: 'revisit', label: '回診／複檢安排', type: 'textarea' },
-  { key: 'warning', label: '返家注意事項與警訊', type: 'textarea' },
-  { key: 'teach', label: '返家衛教重點', type: 'textarea' }
+  { key: 'weight_in', label: '入住體重（gm）', type: 'text' },
+  { key: 'weight_out', label: '出住體重（gm）', type: 'text' },
+  { key: 'tpr', label: '體溫／脈搏／呼吸', type: 'text' },
+  { key: 'last_feed_time', label: '最後一次餵奶時間', type: 'text' },
+  { key: 'feed_way', label: '進食方式', type: 'multi', options: ['親餵', '瓶餵'] },
+  { key: 'feed_breast_ml', label: '母奶（ml）', type: 'text' },
+  { key: 'feed_formula_ml', label: '配方奶（ml）', type: 'text' },
+  { key: 'feed_interval', label: '每隔幾小時餵食一餐', type: 'text' },
+  { key: 'feed_amount', label: '每餐奶量（ml）', type: 'text' },
+  { key: 'formula_brand', label: '目前配方奶使用廠牌', type: 'text' },
+  { key: 'formula_scoop', label: '沖泡方式：1 平匙加多少 ml 的水', type: 'text' },
+  { key: 'cord', label: '臍帶', type: 'multi',
+    options: ['已脫落', '分泌物', '持續 75%+95% 酒精消毒', '未脫落，尚未乾燥，續以 75%+95% 酒精消毒'] },
+  { key: 'cord_return_date', label: '臍帶交還日期', type: 'text' },
+  { key: 'stool_count', label: '排便次數（次/天）', type: 'text' },
+  { key: 'stool_texture', label: '排便性狀', type: 'text' },
+  { key: 'urine_count', label: '排尿次數（次/天）', type: 'text' },
+  { key: 'buttock', label: '臀部', type: 'select', options: ['無異狀', '輕微泛紅', '明顯紅臀'] },
+  { key: 'buttock_care', label: '臀部照護方式', type: 'multi',
+    options: ['每 2 小時更換尿布', '水洗護理', '護膚膏（薄薄一層）使用', '用藥'] },
+  { key: 'buttock_med', label: '用藥說明', type: 'text' },
+  { key: 'returns', label: '用品歸還', type: 'multi',
+    options: ['吸球', '奶粉', '安撫奶嘴', '奶瓶', '沐浴用品', '護膚用品', '藥品', '母乳袋', '其它'] },
+  { key: 'returns_other', label: '用品歸還－其它', type: 'text' }
+];
+// 返家照護摘要固定衛教文字（列印用；依紙本原件）
+const BHS_TIPS = [
+  '請記得多用開心的語調跟寶寶說話聊天，常常撫觸寶寶，並眼神對望。',
+  '新生兒期，餵奶請一定都要分段餵奶並拍背打嗝，幫助排氣。',
+  '餵奶前後，都要檢查尿布，是否尿尿、便便了。',
+  '與寶寶接觸前，請記得一定都要洗手。',
+  '寶寶出生 30 天後仍有黃疸情形，請記得要帶回院所檢驗確認。',
+  '注意照顧寶寶週遭需要有安全環境，也請避免室內溫度過於悶熱。',
+  '寶寶哭泣是與人溝通的方式，哭！是寶寶唯一的語言，不一定是負面的表達，請觀察寶寶真正的需要才是。寶寶累睏了會易哭鬧，顯得更亢奮或情緒不穩，需要家長耐心安撫，不可劇烈搖晃、旋轉；如照護上有任何問題，請來電本中心諮詢或向支持系統與親友尋求協助。',
+  '母乳保存方法：室溫可放置 2 小時；冷藏室可放置 3-5 天；冷凍室可保存 3 個月。',
+  '全家支持是成功哺育母乳的關鍵，職場與社交上亦可建立其他支持系統，相關團體可供參考：台灣母乳哺育聯合學會 http://www.breastfeedingtaiwan.org/、台灣母乳協會 https://www.breastfeeding.org.tw/、國民健康署孕產婦關懷網站 https://mammy.hpa.gov.tw/（關懷諮詢專線 0800-870-870，週一至週五 08:00-18:00）。',
+  '配方奶粉需以攝氏 70 度以上熱水沖泡殺菌後，再以冷水隔水降溫至可餵食溫度（沖泡請先放水再放奶粉）。',
+  '臍帶消毒 5-7 天後仍有大量分泌物或出現紅腫異味時，請就醫確認。'
 ];
 
 app.get('/api/babies/:id/home-summary', requireStaff, (req, res) => {
@@ -957,7 +1047,7 @@ app.get('/api/babies/:id/home-summary', requireStaff, (req, res) => {
     LEFT JOIN users u ON u.id = s.updated_by WHERE s.baby_id = ?`).get(baby.id);
   let data = {};
   if (row) { try { data = JSON.parse(row.data); } catch (e) { data = {}; } }
-  res.json({ baby, items: BHS_ITEMS, summary: row ? { ...row, data } : null });
+  res.json({ baby, items: BHS_ITEMS, tips: BHS_TIPS, summary: row ? { ...row, data } : null });
 });
 
 app.put('/api/babies/:id/home-summary', requireStaff, (req, res) => {
@@ -965,7 +1055,12 @@ app.put('/api/babies/:id/home-summary', requireStaff, (req, res) => {
   if (!baby) return res.status(404).json({ error: '找不到寶寶' });
   const b = req.body || {};
   const data = {};
-  for (const it of BHS_ITEMS) data[it.key] = String((b.data || {})[it.key] ?? '').slice(0, 1000);
+  for (const it of BHS_ITEMS) {
+    const v = (b.data || {})[it.key];
+    data[it.key] = it.type === 'multi'
+      ? (Array.isArray(v) ? v.filter(x => it.options.includes(x)) : [])
+      : String(v ?? '').slice(0, 1000);
+  }
   const d = /^\d{4}-\d{2}-\d{2}$/.test(b.summary_date || '') ? b.summary_date : today();
   const note = String(b.note || '').slice(0, 1000);
   const cur = db.prepare('SELECT id FROM baby_home_summaries WHERE baby_id = ?').get(baby.id);
