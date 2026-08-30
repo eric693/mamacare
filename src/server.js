@@ -3657,7 +3657,8 @@ app.delete('/api/baby-beds/:id', requireAdmin, (req, res) => {
 
 app.get('/api/bookings', requireStaff, (req, res) => {
   const rows = db.prepare(`
-    SELECT bk.*, m.name AS mother_name, r.name AS room_name, r.room_type
+    SELECT bk.*, m.name AS mother_name, m.phone AS mother_phone, m.due_date AS mother_due,
+           r.name AS room_name, r.room_type
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.status != 'cancelled'
     ORDER BY CASE bk.status WHEN 'checked_in' THEN 0 WHEN 'reserved' THEN 1 ELSE 2 END, bk.check_in`).all();

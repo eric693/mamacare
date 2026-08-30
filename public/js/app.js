@@ -4947,6 +4947,8 @@ function printPacket(pk) {
   if (!docs.length) return;
   const main0 = docs.find(d => d.doc_kind === 'contract') || docs[0];
   const st = CONTRACT_STATUS[main0.status] || CONTRACT_STATUS.pending;
+  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  // 紙本版面：A4、每份文件獨立分頁、頁首機構抬頭＋文件名、頁尾當事人與份次
   const proof = main0.status === 'signed' ? `
     <div class="sign-block">
       <div class="sig">
@@ -4961,35 +4963,63 @@ function printPacket(pk) {
         本簽名同時適用本次簽約之全部 ${docs.length} 份文件（其中 ${docs.filter(d => d.sign_required).length} 份須簽署）。
       </div>
     </div>` : '<div class="sign-block"><div class="unsigned">— 本次簽約文件尚未完成簽署 —</div></div>';
+  const meta = [
+    pk.mother_name ? `立約人：${esc(pk.mother_name)}` : '',
+    pk.room_name ? `房號：${esc(pk.room_name)} 房` : '',
+    main0.handler ? `經手人：${esc(main0.handler)}` : ''
+  ].filter(Boolean).join('　｜　');
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
     <title>${esc(pk.mother_name || '')} 簽約文件</title>
     <style>
-      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;line-height:1.7;
-        max-width:760px;margin:24px auto;padding:0 24px}
-      .status{text-align:right;color:${st.badge === 'green' ? '#2a7f78' : st.badge === 'gray' ? '#888' : '#c98a00'};font-weight:700}
-      h2{font-size:17px;border-bottom:2px solid #2a7f78;padding-bottom:6px;margin:0 0 10px}
-      pre{white-space:pre-wrap;font-family:inherit;font-size:15px;margin:12px 0 28px}
-      .doc{page-break-after:always}
-      .doc-sign{margin:-12px 0 24px}
-      .doc-sign img{max-width:240px;max-height:100px;border-bottom:1px solid #333}
-      .doc:last-of-type{page-break-after:auto}
-      .toc{background:#f2f7f6;border-radius:8px;padding:12px 18px;margin-bottom:20px}
-      .toc li{line-height:1.9}
-      .sign-block{border-top:1px solid #ccc;padding-top:18px;margin-top:18px}
-      .sig img{max-width:280px;max-height:120px;border-bottom:1px solid #333}
-      .sig-line{margin-top:6px;font-weight:700}
-      .proof{margin-top:14px;font-size:12px;color:#666}
-      .unsigned{color:#c98a00;font-weight:700}
-      @media print{.noprint{display:none}}
+      @page{size:A4 portrait;margin:16mm 15mm}
+      body{font-family:"Microsoft JhengHei","PingFang TC","Heiti TC",sans-serif;color:#111;
+        font-size:11.5pt;line-height:1.85;margin:0;padding:0}
+      .sheet{max-width:180mm;margin:0 auto;padding:10mm 0}
+      /* 每份文件＝獨立紙本，頁首抬頭＋文件名，內文保留原稿斷行與縮排 */
+      .doc{page-break-after:always;break-after:page}
+      .doc:last-of-type{page-break-after:auto;break-after:auto}
+      .doc-hd{text-align:center;margin:0 0 6mm}
+      .doc-hd .center{font-size:12pt;letter-spacing:2px;margin-bottom:2mm}
+      .doc-hd h2{font-size:15pt;letter-spacing:4px;margin:0 0 3mm;font-weight:700}
+      .doc-hd .rule{border-bottom:1.2pt solid #111}
+      .doc-meta{display:flex;justify-content:space-between;font-size:9.5pt;color:#444;margin:0 0 4mm}
+      .body{white-space:pre-wrap;word-break:break-word;text-align:left;margin:0}
+      .doc-foot{margin-top:6mm;font-size:9pt;color:#555;text-align:center;border-top:.5pt solid #999;padding-top:2mm}
+      .doc-sign{margin-top:6mm;page-break-inside:avoid;break-inside:avoid}
+      .doc-sign img{max-width:60mm;max-height:25mm;border-bottom:.8pt solid #111}
+      .sign-block{border-top:.8pt solid #111;padding-top:5mm;margin-top:5mm;page-break-inside:avoid;break-inside:avoid}
+      .sig img{max-width:70mm;max-height:30mm;border-bottom:.8pt solid #111}
+      .sig-line{margin-top:2mm;font-weight:700}
+      .proof{margin-top:4mm;font-size:9pt;color:#555;line-height:1.6}
+      .unsigned{color:#a33;font-weight:700;text-align:center}
+      .doc-sign .unsigned{text-align:left;color:#111;font-weight:400}
+      /* 目錄與狀態僅供螢幕預覽，紙本不印（紙本＝原契約樣式） */
+      .screen-only{background:#f2f7f6;border-radius:8px;padding:12px 18px;margin-bottom:20px}
+      .screen-only li{line-height:1.9}
+      @media print{.noprint,.screen-only{display:none}.sheet{max-width:none;padding:0}}
     </style></head><body>
-    <div class="status">${st.label}</div>
-    <div class="toc"><b>${esc(pk.mother_name || '')}　${esc(pk.room_name || '')} 房　本次簽約文件（${docs.length} 份）</b>
-      <ol>${docs.map(d => `<li>${esc(d.title)}${d.sign_required ? '' : '（閱讀確認）'}</li>`).join('')}</ol></div>
-    ${main0.handler ? `<div style="font-size:13px;color:#555;margin-bottom:6px">經手人：${esc(main0.handler)}</div>` : ''}
-    ${docs.map(d => `<div class="doc"><h2>${esc(d.title)}</h2><pre>${esc(d.body)}</pre>${docSign(d, main0)}</div>`).join('')}
-    ${proof}
-    <div class="noprint" style="margin-top:24px;text-align:center">
+    <div class="sheet">
+      <div class="screen-only">
+        <div style="text-align:right;color:${st.badge === 'green' ? '#2a7f78' : st.badge === 'gray' ? '#888' : '#c98a00'};font-weight:700">${st.label}</div>
+        <b>${esc(pk.mother_name || '')}　${esc(pk.room_name || '')} 房　本次簽約文件（${docs.length} 份）</b>
+        <ol>${docs.map(d => `<li>${esc(d.title)}${d.sign_required ? '' : '（閱讀確認）'}</li>`).join('')}</ol>
+      </div>
+      ${docs.map((d, i) => `
+        <div class="doc">
+          <div class="doc-hd">
+            <div class="center">${esc(center)}</div>
+            <h2>${esc(d.title)}</h2>
+            <div class="rule"></div>
+          </div>
+          <div class="doc-meta"><span>${meta}</span><span>第 ${i + 1} / ${docs.length} 份${d.sign_required ? '' : '（閱讀確認，無須簽名）'}</span></div>
+          <div class="body">${esc(d.body)}</div>
+          ${docSign(d, main0)}
+          <div class="doc-foot">${esc(center)}　${esc(d.title)}　第 ${i + 1} / ${docs.length} 份　列印日期：${esc(todayStr())}</div>
+        </div>`).join('')}
+      ${proof}
+    </div>
+    <div class="noprint" style="margin:24px 0;text-align:center">
       <button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button>
     </div>
     </body></html>`);
@@ -5016,12 +5046,23 @@ async function viewContracts() {
     <div class="card">
       <h3>建立合約</h3>
       <div class="form-grid">
+        <div class="field"><label>媽媽姓名<small>（可部分比對）</small></label><input id="ct-q-name"></div>
+        <div class="field"><label>連絡電話</label><input id="ct-q-phone"></div>
+        <div class="field"><label>房號</label><input id="ct-q-room"></div>
+        <div class="field"><label>訂房狀態</label>
+          <select id="ct-q-status">
+            <option value="active">進行中（預約＋入住中）</option>
+            <option value="checked_in">入住中</option>
+            <option value="reserved">預約中</option>
+            <option value="checked_out">已退房</option>
+            <option value="">全部</option>
+          </select></div>
+        <div class="field"><label>入住日（起）</label><input type="date" id="ct-q-from"></div>
+        <div class="field"><label>入住日（迄）</label><input type="date" id="ct-q-to"></div>
         <div class="field full">
-          <label>選擇訂房</label>
-          <select id="ct-booking">
-            <option value="">請選擇訂房</option>
-            ${bookings.map(b => `<option value="${b.id}">${esc(b.mother_name)}　${esc(b.room_name)} 房　${esc(b.check_in)}~${esc(b.check_out)}</option>`).join('')}
-          </select>
+          <label>選擇訂房 <span id="ct-q-count" style="font-weight:400;color:var(--muted);font-size:.85rem"></span></label>
+          <select id="ct-booking"><option value="">請先以上方條件查詢</option></select>
+          <small style="color:var(--muted)">預設只列進行中（預約＋入住中）的訂房，避免整份數百人名單難以尋找；輸入姓名／電話／房號即時縮小。</small>
         </div>
         <div class="field full">
           <label>簽約文件（每次簽約須完整附上合約包全部文件）</label>
@@ -5078,6 +5119,37 @@ async function viewContracts() {
       </div>
     </div>`;
   wireFilter(main());
+
+  // 訂房選單查詢（同客戶管理的查詢邏輯）：條件即時縮小名單，超過 200 筆時要求再縮小
+  function ctRenderBookings() {
+    const q = id => (main().querySelector(id).value || '').trim().toLowerCase();
+    const name = q('#ct-q-name'), phone = q('#ct-q-phone'), room = q('#ct-q-room');
+    const status = main().querySelector('#ct-q-status').value;
+    const from = main().querySelector('#ct-q-from').value, to = main().querySelector('#ct-q-to').value;
+    const list = bookings.filter(b => {
+      if (status === 'active' ? !['reserved', 'checked_in'].includes(b.status) : status && b.status !== status) return false;
+      if (name && !String(b.mother_name || '').toLowerCase().includes(name)) return false;
+      if (phone && !String(b.mother_phone || '').includes(phone)) return false;
+      if (room && !String(b.room_name || '').toLowerCase().includes(room)) return false;
+      if (from && b.check_in < from) return false;
+      if (to && b.check_in > to) return false;
+      return true;
+    });
+    const sel = main().querySelector('#ct-booking');
+    const keep = sel.value;
+    const capped = list.slice(0, 200);
+    sel.innerHTML = '<option value="">請選擇訂房</option>' + capped.map(b =>
+      `<option value="${b.id}">${esc(b.mother_name)}　${esc(b.room_name)} 房　${esc(b.check_in)}~${esc(b.check_out)}　${STATUS_LABEL[b.status] || b.status}${b.mother_phone ? '　' + esc(b.mother_phone) : ''}</option>`).join('');
+    if (keep && capped.some(b => String(b.id) === keep)) sel.value = keep;
+    main().querySelector('#ct-q-count').textContent = list.length
+      ? `（符合 ${list.length} 筆${list.length > capped.length ? `，僅列前 ${capped.length} 筆，請再縮小條件` : ''}）`
+      : '（查無符合條件的訂房）';
+  }
+  ['#ct-q-name', '#ct-q-phone', '#ct-q-room', '#ct-q-status', '#ct-q-from', '#ct-q-to'].forEach(id => {
+    const el = main().querySelector(id);
+    el.oninput = ctRenderBookings; el.onchange = ctRenderBookings;
+  });
+  ctRenderBookings();
 
   $('#ct-create').onclick = async () => {
     const bookingId = $('#ct-booking').value;
