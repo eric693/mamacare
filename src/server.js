@@ -6941,8 +6941,10 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
         WHERE bk.mother_id = m.id AND bk.status IN ('reserved','checked_in','checked_out')
         ORDER BY bk.status = 'checked_in' DESC, bk.check_in DESC LIMIT 1) AS room_name,
       (SELECT COALESCE(SUM(bk.deposit),0) FROM bookings bk WHERE bk.mother_id = m.id AND bk.status != 'cancelled') AS deposit_sum,
+      -- 合約款繳費（與收費帳務同一判準：非加購款即合約款，含入住後補繳；不限入住前）
       (SELECT COALESCE(SUM(p.amount),0) FROM payments p JOIN bookings bk ON bk.id = p.booking_id
-        WHERE bk.mother_id = m.id AND bk.status != 'cancelled' AND p.target = 'contract' AND p.paid_on < bk.check_in) AS prepaid_pay
+        WHERE bk.mother_id = m.id AND bk.status != 'cancelled'
+          AND (p.target IS NULL OR p.target != 'addon')) AS contract_pay
     FROM customer_contracts cc JOIN mothers m ON m.id = cc.mother_id
     WHERE cc.status != 'archived'
     ORDER BY cc.id DESC LIMIT 500`).all();
@@ -6951,8 +6953,8 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
     try { items = JSON.parse(r.items); } catch (e) { items = []; }
     try { data = JSON.parse(r.data); } catch (e) { data = {}; }
     const total = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
-    // 合約餘額＝合約總額 − 入住前繳款（訂金＋入住日前登錄的合約款繳費；已入住者僅計入住前的 LOG）
-    const prepaid = (r.deposit_sum || 0) + (r.prepaid_pay || 0);
+    // 合約餘額＝合約總額（合約資料明細合計）− 已收合約款（訂房訂金＋繳費紀錄之合約款）
+    const prepaid = (r.deposit_sum || 0) + (r.contract_pay || 0);
     return {
       mother_id: r.mother_id, contract_no: r.contract_no, name: r.name, id_no: r.id_no || '',
       phone: r.phone || '', birth_date: r.birth_date || '', due_date: r.due_date || '', sign_date: data.sign_date || '',
@@ -6964,7 +6966,8 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
       actual_check_in: r.booking_check_in || '',
       actual_check_out: r.booking_actual_out || '',
       days: items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
-      total, deposit: r.deposit_sum || 0, prepaid, balance: total - prepaid,
+      total, deposit: r.deposit_sum || 0, contract_pay: r.contract_pay || 0,
+      prepaid, paid: prepaid, balance: total - prepaid,
       cancel_date: data.cancel_date || '', cancel_reason: data.cancel_reason || '', cancel_by: data.cancel_by || '',
       checkin_date: r.booking_check_in || '', booking_status: r.booking_status || '', room_name: r.room_name || '',
       cancelled: r.status === 'cancelled',
@@ -7002,6 +7005,7 @@ app.get('/api/client-contracts', requireStaff, (req, res) => {
       { key: 'expected_check_out', label: '預定出住日' }, { key: 'days', label: '天數' },
       { key: 'room_types', label: '房型' }, { key: 'gift_content', label: '贈品內容' },
       { key: 'handler', label: '經手人' }, { key: 'deposit', label: '訂金' },
+      { key: 'contract_pay', label: '繳費紀錄合約款' }, { key: 'paid', label: '已收合計' },
       { key: 'total', label: '合約總額' }, { key: 'balance', label: '合約餘額' },
       { key: 'status_label', label: '狀態' }
     ] : mode === 'transferred' ? [

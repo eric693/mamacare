@@ -15481,6 +15481,8 @@ async function viewClientContractQuery(mode) {
       const { rows } = await api(`/client-contracts?${qs()}`);
       const sumDays = rows.reduce((s, r) => s + (r.days || 0), 0);
       const sumTotal = rows.reduce((s, r) => s + (r.total || 0), 0);
+      const sumPaid = rows.reduce((s, r) => s + (r.paid || 0), 0);
+      const sumBalance = rows.reduce((s, r) => s + (r.balance || 0), 0);
       const dateCell = r => {
         const parts = [`<span style="color:#3b78c2">(產期)${esc(r.due_date || '—')}</span>`];
         parts.push(`<span style="color:var(--danger)">(簽約)${esc(r.sign_date || '—')}</span>`);
@@ -15494,7 +15496,7 @@ async function viewClientContractQuery(mode) {
       };
       $('#ccq-result').innerHTML = rows.length ? (mode === 'signed' ? `
         <div class="table-wrap"><table class="data stack">
-          <thead><tr><th>筆數</th><th>媽媽姓名<br>身分證號</th><th>預產期</th><th>簽約日期</th><th>預定入住日</th><th>狀態</th><th>聯絡電話</th><th>合約住宿摘要</th><th>天數</th><th>合約總額<br>合約餘額</th><th>合約號碼<br>經手人</th></tr></thead>
+          <thead><tr><th>筆數</th><th>媽媽姓名<br>身分證號</th><th>預產期</th><th>簽約日期</th><th>預定入住日</th><th>狀態</th><th>聯絡電話</th><th>合約住宿摘要</th><th>天數</th><th>合約總額<br>已收／合約餘額</th><th>合約號碼<br>經手人</th></tr></thead>
           <tbody>${rows.map((r, i) => `
             <tr data-filter="${esc(r.name)} ${esc(r.contract_no)}">
               <td data-label="筆數">${i + 1}</td>
@@ -15506,13 +15508,16 @@ async function viewClientContractQuery(mode) {
               <td data-label="聯絡電話">${esc(r.phone || '—')}</td>
               <td data-label="合約住宿摘要"><small>${esc(r.summary || '—')}</small></td>
               <td data-label="天數">${r.days || 0}</td>
-              <td data-label="合約總額/餘額">$${(r.total || 0).toLocaleString()}<br><small style="color:${(r.balance || 0) > 0 ? 'var(--danger)' : 'var(--primary-dark)'}">餘 $${(r.balance || 0).toLocaleString()}</small></td>
+              <td data-label="合約總額/餘額">$${(r.total || 0).toLocaleString()}
+                <br><small style="color:var(--primary-dark)" title="訂金 $${(r.deposit || 0).toLocaleString()}＋繳費紀錄合約款 $${(r.contract_pay || 0).toLocaleString()}">已收 $${(r.paid || 0).toLocaleString()}</small>
+                <br><small style="color:${(r.balance || 0) > 0 ? 'var(--danger)' : 'var(--primary-dark)'}">餘 $${(r.balance || 0).toLocaleString()}</small></td>
               <td data-label="合約號碼/經手人"><a href="#/customers?m=${r.mother_id}">${esc(r.contract_no)}</a><br><small>${esc(r.handler || '—')}</small></td>
             </tr>`).join('')}
             <tr style="background:#fbeaea"><td colspan="8" style="text-align:right">合計：</td>
-              <td>${sumDays}</td><td>$${sumTotal.toLocaleString()}</td><td></td></tr>
+              <td>${sumDays}</td><td>$${sumTotal.toLocaleString()}<br><small>已收 $${sumPaid.toLocaleString()}</small><br><small>餘 $${sumBalance.toLocaleString()}</small></td><td></td></tr>
           </tbody>
-        </table></div>` : `
+        </table></div>
+        <small style="color:var(--muted)">＊合約總額＝合約資料「銷售房型明細」合計；已收＝訂房訂金＋繳費紀錄之合約款（不含加購款）；合約餘額＝合約總額−已收，與收費帳務同一判準。</small>` : `
         <div class="table-wrap"><table class="data stack">
           <thead><tr><th>筆數</th><th>媽媽姓名<br>身分證號</th><th>日期</th><th>聯絡電話</th><th>合約住宿摘要</th>
             ${mode === 'cancelled' ? '<th>原合約金額</th><th>退訂原因<br>退訂人</th>' : '<th>天數</th><th>合約總額</th>'}
