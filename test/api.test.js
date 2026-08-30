@@ -700,14 +700,20 @@ test('客戶管理：新增潛客→查詢→編輯→行事曆；權限被擋',
   assert.ok(tr);
   assert.strictEqual((await req('PUT', `/api/tours/${tr.id}`, { status: 'visited' })).status, 200);
   // 排房：建訂房（衝突擋 409）→ 入住 → 客戶狀態同步
+  // 日期取相對今日的遠期區間（種子資料以今日為基準浮動，寫死日期會隨時間與種子訂房相撞）
+  const bkBase = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const BD = n => new Date(bkBase + n * 86400000).toISOString().slice(0, 10);
   const rooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && !r.occupant);
-  const room = rooms[rooms.length - 1];
-  const bk1 = await req('POST', '/api/bookings', {
-    mother_id: ok.data.id, room_id: room.id, check_in: '2026-09-25', check_out: '2026-10-20', total_amount: 99000
-  });
-  assert.strictEqual(bk1.status, 200);
+  let bk1 = null, room = null;
+  for (const r of [...rooms].reverse()) {
+    const t = await req('POST', '/api/bookings', {
+      mother_id: ok.data.id, room_id: r.id, check_in: BD(200), check_out: BD(225), total_amount: 99000
+    });
+    if (t.status === 200) { bk1 = t; room = r; break; }
+  }
+  assert.ok(bk1 && bk1.status === 200, '應能在某間空房建立訂房');
   assert.strictEqual((await req('POST', '/api/bookings', {
-    mother_id: ok.data.id, room_id: room.id, check_in: '2026-10-01', check_out: '2026-10-05'
+    mother_id: ok.data.id, room_id: room.id, check_in: BD(205), check_out: BD(210)
   })).status, 409);
   assert.strictEqual((await req('PUT', `/api/bookings/${bk1.data.id}/status`, { status: 'checked_in' })).status, 200);
   g5 = await req('GET', `/api/customers/${ok.data.id}`);
@@ -816,10 +822,18 @@ test('產後報表：清單／各報表可產出／收款統計分類／Excel', 
   assert.ok(det.data.rows.some(r => r.deposit === 12345));
   // 提前退房：退房帶原因 → actual_check_out 記錄 → 報表命中
   const ecMom = await req('POST', '/api/customers', { name: '提前退房測試', due_date: '2026-10-01' });
+  // 住期取相對今日（原寫死日期會隨時間變成「退房日已過」，提前天數算不出來）
+  const ecBase = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const ED = n => new Date(ecBase + n * 86400000).toISOString().slice(0, 10);
   const ecRooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && !r.occupant);
-  const ecBk = await req('POST', '/api/bookings', {
-    mother_id: ecMom.data.id, room_id: ecRooms[0].id, check_in: '2026-06-20', check_out: '2026-08-20'
-  });
+  let ecBk = null;
+  for (const r of ecRooms) {
+    const t = await req('POST', '/api/bookings', {
+      mother_id: ecMom.data.id, room_id: r.id, check_in: ED(-10), check_out: ED(30)
+    });
+    if (t.status === 200) { ecBk = t; break; }
+  }
+  assert.ok(ecBk, '應能建立提前退房測試訂房');
   await req('PUT', `/api/bookings/${ecBk.data.id}/status`, { status: 'checked_in' });
   assert.strictEqual((await req('PUT', `/api/bookings/${ecBk.data.id}/status`,
     { status: 'checked_out', reason: '寶寶轉院' })).status, 200);
@@ -2333,16 +2347,25 @@ test('合約資料：存檔蓋時間戳，優惠明細帶入訂房確認單（�
   assert.ok(cd.cash_discount_at, '折扣應有存檔時間');
   assert.ok(cd.gift_at, '贈品應有存檔時間');
   assert.strictEqual(cd.voucher_by, '王主任');
-  // 產生合約 → 內文應帶入優惠明細
+  // 產生訂房確認單 → 內文應帶入優惠明細（其餘文件不附）
   const bk = cust.bookings.find(b => b.status === 'checked_in');
   const tpls = (await req('GET', '/api/contract-templates')).data;
-  const tpl = tpls.find(t => t.active && !t.in_packet) || tpls[0];
-  const made = await req('POST', `/api/bookings/${bk.id}/contracts`, { template_id: tpl.id, handler: '王主任' });
+  const packetTpls = tpls.filter(t => t.active && t.in_packet);
+  assert.ok(packetTpls.length, '應有啟用的合約包範本');
+  const made = await req('POST', `/api/bookings/${bk.id}/contracts`,
+    { template_ids: packetTpls.map(t => t.id), handler: '王主任' });
   assert.strictEqual(made.status, 200);
-  const doc = (await req('GET', `/api/contracts/${made.data.id}`)).data;
-  assert.ok(doc.body.includes('優惠與贈品明細'), '合約內文應含優惠明細區塊');
-  assert.ok(doc.body.includes('身體spa *1'), '合約內文應含贈品內容');
-  assert.ok(doc.body.includes('王主任'), '合約內文應含存檔人');
+  const packet = (await req('GET', `/api/contracts/${made.data.id}/packet`)).data;
+  const bookingDoc = packet.docs.find(d => d.doc_kind === 'booking');
+  assert.ok(bookingDoc, '合約包應含訂房確認單');
+  // 訂房確認單以紙本「相關備註」欄位（{{gift_remark}}）帶入禮券／折扣／贈品
+  assert.ok(bookingDoc.body.includes('身體spa *1'), '訂房確認單應含贈品內容');
+  assert.ok(bookingDoc.body.includes('商品禮券'), '訂房確認單應含商品禮券');
+  // 其餘文件（服務說明書／服務內容／住房須知等）不得附加優惠明細
+  for (const d of packet.docs.filter(d => d.doc_kind !== 'booking')) {
+    assert.ok(!d.body.includes('優惠與贈品明細'), `${d.title} 不應附加優惠明細`);
+    assert.ok(!d.body.includes('身體spa *1'), `${d.title} 不應附加贈品內容`);
+  }
 });
 
 test('托嬰：房型/托嬰室已建、排托嬰後媽媽退房寶寶仍在房況且轉為托嬰、結案日帶托嬰結束日', async () => {
