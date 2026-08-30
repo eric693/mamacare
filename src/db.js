@@ -2280,6 +2280,11 @@ function ensureContractTemplate() {
     // 以免蓋掉機構自行修訂的條文
     if (cur.body !== t.body && usedBy.get(cur.id).c === 0) updBody.run(t.body, cur.id);
   }
+  // 定點修補（已用過的範本也要套）：住房須知「上述聲明」改為可由合約資料帶入的勾選變數
+  for (const row of db.prepare("SELECT id, body FROM contract_templates WHERE body LIKE '%□上述聲明經由本機構客服人員說明解釋了解同意%'").all()) {
+    updBody.run(row.body.replace('□上述聲明經由本機構客服人員說明解釋了解同意',
+      '{{staff_explained}}上述聲明經由本機構客服人員說明解釋了解同意'), row.id);
+  }
 }
 
 // 營運參數一律存 settings，程式內不得寫死業務數值

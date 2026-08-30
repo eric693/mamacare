@@ -6154,7 +6154,7 @@ const CCT_FIELDS = [
   'book_date', 'review_deadline', 'csection_date', 'phone_home', 'phone_company',
   'mother_address', 'mother_email', 'diet_type', 'meal_plan', 'disease_history',
   'gift_days', 'deposit_method', 'referrer', 'receptionist', 'reviewer',
-  'pdpa_agree', 'portrait_agree',
+  'pdpa_agree', 'portrait_agree', 'staff_explained',
   // 服務契約書當事人：甲方為契約委託人（非產婦本人）時之資料
   'review_start_basis', 'review_start_date',
   'agent_is_mother', 'agent_name', 'agent_relation', 'agent_id_no', 'agent_birth',
@@ -6180,6 +6180,7 @@ const CCT_LABELS = {
   diet_type: '飲食餐別', meal_plan: '月子餐別', disease_history: '疾病史',
   gift_days: '贈送天數', deposit_method: '訂金支付方式', referrer: '介紹人',
   receptionist: '接待人員', reviewer: '覆核', pdpa_agree: '個資提供合作廠商同意', portrait_agree: '肖像權使用同意',
+  staff_explained: '客服已說明解釋（住房須知）',
   review_start_basis: '審閱起始日基準', review_start_date: '雙方約定審閱起始日',
   agent_is_mother: '甲方是否即產婦本人', agent_name: '契約委託人姓名', agent_relation: '委託人與產婦關係',
   agent_id_no: '委託人身分證字號', agent_birth: '委託人出生年月日', agent_address: '委託人地址',
@@ -8124,6 +8125,8 @@ function contractContext(bookingId) {
       emergency_phone: cd.emergency_phone || blank(12),
       pdpa_agree: agreeText(cd.pdpa_agree),
       portrait_agree: agreeText(cd.portrait_agree),
+      // 住房須知「上述聲明…了解同意」：合約資料勾選已說明即打■，未勾選印空框供紙本手勾
+      staff_explained: cd.staff_explained === '是' ? '■' : '□',
       // 契約當事人甲方：未指定委託人時即產婦本人
       agent_name: cd.agent_name || bk.mother_name || blank(8),
       agent_relation: cd.agent_name ? (cd.agent_relation || blank(6)) : '即產婦本人',
@@ -8267,8 +8270,10 @@ app.get('/api/contracts', requireStaff, (req, res) => {
 // 依範本＋當下訂房資料渲染合約內容（新建與「重新產生」共用，確保兩者結果一致）
 function renderContractBody(tpl, ctx) {
   let body = renderTemplate(tpl.body, ctx.map);
-  // 範本未自行放入優惠欄位時，自動附上合約資料頁存檔的優惠明細（避免重複附加）
-  if (!/\{\{(voucher_amount|cash_discount|gift_content|gift_remark)\}\}/.test(tpl.body || '')) {
+  // 優惠與贈品明細只附在訂房確認單（其餘文件如服務說明書／契約附件／住房須知不附）；
+  // 範本已自行放入優惠欄位時亦不重複附加
+  if (tpl.doc_kind === 'booking'
+    && !/\{\{(voucher_amount|cash_discount|gift_content|gift_remark)\}\}/.test(tpl.body || '')) {
     body += discountBlock(ctx.cd || {});
   }
   return body;

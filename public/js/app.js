@@ -5292,7 +5292,7 @@ async function openTemplateManager() {
     <p>範本內容可使用占位符，產生合約時自動帶入訂房資料：<br>
       <small>${esc('{{center_name}} {{mother_name}} {{mother_phone}} {{room_name}} {{room_type}} {{check_in}} {{check_out}} {{days}} {{total_amount}} {{deposit}} {{balance}} {{today}}')}</small><br>
       訂房確認單／服務契約書當事人欄位：<br>
-      <small>${esc('{{mother_id_no}} {{mother_birth}} {{mother_address}} {{mother_email}} {{phone_home}} {{phone_company}} {{due_date}} {{parity_no}} {{baby_count}} {{birth_hospital}} {{birth_mode}} {{csection_date}} {{diet_type}} {{meal_plan}} {{diet_ban}} {{disease_history}} {{book_date}} {{review_start}} {{review_deadline}} {{gift_days}} {{deposit_method}} {{referrer}} {{receptionist}} {{reviewer}} {{handler}} {{emergency_name}} {{emergency_relation}} {{emergency_phone}} {{pdpa_agree}} {{portrait_agree}} {{center_rep}} {{center_address}} {{center_phone}} {{center_fax}} {{center_email}} {{party_block}}')}</small></p>
+      <small>${esc('{{mother_id_no}} {{mother_birth}} {{mother_address}} {{mother_email}} {{phone_home}} {{phone_company}} {{due_date}} {{parity_no}} {{baby_count}} {{birth_hospital}} {{birth_mode}} {{csection_date}} {{diet_type}} {{meal_plan}} {{diet_ban}} {{disease_history}} {{book_date}} {{review_start}} {{review_deadline}} {{gift_days}} {{deposit_method}} {{referrer}} {{receptionist}} {{reviewer}} {{handler}} {{emergency_name}} {{emergency_relation}} {{emergency_phone}} {{pdpa_agree}} {{portrait_agree}} {{staff_explained}} {{center_rep}} {{center_address}} {{center_phone}} {{center_fax}} {{center_email}} {{party_block}}')}</small></p>
     <div class="table-wrap"><table class="data stack"><tbody>${list}</tbody></table></div>
     <div class="row mt"><button class="btn" id="tpl-new">新增範本</button></div>`, body => {
     body.querySelector('#tpl-new').onclick = () => openTemplateEditor(null);
@@ -5443,6 +5443,7 @@ function printPaperContract(d) {
       ${kv('訂金支付方式', cd.deposit_method)}${kv('介紹人', cd.referrer)}
       ${kv('接待人員', cd.receptionist)}${kv('覆核', cd.reviewer)}
       ${kv('個資提供合作廠商', cd.pdpa_agree)}${kv('肖像權使用', cd.portrait_agree)}
+      ${kv('客服已說明解釋', cd.staff_explained)}
       ${kv('緊急聯絡人', cd.emergency_name ? `${cd.emergency_name}（${cd.emergency_relation || '—'}）${cd.emergency_phone || ''}` : '')}
       ${kv('緊急聯絡人地址', cd.emergency_address)}
       ${kv('緊急聯絡人住家電話', cd.emergency_phone_home)}${kv('緊急聯絡人公司電話', cd.emergency_phone_company)}
@@ -13581,7 +13582,7 @@ async function viewCustomers() {
         deposit_method: gv('#ct-depmethod'), referrer: gv('#ct-referrer'),
         receptionist: gv('#ct-recept'), reviewer: gv('#ct-reviewer'),
         disease_history: checkValue('.ct-disease', '#ct-disease-other'),
-        pdpa_agree: gv('#ct-pdpa'), portrait_agree: gv('#ct-portrait'),
+        pdpa_agree: gv('#ct-pdpa'), portrait_agree: gv('#ct-portrait'), staff_explained: gv('#ct-explained'),
         // 服務契約書當事人
         agent_is_mother: (($('#cust-extra').querySelector('input[name="ctr-agent"]:checked') || {}).value || ''),
         agent_name: gv('#ct-agname'), agent_relation: gv('#ct-agrel'), agent_id_no: gv('#ct-agid'),
@@ -14638,7 +14639,10 @@ async function viewCustomers() {
               <label class="bna-chk">其他：<input id="ct-disease-other" maxlength="60" style="max-width:180px" value="${esc(listOther(cd.disease_history, DISEASE_OPTS))}"></label></div>
             <small style="color:var(--muted)">未勾選任何項目時，訂房確認單印為「無」。</small></div>
           <div class="field"><label>個資提供合作廠商</label><select id="ct-pdpa"><option value="">--未確認--</option>${['同意', '不同意'].map(o => `<option ${cd.pdpa_agree === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
-          <div class="field"><label>肖像權使用（住房須知）</label><select id="ct-portrait"><option value="">--未確認--</option>${['同意', '不同意'].map(o => `<option ${cd.portrait_agree === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
+          <div class="field"><label>肖像權使用（住房須知）</label><select id="ct-portrait"><option value="">--未確認--</option>${['同意', '不同意'].map(o => `<option ${cd.portrait_agree === o ? 'selected' : ''}>${o}</option>`).join('')}</select>
+            <small style="color:var(--muted)">選定後住房須知的「□同意／□不同意」會自動打勾；未確認則印空框供紙本手勾。</small></div>
+          <div class="field"><label>客服已說明解釋（住房須知）</label><select id="ct-explained"><option value="">--未確認--</option>${['是', '否'].map(o => `<option ${cd.staff_explained === o ? 'selected' : ''}>${o}</option>`).join('')}</select>
+            <small style="color:var(--muted)">選「是」時住房須知的「□上述聲明…了解同意」自動打勾。</small></div>
           <div class="field full"><label style="font-weight:700;color:var(--primary)">服務契約書當事人欄位</label></div>
           <div class="field full"><label>立契約書人（甲方）</label>
             <div class="row" style="gap:14px;padding-top:6px">${['即產婦本人', '由契約委託人簽訂'].map(o =>
