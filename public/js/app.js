@@ -18230,7 +18230,13 @@ function watchHelp(key) {
   if (helpObserver || !window.MutationObserver) return;
   helpObserver = new MutationObserver(() => {
     const root = main();
-    if (!CURRENT_HELP_KEY || !root || root.querySelector('#help-box')) return;
+    if (!CURRENT_HELP_KEY || !root) return;
+    const box = root.querySelector('#help-box');
+    // 已是本頁的說明就不動；殘留前一頁的（頁面重繪較慢時可能發生）先移除再補上正確的
+    if (box) {
+      if (box.dataset.helpKey === CURRENT_HELP_KEY) return;
+      box.remove();
+    }
     if (!root.querySelector('.page-title')) return;   // 尚未渲染完成／載入中畫面不插入
     mountHelp(CURRENT_HELP_KEY);
   });
@@ -18244,11 +18250,14 @@ function mountHelpInner(key) {
   const help = (typeof PAGE_HELP !== 'undefined') && PAGE_HELP[key];
   if (!help) return;
   const root = main();
-  if (!root || root.querySelector('#help-box')) return;
+  const exist = root && root.querySelector('#help-box');
+  if (!root || (exist && exist.dataset.helpKey === key)) return;
+  if (exist) exist.remove();
   const box = document.createElement('div');
   box.innerHTML = helpBoxHtml(key, help);
   const node = box.firstElementChild;
   if (!node) return;
+  node.dataset.helpKey = key;
   const title = root.querySelector('.page-title');
   if (title && title.parentElement === root) title.after(node);
   else root.prepend(node);
@@ -18278,15 +18287,17 @@ async function route() {
   });
   $('#sidenav').classList.remove('open');
   $('#overlay').classList.remove('show');
+  // 說明鍵在渲染前就切換：頁面渲染是非同步的，觀察器可能先於 mountHelp 觸發，
+  // 若此時仍是前一頁的鍵就會插到上一頁的說明
+  watchHelp(hash);
   main().innerHTML = '<div class="empty">載入中</div>';
   try {
     await routes[hash]();
-    mountHelp(hash);
-    watchHelp(hash);
   } catch (e) {
     if (e.status === 401) { showLogin(); return; }
     main().innerHTML = `<div class="card"><div class="error-msg">${esc(e.message)}</div></div>`;
   }
+  mountHelp(hash);   // 頁面即使載入失敗也要看得到操作說明
 }
 
 function showLogin() {
