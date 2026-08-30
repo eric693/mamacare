@@ -2677,6 +2677,7 @@ async function viewHousekeeping() {
     <div class="card" style="margin:0">
       <div class="row between" style="align-items:flex-start">
         <div><strong>${esc(r.room_name)} 房</strong>　${esc(r.mother_name)}
+          ${r.state === 'due_in' ? '<span class="badge teal">今日入住・備房</span>' : ''}
           ${r.pending_tasks ? `<span class="badge yellow">待清潔 ${r.pending_tasks}</span>` : ''}</div>
         <button class="btn small secondary" data-hk-edit="${r.mother_id}">編輯需求</button>
       </div>
@@ -2689,6 +2690,20 @@ async function viewHousekeeping() {
   }).join('') : '<div class="empty">目前無入住中住客</div>';
 
   const cleanTasks = data.tasks.filter(t => t.kind !== 'repair');
+  // 同房重複掛「入住中」（前一位未辦退房）：房況只算最新一位，這裡另列提醒，避免房務名單與房況對不起來
+  const staleBlock = (data.stale_residents || []).length ? `
+    <div class="card">
+      <h3>未辦退房提醒（${data.stale_residents.length} 筆）</h3>
+      <p style="font-size:.8rem;color:var(--muted);margin:0 0 8px">下列訂房仍掛「入住中」但該房已有新住客，房況看板不會顯示。請至住客管理辦理退房完成，否則房務名單、收費帳務與房況會對不起來。</p>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>房間</th><th>媽媽</th><th>住期</th></tr></thead>
+        <tbody>${data.stale_residents.map(r => `
+          <tr><td data-label="房間">${esc(r.room_name)} 房</td>
+            <td data-label="媽媽">${esc(r.mother_name)} <span class="badge red">仍掛入住中</span></td>
+            <td data-label="住期">${esc(r.check_in)} ~ ${esc(r.check_out)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      ${canAccess('#/residents') ? '<div class="row" style="margin-top:8px"><a class="btn small secondary" href="#/residents">前往住客管理辦理退房</a></div>' : ''}
+    </div>` : '';
 
   main().innerHTML = `
     <div class="page-title">房務清潔</div>
@@ -2700,8 +2715,8 @@ async function viewHousekeeping() {
       </div>
     </div>
     <div class="card">
-      <h3>住客需求（入住中 ${data.residents.length} 位）</h3>
-      <p style="font-size:.8rem;color:var(--muted);margin:0 0 10px">客服在此登記住客需求（勿擾時間／哺乳衣／定時清垃圾…），清潔人員即可同步看到。</p>
+      <h3>住客需求（入住中 ${data.residents.filter(r => r.state !== 'due_in').length} 位${data.residents.some(r => r.state === 'due_in') ? `＋今日入住 ${data.residents.filter(r => r.state === 'due_in').length} 位` : ''}）</h3>
+      <p style="font-size:.8rem;color:var(--muted);margin:0 0 10px">名單同媽媽房況（每房一位在住者，另含今日應入住需備房者）。客服在此登記住客需求（勿擾時間／哺乳衣／定時清垃圾…），清潔人員即可同步看到。</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">${resCards}</div>
     </div>
     <div class="card">
@@ -2710,7 +2725,8 @@ async function viewHousekeeping() {
         <thead><tr><th>任務</th><th>位置</th><th>排定日</th><th>狀態</th><th></th></tr></thead>
         <tbody>${cleanTasks.map(t => hkTaskRow(t, data.date, isAdmin)).join('') || '<tr><td colspan="5"><div class="empty">本日尚無清潔任務</div></td></tr>'}</tbody>
       </table></div>
-    </div>`;
+    </div>
+    ${staleBlock}`;
 
   $('#hk-date').onchange = () => { location.hash = `#/housekeeping?d=${$('#hk-date').value}`; viewHousekeeping(); };
   $('#hk-add-task').onclick = () => openHkTaskForm(data.residents, data.date, 'clean', viewHousekeeping);

@@ -9683,13 +9683,33 @@ app.get('/api/room-status/babies', requireStaff, (req, res) => {
 // 在住住客的清潔需求總覽（含勿擾時間／需求項目／備註）＋今日任務統計
 app.get('/api/housekeeping', requireStaff, (req, res) => {
   const date = req.query.date || today();
-  const residents = db.prepare(`
+  const allIn = db.prepare(`
     SELECT m.id AS mother_id, m.name AS mother_name, m.hk_dnd, m.hk_needs, m.hk_notes,
            r.id AS room_id, r.name AS room_name, bk.check_in, bk.check_out,
            (SELECT COUNT(*) FROM housekeeping_logs h WHERE h.mother_id = m.id AND h.status='pending') AS pending_tasks
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.status = 'checked_in'
-    ORDER BY r.name`).all();
+    ORDER BY r.name, bk.check_in DESC`).all();
+  // 與媽媽房況同一判準：每房只有最新一筆訂房算在住，其餘是前一位忘了辦退房（另列提醒，不混進住客需求）
+  const seen = new Set();
+  const residents = [], staleResidents = [];
+  for (const x of allIn) {
+    if (seen.has(x.room_id)) { staleResidents.push(x); continue; }
+    seen.add(x.room_id);
+    x.state = 'occupied';
+    residents.push(x);
+  }
+  // 今日應入住（房況顯示為「今日入住」）：房務需備房，一併列入住客需求卡片
+  const dueIn = db.prepare(`
+    SELECT m.id AS mother_id, m.name AS mother_name, m.hk_dnd, m.hk_needs, m.hk_notes,
+           r.id AS room_id, r.name AS room_name, bk.check_in, bk.check_out,
+           (SELECT COUNT(*) FROM housekeeping_logs h WHERE h.mother_id = m.id AND h.status='pending') AS pending_tasks
+    FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
+    WHERE bk.status = 'reserved' AND bk.check_in <= ? AND bk.check_out > ?
+    ORDER BY r.name`).all(date, date);
+  for (const x of dueIn) { x.state = 'due_in'; residents.push(x); }
+  residents.sort((a, b) => String(a.room_name).localeCompare(String(b.room_name)));
+  for (const x of staleResidents) x.state = 'stale';
   const tasks = db.prepare(`
     SELECT h.*, r.name AS room_name, m.name AS mother_name,
            cu.name AS created_name, du.name AS done_name,
@@ -9703,7 +9723,7 @@ app.get('/api/housekeeping', requireStaff, (req, res) => {
     LEFT JOIN users du ON du.id = h.done_by
     WHERE h.scheduled_for = ? OR (h.status='pending' AND h.scheduled_for < ?)
     ORDER BY h.status, h.scheduled_for, h.id DESC`).all(date, date);
-  res.json({ date, residents, tasks });
+  res.json({ date, residents, stale_residents: staleResidents, tasks });
 });
 
 // 更新某住客的清潔需求
