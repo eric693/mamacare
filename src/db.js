@@ -1586,6 +1586,8 @@ function init() {
   }
   // LINE 官方帳號預約參觀：綁定 LINE 用戶、待確認狀態（pending=用戶自 LINE 送出待員工確認）
   if (!tourCols.includes('line_user_id')) db.exec("ALTER TABLE tours ADD COLUMN line_user_id TEXT DEFAULT ''");
+  // 客服承辦人（帶參觀的人員）；空值＝未指定
+  if (!tourCols.includes('host_by')) db.exec('ALTER TABLE tours ADD COLUMN host_by INTEGER');
   if (!tourCols.includes('confirm_status')) db.exec("ALTER TABLE tours ADD COLUMN confirm_status TEXT DEFAULT ''"); // ''/pending/confirmed
   // LINE 預約參觀流程暫存：填資料 → 發驗證碼（推播至 LINE）→ 驗證 → 選時段送出
   db.exec(`CREATE TABLE IF NOT EXISTS line_tour_sessions (

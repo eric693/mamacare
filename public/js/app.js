@@ -3914,6 +3914,12 @@ function openMenuForm(date, mu) {
 }
 
 /* ---------- 參觀預約 ---------- */
+// 客服承辦人選單（帶參觀的人員）；清單由 viewTours／客戶管理載入的 /users 提供
+let TOUR_STAFF = [];
+function tourHostSelect(id, selected) {
+  return `<select id="${id}"><option value="">未指定</option>${TOUR_STAFF.map(u =>
+    `<option value="${u.id}" ${String(selected || '') === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>`;
+}
 function tourForm(t = {}) {
   const [d, tm] = (t.tour_at || '').split(' ');
   return `
@@ -3925,6 +3931,7 @@ function tourForm(t = {}) {
       <div class="field"><label>預產期</label><input type="date" id="tf-due" value="${esc(t.due_date || '')}"></div>
       <div class="field"><label>來源</label><input id="tf-source" value="${esc(t.source || '')}" placeholder="官網 / 介紹 / 廣告"></div>
       <div class="field"><label>下次跟進日</label><input type="date" id="tf-follow" value="${esc(t.follow_up_date || '')}"></div>
+      <div class="field"><label>客服承辦人<small>（帶參觀人員）</small></label>${tourHostSelect('tf-host', t.host_by)}</div>
       <div class="field full">
         <label>狀態</label>
         <select id="tf-status">${Object.entries(TOUR_STATUS_LABEL).map(([k, v]) =>
@@ -3947,12 +3954,14 @@ function readTourForm(body) {
     source: body.querySelector('#tf-source').value.trim(),
     status: body.querySelector('#tf-status').value,
     note: body.querySelector('#tf-note').value,
-    follow_up_date: body.querySelector('#tf-follow').value
+    follow_up_date: body.querySelector('#tf-follow').value,
+    host_by: body.querySelector('#tf-host').value
   };
 }
 
 async function viewTours() {
   const tours = await api('/tours');
+  try { TOUR_STAFF = await api('/users'); } catch (e) { TOUR_STAFF = []; }
   const sources = [...new Set(tours.map(t => t.source).filter(Boolean))].sort();
   const month = todayStr().slice(0, 7);
   const inMonth = tours.filter(t => (t.tour_at || '').slice(0, 7) === month);
@@ -3989,7 +3998,7 @@ async function viewTours() {
       </div>
       <div class="table-wrap">
         <table class="data stack" id="tr-table">
-          <thead><tr><th>參觀時間</th><th>姓名</th><th>電話</th><th>預產期</th><th>來源</th><th>狀態</th><th>最近跟進</th><th></th></tr></thead>
+          <thead><tr><th>參觀時間</th><th>姓名</th><th>電話</th><th>預產期</th><th>來源</th><th>客服承辦人</th><th>狀態</th><th>最近跟進</th><th></th></tr></thead>
           <tbody>${tours.map(t => `
             <tr data-q="${esc((t.name + ' ' + (t.phone || '') + ' ' + (t.source || '') + ' ' + (t.note || '') + ' ' + (t.last_log || '')).toLowerCase())}" data-status="${t.status}" data-source="${esc(t.source || '')}" data-date="${esc((t.tour_at || '').slice(0, 10))}">
               <td data-label="參觀時間">${esc(t.tour_at)}</td>
@@ -3999,6 +4008,7 @@ async function viewTours() {
               <td data-label="電話">${esc(t.phone || '-')}</td>
               <td data-label="預產期">${esc(t.due_date || '-')}</td>
               <td data-label="來源">${esc(t.source || '-')}</td>
+              <td data-label="客服承辦人">${t.host_name ? esc(t.host_name) : '<span style="color:var(--muted)">未指定</span>'}</td>
               <td data-label="狀態">${t.confirm_status === 'pending' && t.status === 'scheduled'
                 ? '<span class="badge yellow">LINE 待確認</span>'
                 : `<span class="badge ${TOUR_STATUS_BADGE[t.status]}">${TOUR_STATUS_LABEL[t.status]}</span>`}</td>
@@ -4017,7 +4027,7 @@ async function viewTours() {
                 <button class="btn small secondary" data-log-tour="${t.id}">追蹤紀錄${t.log_count ? `(${t.log_count})` : ''}</button>
                 <button class="btn small secondary" data-edit-tour="${t.id}">編輯</button>
               </td>
-            </tr>`).join('') || '<tr><td colspan="8"><div class="empty">尚無參觀預約</div></td></tr>'}</tbody>
+            </tr>`).join('') || '<tr><td colspan="9"><div class="empty">尚無參觀預約</div></td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -13985,11 +13995,19 @@ async function viewCustomers() {
       try {
         await api('/tours', { method: 'POST', body: {
           name: d.mother.name, phone: d.mother.phone || '', due_date: d.mother.due_date || '',
-          tour_at: `${date} ${time}`, source: (d.profile || {}).source || '', note: $q('#tr-note').value.trim()
+          tour_at: `${date} ${time}`, source: (d.profile || {}).source || '', note: $q('#tr-note').value.trim(),
+          host_by: $q('#tr-host').value
         } });
         selectCustomer(editId);
       } catch (e) { err.textContent = e.message; }
     };
+    // 客服承辦人：下拉即存（不必進編輯視窗）
+    $('#cust-extra').querySelectorAll('[data-trhost]').forEach(sel => {
+      sel.onchange = async () => {
+        try { await api(`/tours/${sel.dataset.trhost}`, { method: 'PUT', body: { host_by: sel.value } }); selectCustomer(editId); }
+        catch (e) { alert(e.message); }
+      };
+    });
     $('#cust-extra').querySelectorAll('[data-trst]').forEach(btn => {
       btn.onclick = async () => {
         const [id, status] = btn.dataset.trst.split('|');
@@ -14331,6 +14349,9 @@ async function viewCustomers() {
         <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div class="field" style="margin:0"><label>參觀日期 <b class="req">*</b></label><input type="date" id="tr-date" value="${todayStr()}"></div>
           <div class="field" style="margin:0"><label>參觀時段 <b class="req">*</b></label><input type="time" id="tr-time" value="14:00"></div>
+          <div class="field" style="margin:0"><label>客服承辦人<small>（帶參觀人員）</small></label>
+            <select id="tr-host"><option value="">未指定</option>${(staffNames || []).map(u =>
+              `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></div>
           <div class="field" style="margin:0;min-width:220px"><label>備註</label><input id="tr-note" maxlength="200"></div>
           <button class="btn danger" id="tr-add">轉入預約參觀</button>
           <a class="btn small secondary" href="#/tour-calendar">預約參觀行事曆</a>
@@ -14341,10 +14362,13 @@ async function viewCustomers() {
       <div class="card">
         <div class="sec-hd">參觀紀錄（${d.tours.length} 筆）</div>
         ${d.tours.length ? `<div class="table-wrap"><table class="data stack">
-          <thead><tr><th>參觀時間</th><th>狀態</th><th>備註</th><th class="no-print">操作</th></tr></thead>
+          <thead><tr><th>參觀時間</th><th>客服承辦人</th><th>狀態</th><th>備註</th><th class="no-print">操作</th></tr></thead>
           <tbody>${d.tours.map(t => {
             const st = TOUR_STATUS_TW[t.status] || [t.status, 'gray'];
             return `<tr><td data-label="參觀時間">${esc(t.tour_at)}</td>
+              <td data-label="客服承辦人">
+                <select data-trhost="${t.id}" style="min-width:120px"><option value="">未指定</option>${(staffNames || []).map(u =>
+                  `<option value="${u.id}" ${String(t.host_by || '') === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></td>
               <td data-label="狀態"><span class="badge ${st[1]}">${st[0]}</span></td>
               <td data-label="備註"><small>${esc(t.note || '—')}</small></td>
               <td data-label="操作" class="no-print">

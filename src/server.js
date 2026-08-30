@@ -5788,7 +5788,7 @@ app.get('/api/tours', requireStaff, (req, res) => {
   if (req.query.exclude_lost === '1') cond.push("t.status != 'lost'");
   const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
   const cols = `SELECT t.*,
-      uc.name AS created_by_name, ux.name AS cancel_by_name,
+      uc.name AS created_by_name, ux.name AS cancel_by_name, uh.name AS host_name,
       cm.name AS customer_name, cm.status AS customer_status,
       (SELECT COUNT(*) FROM tour_logs l WHERE l.tour_id = t.id) AS log_count,
       (SELECT l.body FROM tour_logs l WHERE l.tour_id = t.id ORDER BY l.id DESC LIMIT 1) AS last_log,
@@ -5796,6 +5796,7 @@ app.get('/api/tours', requireStaff, (req, res) => {
     FROM tours t
     LEFT JOIN users uc ON uc.id = t.created_by
     LEFT JOIN users ux ON ux.id = t.cancel_by
+    LEFT JOIN users uh ON uh.id = t.host_by
     LEFT JOIN mothers cm ON cm.id = t.mother_id`;
   const pg = pageParams(req);
   if (pg.enabled) {
@@ -5846,17 +5847,24 @@ function tourCustomerLink(t, userId) {
   return { motherId: info.lastInsertRowid, created: true };
 }
 
+// 客服承辦人：接受 users.id，查無則存 null
+function tourHostId(v) {
+  const id = Number(v);
+  if (!id) return null;
+  return db.prepare('SELECT id FROM users WHERE id = ?').get(id) ? id : null;
+}
+
 app.post('/api/tours', requireStaff, (req, res) => {
   const t = req.body || {};
   if (!t.name || !t.tour_at) return res.status(400).json({ error: '姓名與參觀時間必填' });
   const link = tourCustomerLink(t, req.session.user.id);
   const info = db.prepare(`INSERT INTO tours
-    (name, phone, due_date, tour_at, source, status, note, follow_up_date, parity, attended, birth_hospital, created_by, mother_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (name, phone, due_date, tour_at, source, status, note, follow_up_date, parity, attended, birth_hospital, created_by, mother_id, host_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     t.name, t.phone || '', t.due_date || '', t.tour_at, t.source || '',
     ['scheduled', 'visited', 'signed', 'lost'].includes(t.status) ? t.status : 'scheduled', t.note || '', t.follow_up_date || '',
     String(t.parity || '').slice(0, 20), ['是', '否'].includes(t.attended) ? t.attended : '',
-    String(t.birth_hospital || '').slice(0, 50), req.session.user.id, link.motherId);
+    String(t.birth_hospital || '').slice(0, 50), req.session.user.id, link.motherId, tourHostId(t.host_by));
   if (link.created) logAudit(req, { action: 'create', entity: 'customer_profiles', entity_id: link.motherId, summary: `參觀預約自動建潛在客戶 ${t.name}` });
   res.json({ id: info.lastInsertRowid, mother_id: link.motherId, customer_created: link.created });
 });
@@ -5875,13 +5883,13 @@ app.put('/api/tours/:id', requireStaff, (req, res) => {
     if (link.created) logAudit(req, { action: 'create', entity: 'customer_profiles', entity_id: motherId, summary: `參觀預約自動建潛在客戶 ${t.name ?? cur.name}` });
   }
   db.prepare(`UPDATE tours SET name = ?, phone = ?, due_date = ?, tour_at = ?, source = ?, status = ?, note = ?, follow_up_date = ?,
-    parity = ?, attended = ?, birth_hospital = ?, mother_id = ? WHERE id = ?`).run(
+    parity = ?, attended = ?, birth_hospital = ?, mother_id = ?, host_by = ? WHERE id = ?`).run(
     t.name ?? cur.name, newPhone, t.due_date ?? cur.due_date, t.tour_at ?? cur.tour_at,
     t.source ?? cur.source, status, t.note ?? cur.note, t.follow_up_date ?? cur.follow_up_date,
     t.parity !== undefined ? String(t.parity).slice(0, 20) : cur.parity,
     t.attended !== undefined ? (['是', '否'].includes(t.attended) ? t.attended : '') : cur.attended,
     t.birth_hospital !== undefined ? String(t.birth_hospital).slice(0, 50) : cur.birth_hospital,
-    motherId, req.params.id);
+    motherId, t.host_by !== undefined ? tourHostId(t.host_by) : cur.host_by, req.params.id);
   if (status !== cur.status) {
     const L = { scheduled: '待參觀', visited: '已參觀', signed: '已簽約', lost: '未成交' };
     addTourLog(req.params.id, `狀態：${L[cur.status] || cur.status} → ${L[status] || status}`, req.session.user.id);
@@ -6067,8 +6075,9 @@ app.get('/api/customers/:motherId', requireStaff, (req, res) => {
   // 關聯資料同步帶出：互動紀錄／參觀／合約／訂房收款
   const logs = db.prepare(`SELECT l.*, u.name AS staff_name FROM customer_logs l
     LEFT JOIN users u ON u.id = l.created_by WHERE l.mother_id = ? ORDER BY l.id DESC LIMIT 100`).all(mother.id);
-  const tours = db.prepare(`SELECT id, tour_at, status, note FROM tours
-    WHERE mother_id = ? OR name = ? OR (? != '' AND phone = ?) ORDER BY tour_at DESC LIMIT 50`)
+  const tours = db.prepare(`SELECT t.id, t.tour_at, t.status, t.note, t.host_by, uh.name AS host_name FROM tours t
+    LEFT JOIN users uh ON uh.id = t.host_by
+    WHERE t.mother_id = ? OR t.name = ? OR (? != '' AND t.phone = ?) ORDER BY t.tour_at DESC LIMIT 50`)
     .all(mother.id, mother.name, mother.phone || '', mother.phone || '');
   const contracts = db.prepare(`
     SELECT c.id, c.title, c.status, c.created_at, c.signed_at, bk.check_in, bk.check_out, bk.room_id,
