@@ -1679,6 +1679,15 @@ async function viewResidents() {
         ? `<button class="btn small" style="background:var(--accent)" data-checkout-done="${sub.booking_id}" data-room="${esc(r.name)}" data-mom="${esc(sub.mother_name)}">退房完成</button>`
         : `<button class="btn small secondary" disabled title="未到退房日（${esc(sub.check_out)}）00:00，暫不可辦理" style="opacity:.55;cursor:not-allowed">退房完成</button>`
     ].filter(Boolean).join('') : (canAccess('#/bed-planning') ? '<a class="btn small secondary" href="#/bed-planning">排床</a>' : '');
+    // 同房重複掛「入住中」：前一位未辦退房，看板只顯示最新一位，其餘在此提醒補辦退房
+    const staleBlock = (r.other_occupants || []).map(o => `
+      <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
+        <div class="rs-kv"><span><b>${esc(o.mother_name)}</b> <span class="badge red">仍掛入住中・未辦退房</span></span>
+          <span>住期 ${esc(o.check_in)} ~ ${esc(o.check_out)}</span></div>
+        <div class="row" style="gap:6px;margin-top:6px">
+          <button class="btn small" style="background:var(--accent)" data-checkout-done="${o.booking_id}" data-room="${esc(r.name)}" data-mom="${esc(o.mother_name)}">退房完成</button>
+        </div>
+      </div>`).join('');
     // 已退房尚未辦產婦結案：住客管理同樣看得到（僅提示，退房已完成故不再有退房完成鈕）
     const pendBlock = (r.pending_closures || []).map(p => `
       <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
@@ -1694,7 +1703,7 @@ async function viewResidents() {
         </div>
         ${body}${nextLine}
         ${actions ? `<div class="row" style="gap:6px;margin-top:10px">${actions}</div>` : ''}
-        ${pendBlock}
+        ${staleBlock}${pendBlock}
       </div>`;
   }).join('');
   // 媽媽／寶寶資料管理卡片（收合區塊；左側色條依狀態）
@@ -2848,49 +2857,109 @@ async function viewBilling() {
   // 入住超過 3 天仍未結清「合約金額」→ 整列變底色
   const isOverdue = b => b.status === 'checked_in' && b.contract_balance > 0
     && (new Date(todayStr) - new Date(b.check_in)) / 86400000 > 3;
+  // 住宿狀態標示：依日期判定（同媽媽房況），bookings.status 仍掛入住中但已過退房日者標「應退未退」
+  const stayBadge = b => b.stale_checked_in
+    ? '<span class="badge red">應退未退</span>'
+    : `<span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span>`;
+  const rowHtml = b => `
+    <tr class="${isOverdue(b) ? 'row-overdue' : ''}">
+      <td data-label="媽媽">${esc(b.mother_name)}　${stayBadge(b)}${b.merged_into ? ' <span class="badge gray" title="期間變更／轉房切段：此段帳務已併入後段訂房">已併入後段</span>' : ''}
+        <br><small style="color:var(--muted)">生日 ${esc(b.mother_birth || '—')}／${b.delivery_date ? '生產 ' + esc(b.delivery_date) : b.due_date ? '預產 ' + esc(b.due_date) : '生產日未填'}</small></td>
+      <td data-label="房間 / 期間">${esc(b.room_name)} 房<br><small>${esc(b.check_in)} ~ ${esc(b.check_out)}</small></td>
+      <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}${b.chain_prior ? `＋前段 ${fmtMoney(b.chain_prior)}` : ''}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶不在館內 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
+      <td data-label="已收">${fmtMoney(b.total_paid)}<br><small>含訂金 ${fmtMoney(b.deposit)}</small></td>
+      <td data-label="未結餘額">${b.balance > 0
+        ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span><br><small>合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}</small>`
+        : '<span class="badge green">已結清</span>'}</td>
+      <td data-label="操作"><button class="btn small secondary" data-detail="${b.id}">收費明細</button> <button class="btn small secondary" data-addpay="${b.id}">新增繳款</button>${b.balance > 0 ? ` <button class="btn small" data-notify="${b.id}">通知繳費</button>` : ''}</td>
+    </tr>`;
   main().innerHTML = `
     <div class="page-title">收費帳務</div>
     <div class="card">
-      ${filterBar({ placeholder: '搜尋媽媽 / 房間…', statuses: [{ val: '', label: '全部' }, { val: 'unpaid', label: '未結清' }, { val: 'paid', label: '已結清' }] })}
+      <div class="form-grid" id="bill-flt" style="margin-bottom:10px">
+        <div class="field"><label>住宿狀態</label>
+          <select id="bf-stay">
+            <option value="">全部</option>
+            <option value="in">入住中</option>
+            <option value="notin">未入住（預約中）</option>
+            <option value="out">已退房</option>
+            <option value="stale">應退未退（未辦退房）</option>
+          </select></div>
+        <div class="field"><label>結清狀態</label>
+          <select id="bf-pay"><option value="">全部</option><option value="unpaid">未結清</option><option value="paid">已結清</option></select></div>
+        <div class="field"><label>姓名 / 房間</label><input id="bf-name" placeholder="輸入姓名或房號"></div>
+        <div class="field"><label>入住／預約日期（起）</label><input type="date" id="bf-from"></div>
+        <div class="field"><label>入住／預約日期（迄）</label><input type="date" id="bf-to"></div>
+        <div class="field"><label>生日</label><input type="date" id="bf-birth"></div>
+        <div class="field"><label>生產日期或預產期</label><input type="date" id="bf-deliv"></div>
+        <div class="field"><label>&nbsp;</label>
+          <div class="row" style="gap:6px"><button class="btn small secondary" id="bf-clear">清除條件</button>
+          <span id="bf-count" style="color:var(--muted);font-size:.85rem;align-self:center"></span></div></div>
+      </div>
       <div class="table-wrap">
         <table class="data stack">
           <thead><tr><th>媽媽</th><th>房間 / 期間</th><th>應收</th><th>已收</th><th>未結餘額</th><th></th></tr></thead>
-          <tbody>${rows.map(b => `
-            <tr class="${isOverdue(b) ? 'row-overdue' : ''}" data-filter="${esc(b.mother_name + ' ' + b.room_name)}" data-status="${b.balance > 0 ? 'unpaid' : 'paid'}">
-              <td data-label="媽媽">${esc(b.mother_name)}　<span class="badge ${STATUS_BADGE[b.status]}">${STATUS_LABEL[b.status]}</span>${b.merged_into ? ' <span class="badge gray" title="期間變更／轉房切段：此段帳務已併入後段訂房">已併入後段</span>' : ''}</td>
-              <td data-label="房間 / 期間">${esc(b.room_name)} 房<br><small>${esc(b.check_in)} ~ ${esc(b.check_out)}</small></td>
-              <td data-label="應收">${fmtMoney(b.total_due)}<br><small>合約 ${fmtMoney(b.total_amount)}${b.chain_prior ? `＋前段 ${fmtMoney(b.chain_prior)}` : ''}＋加購 ${fmtMoney(b.charges_total)}${b.baby_deduct ? `−寶寶不在館內 ${fmtMoney(b.baby_deduct)}` : ''}</small></td>
-              <td data-label="已收">${fmtMoney(b.total_paid)}<br><small>含訂金 ${fmtMoney(b.deposit)}</small></td>
-              <td data-label="未結餘額">${b.balance > 0
-                ? `<strong style="color:var(--danger)">${fmtMoney(b.balance)}</strong> <span class="badge red">未結清</span><br><small>合約 ${fmtMoney(b.contract_balance)}＋加購 ${fmtMoney(b.addon_balance)}</small>`
-                : '<span class="badge green">已結清</span>'}</td>
-              <td data-label="操作"><button class="btn small secondary" data-detail="${b.id}">收費明細</button> <button class="btn small secondary" data-addpay="${b.id}">新增繳款</button>${b.balance > 0 ? ` <button class="btn small" data-notify="${b.id}">通知繳費</button>` : ''}</td>
-            </tr>`).join('') || '<tr><td colspan="6"><div class="empty">尚無訂房資料</div></td></tr>'}</tbody>
+          <tbody id="bill-body"></tbody>
         </table>
       </div>
-      ${rows.some(isOverdue) ? '<p style="font-size:.8rem;color:var(--muted);margin:8px 0 0">底色列＝入住超過 3 天，合約金額尚未結清。</p>' : ''}
+      <p style="font-size:.8rem;color:var(--muted);margin:8px 0 0">底色列＝入住超過 3 天，合約金額尚未結清。「應退未退」＝訂房仍掛入住中但已過退房日，房況看板不會顯示，請至住客管理辦理退房完成。</p>
     </div>`;
-  wireFilter(main());
-  main().querySelectorAll('[data-detail]').forEach(btn => {
-    btn.onclick = () => {
-      $('#modal').onclose = () => { $('#modal').onclose = null; viewBilling(); };
-      openBillingDetail(btn.dataset.detail);
-    };
-  });
-  // 新增繳款：開同一個收費明細畫面，直接捲到繳費紀錄表單
-  main().querySelectorAll('[data-addpay]').forEach(btn => {
-    btn.onclick = () => {
-      $('#modal').onclose = () => { $('#modal').onclose = null; viewBilling(); };
-      openBillingDetail(btn.dataset.addpay, true);
-    };
-  });
-  main().querySelectorAll('[data-notify]').forEach(btn => btn.onclick = async () => {
-    if (!confirm('發送繳費通知給家屬（留言＋已綁定者 LINE）？')) return;
-    try {
-      const r = await api(`/bookings/${btn.dataset.notify}/dun`, { method: 'POST' });
-      alert(`已送出繳費通知${r.notified ? `，並推播 ${r.notified} 位家屬 LINE` : '（家屬留言已送出；尚無綁定 LINE 之家屬）'}`);
-    } catch (e) { alert(e.message); }
-  });
+
+  const $f = id => main().querySelector(id);
+  function render() {
+    const stay = $f('#bf-stay').value, pay = $f('#bf-pay').value;
+    const q = $f('#bf-name').value.trim().toLowerCase();
+    const from = $f('#bf-from').value, to = $f('#bf-to').value;
+    const birth = $f('#bf-birth').value, deliv = $f('#bf-deliv').value;
+    const list = rows.filter(b => {
+      if (stay === 'in' && !(b.status === 'checked_in' && !b.stale_checked_in)) return false;
+      if (stay === 'notin' && b.status !== 'reserved') return false;
+      if (stay === 'out' && b.status !== 'checked_out') return false;
+      if (stay === 'stale' && !b.stale_checked_in) return false;
+      if (pay === 'unpaid' && !(b.balance > 0)) return false;
+      if (pay === 'paid' && b.balance > 0) return false;
+      if (q && !(`${b.mother_name} ${b.room_name}`.toLowerCase().includes(q))) return false;
+      if (from && b.check_in < from) return false;
+      if (to && b.check_in > to) return false;
+      if (birth && b.mother_birth !== birth) return false;
+      if (deliv && b.delivery_date !== deliv && b.due_date !== deliv) return false;
+      return true;
+    });
+    $f('#bill-body').innerHTML = list.map(rowHtml).join('')
+      || '<tr><td colspan="6"><div class="empty">查無符合條件的資料</div></td></tr>';
+    $f('#bf-count').textContent = `顯示 ${list.length} / ${rows.length} 筆`;
+    wireBillingActions();
+  }
+  ['#bf-stay', '#bf-pay', '#bf-name', '#bf-from', '#bf-to', '#bf-birth', '#bf-deliv']
+    .forEach(id => { const el = $f(id); el.oninput = render; el.onchange = render; });
+  $f('#bf-clear').onclick = () => {
+    ['#bf-stay', '#bf-pay', '#bf-name', '#bf-from', '#bf-to', '#bf-birth', '#bf-deliv'].forEach(id => $f(id).value = '');
+    render();
+  };
+
+  function wireBillingActions() {
+    main().querySelectorAll('[data-detail]').forEach(btn => {
+      btn.onclick = () => {
+        $('#modal').onclose = () => { $('#modal').onclose = null; viewBilling(); };
+        openBillingDetail(btn.dataset.detail);
+      };
+    });
+    // 新增繳款：開同一個收費明細畫面，直接捲到繳費紀錄表單
+    main().querySelectorAll('[data-addpay]').forEach(btn => {
+      btn.onclick = () => {
+        $('#modal').onclose = () => { $('#modal').onclose = null; viewBilling(); };
+        openBillingDetail(btn.dataset.addpay, true);
+      };
+    });
+    main().querySelectorAll('[data-notify]').forEach(btn => btn.onclick = async () => {
+      if (!confirm('發送繳費通知給家屬（留言＋已綁定者 LINE）？')) return;
+      try {
+        const r = await api(`/bookings/${btn.dataset.notify}/dun`, { method: 'POST' });
+        alert(`已送出繳費通知${r.notified ? `，並推播 ${r.notified} 位家屬 LINE` : '（家屬留言已送出；尚無綁定 LINE 之家屬）'}`);
+      } catch (e) { alert(e.message); }
+    });
+  }
+  render();
 }
 
 // 另開視窗列印：寶寶報喜入住通知單
@@ -8008,6 +8077,13 @@ async function viewMotherRooms() {
         : `<button class="btn small secondary" disabled title="未到退房日（${esc(sub.check_out)}）00:00，暫不可結案" style="opacity:.55;cursor:not-allowed">產婦結案</button>`) : '',
       !sub && canAccess('#/rooms') ? `<a class="btn small secondary" href="#/rooms">訂房管理</a>` : ''
     ].filter(Boolean).join('');
+    // 同房重複掛「入住中」：前一位未辦退房，房況只顯示最新一位，其餘在此提醒補辦（收費帳務會全部列出）
+    const staleBlock = (r.other_occupants || []).map(o => `
+      <div class="rs-pending" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
+        <div class="rs-kv"><span><b>${esc(o.mother_name)}</b> <span class="badge red">仍掛入住中・未辦退房</span></span>
+          <span>住期 ${esc(o.check_in)} ~ ${esc(o.check_out)}</span></div>
+        ${canAccess('#/residents') ? '<div class="row" style="gap:6px;margin-top:6px"><a class="btn small secondary" href="#/residents">住客管理辦理退房</a></div>' : ''}
+      </div>`).join('');
     // 已退房尚未辦產婦結案：留在原房號、獨立區塊（不影響房態，退房完成與結案互不連動）
     const pendBlock = (r.pending_closures || []).map(p => `
       <div class="rs-pending" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
@@ -8023,7 +8099,7 @@ async function viewMotherRooms() {
         </div>
         ${body}${nextLine}
         ${actions ? `<div class="row" style="gap:6px;margin-top:10px">${actions}</div>` : ''}
-        ${pendBlock}
+        ${staleBlock}${pendBlock}
       </div>`;
   }).join('');
   main().innerHTML = `

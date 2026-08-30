@@ -4093,14 +4093,26 @@ function withBalance(row, rate) {
 }
 
 app.get('/api/billing', requireStaff, (req, res) => {
+  const d = today();
   const rows = db.prepare(`
-    SELECT bk.*, m.name AS mother_name, r.name AS room_name, ${BILLING_SUMS}
+    SELECT bk.*, m.name AS mother_name, m.phone AS mother_phone, m.birth_date AS mother_birth,
+           m.delivery_date, m.due_date, r.name AS room_name, ${BILLING_SUMS}
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
     WHERE bk.status != 'cancelled'
     ORDER BY CASE bk.status WHEN 'checked_in' THEN 0 WHEN 'reserved' THEN 1 ELSE 2 END, bk.check_in`).all();
   const rate = babyDeductRate();
   rows.forEach(r => syncBabyAbsences(r));
-  res.json(rows.map(r => withBalance(r, rate)));
+  // stay_state：與媽媽房況同一判準（依日期），而非只看 bookings.status，
+  // 避免舊訂房忘了辦退房仍掛 checked_in，收費帳務把同一房多人都標成「入住中」
+  res.json(rows.map(r => {
+    const b = withBalance(r, rate);
+    b.stay_state = b.status === 'checked_in'
+      ? (b.check_out <= d ? 'due_out' : 'in')
+      : b.status === 'reserved' ? (b.check_in <= d ? 'due_in' : 'reserved') : 'out';
+    // 應退未退：仍掛入住中但退房日已過（房況看板不會顯示，需在此提醒補辦退房）
+    b.stale_checked_in = b.status === 'checked_in' && b.check_out < d;
+    return b;
+  }));
 });
 
 // 應收帳款帳齡：以退房日為到期基準，逾期分齡（在住者為未到期）
@@ -9435,7 +9447,10 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     // 已退房待產婦結案（不影響房態／佔房統計，僅供護理端在原房號完成結案）
     const pending = pendingClosures.filter(p => p.room_id === r.id);
     const futureBk = future.find(u => u.room_id === r.id) || null;
-    return { ...r, state, occupant: occ, next_booking: next, future_booking: futureBk, pending_closures: pending };
+    // 同一房重複掛「入住中」（前一位忘了辦退房）：不再靜默隱藏，一併回傳供卡片提醒補辦退房
+    const others = occupants.filter(o => o.room_id === r.id && o !== occ);
+    return { ...r, state, occupant: occ, other_occupants: others,
+      next_booking: next, future_booking: futureBk, pending_closures: pending };
   });
   const stats = {
     total: list.length,
