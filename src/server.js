@@ -3361,9 +3361,13 @@ app.get('/api/mothers/:id/records', requireStaff, (req, res) => {
   res.json(rows);
 });
 
+// 媽媽照護紀錄類型（與資料表 CHECK 相同）：未在清單內就擋在 API 層，回明確訊息而不是資料庫錯誤
+const MOTHER_RECORD_TYPES = ['vital', 'wound', 'uterus', 'breast', 'lochia', 'mood', 'education', 'note'];
+
 app.post('/api/mothers/:id/records', requireStaff, (req, res) => {
   const r = req.body || {};
   if (!r.record_type) return res.status(400).json({ error: '紀錄類型必填' });
+  if (!MOTHER_RECORD_TYPES.includes(r.record_type)) return res.status(400).json({ error: '紀錄類型不正確' });
   // 補登紀錄：可指定發生時間（限現在之前）；未帶則以現在時間記錄
   let at = null;
   if (r.recorded_at !== undefined && String(r.recorded_at).trim()) {
@@ -3387,7 +3391,7 @@ app.post('/api/mothers/:id/records', requireStaff, (req, res) => {
 // 媽媽照護紀錄批次新增（一次評估多項）：單一交易原子性
 app.post('/api/mothers/:id/records/batch', requireStaff, (req, res) => {
   const list = Array.isArray((req.body || {}).records) ? req.body.records : [];
-  const valid = list.filter(r => r && r.record_type);
+  const valid = list.filter(r => r && MOTHER_RECORD_TYPES.includes(r.record_type));
   if (!valid.length) return res.status(400).json({ error: '沒有可儲存的紀錄' });
   const ins = db.prepare('INSERT INTO mother_records (mother_id, nurse_id, record_type, value_text, note) VALUES (?,?,?,?,?)');
   const tx = db.transaction(() => {
@@ -11058,6 +11062,7 @@ app.get('/api/handovers/draft', requireStaff, (req, res) => {
 app.post('/api/handovers', requireStaff, (req, res) => {
   const h = req.body || {};
   if (!h.shift_type) return res.status(400).json({ error: '班別必填' });
+  if (!['day', 'evening', 'night'].includes(h.shift_type)) return res.status(400).json({ error: '班別不正確（白班 day／小夜 evening／大夜 night）' });
   const follow = (h.follow_up || '').trim();
   const info = db.prepare(`INSERT INTO handovers
     (nurse_id, shift_type, handover_date, situation, background, assessment, recommendation, follow_up, resolved)
