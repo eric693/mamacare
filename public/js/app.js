@@ -18199,6 +18199,66 @@ function canAccess(hash) {
   return mods.some(m => (currentUser.modules || []).includes(m));
 }
 
+/* ---------- 各模組操作說明（內容見 help.js；於頁面標題下方自動插入） ---------- */
+// 收合狀態記在 localStorage：第一次進某頁預設展開，之後照使用者自己的收放
+function helpIsOpen(key) {
+  try { return localStorage.getItem('help_open_' + key) !== '0'; } catch (e) { return true; }
+}
+function helpBoxHtml(key, help) {
+  if (!help) return '';
+  const li = arr => (arr || []).map(t => `<li>${esc(t)}</li>`).join('');
+  const open = helpIsOpen(key);
+  const steps = (help.steps || []).length ? `<div class="help-h">操作步驟</div><ol>${li(help.steps)}</ol>` : '';
+  const notes = (help.notes || []).length ? `<div class="help-h">注意事項</div><ul>${li(help.notes)}</ul>` : '';
+  const terms = (help.terms || []).length
+    ? `<div class="help-h">名詞說明</div><dl>${help.terms.map(([t, d]) => `<dt>${esc(t)}</dt><dd>${esc(d)}</dd>`).join('')}</dl>` : '';
+  return `<section class="help-box no-print${open ? ' open' : ''}" id="help-box">
+    <button type="button" class="help-toggle" id="help-toggle">
+      <span class="help-mark">?</span>操作說明<span class="help-arrow">${open ? '收合' : '展開'}</span>
+    </button>
+    <div class="help-body">
+      ${help.intro ? `<p class="help-intro">${esc(help.intro)}</p>` : ''}
+      ${steps}${notes}${terms}
+    </div>
+  </section>`;
+}
+// 目前頁面的說明鍵：頁面自行重繪（例如切換日期後重跑 view）時，由觀察器補回說明區塊
+let CURRENT_HELP_KEY = null;
+let helpObserver = null;
+function watchHelp(key) {
+  CURRENT_HELP_KEY = key;
+  if (helpObserver || !window.MutationObserver) return;
+  helpObserver = new MutationObserver(() => {
+    const root = main();
+    if (!CURRENT_HELP_KEY || !root || root.querySelector('#help-box')) return;
+    if (!root.querySelector('.page-title')) return;   // 尚未渲染完成／載入中畫面不插入
+    mountHelp(CURRENT_HELP_KEY);
+  });
+  helpObserver.observe(main(), { childList: true });
+}
+// 頁面渲染完成後插入說明（放在 .page-title 之後，找不到標題就放最前面）
+function mountHelp(key) {
+  try { mountHelpInner(key); } catch (e) { /* 說明區塊不得影響頁面本身 */ }
+}
+function mountHelpInner(key) {
+  const help = (typeof PAGE_HELP !== 'undefined') && PAGE_HELP[key];
+  if (!help) return;
+  const root = main();
+  if (!root || root.querySelector('#help-box')) return;
+  const box = document.createElement('div');
+  box.innerHTML = helpBoxHtml(key, help);
+  const node = box.firstElementChild;
+  if (!node) return;
+  const title = root.querySelector('.page-title');
+  if (title && title.parentElement === root) title.after(node);
+  else root.prepend(node);
+  node.querySelector('#help-toggle').onclick = () => {
+    const open = node.classList.toggle('open');
+    node.querySelector('.help-arrow').textContent = open ? '收合' : '展開';
+    try { localStorage.setItem('help_open_' + key, open ? '1' : '0'); } catch (e) { /* 無痕模式忽略 */ }
+  };
+}
+
 async function route() {
   if (!currentUser) return;
   // 忽略 ?x= 查詢參數（如 #/baby-nursing?b=2、#/housekeeping?d=…），以基底路徑找路由
@@ -18221,6 +18281,8 @@ async function route() {
   main().innerHTML = '<div class="empty">載入中</div>';
   try {
     await routes[hash]();
+    mountHelp(hash);
+    watchHelp(hash);
   } catch (e) {
     if (e.status === 401) { showLogin(); return; }
     main().innerHTML = `<div class="card"><div class="error-msg">${esc(e.message)}</div></div>`;

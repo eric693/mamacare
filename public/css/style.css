@@ -666,3 +666,25 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 .nav-group-body { display: none; }
 .nav-group.open .nav-group-body { display: block; }
 .nav-group-body a[data-nav] { padding-left: 40px; font-size: .93rem; }
+
+/* 頁面操作說明（每個模組標題下方的可收合說明；列印不出現） */
+.help-box { border: 1px solid var(--primary, #2a7f78); background: #f2f8f7; border-radius: 8px; margin: 0 0 14px; }
+.help-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px;
+  background: transparent; border: 0; cursor: pointer; font: inherit; font-size: .88rem; font-weight: 600;
+  color: var(--primary-dark, #1c5f59); text-align: left;
+}
+.help-mark {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border-radius: 50%; background: var(--primary, #2a7f78); color: #fff; font-size: .75rem; font-weight: 700;
+}
+.help-arrow { margin-left: auto; font-weight: 400; color: var(--muted); font-size: .8rem; }
+.help-body { display: none; padding: 0 14px 12px; font-size: .86rem; line-height: 1.85; }
+.help-box.open .help-body { display: block; }
+.help-intro { margin: 0 0 8px }
+.help-h { font-weight: 700; margin: 10px 0 4px; color: var(--primary-dark, #1c5f59) }
+.help-body ol, .help-body ul { margin: 0; padding-left: 20px }
+.help-body li { margin-bottom: 3px }
+.help-body dl { margin: 0 }
+.help-body dt { font-weight: 600 }
+.help-body dd { margin: 0 0 5px; color: var(--muted) }
