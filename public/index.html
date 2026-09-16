@@ -231,6 +231,7 @@
       <a href="#/custom-forms" data-nav data-perm="custom_forms">自訂表格</a>
       <!-- <a href="#/audit-logs" data-nav data-perm="audit">稽核軌跡</a> -->
       <a href="#/export" data-nav data-perm="export">資料匯出與備份</a>
+      <a href="#/ai" data-nav data-perm="ai">AI 助理</a>
       <a href="#/settings" data-nav data-perm="settings">系統設定</a>
       <div class="nav-group" data-nav-group>
         <button type="button" class="nav-group-hd" data-perm="settings">產後系統其他設定<span class="chev">▾</span></button>
@@ -265,7 +266,10 @@
 
   <script src="/js/api.js"></script>
   <script src="/js/help.js"></script>
+  <script src="/js/ai-shim.js"></script>
   <script src="/js/app.js"></script>
+  <script src="/js/pages-ai.js"></script>
+  <script src="/js/ai-route.js"></script>
   <script>if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {})); }</script>
 </body>
 </html>

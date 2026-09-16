@@ -23,6 +23,8 @@ function verifyPassword(password, stored) {
 }
 
 function init() {
+  // AI 助理模組的資料表（獨立一個 SQL 檔，不混進下面這段主 schema）
+  db.exec(require('fs').readFileSync(require('path').join(__dirname, '..', 'db', 'schema-ai.sql'), 'utf8'));
   db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

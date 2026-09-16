@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MamaCare — 功能介紹</title>
+<meta name="description" content="MamaCare（月子中心管理系統）功能介紹：寶寶與媽媽照護紀錄、護理交班、訂房收費、家屬端日報，紙本全面數位化。">
+<meta name="theme-color" content="#9E3B2E">
+<meta property="og:title" content="MamaCare — 功能介紹">
+<meta property="og:description" content="寶寶與媽媽照護紀錄、護理交班、訂房收費、家屬端日報，紙本全面數位化。">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%239E3B2E%22/%3E%3C/svg%3E">
+<style>
+:root{
+  --paper:#EDEFEB; --surface:#F9FAF8; --raise:#FFFFFF;
+  --ink:#151B18; --ink2:#4B5A53; --ink3:#7B887F;
+  --rule:#D2D8D1; --rule2:#E2E7E1;
+  --accent:#9E3B2E; --accent-ink:#9E3B2E; --accent-wash:#9E3B2E14;
+  --sans:"Noto Sans TC","PingFang TC","Microsoft JhengHei","Hiragino Sans",system-ui,-apple-system,sans-serif;
+  --serif:"Noto Serif TC","Songti TC","Source Han Serif TC",Georgia,serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Noto Sans TC",monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#111512; --surface:#181D19; --raise:#1E2420;
+  --ink:#E9EDE8; --ink2:#A4B0A8; --ink3:#77847B;
+  --rule:#2A322C; --rule2:#222A25;
+  --accent:#D8735A; --accent-ink:#E08A72; --accent-wash:#D8735A1F;
+}}
+:root[data-theme="dark"]{
+  --paper:#111512; --surface:#181D19; --raise:#1E2420;
+  --ink:#E9EDE8; --ink2:#A4B0A8; --ink3:#77847B;
+  --rule:#2A322C; --rule2:#222A25;
+  --accent:#D8735A; --accent-ink:#E08A72; --accent-wash:#D8735A1F;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:15.5px;line-height:1.75;-webkit-font-smoothing:antialiased}
+img{max-width:100%}
+a{color:var(--accent-ink)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+
+.masthead{border-bottom:1px solid var(--rule);background:var(--surface)}
+.masthead-in{max-width:1160px;margin:0 auto;padding:20px 28px;
+  display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px}
+.field{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--ink3)}
+.stamp{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:.12em;
+  color:var(--accent-ink);border:1px solid var(--accent);padding:3px 9px;white-space:nowrap}
+
+.shell{max-width:1160px;margin:0 auto;padding:0 28px 90px;
+  display:grid;grid-template-columns:minmax(0,1fr) 214px;gap:52px;align-items:start}
+main{padding:38px 0 0;min-width:0}
+
+.hero h1{font-family:var(--serif);font-weight:700;font-size:clamp(30px,5vw,44px);
+  line-height:1.22;margin:0 0 6px;letter-spacing:.01em;text-wrap:balance}
+.hero .sub{margin:0;font-size:17px;color:var(--ink2)}
+.hero .line{margin:20px 0 0;font-size:16.5px;line-height:1.8;max-width:58ch;
+  border-left:3px solid var(--accent);padding-left:16px}
+.facts{margin:28px 0 0;padding:16px 0;border-top:1px solid var(--rule);
+  border-bottom:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:16px 34px;align-items:center}
+.fact dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;color:var(--ink3);margin:0 0 3px}
+.fact dd{margin:0;font-size:14px}
+.entries{display:flex;flex-wrap:wrap;gap:10px;margin-left:auto}
+.entry{font-family:var(--mono);font-size:12.5px;text-decoration:none;white-space:nowrap;
+  border:1px solid var(--rule);color:var(--ink);padding:7px 14px;display:inline-flex;gap:8px;
+  align-items:center;transition:border-color .15s,color .15s,background .15s}
+.entry span{color:var(--ink3);font-size:11px}
+.entry:hover{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}
+.entry:hover span{color:var(--accent-ink)}
+.entry:first-child{border-color:var(--accent);color:var(--accent-ink)}
+
+.toc{position:sticky;top:0;max-height:100vh;overflow-y:auto;padding:44px 0 40px;
+  font-size:13px;line-height:1.6}
+.toc-label{font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;color:var(--ink3);
+  padding-bottom:8px;border-bottom:1px solid var(--rule);margin-bottom:8px}
+.toc a{display:block;padding:6px 10px;border-left:2px solid transparent;text-decoration:none;
+  color:var(--ink2);transition:color .15s,border-color .15s,background .15s}
+.toc a:hover{background:var(--accent-wash);color:var(--ink)}
+.toc a.on{border-left-color:var(--accent);color:var(--accent-ink);font-weight:500;background:var(--accent-wash)}
+
+.doc{max-width:66ch;padding-top:4px}
+.doc h2{font-family:var(--serif);font-weight:700;font-size:23px;line-height:1.45;
+  margin:54px 0 14px;padding-top:22px;border-top:1px solid var(--rule);
+  scroll-margin-top:20px;text-wrap:balance}
+.doc h2::before{content:"";display:block;width:26px;height:2px;background:var(--accent);margin-bottom:14px}
+.doc h3{font-weight:700;font-size:16.5px;margin:32px 0 8px;text-wrap:balance}
+.doc h4{font-weight:700;font-size:15px;margin:24px 0 6px;color:var(--ink2)}
+.doc p{margin:0 0 14px}
+.doc ul,.doc ol{margin:0 0 16px;padding-left:1.35em}
+.doc li{margin:0 0 6px}
+.doc li::marker{color:var(--ink3)}
+.doc hr{border:0;border-top:1px solid var(--rule2);margin:36px 0}
+.doc blockquote{margin:20px 0;padding:2px 0 2px 18px;border-left:3px solid var(--accent);
+  color:var(--ink2);font-size:14.5px}
+.doc blockquote p:last-child{margin-bottom:0}
+.doc code{font-family:var(--mono);font-size:.88em;background:var(--raise);
+  border:1px solid var(--rule2);padding:1px 5px;border-radius:2px}
+.doc pre{background:var(--raise);border:1px solid var(--rule);padding:16px 18px;
+  overflow-x:auto;margin:20px 0;font-size:12.5px;line-height:1.7}
+.doc pre code{background:none;border:0;padding:0;font-size:12.5px}
+.tw{overflow-x:auto;margin:20px 0;border:1px solid var(--rule)}
+.doc table{border-collapse:collapse;width:100%;font-size:14px;
+  font-variant-numeric:tabular-nums;background:var(--surface)}
+.doc th,.doc td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--rule2);vertical-align:top}
+.doc thead th{font-family:var(--mono);font-weight:500;font-size:12px;letter-spacing:.06em;
+  color:var(--ink2);background:var(--raise);border-bottom:1px solid var(--rule)}
+.doc tbody tr:last-child td{border-bottom:0}
+
+footer{max-width:66ch;margin-top:64px;padding-top:18px;border-top:1px solid var(--rule);
+  font-family:var(--mono);font-size:12px;color:var(--ink3);line-height:1.9}
+
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr;gap:0;padding:0 20px 64px}
+  .toc{display:none}
+  main{padding-top:28px}
+  .entries{margin-left:0}
+  .masthead-in{padding:16px 20px}
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-in">
+    <span class="field">長照與社福</span>
+    <span class="field">MamaCare</span>
+    <span class="stamp">功能介紹　2026.09</span>
+  </div>
+</header>
+
+<div class="shell">
+  <main>
+    <div class="hero">
+      <h1>MamaCare</h1>
+      <p class="sub">月子中心管理系統</p>
+      <p class="line">寶寶與媽媽照護紀錄、護理交班、訂房收費、家屬端日報，紙本全面數位化。</p>
+      <dl class="facts">
+        <div class="fact"><dt>使用對象</dt><dd>月子中心・產後護理之家</dd></div>
+        <div class="entries"><a class="entry" href="https://mamacare.crownai.ink" target="_blank" rel="noopener">員工端<span>↗</span></a></div>
+      </dl>
+    </div>
+    <article class="doc" id="doc">
+<h2>這是什麼？</h2>
+<p>MamaCare 是一套給「月子中心／產後護理之家」用的管理系統。它把中心每天要做的事 —— 照顧寶寶、照顧媽媽、護理交班、排班、訂房、收費、訂餐、商城販售、課程報名、耗材庫存、會員點數 —— 全部搬到電腦和手機上，不用再靠紙本和白板。</p>
+<p>系統分成兩個入口：</p>
+<ul><li><strong>員工端</strong>：護理師、管理員每天工作的地方。</li><li><strong>家屬端</strong>：寶寶的爸爸、阿公阿嬤，用一組通行碼登入，隨時看到寶寶今天的狀況。</li></ul>
+<p>手機、平板、電腦都能用（畫面會自動調整大小）。</p>
+<hr>
+<h2>給「護理師 / 員工」用的功能</h2>
+<h3>1. 寶寶照護紀錄</h3>
+<p>每天照顧寶寶的大小事都能記下來：</p>
+<ul><li>餵奶（喝多少、怎麼餵）、換尿布、量體溫、量體重、黃疸值、洗澡、睡眠，以及呼吸、心跳、血氧、身長、頭圍等生命徵象與膚色、臍帶、溢吐奶、活動力、大便性狀等觀察。<strong>親餵可記錄左／右乳各餵幾分鐘</strong>。</li><li><strong>一鍵快速記錄</strong>：例如「換了濕尿布」「大便」「洗澡」「餵奶」，按一下就完成，不用慢慢填表；觀察類欄位用下拉選單。</li><li><strong>巡房批次記錄</strong>：一個畫面一次記錄多位在住寶寶的體溫與餵食，巡房時不用一位一位切換。</li><li>可以<strong>上傳寶寶照片</strong>。</li><li>系統會自動把一天的紀錄整理成<strong>寶寶日報</strong>：</li><ul><li><strong>完整摘要</strong>：除餵食、尿布、紅臀、體溫、體重、黃疸外，呼吸、心跳、血氧、身長、頭圍、膚色、活動力、大便性狀等<strong>有記錄就一併呈現</strong>。</li><li><strong>異常提醒</strong>：體溫／黃疸超出門檻、紅臀中度以上、餵食間隔過長會在日報上方紅字標示。</li><li><strong>可列印／匯出 PDF</strong>：日報可一鍵列印或另存 PDF（含摘要、當日紀錄、照片）。</li><li>還會畫出體重、黃疸的趨勢圖。</li></ul><li>日報可以<strong>一鍵發送給家屬</strong>（家屬端與 LINE 同步顯示完整摘要與注意事項）。</li></ul>
+<h3>2. 寶寶位置（嬰兒室／母嬰同室）</h3>
+<p>清楚掌握每個寶寶現在「人在哪裡」：</p>
+<ul><li>每個寶寶都有<strong>目前位置</strong>：在<strong>嬰兒室</strong>，或是<strong>母嬰同室</strong>（抱在媽媽身邊）。</li><li>一鍵切換：<strong>「抱去給媽媽」／「抱回嬰兒室」</strong>，切換時可加註備註。</li><li>每次移動都會留下<strong>位置異動紀錄</strong>（誰、什麼時候、移到哪），隨時可查完整歷史。</li><li>記錄照護時可<strong>標註是在嬰兒室還是媽媽房做的</strong>；不選的話自動沿用寶寶目前位置。</li><li>總覽會顯示<strong>「嬰兒室幾名、母嬰同室幾名」</strong>，並在每個寶寶旁標出目前位置。</li></ul>
+<h3>3. 媽媽照護紀錄</h3>
+<p>記錄產後媽媽的恢復狀況：生命徵象、傷口、子宮、乳房、惡露、排泄、泌乳、情緒評估、衛教說明。</p>
+<ul><li><strong>一頁式評估</strong>：點「一頁式評估」可在<strong>同一頁</strong>一次填寫生命徵象與全部評估項目，類別欄位（傷口、子宮、乳房、惡露、排泄、泌乳、情緒、衛教）改用<strong>下拉選單</strong>，減少護理師打字時間；只填需要的項目、留空者不建檔，一次儲存多筆。下拉內容可在「系統設定」自訂。</li></ul>
+<h3>3-1. 醫師巡診就醫紀錄（小兒科／婦產科）</h3>
+<p>特約醫師到院巡診時，用標準 <strong>SOAP 格式</strong>留下正式就醫紀錄，補足「只記錄有沒有通知醫師」的不足：</p>
+<ul><li><strong>巡診對象</strong>：可選寶寶（小兒科）或媽媽（婦產科），科別可再選小兒科／婦產科／其他。</li><li><strong>巡診類型</strong>：常規巡診／追蹤複查／不適診視／出院評估。</li><li><strong>SOAP 欄位</strong>：主訴（S，含護理或家屬反映）、理學檢查所見（O）、診斷評估（A）、處置醫囑（P），另有追蹤／回診安排。</li><li><strong>轉診／建議就醫</strong>：填寫院所即代表需轉診，列表以紅字標示，方便追蹤院外就醫。</li><li><strong>巡診醫師</strong>可在「系統設定」建立常用名單快選，減少打字。</li><li>依科別（小兒科／婦產科）一鍵篩選；每筆都留下記錄者與時間。</li><li>為獨立權限模組「醫師巡診」，可單獨授權；刪除僅限管理員。</li></ul>
+<h3>4. 護理交班（SBAR）</h3>
+<p>換班的時候，把重要資訊用標準格式（現況、背景、評估、建議）交接清楚，可以依「日期」和「班別」查看，避免口頭交代漏掉事情。</p>
+<ul><li><strong>未結待辦</strong>會自動列入下一班提醒；可「自動帶入草稿」依當日紀錄產生 SBAR。</li><li><strong>列印交班單</strong>：可一鍵列印／另存 PDF 當日整份交班單（機構抬頭＋各班別 S/B/A/R＋待辦），交接、存查兩用。</li></ul>
+<h3>5. 住客管理</h3>
+<p>管理每位媽媽和寶寶的基本資料，例如預產期、生產方式、飲食禁忌、醫療注意事項，隨時可以修改。</p>
+<h3>6. 房務與訂房</h3>
+<ul><li>看各種房型、房價、目前哪幾間空著。</li><li>訂房時系統會<strong>自動檢查檔期有沒有撞到</strong>，並依入住天數<strong>自動算出總金額</strong>。</li><li>完整的入住、退房、取消流程。</li><li><strong>入住前準備</strong>：已簽約到實際入住之間，預約那筆可按「入住前準備」一次調整<strong>床位／房間、入住退房日、膳食類型與飲食注意、寶寶入住日</strong>，確認無誤後可直接「儲存並辦理入住」。</li></ul>
+<h3>6-1. 排床（預定床表 / 實際入住床表）</h3>
+<p>專門的「排床」頁，用房間 × 日期的格狀表呈現兩種床表，一鍵切換：</p>
+<ul><li><strong>預定床表</strong>：含所有已預約與入住中的訂房，看未來檔期怎麼排。</li><li><strong>實際入住床表</strong>：只顯示<strong>實際已辦理入住</strong>者；已預約但還沒入住的會以斜線標示「待入住」，一眼看出計畫與現況的落差。</li><li>上方統計今日預定床數、實際入住、待入住與總床位。</li></ul>
+<h3>6-2. 房務清潔</h3>
+<p>讓<strong>客服與清潔人員同步</strong>掌握每位在住媽媽的需求：</p>
+<ul><li><strong>住客需求</strong>：登記勿擾時間、需求項目（哺乳衣、定時清垃圾、加床被…）、其他備註，清潔人員即時可見。</li><li><strong>清潔任務</strong>：可排定清潔/備品任務（指定房間或公共區域）、設定日期、完成打卡，逾期會標示。</li><li>「房務清潔」為獨立權限模組，可單獨授權給清潔人員。</li></ul>
+<h3>7. 收費帳務</h3>
+<p>每一筆訂房都看得到：</p>
+<ul><li><strong>應收</strong>：合約金額 ＋ 額外加購的消費 −（寶寶未入住扣抵）。</li><li><strong>已收</strong>：訂金 ＋ 後續繳費。</li><li><strong>還差多少沒收</strong>：未結餘款會<strong>拆成「合約未結」與「加購未結」</strong>分別顯示。</li></ul>
+<p>加購和繳費都會記下「是誰經手的」，刪除紀錄只有管理員能做，避免出錯或亂改帳。</p>
+<ul><li><strong>寶寶入住日連動</strong>：媽媽已入住但寶寶還沒到院的期間，系統<strong>每日自動扣抵</strong>（金額可在系統設定調整，預設 1,000 元／日，上限不超過總住宿天數），扣抵會反映在應收與帳齡、儀表板，退費試算也會一併計入。</li><li><strong>加購明細可列印</strong>：收費明細頁可一鍵列印加購消費明細（含機構抬頭、品項、單價、數量、經手人、合計）。</li></ul>
+<h3>8. 膳食管理</h3>
+<ul><li>系統會自動算出今天有哪些媽媽在住。</li><li>早、午、晚三餐，點一下就存檔，並會自動帶入每個人的<strong>飲食禁忌</strong>。</li><li>每一餐可標記<strong>訂餐狀態</strong>（備餐中／已出餐／取消）並加<strong>備註</strong>，備餐進度一目了然。</li><li>可以列印<strong>廚房備餐單</strong>，上面有各餐的份數統計，廚房照著做就好。</li><li>適合把月子餐<strong>外包給多家廠商</strong>的中心：備餐單會依廠商分別列出各家明細，並提供區間請款統計。</li></ul>
+<h3>8-1. 月子餐（自家廚房／分階段菜單）</h3>
+<p>給有自己廚房、要做<strong>結構化月子餐</strong>的中心：</p>
+<ul><li><strong>餐期階段</strong>：依每位媽媽的<strong>產後天數</strong>自動判定階段（例：排惡露→補氣血→健脾胃→養氣補身），階段天數可自訂。</li><li><strong>一日多餐含點心</strong>：餐別可自訂（預設早餐、早點、午餐、午點、晚餐、宵夜）。</li><li><strong>每日菜單</strong>：每餐可分「餐期×飲食類型」建立菜色（主食／主菜／藥膳湯品／鮮蔬／甜品／飲品），可<strong>一鍵複製前一天</strong>。</li><li><strong>供餐總覽／廚房備餐單</strong>：自動對應每位媽媽的階段與飲食類型，列出當餐菜色與份數統計，可列印。</li><li><strong>家屬可看</strong>：家屬端「月子餐」分頁能看到媽媽今天每一餐的菜色。</li><li><strong>我要換餐</strong>：家屬可在月子餐頁<strong>線上申請換餐</strong>（選餐別、希望更換內容、原因），由護理站／膳食部審核，家屬可看到同意或婉拒結果。</li></ul>
+<h3>9. 參觀預約（含一鍵簽約建檔）</h3>
+<p>登記來參觀的潛在客戶（參觀時間、預產期、從哪知道我們的），並追蹤狀態（待參觀 / 已參觀 / 已簽約 / 未成交），還能看本月參觀人數和簽約率。</p>
+<ul><li><strong>多條件篩選</strong>：可依關鍵字、狀態、<strong>來源</strong>、<strong>參觀日期區間</strong>快速過濾。</li><li><strong>追蹤紀錄（log）</strong>：每位客戶的備註改為<strong>追加式時間軸</strong>，每筆都帶時間與經手人，狀態變更也會自動寫入，跟進歷程不會被覆蓋。</li><li><strong>下次跟進日＋提醒</strong>：可設定每位潛客的下次跟進日期，到期（含逾期）自動列入總覽待辦提醒，不漏追。</li><li><strong>對外線上參觀預約</strong>：提供公開頁 <code>/tour-booking.html</code>，潛在客戶可自助填寫姓名、電話、希望參觀時間直接送出，自動進到參觀預約（來源標記「線上預約」），並可即時 LINE 通知值班。</li></ul>
+<ul><li>按下<strong>「已簽約」</strong>會直接跳出<strong>訂房表單</strong>，自動帶入客戶的姓名、電話、預產期。</li><li>選好房間和入住／退房日，系統會<strong>自動算出合約總額</strong>。</li><li>確認後一次完成：<strong>建立媽媽資料、建立訂房、把參觀轉為已簽約</strong>，並跳到房務頁；不用再重複輸入一遍客戶資料。</li></ul>
+<h3>10. 排班與人力檢核</h3>
+<ul><li>排三班、七天的班表。</li><li>系統會自動算出每天有幾個寶寶在住，<strong>對照法定人力比，提醒你人手夠不夠</strong>，避免違規。</li></ul>
+<h3>11. 總覽儀表板</h3>
+<p>一打開就看到中心今天的整體狀況：</p>
+<ul><li>入住率、在住媽媽和寶寶人數、今日照護筆數。</li><li>還沒收的款項、這個月已收的錢。</li><li>每個寶寶今天的照護狀態（最後一次餵奶、餵幾次、尿布、最後體溫）。</li><li>今日訂餐彙總（有人沒訂會提醒）。</li><li><strong>異常警示</strong>（體溫、黃疸超過設定值會跳出來）。</li><li>人力比檢核、近期退房、即將入住、待參觀名單、近 30 天入住率走勢圖。</li></ul>
+<h3>12. 評鑑月報（管理員專用）</h3>
+<p>一鍵產生月報：住房率、照護與交班統計、每天的人力比是否合規（不合規的日期會標出來）、異常事件清單。可以列印或匯出檔案，<strong>直接拿來當衛福部評鑑的佐證資料</strong>。</p>
+<h3>12-1. 營運報表（每日入住率＋品管指標）</h3>
+<p>獨立的「營運報表」頁，選月份即可看：</p>
+<ul><li><strong>每日入住率</strong>：逐日佔床／總床、入住率長條與當日人力配置是否符合，可列印、可匯出 CSV。</li><li><strong>評鑑品管 7 大指標</strong>：依衛福部產後護理機構評鑑精神彙整——平均入住率、住民跌倒事件率（每千住民日）、院內感染事件率、手部衛生遵從率、新生兒篩檢異常追蹤完成率、顧客滿意度、護理人力配置達標率。指標定義與分母可依各中心評鑑基準調整。</li></ul>
+<h3>13. 商城（商品販售）</h3>
+<p>把中心要賣的東西搬上線，家屬自己就能下單：</p>
+<ul><li><strong>商品上架／下架</strong>：建立商品（品名、分類、售價、成本、圖片、說明），一鍵上架或下架。</li><li><strong>庫存管理</strong>：可選擇是否管控庫存；確認訂單時自動扣庫存。</li><li><strong>家屬線上購買</strong>：家屬在「商城」分頁瀏覽上架商品、加數量、送出訂單。</li><li><strong>護理站確認入帳</strong>：員工確認訂單後，金額<strong>自動列入該媽媽的收費帳單</strong>，於現場結算（也支援員工<strong>代客下單</strong>）。</li><li><strong>批次匯入商品</strong>：可用 CSV 一次匯入大量商品（以品名為鍵，已存在則更新、否則新增）。</li></ul>
+<h3>14. 耗材庫存（內部進銷存）</h3>
+<p>管理尿布、奶粉等<strong>內部物料</strong>（和商城賣的商品是兩回事）：</p>
+<ul><li>建立耗材品項與<strong>安全庫存</strong>；庫存低於安全量會跳出<strong>補貨提醒</strong>。</li><li><strong>進貨／領用／盤點</strong>都會留下異動紀錄（誰、什麼時候、剩多少），隨時可查。</li><li>另有更完整的<strong>備品庫存管理</strong>模組，見「近期新增功能」。</li></ul>
+<h3>15. 課程與服務</h3>
+<p>中心的媽媽教室、產後服務都能線上報名收費：</p>
+<ul><li>建立<strong>課程／活動</strong>（可設時間、地點、名額）或<strong>加購服務</strong>（泌乳諮詢、產後 SPA、寶寶攝影、彌月禮盒…）。</li><li>家屬在「課程／服務」分頁<strong>線上報名</strong>，護理站確認後<strong>自動列入帳單</strong>。</li><li>課程<strong>名額自動控管</strong>，額滿不能再報。</li><li><strong>課程行事曆</strong>：可切換「清單／行事曆」，用<strong>月／週檢視</strong>排定的課程；管理員可<strong>點空白日期新增課程</strong>、<strong>拖曳課程改期</strong>，點課程也能<strong>直接代客報名</strong>。家屬端「月子餐」頁另有近期<strong>課表</strong>可看。</li></ul>
+<h3>16. 會員與優惠（點數、優惠券）</h3>
+<p>每位媽媽入住即為會員，消費更有感：</p>
+<ul><li><strong>會員點數</strong>：每位媽媽有專屬會員編號與點數；消費回饋點數，下次可折抵（回饋率可在系統設定調整）。</li><li><strong>優惠券</strong>：可發行固定金額或百分比折扣券，設定最低消費、使用次數與效期。</li><li>家屬在商城結帳時可<strong>輸入優惠券、折抵點數</strong>，系統即時試算應付金額；折抵與回饋都會反映到帳單。</li></ul>
+<h3>17. 系統設定（管理員專用）</h3>
+<p>中心的各種參數都能自己調，不用找工程師：</p>
+<ul><li>機構名稱、人力比、體溫／黃疸的警示門檻。</li><li>餵食方式、生產方式、繳費方式、常用加購項目、餐點選項。</li><li><strong>點數回饋規則</strong>（每滿多少元回饋 1 點、1 點折抵多少元）。</li><li><strong>月子餐</strong>：餐別、飲食類型、餐期階段（依產後天數）。</li><li>LINE 推播的設定。</li></ul>
+<h3>18. 帳號與權限（管理員專用）</h3>
+<p>後台帳號可<strong>分權限</strong>，不必每個人都看得到全部功能：</p>
+<ul><li><strong>管理員</strong>：全權帳號。</li><li><strong>一般員工</strong>：由管理員逐一勾選可用模組（如：廚房只開「膳食／月子餐」、出納只開「收費帳務／電子發票」、護理師開照護相關模組）。</li><li>內建<strong>角色範本</strong>（護理師／出納／廚房／行政）可一鍵套用再微調。</li><li>權限在<strong>前後台雙重把關</strong>：沒權限的人看不到該功能選單，後端 API 也會擋下；系統並保護「至少保留一位管理員」。</li></ul>
+<h3>19. 衛福部表單通報</h3>
+<p>把營運資料整理成可申報主管機關的<strong>標準月報表</strong>：</p>
+<ul><li>一鍵產生<strong>產後護理機構月報表</strong>：總床數、可用床日數、佔床日數、佔床率、月初在住／本月新收／出住／月底在住人數、平均住房日數、嬰兒照護人日、人力比與不合規天數、手部衛生遵從率、清消次數、群聚數、異常事件、待追蹤篩檢…</li><li>可<strong>下載 Excel</strong>（供人工上傳各地衛生局系統），或「檢視欄位」即時預覽。</li><li>若設有衛生局／加值平台 API，可<strong>自動上傳</strong>並於<strong>失敗時自動重試補送</strong>，保留回執編號與上傳紀錄；未設定時為本地模式。</li></ul>
+<h3>20. 員工證照管理</h3>
+<ul><li>登記每位員工的證照（名稱、證號、發證單位、發證日、到期日）。</li><li><strong>到期提醒</strong>：到期前 N 天（可設定）會在總覽「待辦提醒」自動跳出，過期則標紅。</li></ul>
+<h3>21. 電子問卷／滿意度調查</h3>
+<ul><li>自訂問卷題目（評分、單選、文字），開放或關閉。</li><li>家屬在家屬端「滿意度問卷」分頁填寫（每份只能填一次）。</li><li>後台即時看<strong>統計</strong>：平均評分、選項分布、文字回饋。</li><li><strong>退房自動推問卷</strong>：媽媽退房時，系統自動把問卷邀請推給家屬（已綁 LINE 者直接收到），回收率更高。</li></ul>
+<h3>22. 完整照護紀錄欄位</h3>
+<p>照護紀錄涵蓋產後護理之家該追蹤的細項，不只餵奶／尿布：</p>
+<ul><li><strong>寶寶生命徵象</strong>：體溫、呼吸、心跳、血氧（SpO₂）。</li><li><strong>生長測量</strong>：體重、身長、頭圍、黃疸值（自動畫趨勢圖）。</li><li><strong>觀察評估</strong>：膚色／發紺、臍帶狀態、溢吐奶、活動力、<strong>大便性狀</strong>（胎便／黃稠／水樣／血絲…）、<strong>紅臀</strong>程度。</li><li><strong>媽媽</strong>：生命徵象、血壓、脈搏、傷口、子宮、乳房、惡露、排泄、泌乳指導、用藥、情緒評估、衛教。</li><li>上述類別選項（膚色、臍帶、大便性狀…）都可在系統設定自訂。</li></ul>
+<h3>23. 合約電子簽署</h3>
+<ul><li>由訂房＋範本一鍵產生合約，家屬以<strong>簽署連結手寫簽名</strong>完成（留存簽署人、時間、IP 佐證）。</li><li><strong>可重新編輯／重新簽署</strong>：未簽署的可直接改內容；已簽署的可以原文為底建立新版重簽，原合約自動作廢並保留版本鏈，符合存證要求。</li><li><strong>經手人欄位</strong>：建立合約時可選擇經手人（業務／客服），列表、搜尋與列印都會顯示，責任歸屬清楚。</li></ul>
+<h3>24. LINE／Facebook 客訊整合（CRM）</h3>
+<p>把官方帳號與粉專的訊息收進同一個後台收件匣：</p>
+<ul><li><strong>雙向訊息</strong>：自動接收 LINE／FB 來訊，後台直接回覆，推回原通道。</li><li><strong>自動對應住戶</strong>：已綁定 LINE 的家屬來訊自動連到個案；未對應者列為<strong>潛在客戶</strong>，可手動指定。</li><li>未讀會進總覽提醒，不漏接客戶與家屬訊息。</li></ul>
+<h3>25. 經營分析儀表板（管理員專用）</h3>
+<p>不只看單月，更看趨勢：</p>
+<ul><li><strong>入住率、每月實收、參觀簽約轉換率、商城毛利</strong>的近 6～24 個月走勢圖。</li><li>逐月明細表（新收／退住人數、營收、毛利…），可列印，幫經營者掌握成長與淡旺季。</li></ul>
+<h3>26. 應收帳齡與催收</h3>
+<ul><li><strong>帳齡分析</strong>：未結帳款依逾期天數分級（未到期／1–30／31–60／60 天以上），逾期金額一目了然。</li><li><strong>一鍵催收</strong>：對逾期住戶發送催收提醒（家屬留言＋已綁 LINE 者直接收到），並記錄催收時間。</li></ul>
+<h3>27. 日常更順手</h3>
+<ul><li><strong>智能餵奶提醒</strong>：寶寶距上次餵奶超過設定時間，自動在總覽提醒「該餵奶了」。</li><li><strong>交班自動彙整</strong>：交班時可一鍵帶入 SBAR 草稿（自動統整當日餵食、換尿布、異常與待辦），不必從頭打字。</li></ul>
+<h3>28. 名人／顧客推薦牆（對外行銷）</h3>
+<ul><li>後台管理推薦內容：人物<strong>姓名、稱號、推薦語、照片、來源連結（FB／IG）、影片連結</strong>，可上架／下架與排序。</li><li>內建<strong>公開展示頁</strong>（<code>/testimonials.html</code>）：自動以上架內容呈現推薦牆，可放進官網或直接分享連結；照片上傳即時生效。</li></ul>
+<h3>29. 營運優化（日常更順手）</h3>
+<ul><li><strong>房況時間軸</strong>：甘特圖式檔期總覽，哪間房、哪段時間有人一眼看懂，排房不撞期（點訂房可看帳務）。</li><li><strong>異常即時通知</strong>：寶寶體溫／黃疸超過設定值時，除了儀表板提醒，還能<strong>即時 LINE 通知值班人員</strong>。</li><li><strong>耗材叫貨單</strong>：低於安全庫存的耗材一鍵產生<strong>建議叫貨量清單</strong>，可列印交供應商。</li><li><strong>評鑑月報一鍵 PDF</strong>：月報可直接<strong>匯出 PDF</strong>佐證檔（也保留列印／CSV）。</li><li><strong>交班待辦不漏接</strong>：交班時填的待辦事項，未完成會自動列入「未結待辦」與總覽提醒，做完再勾掉。</li><li><strong>快速輸入（減少打字）</strong>：常填欄位提供「快選建議」下拉，直接點選也能自己打——涵蓋新生兒醫療（藥品／給藥途徑／接種部位）、異常事件（發生地點）、感染管制（稽核區域／對象、清消區域／消毒方式）、員工證照（證照名稱／發證單位），以及商城／耗材／課程的分類（自動帶出現有分類）。建議選項皆可在「系統設定」自訂。</li><li><strong>更完整的待辦提醒</strong>：待辦提醒再加入<strong>漏給藥（高）</strong>、<strong>疫苗待接種</strong>、<strong>體溫連續偏高／體重連續下降的趨勢預警</strong>、<strong>參觀跟進到期</strong>、<strong>媽媽預產期將近／寶寶滿月的關懷</strong>，讓護理與客服都不漏事。</li><li><strong>家屬留言即時通知</strong>：家屬在入口「聯絡護理站」留言時，除了總覽提醒，還能<strong>即時 LINE 通知值班人員</strong>，回覆更即時。</li><li><strong>入住歡迎與關懷</strong>：媽媽辦理入住時自動發送歡迎關懷訊息到家屬端（有家屬帳號才送、不重複）；預產期將近與寶寶滿月則以待辦提醒方式提示，方便主動關懷。</li><li><strong>臨床紀錄單列印</strong>：護理交班單、<strong>新生兒醫療紀錄單（給藥／疫苗／篩檢／光療）</strong>、寶寶日報都可一鍵列印或另存 PDF。</li><li><strong>加到主畫面（PWA）</strong>：員工端與家屬端都可「加到手機主畫面」像 App 一樣開啟，並支援基本離線檢視。</li></ul>
+<hr>
+<h2>近期新增功能（後台管理擴充）</h2>
+<h3>房間資料管理</h3>
+<p>把房間相關設定集中管理：</p>
+<ul><li><strong>房型設定</strong>（名稱、定價、排序）、<strong>房間資料</strong>（房號、房型、呼叫／客服分機、狀態，支援多筆新增）。</li><li><strong>房價折扣設定</strong>：依房型／客戶分類／專案期間設定折扣（百分比、折抵金額、專案贈送天數），可<strong>批次新增</strong>與<strong>維護折扣客戶分類</strong>。</li><li><strong>嬰兒床位設定</strong>：建立嬰兒床號與分區（可多筆新增）。</li></ul>
+<h3>預約參觀管理</h3>
+<p>把潛在客戶到參觀報名的流程做成一組報表與設定：</p>
+<ul><li><strong>潛在客戶資料</strong>、<strong>預約參觀報名資料</strong>（可標記是否出席、單筆列印報名單）、<strong>取消預約明細表</strong>（記錄取消時間／原因／取消人，可匯出）。</li><li><strong>預約參觀時段設定</strong>：設定一般開放時段（起訖、每時段分鐘、每時段人數），以及指定日期時段或不開放日。</li><li><strong>LINE 官方帳號線上預約</strong>：用戶從官賴選單自助預約（填資料→驗證手機→行事曆選時段），員工在「待確認預約」一鍵確認並自動回覆 LINE 訊息（詳見「LINE 官方帳號串接」章節）。</li><li>各查詢頁支援日期區間、關鍵字、伺服器端分頁，資料再多也查得到。</li></ul>
+<h3>備品庫存管理</h3>
+<p>比耗材庫存更完整的備品進銷存，共六個作業頁：</p>
+<ul><li><strong>備品名稱設定</strong>（產品編號、分類、單位、建議售價、是否標示有效期、是否開放前台銷售、安全庫存），支援<strong>CSV 批次匯入</strong>。</li><li><strong>進貨入庫</strong>（可記進貨廠商、有效日期）、<strong>領取出庫</strong>（可記使用區域）。</li><li><strong>進出明細表</strong>、<strong>庫存盤點</strong>（顯示期初／入庫總數／出庫總數／目前庫存）、<strong>盤點明細表</strong>，皆可查詢、分頁與<strong>匯出 CSV</strong>。</li></ul>
+<h3>員工基本資料</h3>
+<p>比「帳號管理」更完整的員工檔案（與帳號管理並存）：</p>
+<ul><li>記錄部門、群組、分類、等級、考勤卡號、手機、住家電話、E-mail、分機、離職日等。</li><li><strong>登入權限 0–5</strong> 自動對映系統角色（0 停用、5 管理員、1–4 一般員工）；醫師／護理等旗標對映對應模組權限。</li><li>可依姓名／等級／權限／身分證號、分類、部門查詢（含已離職）。</li></ul>
+<h3>產後報表與護理紀錄查詢</h3>
+<p>彙整多份<strong>產後營運報表</strong>（每日收款、營收分析、住宿率、入住統計、退訂統計、參觀成交率…）與<strong>護理紀錄查詢</strong>（媽媽／寶寶護理、母乳哺育率、親子同室、感控品質、愛丁堡憂鬱量表統計…），依日期／條件查詢。</p>
+<h3>系統其他設定</h3>
+<p>可自訂各種下拉選項與規則：預約參觀訊息來源、打掃定期工作、寶寶奶粉廠牌、<strong>門燈控制（房況顏色）</strong>、護理後送醫院、產後客戶聯絡人分類、<strong>出院帶藥藥品</strong>（藥品種類＋名稱）、媽媽憂鬱量表樣版等。</p>
+<h3>公佈欄與文件上傳下載區</h3>
+<ul><li><strong>公佈欄及交辦事項</strong>：內部佈告與交辦。</li><li><strong>文件上傳下載區</strong>：上傳 PDF／Office／圖片等文件供內部下載留存。</li></ul>
+<h3>2026-07 介面與流程整合更新</h3>
+<p>依實際營運回饋做的一批整合修正：</p>
+<ul><li><strong>側欄重整</strong>：「7日內入住／7日內退房」拉到最上層；「寶寶房況」改為群組（房況看板＋寶寶照護紀錄查詢＋寶寶護理需求）；營運管理區依使用頻率重新排序。</li><li><strong>退房雙流程</strong>：護理部「產婦結案／嬰兒結案」與客服部「退房完成」都須到退房日 00:00 才可辦理；兩者退房後房況轉空房、<strong>自動建立清潔任務</strong>，結案後訂房不可改回入住中（需先解除結案）。照護紀錄查詢可查<strong>已出住</strong>資料。</li><li><strong>寶寶照護快速記錄</strong>：一鍵記錄（濕尿布／大便／沐浴）、餵奶、臍帶掉落、位置切換都改跳窗，<strong>日期可回填</strong>＋備註；位置異動同步顯示在當日紀錄時間軸。</li><li><strong>寶寶報喜（入住通知單）</strong>：房號／入住日從實際入住床表帶入，未排房可手選並<strong>雙向寫回床表</strong>；總天數取自合約。儲存後自動建立「(房號)請備房」房務任務（備註含入出住日與哺乳衣尺寸）、入住日當日三餐訂餐（含禁忌），並在「7日內入住」帶出完整欄位（生日、後四碼、生產資訊、妊娠週數、寶寶性別體重）。<strong>訂房改期時訂餐與請備房任務會跟著搬</strong>。</li><li><strong>床表強化</strong>：預定／實際入住床表加橫向捲軸；已退房以<strong>實際退房日</strong>收斂並以灰色顯示；實際入住床表遇「入住中與已預約同房同日重疊」顯示<strong>紅斜線警示</strong>；預定床表標示升等／降等（依房型定價判斷）與特殊需求（訂房備註）。</li><li><strong>房務清潔</strong>：新增<strong>設備報修</strong>（故障類別：燈泡／電視／冷氣／馬桶／熱水／水管／窗簾／垃圾桶／房門櫃門），對象可選 2/3/4 樓公共區域；每筆任務可逐筆記錄<strong>處理進度</strong>（含歷史 log）。</li><li><strong>客戶管理合約</strong>：第一次建立合約必填檢核（經手人、預計入住日、胎次、媽媽手機、緊急聯絡人姓名／關係／電話、銷售房型、禮券／折扣／贈品）；新增「儲存合約」「<strong>列印紙本合約</strong>」；每次存檔顯示<strong>修改紀錄</strong>（欄位舊值→新值）；住房卡／分享卡區塊移除；「增加房型」更名「特殊折扣訂房」。</li><li><strong>膳食管理</strong>：廚房備餐單可<strong>匯出 Excel</strong>；列印改橫向專屬版面，完整欄位不再被截斷。</li><li><strong>課程與服務</strong>：時間欄改月曆選日期＋自填時間；支援<strong>外部協力廠商帳號</strong>（僅能閱覽／登記自己服務名稱的項目，確認入帳仍由館方）。</li><li><strong>備品×商城</strong>：備品勾選「開放前台銷售」即自動在商城建檔（庫存 0、上架），既有品項已批次補建。</li></ul>
+<hr>
+<h2>給「家屬」用的功能</h2>
+<p>家屬拿到一組 <strong>8 碼通行碼</strong>就能登入，看到自己寶寶的狀況：</p>
+<ul><li><strong>今日摘要</strong>：寶寶今天過得怎麼樣。</li><li><strong>完整照護時間軸</strong>：餵奶、換尿布、量體溫…一筆筆都看得到。</li><li><strong>照片牆</strong>：護理師上傳的寶寶照片。</li><li><strong>成長趨勢圖</strong>：體重、黃疸的變化。</li><li><strong>月子餐</strong>：看媽媽今天每一餐的菜色（產後第幾天、餐期階段），並可<strong>線上申請換餐</strong>、查看審核結果；另有近期<strong>課表</strong>。</li><li><strong>商城</strong>：瀏覽商品、加入購物車、線上下單，可用優惠券與點數折抵，並查看自己的訂單與會員點數。</li><li><strong>課程／服務</strong>：瀏覽並報名中心的課程與加購服務，追蹤報名狀態。</li><li><strong>滿意度問卷</strong>：填寫中心的問卷與滿意度調查。</li></ul>
+<blockquote><p>家屬端<strong>看不到內部護理人員的資訊</strong>，保護員工隱私，也讓家屬安心透明。 商城下單與課程報名都需<strong>護理站確認</strong>後才入帳，費用於現場結算。</p></blockquote>
+<hr>
+<h2>LINE 官方帳號串接（使用方式）</h2>
+<p>中心的 LINE 官方帳號選單有兩顆按鈕：<strong>「預約參觀」</strong>給還沒入住的媽咪用、<strong>「產後服務」</strong>給已入住寶寶的家屬用。</p>
+<h3>預約參觀（用戶端）</h3>
+<p>還沒入住的媽咪加入官方帳號好友後，全程在 LINE 裡完成預約：</p>
+<ol><li>點選單<strong>「預約參觀」</strong>，開啟預約頁面。</li><li><strong>填寫資料</strong>：媽咪姓名、連絡電話、胎次、預產期，按「儲存」。</li><li><strong>驗證手機</strong>：系統把 6 碼驗證碼傳到您的 LINE 聊天室，切回對話查看後回頁面輸入（10 分鐘內有效，可重新發送）。</li><li><strong>選擇時段</strong>：行事曆只顯示<strong>有開放且尚有名額</strong>的日期，點日期後選擇時段（會顯示每時段剩餘組數）。</li><li>送出後立即收到<strong>「預約參觀安排中」</strong>卡片訊息（含預約日期、時段、預產期、胎次）。</li><li>中心確認後，再收到<strong>「預約參觀已確認」</strong>訊息，就完成囉！</li></ol>
+<h3>預約參觀（員工端）</h3>
+<ul><li>用戶送出的預約會<strong>自動建立潛在客戶檔</strong>（以電話比對，已有客戶則自動關聯），並出現在：</li><ul><li><strong>客戶管理</strong>頁查詢區下方的紅框<strong>「待確認預約（LINE）」</strong>區塊；</li><li><strong>預約參觀行事曆</strong>與<strong>參觀預約列表</strong>（黃色「待確認」標示）。</li></ul><li>點<strong>「確認」</strong>：系統自動發送「預約參觀已確認」LINE 訊息給客戶；點「取消」需填原因。</li><li>可預約時段完全依照<strong>「預約參觀時段設定」</strong>：一般開放時間（起訖、每時段分鐘、每時段人數）＋指定日期時段／不開放日；已被預約（含待確認）的額度會自動扣除，不會超收。</li><li>若有設定值班通知目標，收到新預約時<strong>同步 LINE 通知值班人員</strong>。</li></ul>
+<h3>產後服務（家屬端）</h3>
+<p>後台完成<strong>寶寶報喜</strong>建檔並建立家屬帳號後即開通。家屬點選單<strong>「產後服務」</strong>：</p>
+<ul><li><strong>第一次使用（未綁定）</strong>：機器人會請家屬直接在對話輸入護理站提供的 <strong>8 碼家屬通行碼</strong>，輸入即綁定完成。</li><li><strong>已綁定</strong>：直接回覆<strong>家屬入口網頁連結</strong>，點開<strong>自動登入</strong>，可看寶寶日報、照護時間軸、照片牆、成長趨勢、月子餐、商城等。</li><li><strong>每日 10:00 自動推播</strong>（時間可在系統設定調整）：綁定 LINE 且寶寶在住的家屬，每天自動收到<strong>前一日的寶寶日報摘要</strong>（餵食、尿布、體溫、體重、黃疸、沐浴…）與<strong>成長趨勢</strong>（體重較前次增減、最新黃疸、近 7 日平均餵食次數），並附家屬入口連結。</li><li>員工在寶寶日報頁按「發送日報」時，綁定 LINE 的家屬也會直接在 LINE 收到；沒綁定的家屬一樣可從家屬入口自己看。</li></ul>
+<h3>雙向客訊（LINE／FB 客訊）</h3>
+<p>用戶在官方帳號輸入的<strong>一般訊息</strong>會進入員工端「LINE／FB 客訊」統一收件匣，可直接回覆（推回 LINE）、對應住戶或標示潛在客戶；選單關鍵字（預約參觀／產後服務／通行碼）由系統自動處理，不會塞進收件匣。</p>
+<h3>中心要設定什麼（一次性）</h3>
+<ol><li>到 LINE Developers 建立 <strong>Messaging API</strong> channel，把 <strong>Channel Access Token</strong> 與 <strong>Channel Secret</strong> 填入系統設定。</li><li><strong>Webhook</strong> 網址設為 <code>https://mamacare.crownai.ink/api/webhooks/line</code> 並啟用。</li><li>官方帳號<strong>圖文選單</strong>設兩顆按鈕：「預約參觀」＝傳送文字「預約參觀」；「產後服務」＝傳送文字「產後服務」（也支援 postback <code>action=tour_booking</code>／<code>action=family_portal</code>）。</li><li>（選用）建立 <strong>LIFF</strong>：Endpoint 設為 <code>https://mamacare.crownai.ink/tour-booking.html</code>，LIFF ID 填入系統設定後，選單可直接開啟預約頁、不經對話回連結。</li><li>系統設定填<strong>對外網址</strong>（public_base_url）、<strong>異常／值班通知 LINE 目標</strong>、<strong>家屬日報自動推播時間</strong>（預設 10:00，留空停用）。</li></ol>
+<blockquote><p>就算完全不設定 LINE，整套系統也能正常離線使用；線上預約與家屬入口仍可用一般網頁操作。</p></blockquote>
+<hr>
+<h2>重點整理</h2>
+<div class="tw"><table><thead><tr><th>對象</th><th>最有感的好處</th></tr></thead><tbody><tr><td>護理師</td><td>照護紀錄、交班、訂餐都數位化，少寫紙、少出錯</td></tr><tr><td>管理員</td><td>房務、帳務、排班、評鑑月報一站搞定，符合法規</td></tr><tr><td>經營者</td><td>商城、課程、會員點數帶來額外營收，耗材庫存不漏帳</td></tr><tr><td>家屬</td><td>隨時用手機看寶寶狀況、線上購物與報名課程，安心透明</td></tr></tbody></table></div>
+<hr>
+<h2>測試帳號（示範用）</h2>
+<div class="tw"><table><thead><tr><th>入口</th><th>帳號 / 通行碼</th></tr></thead><tbody><tr><td>員工端（管理員）</td><td>admin / admin123</td></tr><tr><td>員工端（護理師）</td><td>nurse1、nurse2、nurse3 / nurse123</td></tr><tr><td>家屬入口</td><td>通行碼 DEMO1234</td></tr></tbody></table></div>
+    </article>
+    <footer>MamaCare　功能介紹　·　https://mamacare.crownai.ink<br>本頁依系統實際功能撰寫；主管機關公告之給付單價、支付碼與評鑑指標，請依當年度規定核對。</footer>
+  </main>
+  <nav class="toc" id="toc" aria-label="章節目錄"></nav>
+</div>
+
+<script src="js/intro-toc.js" defer></script>
+</body>
+</html>

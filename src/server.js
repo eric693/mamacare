@@ -130,6 +130,7 @@ const MODULES = [
   { key: 'coupons', label: '優惠券' },
   { key: 'audit', label: '稽核軌跡' },
   { key: 'export', label: '資料匯出與備份' },
+  { key: 'ai', label: 'AI 助理' },
   { key: 'settings', label: '系統設定' },
   { key: 'users', label: '帳號管理' }
 ];
@@ -244,6 +245,9 @@ app.use('/api', (req, res, next) => {
   const label = mods.map(k => (MODULES.find(m => m.key === k) || {}).label).filter(Boolean).join('」或「');
   return res.status(403).json({ error: '您沒有「' + label + '」的權限' });
 });
+
+// AI 助理（只產草稿，不寫任何業務資料表）。路由自己做登入與權限檢查。
+app.use('/api', require('./routes/ai'));
 
 const upload = multer({
   storage: multer.diskStorage({
