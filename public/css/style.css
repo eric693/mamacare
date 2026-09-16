@@ -379,6 +379,8 @@ dialog.modal {
   overflow-y: auto;
 }
 dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
+/* 明細型表單（請購／採購／驗貨／請款）用的寬對話框 */
+dialog.modal.wide { width: min(1000px, calc(100vw - 32px)); }
 .modal-head {
   display: flex;
   justify-content: space-between;

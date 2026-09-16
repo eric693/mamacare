@@ -18323,7 +18323,8 @@ async function showApp() {
   // 依帳號權限顯示／隱藏側欄項目；admin 為全權
   const mods = currentUser.role === 'admin' ? null : (currentUser.modules || []);
   document.querySelectorAll('[data-perm]').forEach(el => {
-    el.style.display = (!mods || mods.includes(el.getAttribute('data-perm'))) ? '' : 'none';
+    // data-perm 可用逗號列多個模組，任一有權限即顯示（如採購作業的三層權限）
+    el.style.display = (!mods || el.getAttribute('data-perm').split(',').some(p => mods.includes(p.trim()))) ? '' : 'none';
   });
   // 折疊群組底下的分頁全被隱藏時，連群組標題一起隱藏
   document.querySelectorAll('[data-nav-group]').forEach(g => {

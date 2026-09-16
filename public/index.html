@@ -12,6 +12,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="MamaCare">
   <link rel="apple-touch-icon" href="/favicon.svg">
+  <!-- 採購作業頁面：defer 在 body 內的 app.js 執行後、登入檢查回來前完成路由註冊 -->
+  <script src="/js/pages-procurement.js" defer></script>
 </head>
 <body>
 
@@ -141,6 +143,22 @@
           <a href="#/supply-movements" data-nav data-perm="supplies">備品進出明細表</a>
           <a href="#/supply-stocktake" data-nav data-perm="supplies">庫存盤點</a>
           <a href="#/stocktake-detail" data-nav data-perm="supplies">庫存盤點明細表</a>
+        </div>
+      </div>
+      <div class="nav-group" data-nav-group>
+        <button type="button" class="nav-group-hd">採購作業<span class="chev">▾</span></button>
+        <div class="nav-group-body">
+          <a href="#/proc-dashboard" data-nav data-perm="purchasing,purchasing_approve,payables">採購總覽</a>
+          <a href="#/proc-requests" data-nav data-perm="purchasing,purchasing_approve">請購單</a>
+          <a href="#/proc-orders" data-nav data-perm="purchasing,purchasing_approve">採購單</a>
+          <a href="#/proc-receiving" data-nav data-perm="purchasing,purchasing_approve">驗貨入庫</a>
+          <a href="#/proc-payments" data-nav data-perm="purchasing,purchasing_approve,payables">請款單</a>
+          <a href="#/proc-shipments" data-nav data-perm="purchasing,purchasing_approve">出貨管理</a>
+          <a href="#/proc-picks" data-nav data-perm="purchasing,purchasing_approve">領料單</a>
+          <a href="#/proc-stock" data-nav data-perm="purchasing,purchasing_approve,payables">庫存總覽</a>
+          <a href="#/proc-items" data-nav data-perm="purchasing,purchasing_approve,payables">品項管理</a>
+          <a href="#/proc-vendors" data-nav data-perm="purchasing,purchasing_approve,payables">廠商管理</a>
+          <a href="#/proc-settings" data-nav data-perm="purchasing,purchasing_approve,payables">採購設定</a>
         </div>
       </div>
       <div class="nav-group" data-nav-group>

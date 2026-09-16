@@ -2421,6 +2421,11 @@ const DEFAULT_SETTINGS = {
   // 打掃定期工作設定：媽媽房間每 N 天換床單／每 N 天更新備品
   hk_sheet_days: '7',
   hk_supply_days: '1',
+  // 採購作業：列印單據的請購單位／部門別、請款預設稅率、廠商付款條件選項
+  proc_request_dept: '健康生活事業處',
+  proc_pay_dept: '月子中心',
+  proc_tax_rate: '5',
+  proc_payment_terms: '月結30天,月結45天,月結60天,貨到付款,預付款',
   hk_updated_by: '',                     // 打掃定期工作最後異動人
   hk_updated_at: '',                     // 打掃定期工作最後異動時間
   // 衛教時間表：入住第 N 天應完成的衛教項目（JSON 陣列，管理員可於「衛教時間表設定」自由增修）
