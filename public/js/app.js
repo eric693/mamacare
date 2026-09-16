@@ -18247,7 +18247,9 @@ function mountHelp(key) {
   try { mountHelpInner(key); } catch (e) { /* 說明區塊不得影響頁面本身 */ }
 }
 function mountHelpInner(key) {
-  const help = (typeof PAGE_HELP !== 'undefined') && PAGE_HELP[key];
+  // 共用頁（如 AI 助理，經 ai-shim 掛在 App.pages）自帶 help，本站沒另寫時直接沿用，避免兩份文字不同步
+  const shared = window.App && App.pages && App.pages[key.replace(/^#\//, '')];
+  const help = ((typeof PAGE_HELP !== 'undefined') && PAGE_HELP[key]) || (shared && shared.help);
   if (!help) return;
   const root = main();
   const exist = root && root.querySelector('#help-box');
