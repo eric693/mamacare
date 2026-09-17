@@ -6454,8 +6454,18 @@ function productImportModal() {
     };
   });
 }
-function openProductForm(p, cats) {
+async function openProductForm(p, cats) {
   const ed = p || {};
+  // 可把商品綁到「某個倉的某個備品」：綁了以後商城庫存就是那個倉的庫存
+  let supplies = [], whs = { rows: [] };
+  try { [supplies, whs] = await Promise.all([api('/supplies'), api('/warehouses')]); } catch (e) { /* 沒權限就不顯示綁定欄 */ }
+  const bindBox = supplies.length && whs.rows.length ? `
+      <div class="field"><label>綁定備品品項<small>（庫存改由倉別管理）</small></label>
+        <select id="pf-supply"><option value="">不綁定（自行輸入庫存）</option>${supplies.filter(x => x.active || x.id === ed.supply_id)
+          .map(x => `<option value="${x.id}" ${String(ed.supply_id || '') === String(x.id) ? 'selected' : ''}>${esc((x.code ? x.code + '｜' : '') + x.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>庫存倉庫</label>
+        <select id="pf-wh">${whs.rows.map(w => `<option value="${w.id}" ${String(ed.warehouse_id || whs.default_id) === String(w.id) ? 'selected' : ''}>${
+          esc(w.kind === 'sub' ? '　└ ' + w.name : w.name)}${w.company_name ? `（${esc(w.company_name)}）` : ''}</option>`).join('')}</select></div>` : '';
   openModal(ed.id ? '編輯商品' : '新增商品', `
     <div class="form-grid">
       <div class="field full"><label>品名 *</label><input id="pf-name" value="${esc(ed.name || '')}"></div>
@@ -6465,6 +6475,7 @@ function openProductForm(p, cats) {
       <div class="field"><label>排序</label><input type="number" id="pf-sort" value="${ed.sort ?? 0}"></div>
       <div class="field"><label><input type="checkbox" id="pf-track" ${ed.track_stock ? 'checked' : ''}> 管控庫存</label>
         <input type="number" id="pf-stock" min="0" value="${ed.stock ?? 0}" placeholder="庫存數量"></div>
+      ${bindBox}
       <div class="field"><label><input type="checkbox" id="pf-active" ${ed.active === 0 ? '' : 'checked'}> 上架（顯示於家屬商城）</label></div>
       <div class="field full"><label>商品說明</label><textarea id="pf-desc" rows="2">${esc(ed.description || '')}</textarea></div>
       <div class="field full"><label>商品圖片</label>
@@ -6481,6 +6492,18 @@ function openProductForm(p, cats) {
       </div>
     </div>`, body => {
     const val = id => body.querySelector(id);
+    const supSel = val('#pf-supply');
+    if (supSel) {
+      const toggle = () => {
+        const bound = !!supSel.value;
+        val('#pf-wh').disabled = !bound;
+        val('#pf-stock').disabled = bound;
+        val('#pf-track').disabled = bound;
+        if (bound) val('#pf-track').checked = true;
+        val('#pf-stock').title = bound ? '綁定倉別後庫存以倉為準，請用調撥或盤點調整' : '';
+      };
+      supSel.onchange = toggle; toggle();
+    }
     if (ed.id) {
       val('#pf-img').onchange = async () => {
         const f = val('#pf-img').files[0]; if (!f) return;
@@ -6496,7 +6519,9 @@ function openProductForm(p, cats) {
         price: Number(val('#pf-price').value), cost: Number(val('#pf-cost').value) || 0,
         sort: Number(val('#pf-sort').value) || 0,
         track_stock: val('#pf-track').checked ? 1 : 0, stock: Number(val('#pf-stock').value) || 0,
-        active: val('#pf-active').checked ? 1 : 0, description: val('#pf-desc').value
+        active: val('#pf-active').checked ? 1 : 0, description: val('#pf-desc').value,
+        supply_id: val('#pf-supply') ? (val('#pf-supply').value || null) : undefined,
+        warehouse_id: val('#pf-wh') ? val('#pf-wh').value : undefined
       };
       try {
         if (ed.id) await api(`/products/${ed.id}`, { method: 'PUT', body: payload });
@@ -6867,7 +6892,14 @@ const SUPPLY_PURPOSES = ['販售', '住房', '護理', '贈送', '尿布', '其�
 async function supplyFlowPage(cfg) {
   const { type, pfx, title, dateLabel, extraKey, extraLabel, qtyLabel, stockLabel } = cfg;
   const extraKwLabel = cfg.extraKwLabel || extraLabel;
-  const [supplies, txns] = await Promise.all([api('/supplies'), api(`/supply-txns?type=${type}`)]);
+  const [supplies, txns, whs] = await Promise.all([api('/supplies'), api(`/supply-txns?type=${type}`), api('/warehouses')]);
+  // 只有一個倉時不用選，直接沿用；有分倉才顯示倉別欄
+  const whField = (id, label) => (whs.rows.length > 1
+    ? `<div class="field"><label>${label} <b class="req">*</b></label><select id="${id}">${whs.rows.map(w =>
+        `<option value="${w.id}" ${w.id === whs.default_id ? 'selected' : ''}>${esc(w.kind === 'sub' ? '　└ ' + w.name : w.name)}${
+          w.company_name ? `（${esc(w.company_name)}）` : ''}</option>`).join('')}</select></div>`
+    : '');
+  const whVal = (body, id) => { const el = body.querySelector('#' + id); return el ? el.value : ''; };
   const canWrite = canAccess('#/supplies');
   const active = supplies.filter(s => s.active);
   const smap = Object.fromEntries(supplies.map(s => [s.id, s]));
@@ -6938,6 +6970,7 @@ async function supplyFlowPage(cfg) {
   // 入庫：單品項（無進貨廠商欄）；出庫：領取單位＋多品項＋領取用途
   const openIn = () => openModal(`${title} 資料新增`, `
     <div class="field"><label>備品品項 <b class="req">*</b></label><select id="${pfx}-item">${itemOpts}</select></div>
+    ${whField(`${pfx}-wh`, '入庫倉庫')}
     <div class="field"><label>${qtyLabel} <b class="req">*</b></label><input type="number" min="1" id="${pfx}-qty"></div>
     <div class="field"><label>有效日期</label><input type="date" id="${pfx}-exp"></div>
     <div class="field"><label>備註</label><input id="${pfx}-note"></div>
@@ -6948,6 +6981,7 @@ async function supplyFlowPage(cfg) {
       if (!(Number(qty) > 0)) { body.querySelector(`#${pfx}-err`).textContent = '請輸入正確數量'; return; }
       try {
         await api(`/supplies/${id}/txns`, { method: 'POST', body: { txn_type: 'in', quantity: qty,
+          warehouse_id: whVal(body, `${pfx}-wh`),
           expiry_date: body.querySelector(`#${pfx}-exp`).value, note: body.querySelector(`#${pfx}-note`).value.trim() } });
         closeModal(); supplyFlowPage(cfg);
       } catch (e) { body.querySelector(`#${pfx}-err`).textContent = e.message; }
@@ -6956,12 +6990,13 @@ async function supplyFlowPage(cfg) {
   const openOut = () => openModal(`${title} 資料新增`, `
     <div class="field"><label>領取單位 <b class="req">*</b></label>
       <select id="${pfx}-dept"><option value="">請選擇</option>${SUPPLY_DEPTS.map(d => `<option>${d}</option>`).join('')}</select></div>
+    ${whField(`${pfx}-wh`, '出庫倉庫')}
     <div id="${pfx}-rows"></div>
     <div class="row" style="margin:6px 0"><button class="btn small secondary" id="${pfx}-addrow">增加品項</button>
       <small style="color:var(--muted)">一個單位可一次領取多個品項</small></div>
     <div class="field"><label>領取用途 <b class="req">*</b></label>
       <select id="${pfx}-purpose"><option value="">請選擇</option>${SUPPLY_PURPOSES.map(p => `<option>${p}</option>`).join('')}</select></div>
-    <p id="${pfx}-sale-hint" style="display:none;font-size:.78rem;color:var(--muted);margin:4px 0">用途「販售」：領出數量將自動匯入商城<strong>同名商品</strong>庫存；商城無此品項時將禁止領用。</p>
+    <p id="${pfx}-sale-hint" style="display:none;font-size:.78rem;color:var(--muted);margin:4px 0">用途「販售」：領出數量將自動匯入商城<strong>同名商品</strong>庫存；商城無此品項時將禁止領用。若該商品已綁定倉別，則改為<strong>調撥到商城庫存倉</strong>（總庫存不變）。</p>
     <div class="field"><label>備註</label><input id="${pfx}-note"></div>
     <div class="row mt"><button class="btn" id="${pfx}-save">存檔</button><span class="error-msg" id="${pfx}-err"></span></div>`, body => {
     const rowsBox = body.querySelector(`#${pfx}-rows`);
@@ -6998,7 +7033,8 @@ async function supplyFlowPage(cfg) {
       if (!purposeSel.value) { err.textContent = '請選擇領取用途'; return; }
       try {
         await api('/supply-txns/out-batch', { method: 'POST', body: {
-          dept, purpose: purposeSel.value, note: body.querySelector(`#${pfx}-note`).value.trim(), items
+          dept, purpose: purposeSel.value, warehouse_id: whVal(body, `${pfx}-wh`),
+          note: body.querySelector(`#${pfx}-note`).value.trim(), items
         } });
         closeModal(); supplyFlowPage(cfg);
       } catch (e) {
@@ -7133,17 +7169,33 @@ async function viewSupplyStocktake() {
   $('#stk-go').onclick = go;
   go();
 }
-function adjustStock(id, name, stock, unit) {
+// 盤點是「逐倉盤」：選一個倉，輸入那個倉實際點到的數量；總庫存＝各倉合計
+async function adjustStock(id, name, stock, unit) {
+  const stocks = await api(`/supplies/${id}/stocks`);
+  const multi = stocks.length > 1;
+  const whOpts = stocks.map(w => `<option value="${w.warehouse_id}" data-qty="${w.qty}">${
+    esc(w.kind === 'sub' ? '　└ ' + w.name : w.name)}${w.company_name ? `（${esc(w.company_name)}）` : ''}：${w.qty}</option>`).join('');
+  const first = stocks[0] || { qty: stock };
   openModal(`盤點調整：${name}`, `
-    <div class="field"><label>系統目前庫存</label><input value="${stock} ${esc(unit || '')}" disabled></div>
-    <div class="field"><label>實際盤點數量 <b class="req">*</b></label><input type="number" min="0" id="adj-qty" value="${stock}"></div>
+    <div class="field"><label>系統目前庫存（所有倉合計）</label><input value="${stock} ${esc(unit || '')}" disabled></div>
+    ${multi ? `<div class="field"><label>盤點倉庫 <b class="req">*</b></label><select id="adj-wh">${whOpts}</select></div>` : ''}
+    <div class="field"><label>本倉系統庫存</label><input id="adj-cur" value="${first.qty}" disabled></div>
+    <div class="field"><label>本倉實際盤點數量 <b class="req">*</b></label><input type="number" min="0" id="adj-qty" value="${first.qty}"></div>
     <div class="field"><label>備註</label><input id="adj-note" placeholder="庫存盤點"></div>
+    ${multi ? '<p style="font-size:.78rem;color:var(--muted);margin:4px 0">一次盤一個倉；其他倉的數量不受影響，總庫存會自動重算成各倉合計。</p>' : ''}
     <div class="row mt"><button class="btn" id="adj-save">存檔</button><span class="error-msg" id="adj-err"></span></div>`, body => {
+    const whSel = body.querySelector('#adj-wh');
+    if (whSel) whSel.onchange = () => {
+      const q = whSel.selectedOptions[0].dataset.qty;
+      body.querySelector('#adj-cur').value = q;
+      body.querySelector('#adj-qty').value = q;
+    };
     body.querySelector('#adj-save').onclick = async () => {
       const qty = body.querySelector('#adj-qty').value;
       if (qty === '' || Number(qty) < 0) { body.querySelector('#adj-err').textContent = '請輸入正確盤點數量'; return; }
       try {
-        await api(`/supplies/${id}/txns`, { method: 'POST', body: { txn_type: 'adjust', quantity: qty, reason: '庫存盤點', note: body.querySelector('#adj-note').value.trim() } });
+        await api(`/supplies/${id}/txns`, { method: 'POST', body: { txn_type: 'adjust', quantity: qty,
+          warehouse_id: whSel ? whSel.value : (first.warehouse_id || ''), reason: '庫存盤點', note: body.querySelector('#adj-note').value.trim() } });
         closeModal(); viewSupplyStocktake();
       } catch (e) { body.querySelector('#adj-err').textContent = e.message; }
     };
@@ -18274,8 +18326,10 @@ async function route() {
   if (!currentUser) return;
   // 忽略 ?x= 查詢參數（如 #/baby-nursing?b=2、#/housekeeping?d=…），以基底路徑找路由
   const base = location.hash.split('?')[0];
-  let hash = routes[base] ? base : '#/dashboard';
-  if (!canAccess(hash)) hash = '#/dashboard';
+  // 請採驗獨立入口（proc.html）沒有月中 ERP 的總覽，首頁改為採購總覽
+  const HOME = (window.APP_HOME && routes[window.APP_HOME]) ? window.APP_HOME : '#/dashboard';
+  let hash = routes[base] ? base : HOME;
+  if (!canAccess(hash)) hash = HOME;
   const fullHash = location.hash || hash;
   document.querySelectorAll('[data-nav]').forEach(a => {
     const href = a.getAttribute('href');
@@ -18310,6 +18364,12 @@ function showLogin() {
 
 function applyBrand() {
   const name = SETTINGS.center_name || 'MamaCare';
+  if (window.APP_TITLE) {                      // 請採驗獨立入口：固定用自己的抬頭
+    $('#brand').textContent = window.APP_TITLE;
+    $('#login-brand').textContent = window.APP_TITLE;
+    document.title = window.APP_TITLE;
+    return;
+  }
   $('#brand').textContent = name;
   $('#login-brand').textContent = name;
   document.title = `${name} 管理系統`;
@@ -18389,8 +18449,10 @@ $('#logout-btn').onclick = async () => {
 (async () => {
   try {
     const meta = await api('/meta');
-    $('#login-brand').textContent = meta.center_name || 'MamaCare';
-    document.title = `${meta.center_name || 'MamaCare'} 管理系統`;
+    if (!window.APP_TITLE) {
+      $('#login-brand').textContent = meta.center_name || 'MamaCare';
+      document.title = `${meta.center_name || 'MamaCare'} 管理系統`;
+    }
   } catch (e) { /* 沿用預設名稱 */ }
   try {
     const r = await api('/me');

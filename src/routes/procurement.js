@@ -7,6 +7,7 @@
 // 每個動作可用的角色見下方 PERMS，前端 pages-procurement.js 有同一份對照。
 const express = require('express');
 const { ensureLotSchema, syncLots } = require('../proc-lots');
+const WH = require('../warehouse');
 
 const ROLE = {
   request: 'proc_request',   // 請購人員
@@ -40,7 +41,7 @@ const PERMS = {
 // 舊版三個權限 → 新角色（帳號資料一次轉換）
 const LEGACY = { purchasing: r('request', 'buyer', 'receive', 'ship'), purchasing_approve: r('admin'), payables: r('account') };
 
-const PREFIX = { pr: 'PR', po: 'PO', gr: 'REC', pay: 'PAY', ship: 'SHP', pick: 'PICK' };
+const PREFIX = { pr: 'PR', po: 'PO', gr: 'REC', pay: 'PAY', ship: 'SHP', pick: 'PICK', trf: 'TRF' };
 const PR_STATUS = ['pending', 'approved', 'ordered', 'cancelled'];
 const PAY_METHODS = ['銀行轉帳', '支票', '現金', '其他'];
 
@@ -88,22 +89,34 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   }
 
   // 庫存異動（與既有 /api/supplies/:id/txns 同一套寫法，交易內呼叫）
+  // 進出一律指定倉別：分倉數量先動，supplies.stock 重算成各倉合計（全系統共用的還是這個總數）
   function stockMove(supplyId, type, qty, userId, extra = {}) {
     const cur = db.prepare('SELECT id, name, stock FROM supplies WHERE id = ?').get(supplyId);
     if (!cur) throw httpErr(`找不到品項（#${supplyId}）`);
-    let balance;
-    if (type === 'in') balance = cur.stock + qty;
-    else {
-      if (cur.stock < qty) throw httpErr(`庫存不足：${cur.name}（現有 ${cur.stock}，需 ${qty}）`);
-      balance = cur.stock - qty;
+    const whId = warehouseId(extra.warehouseId, () => WH.mainWarehouseOf(db, supplyId));
+    if (type !== 'in') {
+      const have = WH.warehouseQty(db, supplyId, whId);
+      if (have < qty) throw httpErr(`庫存不足：${cur.name}（${warehouseName(whId)}現有 ${have}，需 ${qty}）`);
     }
-    db.prepare('UPDATE supplies SET stock = ? WHERE id = ?').run(balance, cur.id);
+    const balance = WH.addWarehouseQty(db, supplyId, whId, type === 'in' ? qty : -qty);
     db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, dept, purpose,
-        unit_price, vendor_id, ref_type, ref_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
+        unit_price, vendor_id, ref_type, ref_id, warehouse_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
       str(extra.vendor, 60), str(extra.dept, 60), str(extra.purpose, 60),
-      extra.unitPrice === undefined ? null : extra.unitPrice, extra.vendorId || null, extra.refType || '', extra.refId || null);
+      extra.unitPrice === undefined ? null : extra.unitPrice, extra.vendorId || null, extra.refType || '', extra.refId || null, whId);
     return balance;
+  }
+  const warehouseName = id => (db.prepare('SELECT name FROM warehouses WHERE id = ?').get(id) || {}).name || '倉庫';
+  // 倉別參數：沒給就用 fallback（品項主要存放倉／公司預設總倉）；給了就要是啟用中的倉
+  function warehouseId(v, fallback) {
+    const id = int(v);
+    if (!id) {
+      const f = typeof fallback === 'function' ? fallback() : fallback;
+      if (!f) throw httpErr('尚未建立倉庫，請先到「倉庫管理」新增總倉');
+      return f;
+    }
+    if (!db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(id)) throw httpErr('倉庫不存在或已停用');
+    return id;
   }
   function httpErr(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
   function run(res, fn) {
@@ -256,7 +269,14 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (b.payment_terms !== undefined) {
       set('proc_payment_terms', String(b.payment_terms).split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',').slice(0, 500));
     }
-    logAudit(req, { action: 'update', entity: 'settings', entity_id: 'proc', summary: '修改採購設定（稅率／付款條件）' });
+    // 商城出貨倉：商城商品的庫存看這個倉（嘉禾的小倉）
+    if (b.shop_warehouse_id !== undefined) {
+      const w = int(b.shop_warehouse_id);
+      if (w && !db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(w)) return bad(res, '倉庫不存在或已停用');
+      db.prepare(`INSERT INTO settings (key, value) VALUES ('shop_warehouse_id', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(w || ''));
+    }
+    logAudit(req, { action: 'update', entity: 'settings', entity_id: 'proc', summary: '修改採購設定（稅率／付款條件／商城倉）' });
     res.json({ ok: true, settings: procSettings() });
   });
 
@@ -287,7 +307,10 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       tax_rate: num(s.proc_tax_rate === undefined ? 5 : s.proc_tax_rate),
       payment_terms: String(s.proc_payment_terms || '').split(',').map(x => x.trim()).filter(Boolean),
       companies: companies(),
-      default_company_id: defaultCompanyId()
+      default_company_id: defaultCompanyId(),
+      warehouses: WH.activeWarehouses(db),
+      default_warehouse_id: WH.defaultWarehouseId(db, null),
+      shop_warehouse_id: WH.shopWarehouseId(db)
     };
   }
 
@@ -405,14 +428,29 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const q = str(req.query.q, 60);
     if (q) { cond.push('(s.name LIKE ? OR s.code LIKE ?)'); args.push('%' + q + '%', '%' + q + '%'); }
     if (req.query.warehouse) { cond.push('s.warehouse = ?'); args.push(str(req.query.warehouse, 40)); }
+    // 指定倉別時只列那個倉有庫存紀錄的品項
+    const whId = int(req.query.warehouse_id);
+    if (whId) { cond.push('EXISTS (SELECT 1 FROM supply_stocks ss WHERE ss.supply_id = s.id AND ss.warehouse_id = ?)'); args.push(whId); }
     if (req.query.low === '1') cond.push('s.stock < s.safety_stock');
     if (req.query.vendor_id) { cond.push('EXISTS (SELECT 1 FROM supply_vendors sv WHERE sv.supply_id = s.id AND sv.vendor_id = ?)'); args.push(int(req.query.vendor_id)); }
     const rows = db.prepare(`SELECT s.id, s.code, s.name, s.category, s.unit, s.stock, s.safety_stock, s.price, s.warehouse,
         (SELECT COUNT(DISTINCT i.po_id) FROM purchase_order_items i WHERE i.supply_id = s.id) AS po_count
       FROM supplies s WHERE ${cond.join(' AND ')} ORDER BY s.warehouse, s.code, s.name`).all(...args);
-    for (const r of rows) r.vendors = itemVendors(r.id);
+    // 各倉庫存一次撈回來掛到品項上（庫存總覽要看得出同一品項分散在哪些倉）
+    const byItem = new Map();
+    for (const r of db.prepare(`SELECT ss.supply_id, ss.warehouse_id, ss.qty, w.name AS warehouse_name, w.kind
+        FROM supply_stocks ss JOIN warehouses w ON w.id = ss.warehouse_id WHERE w.active = 1
+        ORDER BY w.kind DESC, w.sort_order, w.id`).all()) {
+      if (!byItem.has(r.supply_id)) byItem.set(r.supply_id, []);
+      byItem.get(r.supply_id).push(r);
+    }
+    for (const r of rows) {
+      r.vendors = itemVendors(r.id);
+      r.stocks = byItem.get(r.id) || [];
+      if (whId) r.wh_qty = (r.stocks.find(x => x.warehouse_id === whId) || {}).qty || 0;
+    }
     const warehouses = db.prepare("SELECT DISTINCT warehouse FROM supplies WHERE active = 1 AND warehouse != '' ORDER BY warehouse").all().map(r => r.warehouse);
-    res.json({ rows, warehouses });
+    res.json({ rows, warehouses, warehouse_list: WH.activeWarehouses(db) });
   });
   const defaultVendorOf = list => {
     const arr = Array.isArray(list) ? list : [];
@@ -444,7 +482,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       saveItemVendors(id, b.vendors);
       const init = Math.max(0, int(b.initial_stock));
       if (init > 0) stockMove(id, 'in', init, req.session.user.id, { reason: '期初庫存', note: '品項管理建立時輸入',
-        unitPrice: Math.max(0, int(b.price)), vendorId: (defaultVendorOf(b.vendors) || null), refType: 'initial' });
+        warehouseId: b.warehouse_id, unitPrice: Math.max(0, int(b.price)),
+        vendorId: (defaultVendorOf(b.vendors) || null), refType: 'initial' });
     })();
     logAudit(req, { action: 'create', entity: 'supplies', entity_id: id, summary: `採購品項新增 ${name}` });
     res.json({ id });
@@ -876,14 +915,16 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const q = str(req.query.q, 60);
     if (q) { cond.push('(g.no LIKE ? OR o.no LIKE ? OR g.invoice_no LIKE ? OR g.inspector LIKE ? OR v.name LIKE ?)'); args.push(...Array(5).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT g.*, o.no AS po_no, o.status AS po_status, v.name AS vendor_name, p.no AS pay_no, p.id AS pay_id,
+        w.name AS warehouse_name,
         (SELECT COALESCE(SUM(received_qty * unit_price),0) FROM goods_receipt_items i WHERE i.gr_id = g.id) AS subtotal
       FROM goods_receipts g JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id
-      LEFT JOIN payment_requests p ON p.gr_id = g.id
+      LEFT JOIN payment_requests p ON p.gr_id = g.id LEFT JOIN warehouses w ON w.id = g.warehouse_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY g.id DESC LIMIT 500`).all(...args));
   });
   router.get('/procurement/receipts/:id', requireStaff, need('receipts_read'), (req, res) => {
-    const g = db.prepare(`SELECT g.*, o.no AS po_no, v.name AS vendor_name FROM goods_receipts g
-      JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id WHERE g.id = ?`).get(req.params.id);
+    const g = db.prepare(`SELECT g.*, o.no AS po_no, v.name AS vendor_name, w.name AS warehouse_name FROM goods_receipts g
+      JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id
+      LEFT JOIN warehouses w ON w.id = g.warehouse_id WHERE g.id = ?`).get(req.params.id);
     if (!g) return bad(res, '找不到入庫單', 404);
     g.items = db.prepare(`SELECT gi.*, i.qty AS order_qty,
         COALESCE((SELECT SUM(x.received_qty) FROM goods_receipt_items x WHERE x.po_item_id = gi.po_item_id AND x.gr_id <= gi.gr_id), 0) AS cumulative_qty
@@ -901,14 +942,17 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const inspector = str(b.inspector, 50);
     if (!inspector) throw httpErr('請填寫驗貨人員');
     const receiveDate = isDate(b.receive_date) ? b.receive_date : today();
+    // 入庫倉：預設進採購公司的總倉，驗貨人員可改（例如小倉直送）
+    const whId = warehouseId(b.warehouse_id, () => WH.defaultWarehouseId(db, o.company_id));
     const input = new Map((Array.isArray(b.items) ? b.items : []).map(i => [int(i.po_item_id), i]));
     const s = procSettings();
     let grId, grNo, payId, payNo, newCount = 0, allDone = true;
     const batchNo = o.receipts.length + 1;
     db.transaction(() => {
       grNo = nextNo('goods_receipts', 'gr', receiveDate);
-      grId = db.prepare(`INSERT INTO goods_receipts (no, po_id, batch_no, receive_date, inspector, invoice_no, note, created_by)
-        VALUES (?,?,?,?,?,?,?,?)`).run(grNo, o.id, batchNo, receiveDate, inspector, str(b.invoice_no, 30), str(b.note, 500), req.session.user.id).lastInsertRowid;
+      grId = db.prepare(`INSERT INTO goods_receipts (no, po_id, batch_no, receive_date, inspector, invoice_no, note, created_by, warehouse_id)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(grNo, o.id, batchNo, receiveDate, inspector, str(b.invoice_no, 30), str(b.note, 500),
+        req.session.user.id, whId).lastInsertRowid;
       const insGi = db.prepare(`INSERT INTO goods_receipt_items (gr_id, po_item_id, supply_id, item_name, unit, ordered_qty, received_qty, unit_price)
         VALUES (?,?,?,?,?,?,?,?)`);
       const payLines = [];
@@ -950,7 +994,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         if (price > 0) upsertVendorItem({ vendorId: o.vendor_id, supplyId, name: it.item_name, unit, price, source: 'purchase',
           note: `採購 ${o.no}`, userId: req.session.user.id, date: receiveDate });
         stockMove(supplyId, 'in', qty, req.session.user.id, {
-          vendor: o.vendor_name, vendorId: o.vendor_id, unitPrice: price, refType: 'receipt', refId: grId,
+          warehouseId: whId, vendor: o.vendor_name, vendorId: o.vendor_id, unitPrice: price, refType: 'receipt', refId: grId,
           reason: `驗貨入庫 ${grNo}`,
           note: `採購單 ${o.no} 第 ${batchNo} 批${b.invoice_no ? `／發票 ${str(b.invoice_no, 30)}` : ''}`
         });
@@ -978,7 +1022,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       AND substr(req_date,1,7) = substr(?,1,7) AND company_id IS ?`).get(o.vendor_id, today(), payCompany).c;
     logAudit(req, { action: 'create', entity: 'goods_receipts', entity_id: grId,
       summary: `驗貨入庫 ${grNo}（採購單 ${o.no} 第 ${batchNo} 批${allDone ? '，已到齊' : '，尚有未到貨'}），產生請款單 ${payNo}` });
-    res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, payment_id: payId, payment_no: payNo, new_items: newCount,
+    res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, warehouse_id: whId, warehouse_name: warehouseName(whId),
+    payment_id: payId, payment_no: payNo, new_items: newCount,
       vendor_name: o.vendor_name, merge_candidates: mergeWith, month_paid: monthPaid });
   }));
 
@@ -1181,15 +1226,17 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
 
   // ---------- 出貨／領料 ----------
   function shipDetail(id) {
-    const s = db.prepare(`SELECT sh.*, u.name AS shipped_name, ${COMPANY_COLS} FROM shipments sh LEFT JOIN users u ON u.id = sh.shipped_by
+    const s = db.prepare(`SELECT sh.*, u.name AS shipped_name, w.name AS warehouse_name, ${COMPANY_COLS} FROM shipments sh
+      LEFT JOIN users u ON u.id = sh.shipped_by LEFT JOIN warehouses w ON w.id = sh.warehouse_id
       LEFT JOIN proc_companies c ON c.id = sh.company_id WHERE sh.id = ?`).get(id);
     if (!s) return null;
-    s.items = db.prepare(`SELECT i.*, sp.stock, sp.code AS supply_code FROM shipment_items i
-      LEFT JOIN supplies sp ON sp.id = i.supply_id WHERE i.shipment_id = ? ORDER BY i.id`).all(id);
+    s.items = db.prepare(`SELECT i.*, sp.stock, sp.code AS supply_code,
+        COALESCE((SELECT qty FROM supply_stocks ss WHERE ss.supply_id = i.supply_id AND ss.warehouse_id = ?), 0) AS wh_stock
+      FROM shipment_items i LEFT JOIN supplies sp ON sp.id = i.supply_id WHERE i.shipment_id = ? ORDER BY i.id`).all(s.warehouse_id || 0, id);
     s.pick = db.prepare('SELECT * FROM pick_lists WHERE shipment_id = ?').get(id) || null;
     return s;
   }
-  function normShipItems(list) {
+  function normShipItems(list, whId) {
     const merged = new Map();
     for (const it of Array.isArray(list) ? list : []) {
       const id = int(it.supply_id), qty = int(it.qty);
@@ -1200,7 +1247,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     for (const [id, qty] of merged) {
       const sp = db.prepare('SELECT id, name, unit, stock FROM supplies WHERE id = ? AND active = 1').get(id);
       if (!sp) throw httpErr('出貨品項不存在');
-      if (sp.stock < qty) throw httpErr(`庫存不足：${sp.name}（現有 ${sp.stock}，需 ${qty}）`);
+      const have = whId ? WH.warehouseQty(db, id, whId) : sp.stock;
+      if (have < qty) throw httpErr(`庫存不足：${sp.name}（${whId ? warehouseName(whId) : ''}現有 ${have}，需 ${qty}）`);
       out.push({ supply_id: id, item_name: sp.name, unit: sp.unit, qty });
     }
     if (!out.length) throw httpErr('請至少填一個品項與數量');
@@ -1214,6 +1262,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const q = str(req.query.q, 60);
     if (q) { cond.push('(sh.no LIKE ? OR sh.recipient LIKE ? OR EXISTS (SELECT 1 FROM shipment_items i WHERE i.shipment_id = sh.id AND i.item_name LIKE ?))'); args.push(...Array(3).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT sh.*, pk.no AS pick_no, pk.status AS pick_status,
+        (SELECT name FROM warehouses w WHERE w.id = sh.warehouse_id) AS warehouse_name,
         (SELECT name FROM proc_companies c WHERE c.id = sh.company_id) AS company_name,
         (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id = sh.id) AS item_count
       FROM shipments sh LEFT JOIN pick_lists pk ON pk.shipment_id = sh.id
@@ -1229,12 +1278,14 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const recipient = str(b.recipient, 60);
     if (!recipient) throw httpErr('請填寫客戶／部門');
     const shipDate = isDate(b.ship_date) ? b.ship_date : today();
-    const items = normShipItems(b.items);
+    const coId = companyId(b.company_id);
+    const whId = warehouseId(b.warehouse_id, () => WH.defaultWarehouseId(db, coId));
+    const items = normShipItems(b.items, whId);
     let id, no, pickNo;
     db.transaction(() => {
       no = nextNo('shipments', 'ship', shipDate);
-      id = db.prepare('INSERT INTO shipments (no, ship_date, recipient, note, created_by, company_id) VALUES (?,?,?,?,?,?)')
-        .run(no, shipDate, recipient, str(b.note, 500), req.session.user.id, companyId(b.company_id)).lastInsertRowid;
+      id = db.prepare('INSERT INTO shipments (no, ship_date, recipient, note, created_by, company_id, warehouse_id) VALUES (?,?,?,?,?,?,?)')
+        .run(no, shipDate, recipient, str(b.note, 500), req.session.user.id, coId, whId).lastInsertRowid;
       const ins = db.prepare('INSERT INTO shipment_items (shipment_id, supply_id, item_name, unit, qty) VALUES (?,?,?,?,?)');
       for (const it of items) ins.run(id, it.supply_id, it.item_name, it.unit, it.qty);
       pickNo = nextNo('pick_lists', 'pick', shipDate);
@@ -1248,11 +1299,13 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!cur) throw httpErr('找不到出貨單', 404);
     if (cur.status !== 'pending') throw httpErr('出貨單已出貨或取消，不能再修改');
     const b = req.body || {};
-    const items = b.items === undefined ? null : normShipItems(b.items);
+    const whId = warehouseId(b.warehouse_id === undefined ? cur.warehouse_id : b.warehouse_id,
+      () => WH.defaultWarehouseId(db, cur.company_id));
+    const items = b.items === undefined ? null : normShipItems(b.items, whId);
     const recipient = b.recipient === undefined ? cur.recipient : str(b.recipient, 60);
     if (!recipient) throw httpErr('請填寫客戶／部門');
     db.transaction(() => {
-      db.prepare('UPDATE shipments SET company_id=? WHERE id=?').run(companyId(b.company_id, cur.company_id), cur.id);
+      db.prepare('UPDATE shipments SET company_id=?, warehouse_id=? WHERE id=?').run(companyId(b.company_id, cur.company_id), whId, cur.id);
       db.prepare('UPDATE shipments SET ship_date=?, recipient=?, note=? WHERE id=?').run(
         isDate(b.ship_date) ? b.ship_date : cur.ship_date, recipient, b.note === undefined ? cur.note : str(b.note, 500), cur.id);
       db.prepare('UPDATE pick_lists SET recipient=?, pick_date=? WHERE shipment_id=?').run(recipient, isDate(b.ship_date) ? b.ship_date : cur.ship_date, cur.id);
@@ -1273,7 +1326,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     db.transaction(() => {
       for (const it of s.items) {
         stockMove(it.supply_id, 'out', it.qty, req.session.user.id, {
-          refType: 'shipment', refId: s.id,
+          warehouseId: s.warehouse_id, refType: 'shipment', refId: s.id,
           reason: `出貨 ${s.no}`, note: s.pick ? `領料單 ${s.pick.no}` : '', dept: s.recipient, purpose: '出貨'
         });
       }
@@ -1305,6 +1358,198 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       FROM pick_lists pk JOIN shipments sh ON sh.id = pk.shipment_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY pk.id DESC LIMIT 500`).all(...args));
   });
+
+  // ---------- 倉庫管理 ----------
+  // 一家公司底下一個（或多個）總倉，總倉底下掛小倉；商城賣的東西就放在指定的小倉
+  router.get('/procurement/warehouses', requireStaff, need('read'), (req, res) => {
+    const rows = db.prepare(`SELECT w.*, c.name AS company_name,
+        (SELECT name FROM warehouses p WHERE p.id = w.parent_id) AS parent_name,
+        (SELECT COUNT(*) FROM supply_stocks ss WHERE ss.warehouse_id = w.id AND ss.qty != 0) AS item_count,
+        (SELECT COALESCE(SUM(qty),0) FROM supply_stocks ss WHERE ss.warehouse_id = w.id) AS total_qty
+      FROM warehouses w LEFT JOIN proc_companies c ON c.id = w.company_id
+      ${req.query.active === 'all' ? '' : 'WHERE w.active = 1'}
+      ORDER BY c.is_default DESC, w.company_id, w.kind DESC, w.sort_order, w.id`).all();
+    res.json({ rows, default_id: WH.defaultWarehouseId(db, null), shop_warehouse_id: WH.shopWarehouseId(db) });
+  });
+  function normWarehouse(b, cur) {
+    const name = b.name === undefined && cur ? cur.name : str(b.name, 60);
+    if (!name) throw httpErr('請填寫倉庫名稱');
+    const kind = ['main', 'sub'].includes(b.kind) ? b.kind : (cur ? cur.kind : 'main');
+    let parent = kind === 'sub' ? int(b.parent_id) || (cur ? cur.parent_id : 0) : null;
+    if (kind === 'sub') {
+      if (!parent) throw httpErr('小倉請選擇所屬總倉');
+      const p = db.prepare("SELECT id, company_id FROM warehouses WHERE id = ? AND kind = 'main'").get(parent);
+      if (!p) throw httpErr('所屬總倉不存在');
+      if (cur && p.id === cur.id) throw httpErr('總倉不能設成自己');
+    }
+    return { name, kind, parent, company_id: companyId(b.company_id, cur && cur.company_id) };
+  }
+  router.post('/procurement/warehouses', requireStaff, need('master_write'), (req, res) => run(res, () => {
+    const b = req.body || {};
+    const n = normWarehouse(b, null);
+    const id = db.prepare(`INSERT INTO warehouses (company_id, code, name, kind, parent_id, is_default, active, sort_order, note)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(n.company_id, str(b.code, 20), n.name, n.kind, n.parent,
+      b.is_default ? 1 : 0, b.active === undefined || b.active ? 1 : 0, int(b.sort_order), str(b.note, 200)).lastInsertRowid;
+    if (b.is_default) db.prepare("UPDATE warehouses SET is_default = 0 WHERE id != ? AND company_id IS ? AND kind = 'main'").run(id, n.company_id);
+    logAudit(req, { action: 'create', entity: 'warehouses', entity_id: id, summary: `新增倉庫 ${n.name}` });
+    res.json({ id });
+  }));
+  router.put('/procurement/warehouses/:id', requireStaff, need('master_write'), (req, res) => run(res, () => {
+    const cur = db.prepare('SELECT * FROM warehouses WHERE id = ?').get(req.params.id);
+    if (!cur) throw httpErr('找不到倉庫', 404);
+    const b = req.body || {};
+    const n = normWarehouse(b, cur);
+    // 總倉底下還有小倉、或倉內還有庫存時不能停用
+    const active = b.active === undefined ? cur.active : (b.active ? 1 : 0);
+    if (!active) {
+      const left = db.prepare('SELECT COALESCE(SUM(qty),0) q FROM supply_stocks WHERE warehouse_id = ?').get(cur.id).q;
+      if (left > 0) throw httpErr(`「${cur.name}」還有 ${left} 個庫存，請先調撥出去再停用`);
+      if (db.prepare('SELECT 1 FROM warehouses WHERE parent_id = ? AND active = 1 LIMIT 1').get(cur.id)) throw httpErr('這個總倉底下還有啟用中的小倉');
+    }
+    if (cur.kind === 'main' && n.kind === 'sub' && db.prepare('SELECT 1 FROM warehouses WHERE parent_id = ? LIMIT 1').get(cur.id)) {
+      throw httpErr('這個總倉底下還有小倉，不能改成小倉');
+    }
+    db.prepare(`UPDATE warehouses SET company_id=?, code=?, name=?, kind=?, parent_id=?, is_default=?, active=?, sort_order=?, note=? WHERE id=?`)
+      .run(n.company_id, b.code === undefined ? cur.code : str(b.code, 20), n.name, n.kind, n.parent,
+        b.is_default ? 1 : 0, active, b.sort_order === undefined ? cur.sort_order : int(b.sort_order),
+        b.note === undefined ? cur.note : str(b.note, 200), cur.id);
+    if (b.is_default) db.prepare("UPDATE warehouses SET is_default = 0 WHERE id != ? AND company_id IS ? AND kind = 'main'").run(cur.id, n.company_id);
+    logAudit(req, { action: 'update', entity: 'warehouses', entity_id: cur.id, summary: `修改倉庫 ${n.name}` });
+    res.json({ ok: true });
+  }));
+  // 某個倉的庫存明細
+  router.get('/procurement/warehouses/:id/stock', requireStaff, need('read'), (req, res) => {
+    const q = str(req.query.q, 60);
+    const args = [req.params.id];
+    let cond = 'ss.warehouse_id = ? AND s.active = 1';
+    if (req.query.nonzero !== '0') cond += ' AND ss.qty != 0';
+    if (q) { cond += ' AND (s.name LIKE ? OR s.code LIKE ?)'; args.push('%' + q + '%', '%' + q + '%'); }
+    res.json(db.prepare(`SELECT s.id, s.code, s.name, s.unit, s.category, s.safety_stock, ss.qty, s.stock AS total_stock
+      FROM supply_stocks ss JOIN supplies s ON s.id = ss.supply_id WHERE ${cond} ORDER BY s.code, s.name`).all(...args));
+  });
+
+  // ---------- 調撥單（總倉 ↔ 小倉）----------
+  // 只搬倉別、不改總量，所以不寫備品進出紀錄（不然進銷存報表會多一筆假的進貨與出貨）
+  function transferDetail(id) {
+    const t = db.prepare(`SELECT t.*, wf.name AS from_name, wt.name AS to_name,
+        cf.name AS from_company, ct.name AS to_company, uc.name AS created_name, ud.name AS done_name
+      FROM stock_transfers t JOIN warehouses wf ON wf.id = t.from_warehouse_id JOIN warehouses wt ON wt.id = t.to_warehouse_id
+      LEFT JOIN proc_companies cf ON cf.id = wf.company_id LEFT JOIN proc_companies ct ON ct.id = wt.company_id
+      LEFT JOIN users uc ON uc.id = t.created_by LEFT JOIN users ud ON ud.id = t.done_by WHERE t.id = ?`).get(id);
+    if (!t) return null;
+    t.items = db.prepare(`SELECT i.*, s.code AS supply_code,
+        COALESCE((SELECT qty FROM supply_stocks ss WHERE ss.supply_id = i.supply_id AND ss.warehouse_id = ?), 0) AS from_qty,
+        COALESCE((SELECT qty FROM supply_stocks ss WHERE ss.supply_id = i.supply_id AND ss.warehouse_id = ?), 0) AS to_qty
+      FROM stock_transfer_items i LEFT JOIN supplies s ON s.id = i.supply_id
+      WHERE i.transfer_id = ? ORDER BY i.id`).all(t.from_warehouse_id, t.to_warehouse_id, id);
+    return t;
+  }
+  function normTransferItems(list, fromWh) {
+    const merged = new Map();
+    for (const it of Array.isArray(list) ? list : []) {
+      const id = int(it.supply_id), qty = int(it.qty);
+      if (!id || qty <= 0) continue;
+      merged.set(id, (merged.get(id) || 0) + qty);
+    }
+    const out = [];
+    for (const [id, qty] of merged) {
+      const sp = db.prepare('SELECT id, name, unit FROM supplies WHERE id = ? AND active = 1').get(id);
+      if (!sp) throw httpErr('調撥品項不存在');
+      const have = WH.warehouseQty(db, id, fromWh);
+      if (have < qty) throw httpErr(`調出倉庫存不足：${sp.name}（${warehouseName(fromWh)}現有 ${have}，需 ${qty}）`);
+      out.push({ supply_id: id, item_name: sp.name, unit: sp.unit, qty });
+    }
+    if (!out.length) throw httpErr('請至少填一個品項與數量');
+    return out;
+  }
+  router.get('/procurement/transfers', requireStaff, need('read'), (req, res) => {
+    const cond = [], args = [];
+    dateRange(cond, args, 't.transfer_date', req.query);
+    if (['pending', 'done', 'cancelled'].includes(req.query.status)) { cond.push('t.status = ?'); args.push(req.query.status); }
+    if (int(req.query.warehouse_id)) { cond.push('(t.from_warehouse_id = ? OR t.to_warehouse_id = ?)'); args.push(int(req.query.warehouse_id), int(req.query.warehouse_id)); }
+    const q = str(req.query.q, 60);
+    if (q) { cond.push('(t.no LIKE ? OR t.reason LIKE ? OR EXISTS (SELECT 1 FROM stock_transfer_items i WHERE i.transfer_id = t.id AND i.item_name LIKE ?))'); args.push(...Array(3).fill('%' + q + '%')); }
+    res.json(db.prepare(`SELECT t.*, wf.name AS from_name, wt.name AS to_name,
+        (SELECT COUNT(*) FROM stock_transfer_items i WHERE i.transfer_id = t.id) AS item_count,
+        (SELECT COALESCE(SUM(qty),0) FROM stock_transfer_items i WHERE i.transfer_id = t.id) AS total_qty
+      FROM stock_transfers t JOIN warehouses wf ON wf.id = t.from_warehouse_id JOIN warehouses wt ON wt.id = t.to_warehouse_id
+      ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY t.id DESC LIMIT 500`).all(...args));
+  });
+  router.get('/procurement/transfers/:id', requireStaff, need('read'), (req, res) => {
+    const t = transferDetail(req.params.id);
+    return t ? res.json(t) : bad(res, '找不到調撥單', 404);
+  });
+  router.post('/procurement/transfers', requireStaff, need('ship_write'), (req, res) => run(res, () => {
+    const b = req.body || {};
+    const fromWh = warehouseId(b.from_warehouse_id, null);
+    const toWh = warehouseId(b.to_warehouse_id, null);
+    if (fromWh === toWh) throw httpErr('調出與調入不能是同一個倉');
+    const date = isDate(b.transfer_date) ? b.transfer_date : today();
+    const items = normTransferItems(b.items, fromWh);
+    let id, no;
+    db.transaction(() => {
+      no = nextNo('stock_transfers', 'trf', date);
+      id = db.prepare(`INSERT INTO stock_transfers (no, transfer_date, from_warehouse_id, to_warehouse_id, reason, note, created_by)
+        VALUES (?,?,?,?,?,?,?)`).run(no, date, fromWh, toWh, str(b.reason, 100), str(b.note, 500), req.session.user.id).lastInsertRowid;
+      const ins = db.prepare('INSERT INTO stock_transfer_items (transfer_id, supply_id, item_name, unit, qty) VALUES (?,?,?,?,?)');
+      for (const it of items) ins.run(id, it.supply_id, it.item_name, it.unit, it.qty);
+      if (b.confirm) doTransfer(id, req.session.user.id);
+    })();
+    logAudit(req, { action: 'create', entity: 'stock_transfers', entity_id: id, summary: `建立調撥單 ${no}（${warehouseName(fromWh)} → ${warehouseName(toWh)}）` });
+    res.json({ id, no });
+  }));
+  router.put('/procurement/transfers/:id', requireStaff, need('ship_write'), (req, res) => run(res, () => {
+    const cur = db.prepare('SELECT * FROM stock_transfers WHERE id = ?').get(req.params.id);
+    if (!cur) throw httpErr('找不到調撥單', 404);
+    if (cur.status !== 'pending') throw httpErr('調撥單已確認或取消，不能再修改');
+    const b = req.body || {};
+    const fromWh = warehouseId(b.from_warehouse_id === undefined ? cur.from_warehouse_id : b.from_warehouse_id, null);
+    const toWh = warehouseId(b.to_warehouse_id === undefined ? cur.to_warehouse_id : b.to_warehouse_id, null);
+    if (fromWh === toWh) throw httpErr('調出與調入不能是同一個倉');
+    const items = b.items === undefined ? null : normTransferItems(b.items, fromWh);
+    db.transaction(() => {
+      db.prepare('UPDATE stock_transfers SET transfer_date=?, from_warehouse_id=?, to_warehouse_id=?, reason=?, note=? WHERE id=?').run(
+        isDate(b.transfer_date) ? b.transfer_date : cur.transfer_date, fromWh, toWh,
+        b.reason === undefined ? cur.reason : str(b.reason, 100),
+        b.note === undefined ? cur.note : str(b.note, 500), cur.id);
+      if (items) {
+        db.prepare('DELETE FROM stock_transfer_items WHERE transfer_id = ?').run(cur.id);
+        const ins = db.prepare('INSERT INTO stock_transfer_items (transfer_id, supply_id, item_name, unit, qty) VALUES (?,?,?,?,?)');
+        for (const it of items) ins.run(cur.id, it.supply_id, it.item_name, it.unit, it.qty);
+      }
+    })();
+    logAudit(req, { action: 'update', entity: 'stock_transfers', entity_id: cur.id, summary: `修改調撥單 ${cur.no}` });
+    res.json({ ok: true });
+  }));
+  // 確認調撥：調出倉減、調入倉加，總量不變
+  function doTransfer(id, userId) {
+    const t = transferDetail(id);
+    if (!t) throw httpErr('找不到調撥單', 404);
+    if (t.status !== 'pending') throw httpErr('此調撥單已確認或已取消');
+    for (const it of t.items) {
+      const have = WH.warehouseQty(db, it.supply_id, t.from_warehouse_id);
+      if (have < it.qty) throw httpErr(`調出倉庫存不足：${it.item_name}（${t.from_name}現有 ${have}，需 ${it.qty}）`);
+      WH.addWarehouseQty(db, it.supply_id, t.from_warehouse_id, -it.qty);
+      WH.addWarehouseQty(db, it.supply_id, t.to_warehouse_id, it.qty);
+    }
+    db.prepare("UPDATE stock_transfers SET status='done', done_by=?, done_at=datetime('now','localtime') WHERE id=?").run(userId, t.id);
+    return t;
+  }
+  router.post('/procurement/transfers/:id/confirm', requireStaff, need('ship_write'), (req, res) => run(res, () => {
+    let t;
+    db.transaction(() => { t = doTransfer(int(req.params.id), req.session.user.id); })();
+    logAudit(req, { action: 'update', entity: 'stock_transfers', entity_id: t.id, summary: `確認調撥 ${t.no}（${t.from_name} → ${t.to_name}）` });
+    res.json({ ok: true });
+  }));
+  router.post('/procurement/transfers/:id/cancel', requireStaff, need('ship_write'), (req, res) => run(res, () => {
+    const t = db.prepare('SELECT * FROM stock_transfers WHERE id = ?').get(req.params.id);
+    if (!t) throw httpErr('找不到調撥單', 404);
+    if (t.status !== 'pending') throw httpErr('只有待調撥的調撥單可以取消');
+    db.prepare("UPDATE stock_transfers SET status='cancelled', note=TRIM(note || ' 取消原因：' || ?) WHERE id=?")
+      .run(str((req.body || {}).reason, 200), t.id);
+    logAudit(req, { action: 'update', entity: 'stock_transfers', entity_id: t.id, summary: `取消調撥單 ${t.no}` });
+    res.json({ ok: true });
+  }));
 
   require('./procurement-reports')(router, { db, need, requireStaff, today, buildWorkbook, syncLots, str, int, isDate, companyFilter });
 
@@ -1656,6 +1901,17 @@ function ensureSchema(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_item ON po_item_quotes(po_item_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_vendor ON po_item_quotes(vendor_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_gr_po ON goods_receipts(po_id)');
+  // 倉庫與分倉庫存：要在批次帳之前，第一次啟用時把現有庫存分配到各倉
+  WH.ensureWarehouseSchema(db);
+  // 入庫進哪個倉、出貨從哪個倉出（舊單據補成預設總倉）
+  const defWh = WH.defaultWarehouseId(db, null);
+  for (const t of ['goods_receipts', 'shipments']) {
+    const cs = db.prepare(`PRAGMA table_info(${t})`).all().map(c => c.name);
+    if (!cs.includes('warehouse_id')) {
+      db.exec(`ALTER TABLE ${t} ADD COLUMN warehouse_id INTEGER REFERENCES warehouses(id)`);
+      if (defWh) db.prepare(`UPDATE ${t} SET warehouse_id = ?`).run(defWh);
+    }
+  }
   // 批次帳（進銷存報表）：放最後，回填時要用到上面建好的採購表與欄位
   ensureLotSchema(db);
 }

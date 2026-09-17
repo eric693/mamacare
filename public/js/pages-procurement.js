@@ -39,10 +39,21 @@
   const val = (root, sel) => { const el = root.querySelector(sel); return el ? el.value.trim() : ''; };
   let SETTINGS_CACHE = null;
 
-  async function procSettings() {
+  async function procSettings(fresh) {
+    if (fresh) SETTINGS_CACHE = null;
     if (!SETTINGS_CACHE) SETTINGS_CACHE = (await api('/procurement/dashboard')).settings;
     return SETTINGS_CACHE;
   }
+  // 倉庫下拉：總倉在前、小倉縮排列在所屬總倉之下；多家公司時標出公司名
+  const whLabel = (w, st) => `${w.kind === 'sub' ? '　└ ' : ''}${w.name}${multiCo(st) && w.company_name ? `（${w.company_name}）` : ''}`;
+  function warehouseSelect(st, sel, id, opt = {}) {
+    const list = st.warehouses || [];
+    const blank = opt.blank ? `<option value="">${esc(opt.blank)}</option>` : '';
+    const pick = sel || (opt.noDefault ? '' : st.default_warehouse_id);
+    return `<select id="${id}" ${opt.attrs || ''}>${blank}${list.map(w =>
+      `<option value="${w.id}" ${String(pick) === String(w.id) ? 'selected' : ''}>${esc(whLabel(w, st))}</option>`).join('')}</select>`;
+  }
+  const whName = (st, id) => { const w = (st.warehouses || []).find(x => String(x.id) === String(id)); return w ? w.name : ''; };
 
   // 明細編輯需要較寬的對話框；關閉時還原，不影響其他頁面的對話框
   function openWide(title, html, onMount) {
@@ -735,7 +746,7 @@
       <h3 style="margin:14px 0 6px">入庫紀錄</h3>
       ${filterBar({ dateLabel: '入庫日期', vendors, placeholder: '入庫單號／採購單號／發票號／驗貨人' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
-        <thead><tr><th>入庫單號</th><th>採購單號</th><th>批次</th><th>廠商</th><th>入庫日期</th><th>驗貨人員</th><th>發票號碼</th>${can('amounts') ? '<th>未稅金額</th>' : ''}<th>請款單</th><th class="no-print"></th></tr></thead>
+        <thead><tr><th>入庫單號</th><th>採購單號</th><th>批次</th><th>廠商</th><th>入庫倉庫</th><th>入庫日期</th><th>驗貨人員</th><th>發票號碼</th>${can('amounts') ? '<th>未稅金額</th>' : ''}<th>請款單</th><th class="no-print"></th></tr></thead>
         <tbody id="gr-body"></tbody></table></div></div>`;
     wirePoActions($('#rcv-pending'), viewProcReceiving);
     wireFilter(main(), async (qs, setCount) => {
@@ -744,15 +755,16 @@
       $('#gr-body').innerHTML = rows.map(g => `<tr>
         <td data-label="入庫單號">${esc(g.no)}</td><td data-label="採購單號">${esc(g.po_no)}</td>
         <td data-label="批次">第 ${g.batch_no} 批</td><td data-label="廠商">${esc(g.vendor_name || '')}</td>
+        <td data-label="入庫倉庫">${esc(g.warehouse_name || '—')}</td>
         <td data-label="入庫日期">${esc(g.receive_date)}</td><td data-label="驗貨人員">${esc(g.inspector)}</td>
         <td data-label="發票號碼">${esc(g.invoice_no || '—')}</td>${can('amounts') ? `<td data-label="未稅金額">${money(g.subtotal)}</td>` : ''}
         <td data-label="請款單">${g.pay_no ? `<a href="#/proc-payments">${esc(g.pay_no)}</a>` : '—'}</td>
         <td data-label="操作" class="no-print"><button class="btn small secondary" data-gr="${g.id}">查看</button></td></tr>`).join('')
-        || `<tr><td colspan="${can('amounts') ? 10 : 9}"><div class="empty">查無入庫紀錄</div></td></tr>`;
+        || `<tr><td colspan="${can('amounts') ? 11 : 10}"><div class="empty">查無入庫紀錄</div></td></tr>`;
       main().querySelectorAll('[data-gr]').forEach(b => b.onclick = async () => {
         const g = await api('/procurement/receipts/' + b.dataset.gr);
         openWide(`入庫單 ${g.no}（第 ${g.batch_no} 批）`, `
-          <div style="margin-bottom:8px;font-size:.9rem">採購單：${esc(g.po_no)}　廠商：${esc(g.vendor_name || '')}　入庫日期：${esc(g.receive_date)}　驗貨人員：${esc(g.inspector)}${g.invoice_no ? `　發票：${esc(g.invoice_no)}` : ''}</div>
+          <div style="margin-bottom:8px;font-size:.9rem">採購單：${esc(g.po_no)}　廠商：${esc(g.vendor_name || '')}　入庫倉庫：${esc(g.warehouse_name || '—')}　入庫日期：${esc(g.receive_date)}　驗貨人員：${esc(g.inspector)}${g.invoice_no ? `　發票：${esc(g.invoice_no)}` : ''}</div>
           <table class="data"><thead><tr><th>品項</th><th>訂購數</th><th>本批到貨</th><th>累計到貨</th></tr></thead>
           <tbody>${g.items.map(i => `<tr><td>${esc(i.item_name)}</td><td>${i.ordered_qty} ${esc(i.unit)}</td>
             <td><strong>${i.received_qty}</strong></td>
@@ -762,8 +774,9 @@
     });
   }
 
-  function openReceiving(o, done) {
+  async function openReceiving(o, done) {
     if (!['pending', 'partial'].includes(o.status)) { alert(o.status === 'draft' ? '採購單尚未審核通過，不能驗貨' : '此採購單已全數入庫、結案或取消'); return; }
+    const st = await procSettings();
     const open = o.items.filter(i => i.remaining > 0);
     const batch = o.receipts.length + 1;
     openWide(`驗貨入庫 — ${o.no}（第 ${batch} 批）`, `
@@ -772,6 +785,7 @@
       <div class="form-grid">
         <div class="field"><label>驗貨日期</label><input type="date" id="rc-date" value="${todayStr()}"></div>
         <div class="field"><label>驗貨人員 <b class="req">*</b></label><input id="rc-insp" value="${esc(currentUser.name)}"></div>
+        <div class="field"><label>入庫倉庫 <b class="req">*</b></label>${warehouseSelect(st, o.warehouse_id, 'rc-wh')}</div>
         <div class="field"><label>發票號碼<small>（本批）</small></label><input id="rc-inv" maxlength="30" placeholder="廠商發票號碼"></div>
         <div class="field"><label>備註</label><input id="rc-note" maxlength="500"></div>
       </div>
@@ -818,8 +832,8 @@
         try {
           const r = await api('/procurement/receipts', { method: 'POST', body: {
             po_id: o.id, receive_date: val(body, '#rc-date'), inspector: val(body, '#rc-insp'),
-            invoice_no: val(body, '#rc-inv'), note: val(body, '#rc-note'), items } });
-          alert(`第 ${r.batch_no} 批入庫完成（${r.no}），庫存已更新${r.new_items ? `，新建 ${r.new_items} 個品項` : ''}。\n請款單 ${r.payment_no} 已自動建立。\n${r.complete ? '採購單已全數到齊。' : '尚有未到貨數量，採購單標為「部分到貨」。'}`);
+            warehouse_id: val(body, '#rc-wh'), invoice_no: val(body, '#rc-inv'), note: val(body, '#rc-note'), items } });
+          alert(`第 ${r.batch_no} 批入庫完成（${r.no}），${r.warehouse_name || '倉庫'}庫存已更新${r.new_items ? `，新建 ${r.new_items} 個品項` : ''}。\n請款單 ${r.payment_no} 已自動建立。\n${r.complete ? '採購單已全數到齊。' : '尚有未到貨數量，採購單標為「部分到貨」。'}`);
           closeModal();
           await askMonthlyMerge(r);
           done && done();
@@ -1070,7 +1084,7 @@
         <span style="color:var(--muted);font-size:.85rem">建立出貨單會同時產生領料單；按「確認出貨」才從備品庫存扣除。</span></div></div>
       ${filterBar({ dateLabel: '出貨日期', statuses: SHIP_ST, companies: st.companies, placeholder: '出貨單號／客戶部門／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
-        <thead><tr><th>出貨單號</th><th>出貨日期</th><th>客戶／部門</th><th>品項數</th><th>領料單</th><th>狀態</th><th class="no-print"></th></tr></thead>
+        <thead><tr><th>出貨單號</th><th>出貨日期</th><th>客戶／部門</th><th>出貨倉庫</th><th>品項數</th><th>領料單</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="sh-body"></tbody></table></div></div>`;
     let lastQs = '';
     const reload = () => load(lastQs, () => {});
@@ -1083,6 +1097,7 @@
       $('#sh-body').innerHTML = rows.map(s => `<tr>
         <td data-label="出貨單號">${esc(s.no)}${coTag(st, s.company_name)}</td><td data-label="出貨日期">${esc(s.ship_date)}</td>
         <td data-label="客戶／部門">${esc(s.recipient)}${s.note ? `<br><small style="color:var(--muted)">${esc(s.note)}</small>` : ''}</td>
+        <td data-label="出貨倉庫">${esc(s.warehouse_name || '—')}</td>
         <td data-label="品項數">${s.item_count}</td>
         <td data-label="領料單">${esc(s.pick_no || '—')}</td>
         <td data-label="狀態">${badge(SHIP_ST, s.status)}</td>
@@ -1091,7 +1106,7 @@
           ${s.status === 'pending' && can('ship_write') ? `<button class="btn small secondary" data-edit="${s.id}">修改</button>
             <button class="btn small" data-confirm="${s.id}">確認出貨</button>
             <button class="btn small danger" data-cancel="${s.id}">取消</button>` : ''}
-        </td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">查無出貨單</div></td></tr>';
+        </td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無出貨單</div></td></tr>';
       main().querySelectorAll('[data-view]').forEach(b => b.onclick = async () => showShipment(await api('/procurement/shipments/' + b.dataset.view)));
       main().querySelectorAll('[data-edit]').forEach(b => b.onclick = async () => openShipForm(await api('/procurement/shipments/' + b.dataset.edit), reload));
       main().querySelectorAll('[data-confirm]').forEach(b => b.onclick = async () => {
@@ -1119,6 +1134,7 @@
         ${multiCo(st) ? `<div class="field"><label>公司</label>${companySelect(st, s && s.company_id, 'shf-co')}</div>` : ''}
         <div class="field"><label>客戶／部門 <b class="req">*</b></label><input id="shf-to" value="${esc(s ? s.recipient : '')}" placeholder="客戶或內部部門"></div>
         <div class="field"><label>出貨日期</label><input type="date" id="shf-date" value="${esc(s ? s.ship_date : todayStr())}"></div>
+        <div class="field"><label>出貨倉庫 <b class="req">*</b></label>${warehouseSelect(st, s && s.warehouse_id, 'shf-wh')}</div>
         <div class="field full"><label>備註</label><input id="shf-note" value="${esc(s ? s.note : '')}"></div>
       </div>
       <div class="table-wrap" style="margin-top:8px"><table class="data stack">
@@ -1137,7 +1153,8 @@
       body.querySelector('#shf-add').onclick = () => { body.querySelector('#shf-lines').insertAdjacentHTML('beforeend', lineHtml()); wire(body.querySelector('#shf-lines').lastElementChild); };
       body.querySelector('#shf-save').onclick = async () => {
         const lines = [...body.querySelectorAll('[data-line]')].map(tr => ({ supply_id: Number(val(tr, '[data-k="supply_id"]')), qty: Number(val(tr, '[data-k="qty"]')) })).filter(l => l.supply_id);
-        const payload = { company_id: Number(val(body, '#shf-co')) || null, recipient: val(body, '#shf-to'), ship_date: val(body, '#shf-date'), note: val(body, '#shf-note'), items: lines };
+        const payload = { company_id: Number(val(body, '#shf-co')) || null, warehouse_id: Number(val(body, '#shf-wh')) || null,
+          recipient: val(body, '#shf-to'), ship_date: val(body, '#shf-date'), note: val(body, '#shf-note'), items: lines };
         try {
           if (s) await api('/procurement/shipments/' + s.id, { method: 'PUT', body: payload });
           else { const r = await api('/procurement/shipments', { method: 'POST', body: payload }); alert(`出貨單 ${r.no} 已建立，領料單 ${r.pick_no} 已產生`); }
@@ -1149,10 +1166,10 @@
 
   function showShipment(s) {
     openWide(`出貨單 ${s.no}`, `
-      <div style="margin-bottom:8px">客戶／部門：<strong>${esc(s.recipient)}</strong>　日期：${esc(s.ship_date)}　狀態：${badge(SHIP_ST, s.status)}
+      <div style="margin-bottom:8px">客戶／部門：<strong>${esc(s.recipient)}</strong>　日期：${esc(s.ship_date)}　出貨倉庫：${esc(s.warehouse_name || '—')}　狀態：${badge(SHIP_ST, s.status)}
         ${s.status === 'shipped' ? `　出貨人：${esc(s.shipped_name || '')} ${esc((s.shipped_at || '').slice(0, 16))}` : ''}</div>
-      <table class="data"><thead><tr><th>品項</th><th>單位</th><th>數量</th><th>目前庫存</th></tr></thead>
-        <tbody>${s.items.map(i => `<tr><td>${esc(i.item_name)}</td><td>${esc(i.unit)}</td><td><strong>${i.qty}</strong></td><td>${i.stock}</td></tr>`).join('')}</tbody></table>
+      <table class="data"><thead><tr><th>品項</th><th>單位</th><th>數量</th><th>出貨倉現有</th><th>全部倉合計</th></tr></thead>
+        <tbody>${s.items.map(i => `<tr><td>${esc(i.item_name)}</td><td>${esc(i.unit)}</td><td><strong>${i.qty}</strong></td><td>${i.wh_stock}</td><td>${i.stock}</td></tr>`).join('')}</tbody></table>
       ${s.pick ? `<div class="row" style="margin-top:10px;gap:8px"><span>領料單：${esc(s.pick.no)} ${badge(PICK_ST, s.pick.status)}</span>
         <button class="btn small secondary" id="shv-print">列印領料單</button></div>` : ''}`, body => {
       const b = body.querySelector('#shv-print');
@@ -1207,43 +1224,52 @@
 
   /* ================= 庫存總覽 ================= */
   async function viewProcStock() {
-    const [first, vendors] = await Promise.all([api('/procurement/items'), api('/procurement/vendors')]);
+    const [first, vendors, st] = await Promise.all([api('/procurement/items'), api('/procurement/vendors'), procSettings(true)]);
     main().innerHTML = `
       <div class="page-title">庫存總覽</div>
       <div class="card no-print"><div class="form-grid">
-        <div class="field"><label>倉庫別</label><select id="st-wh"><option value="">全部倉庫</option>${first.warehouses.map(w => `<option>${esc(w)}</option>`).join('')}</select></div>
+        <div class="field"><label>倉庫</label>${warehouseSelect(st, '', 'st-wh', { noDefault: true, blank: '全部倉庫（合計）' })}</div>
         <div class="field"><label>供應廠商</label><select id="st-vendor"><option value="">全部廠商</option>${vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</select></div>
         <div class="field"><label>關鍵字</label><input id="st-q" placeholder="品項編號／名稱"></div>
         <div class="field"><label>&nbsp;</label><label class="bna-chk"><input type="checkbox" id="st-low"> 只看庫存不足</label></div>
       </div></div>
       <div class="stat-grid" id="st-stats"></div>
       <div class="card"><div class="table-wrap"><table class="data stack">
-        <thead><tr><th>品項編號</th><th>品項名稱</th><th>倉庫別</th><th>目前庫存</th><th>安全庫存</th><th>參考單價</th><th>未稅庫存值</th><th>狀態</th><th class="no-print"></th></tr></thead>
+        <thead><tr><th>品項編號</th><th>品項名稱</th><th>倉別分布</th><th>目前庫存</th><th>安全庫存</th><th>參考單價</th><th>未稅庫存值</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="st-body"></tbody></table></div>
-        <small style="color:var(--muted)">庫存與「備品庫存管理」為同一份數字：驗貨入庫加、確認出貨扣、盤點調整，都會即時反映。</small></div>`;
+        <small style="color:var(--muted)">庫存與「備品庫存管理」為同一份數字：驗貨入庫加、確認出貨扣、盤點調整、調撥換倉，都會即時反映；不選倉庫時看到的是各倉合計。</small></div>`;
     const load = async () => {
       const p = new URLSearchParams();
-      if ($('#st-wh').value) p.set('warehouse', $('#st-wh').value);
+      const whId = $('#st-wh').value;
+      if (whId) p.set('warehouse_id', whId);
       if ($('#st-vendor').value) p.set('vendor_id', $('#st-vendor').value);
       if ($('#st-q').value.trim()) p.set('q', $('#st-q').value.trim());
       if ($('#st-low').checked) p.set('low', '1');
       const { rows } = await api('/procurement/items?' + p);
-      const value = rows.reduce((t, r) => t + r.stock * r.price, 0);
-      const low = rows.filter(r => r.stock < r.safety_stock);
+      // 指定倉別時所有數字都看那個倉，沒指定就看全公司合計
+      const qtyOf = r => (whId ? (r.wh_qty || 0) : r.stock);
+      const value = rows.reduce((t, r) => t + qtyOf(r) * r.price, 0);
+      const low = rows.filter(r => qtyOf(r) < r.safety_stock);
       $('#st-stats').innerHTML = `
         <div class="stat"><div class="num">${rows.length}</div><div class="label">品項數</div></div>
         <div class="stat"><div class="num" style="color:${low.length ? 'var(--danger)' : ''}">${low.length}</div><div class="label">庫存不足</div></div>
         <div class="stat"><div class="num" style="font-size:1.3rem">${money(value)}</div><div class="label">庫存未稅總值（依參考單價）</div></div>`;
       $('#st-body').innerHTML = rows.map(r => {
-        const isLow = r.stock < r.safety_stock;
+        const qty = qtyOf(r);
+        const isLow = qty < r.safety_stock;
+        // 沒指定倉時，把這個品項分散在哪些倉列出來
+        const spread = (r.stocks || []).filter(x => x.qty);
         return `<tr>
           <td data-label="品項編號">${esc(r.code || '—')}</td>
           <td data-label="品項名稱">${esc(r.name)}${r.vendors.length ? `<br><small style="color:var(--muted)">${esc(r.vendors.map(v => v.name + (v.is_default ? '（預設）' : '')).join('、'))}</small>` : ''}</td>
-          <td data-label="倉庫別">${esc(r.warehouse || '—')}</td>
-          <td data-label="目前庫存"><strong style="color:${isLow ? 'var(--danger)' : 'var(--ok)'}">${r.stock}</strong> ${esc(r.unit)}</td>
+          <td data-label="倉別分布">${whId ? esc(whName(st, whId)) : (spread.length
+            ? spread.map(x => `${esc(x.warehouse_name)} ${x.qty}`).join('<br>')
+            : '<span style="color:var(--muted)">—</span>')}</td>
+          <td data-label="目前庫存"><strong style="color:${isLow ? 'var(--danger)' : 'var(--ok)'}">${qty}</strong> ${esc(r.unit)}${
+            whId && qty !== r.stock ? `<br><small style="color:var(--muted)">全部倉合計 ${r.stock}</small>` : ''}</td>
           <td data-label="安全庫存">${r.safety_stock}</td>
           <td data-label="參考單價">${r.price ? money(r.price) : '<span style="color:var(--muted)">未設</span>'}</td>
-          <td data-label="未稅庫存值">${r.price ? money(r.stock * r.price) : '—'}</td>
+          <td data-label="未稅庫存值">${r.price ? money(qty * r.price) : '—'}</td>
           <td data-label="狀態">${isLow ? '<span class="badge red">庫存不足</span>' : '<span class="badge green">正常</span>'}</td>
           <td data-label="操作" class="no-print">
             ${can('requests_write') ? `<button class="btn small" data-req="${r.id}">請購</button>` : ''}
@@ -1251,7 +1277,7 @@
       }).join('') || '<tr><td colspan="9"><div class="empty">查無品項</div></td></tr>';
       main().querySelectorAll('[data-req]').forEach(b => b.onclick = () => {
         const r = rows.find(x => String(x.id) === b.dataset.req);
-        openPrForm(null, [{ supply_id: r.id, qty: Math.max(1, r.safety_stock * 2 - r.stock) }], load);
+        openPrForm(null, [{ supply_id: r.id, qty: Math.max(1, r.safety_stock * 2 - qtyOf(r)) }], load);
       });
       main().querySelectorAll('[data-hist]').forEach(b => b.onclick = () => showItemHistory(b.dataset.hist));
     };
@@ -1282,6 +1308,218 @@
         <tbody>${h.quotes.map(q => `<tr><td>${esc((q.created_at || '').slice(0, 10))}</td><td>${esc(q.po_no)}</td><td>${esc(q.vendor_name || '')}</td>
           <td>${money(q.unit_price)}</td><td>${q.is_selected ? '<span class="badge green">得標</span>' : ''}</td></tr>`).join('')}</tbody></table>` : ''}
       <p style="margin-top:8px"><a href="#/supply-movements">查看備品進出明細表</a></p>`);
+  }
+
+
+  /* ================= 倉庫管理 ================= */
+  // 一家公司底下開總倉，總倉底下掛小倉（例如商城賣的東西就放在指定的小倉）
+  async function viewProcWarehouses() {
+    const st = await procSettings(true);
+    main().innerHTML = `
+      <div class="page-title">倉庫管理</div>
+      <div class="card no-print"><div class="row" style="gap:8px">
+        ${can('master_write') ? '<button class="btn" id="wh-new">新增倉庫</button>' : ''}
+        <span style="color:var(--muted);font-size:.85rem">每家公司可開自己的總倉，總倉底下再開小倉；驗貨入庫進總倉，總倉用「調撥單」撥到小倉。</span></div></div>
+      <div class="card"><div class="table-wrap"><table class="data stack">
+        <thead><tr><th>倉庫編號</th><th>倉庫名稱</th><th>所屬公司</th><th>類別</th><th>所屬總倉</th><th>品項數</th><th>庫存合計</th><th>狀態</th><th class="no-print"></th></tr></thead>
+        <tbody id="wh-body"></tbody></table></div>
+        <small style="color:var(--muted)">停用倉庫前要先把庫存調撥出去；商城商品的庫存倉在「採購設定」指定。</small></div>`;
+    const nb = main().querySelector('#wh-new');
+    if (nb) nb.onclick = () => openWhForm(null, load);
+    async function load() {
+      const { rows, shop_warehouse_id: shopWh } = await api('/procurement/warehouses?active=all');
+      $('#wh-body').innerHTML = rows.map(w => `<tr>
+        <td data-label="倉庫編號">${esc(w.code || '—')}</td>
+        <td data-label="倉庫名稱"><strong>${esc(w.name)}</strong>${w.is_default ? ' <span class="badge teal">預設</span>' : ''}${
+          String(w.id) === String(shopWh) ? ' <span class="badge purple">商城庫存倉</span>' : ''}${
+          w.note ? `<br><small style="color:var(--muted)">${esc(w.note)}</small>` : ''}</td>
+        <td data-label="所屬公司">${esc(w.company_name || '—')}</td>
+        <td data-label="類別">${w.kind === 'main' ? '<span class="badge green">總倉</span>' : '<span class="badge gray">小倉</span>'}</td>
+        <td data-label="所屬總倉">${esc(w.parent_name || '—')}</td>
+        <td data-label="品項數">${w.item_count}</td>
+        <td data-label="庫存合計">${w.total_qty}</td>
+        <td data-label="狀態">${w.active ? '<span class="badge green">啟用</span>' : '<span class="badge gray">停用</span>'}</td>
+        <td data-label="操作" class="no-print">
+          <button class="btn small secondary" data-stock="${w.id}">庫存明細</button>
+          ${can('master_write') ? `<button class="btn small secondary" data-edit="${w.id}">修改</button>` : ''}</td></tr>`).join('')
+        || '<tr><td colspan="9"><div class="empty">尚未建立倉庫</div></td></tr>';
+      main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openWhForm(rows.find(w => String(w.id) === b.dataset.edit), load));
+      main().querySelectorAll('[data-stock]').forEach(b => b.onclick = () => showWhStock(rows.find(w => String(w.id) === b.dataset.stock)));
+    }
+    load();
+  }
+  async function openWhForm(w, done) {
+    const st = await procSettings();
+    const mains = (st.warehouses || []).filter(x => x.kind === 'main' && (!w || x.id !== w.id));
+    openModal(w ? `修改倉庫 ${w.name}` : '新增倉庫', `
+      <div class="form-grid">
+        <div class="field"><label>倉庫編號</label><input id="whf-code" maxlength="20" value="${esc(w ? w.code : '')}" placeholder="例如 W01"></div>
+        <div class="field"><label>倉庫名稱 <b class="req">*</b></label><input id="whf-name" maxlength="60" value="${esc(w ? w.name : '')}" placeholder="例如 嘉禾總倉、商城小倉"></div>
+        <div class="field"><label>所屬公司 <b class="req">*</b></label>${companySelect(st, w && w.company_id, 'whf-co')}</div>
+        <div class="field"><label>類別 <b class="req">*</b></label><select id="whf-kind">
+          <option value="main" ${!w || w.kind === 'main' ? 'selected' : ''}>總倉</option>
+          <option value="sub" ${w && w.kind === 'sub' ? 'selected' : ''}>小倉</option></select></div>
+        <div class="field" id="whf-parent-box"><label>所屬總倉 <b class="req">*</b></label><select id="whf-parent">
+          <option value="">-- 請選擇 --</option>${mains.map(m => `<option value="${m.id}" ${w && String(w.parent_id) === String(m.id) ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>排序</label><input type="number" id="whf-sort" value="${w ? w.sort_order : 0}"></div>
+        <div class="field"><label>&nbsp;</label><label class="bna-chk"><input type="checkbox" id="whf-def" ${w && w.is_default ? 'checked' : ''}> 設為這家公司的預設總倉</label></div>
+        <div class="field"><label>&nbsp;</label><label class="bna-chk"><input type="checkbox" id="whf-active" ${!w || w.active ? 'checked' : ''}> 啟用</label></div>
+        <div class="field full"><label>備註</label><input id="whf-note" maxlength="200" value="${esc(w ? w.note : '')}"></div>
+      </div>
+      <div class="row" style="gap:8px"><button class="btn" id="whf-save">儲存</button><span class="error-msg" id="whf-err"></span></div>`, body => {
+      const kind = body.querySelector('#whf-kind');
+      const toggle = () => { body.querySelector('#whf-parent-box').style.display = kind.value === 'sub' ? '' : 'none'; };
+      kind.onchange = toggle; toggle();
+      body.querySelector('#whf-save').onclick = async () => {
+        const payload = {
+          code: val(body, '#whf-code'), name: val(body, '#whf-name'), company_id: Number(val(body, '#whf-co')) || null,
+          kind: kind.value, parent_id: Number(val(body, '#whf-parent')) || null, sort_order: Number(val(body, '#whf-sort')) || 0,
+          is_default: body.querySelector('#whf-def').checked, active: body.querySelector('#whf-active').checked,
+          note: val(body, '#whf-note')
+        };
+        try {
+          if (w) await api('/procurement/warehouses/' + w.id, { method: 'PUT', body: payload });
+          else await api('/procurement/warehouses', { method: 'POST', body: payload });
+          SETTINGS_CACHE = null;
+          closeModal(); done && done();
+        } catch (e) { body.querySelector('#whf-err').textContent = e.message; }
+      };
+    });
+  }
+  async function showWhStock(w) {
+    const rows = await api(`/procurement/warehouses/${w.id}/stock`);
+    openWide(`${w.name} — 庫存明細`, `
+      <table class="data"><thead><tr><th>品項編號</th><th>品項名稱</th><th>本倉庫存</th><th>全公司庫存</th><th>安全庫存</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td>${esc(r.code || '—')}</td><td>${esc(r.name)}</td>
+        <td><strong>${r.qty}</strong> ${esc(r.unit)}</td><td>${r.total_stock}</td><td>${r.safety_stock}</td></tr>`).join('')
+        || '<tr><td colspan="5"><div class="empty">這個倉目前沒有庫存</div></td></tr>'}</tbody></table>`);
+  }
+
+  /* ================= 調撥單（倉對倉） ================= */
+  const TRF_ST = { pending: ['待調撥', 'yellow'], done: ['已調撥', 'green'], cancelled: ['已取消', 'gray'] };
+  async function viewProcTransfers() {
+    const st = await procSettings(true);
+    main().innerHTML = `
+      <div class="page-title">調撥單</div>
+      <div class="card no-print"><div class="row" style="gap:8px">
+        ${can('ship_write') ? '<button class="btn" id="tf-new">新增調撥單</button>' : ''}
+        <span style="color:var(--muted);font-size:.85rem">倉與倉之間搬貨（總倉 → 小倉、小倉 → 小倉）。只換倉別、不影響總庫存與進銷存報表。</span></div></div>
+      ${filterBar({ dateLabel: '調撥日期', statuses: TRF_ST, placeholder: '調撥單號／事由／品名' })}
+      <div class="card"><div class="table-wrap"><table class="data stack">
+        <thead><tr><th>調撥單號</th><th>調撥日期</th><th>調出倉</th><th>調入倉</th><th>品項／數量</th><th>事由</th><th>狀態</th><th class="no-print"></th></tr></thead>
+        <tbody id="tf-body"></tbody></table></div></div>`;
+    let lastQs = '';
+    const reload = () => load(lastQs, () => {});
+    const nb = main().querySelector('#tf-new');
+    if (nb) nb.onclick = () => openTransferForm(null, reload);
+    async function load(qs, setCount) {
+      lastQs = qs;
+      const rows = await api('/procurement/transfers?' + qs);
+      setCount(rows.length);
+      $('#tf-body').innerHTML = rows.map(t => `<tr>
+        <td data-label="調撥單號">${esc(t.no)}</td>
+        <td data-label="調撥日期">${esc(t.transfer_date)}</td>
+        <td data-label="調出倉">${esc(t.from_name)}</td>
+        <td data-label="調入倉">${esc(t.to_name)}</td>
+        <td data-label="品項／數量">${t.item_count} 項／共 ${t.total_qty}</td>
+        <td data-label="事由">${esc(t.reason || '—')}</td>
+        <td data-label="狀態">${badge(TRF_ST, t.status)}</td>
+        <td data-label="操作" class="no-print">
+          <button class="btn small secondary" data-view="${t.id}">查看</button>
+          ${t.status === 'pending' && can('ship_write') ? `<button class="btn small secondary" data-edit="${t.id}">修改</button>
+            <button class="btn small" data-confirm="${t.id}">確認調撥</button>
+            <button class="btn small danger" data-cancel="${t.id}">取消</button>` : ''}
+        </td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無調撥單</div></td></tr>';
+      main().querySelectorAll('[data-view]').forEach(b => b.onclick = async () => showTransfer(await api('/procurement/transfers/' + b.dataset.view)));
+      main().querySelectorAll('[data-edit]').forEach(b => b.onclick = async () => openTransferForm(await api('/procurement/transfers/' + b.dataset.edit), reload));
+      main().querySelectorAll('[data-confirm]').forEach(b => b.onclick = async () => {
+        if (!confirm('確認調撥？調出倉庫存減少、調入倉庫存增加。')) return;
+        try { await api(`/procurement/transfers/${b.dataset.confirm}/confirm`, { method: 'POST' }); reload(); } catch (e) { alert(e.message); }
+      });
+      main().querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
+        const reason = prompt('取消調撥單的原因（可留空）：', '');
+        if (reason === null) return;
+        try { await api(`/procurement/transfers/${b.dataset.cancel}/cancel`, { method: 'POST', body: { reason } }); reload(); } catch (e) { alert(e.message); }
+      });
+    }
+    wireFilter(main(), load);
+  }
+  async function openTransferForm(t, done) {
+    const [{ rows: items }, st] = await Promise.all([api('/procurement/items'), procSettings()]);
+    const stockIn = (supplyId, whId) => {
+      const it = items.find(i => String(i.id) === String(supplyId));
+      if (!it) return 0;
+      const hit = (it.stocks || []).find(x => String(x.warehouse_id) === String(whId));
+      return hit ? hit.qty : 0;
+    };
+    const lineHtml = (it = {}) => `<tr data-line>
+      <td data-label="品項"><select data-k="supply_id" style="min-width:240px"><option value="">-- 選擇品項 --</option>${itemOptions(items, it.supply_id)}</select></td>
+      <td data-label="調出倉現有" data-have>—</td>
+      <td data-label="調撥數量"><input type="number" min="1" data-k="qty" value="${it.qty || 1}" style="max-width:90px"></td>
+      <td><button class="btn small danger" data-del>刪</button></td></tr>`;
+    openWide(t ? `修改調撥單 ${t.no}` : '新增調撥單', `
+      <div class="form-grid">
+        <div class="field"><label>調撥日期</label><input type="date" id="tff-date" value="${esc(t ? t.transfer_date : todayStr())}"></div>
+        <div class="field"><label>調出倉 <b class="req">*</b></label>${warehouseSelect(st, t && t.from_warehouse_id, 'tff-from')}</div>
+        <div class="field"><label>調入倉 <b class="req">*</b></label>${warehouseSelect(st, t && t.to_warehouse_id, 'tff-to', { noDefault: true, blank: '-- 請選擇 --' })}</div>
+        <div class="field"><label>事由</label><input id="tff-reason" maxlength="100" value="${esc(t ? t.reason : '')}" placeholder="例如 補商城小倉庫存"></div>
+        <div class="field full"><label>備註</label><input id="tff-note" maxlength="500" value="${esc(t ? t.note : '')}"></div>
+      </div>
+      <div class="table-wrap" style="margin-top:8px"><table class="data stack">
+        <thead><tr><th>品項</th><th>調出倉現有</th><th>調撥數量</th><th></th></tr></thead>
+        <tbody id="tff-lines">${(t ? t.items : [{}]).map(lineHtml).join('')}</tbody></table></div>
+      <div class="row" style="gap:8px;margin-top:8px">
+        <button class="btn small secondary" id="tff-add">新增品項</button>
+        <button class="btn" id="tff-save">${t ? '儲存修改' : '建立調撥單'}</button>
+        ${t ? '' : '<button class="btn secondary" id="tff-save-go">建立並直接調撥</button>'}
+        <span class="error-msg" id="tff-err"></span></div>`, body => {
+      const refresh = () => {
+        const from = val(body, '#tff-from');
+        body.querySelectorAll('[data-line]').forEach(tr => {
+          const sid = val(tr, '[data-k="supply_id"]');
+          tr.querySelector('[data-have]').textContent = sid ? stockIn(sid, from) : '—';
+        });
+      };
+      const wire = tr => {
+        tr.querySelector('[data-del]').onclick = () => tr.remove();
+        tr.querySelector('[data-k="supply_id"]').onchange = refresh;
+      };
+      body.querySelectorAll('[data-line]').forEach(wire);
+      body.querySelector('#tff-from').onchange = refresh;
+      body.querySelector('#tff-add').onclick = () => {
+        body.querySelector('#tff-lines').insertAdjacentHTML('beforeend', lineHtml());
+        wire(body.querySelector('#tff-lines').lastElementChild);
+        refresh();
+      };
+      refresh();
+      const save = async confirmNow => {
+        const lines = [...body.querySelectorAll('[data-line]')]
+          .map(tr => ({ supply_id: Number(val(tr, '[data-k="supply_id"]')), qty: Number(val(tr, '[data-k="qty"]')) }))
+          .filter(l => l.supply_id);
+        const payload = { transfer_date: val(body, '#tff-date'), from_warehouse_id: Number(val(body, '#tff-from')),
+          to_warehouse_id: Number(val(body, '#tff-to')), reason: val(body, '#tff-reason'), note: val(body, '#tff-note'),
+          items: lines, confirm: !!confirmNow };
+        try {
+          if (t) await api('/procurement/transfers/' + t.id, { method: 'PUT', body: payload });
+          else { const r = await api('/procurement/transfers', { method: 'POST', body: payload }); alert(`調撥單 ${r.no} 已建立${confirmNow ? '並完成調撥' : '，待確認調撥'}`); }
+          closeModal(); done && done();
+        } catch (e) { body.querySelector('#tff-err').textContent = e.message; }
+      };
+      body.querySelector('#tff-save').onclick = () => save(false);
+      const go = body.querySelector('#tff-save-go');
+      if (go) go.onclick = () => save(true);
+    });
+  }
+  function showTransfer(t) {
+    openWide(`調撥單 ${t.no}`, `
+      <div style="background:var(--primary-light);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:.9rem">
+        ${esc(t.from_name)} → <strong>${esc(t.to_name)}</strong>　調撥日期：${esc(t.transfer_date)}　${badge(TRF_ST, t.status)}
+        ${t.reason ? `<br>事由：${esc(t.reason)}` : ''}${t.note ? `<br>備註：${esc(t.note)}` : ''}
+        <br><small style="color:var(--muted)">建立：${esc(t.created_name || '')} ${esc((t.created_at || '').slice(0, 16))}${
+          t.done_at ? `　確認：${esc(t.done_name || '')} ${esc(t.done_at.slice(0, 16))}` : ''}</small></div>
+      <table class="data"><thead><tr><th>品項</th><th>調撥數量</th><th>調出倉現有</th><th>調入倉現有</th></tr></thead>
+      <tbody>${t.items.map(i => `<tr><td>${esc(i.item_name)}</td><td><strong>${i.qty}</strong> ${esc(i.unit)}</td>
+        <td>${i.from_qty}</td><td>${i.to_qty}</td></tr>`).join('')}</tbody></table>`);
   }
 
   /* ================= 品項管理 ================= */
@@ -1552,6 +1790,8 @@
           <div class="field"><label>請款單預設稅率（%）</label><input type="number" min="0" max="100" step="0.1" id="ps-tax" value="${esc(st.tax_rate)}" ${dis}></div>
           <div class="field full"><label>廠商付款條件選項<small>（逗號分隔；含數字者視為天數，用來算付款到期日）</small></label>
             <input id="ps-terms" value="${esc(st.payment_terms.join(','))}" ${dis}></div>
+          <div class="field"><label>商城庫存倉<small>（商城商品賣的就是這個倉的庫存）</small></label>
+            ${warehouseSelect(st, st.shop_warehouse_id, 'ps-shopwh', { attrs: dis })}</div>
         </div>
         <div class="row" style="gap:8px;margin-top:8px">${isAdmin ? '<button class="btn" id="ps-save">儲存參數</button>' : '<small style="color:var(--muted)">僅採購作業管理員可修改</small>'}<span class="error-msg" id="ps-err"></span></div>
       </div>`;
@@ -1593,7 +1833,8 @@
       const tax = Number($('#ps-tax').value);
       if (!(tax >= 0 && tax <= 100)) { $('#ps-err').textContent = '稅率需介於 0 到 100'; return; }
       try {
-        await api('/procurement/settings', { method: 'PUT', body: { tax_rate: tax, payment_terms: $('#ps-terms').value } });
+        await api('/procurement/settings', { method: 'PUT', body: { tax_rate: tax, payment_terms: $('#ps-terms').value,
+          shop_warehouse_id: $('#ps-shopwh') ? $('#ps-shopwh').value : undefined } });
         SETTINGS_CACHE = null;
         $('#ps-err').textContent = '';
         alert('已儲存');
@@ -1720,6 +1961,8 @@
     '#/proc-shipments': [viewProcShipments, R('ship', 'finance', 'admin')],
     '#/proc-picks': [viewProcPicks, R('ship', 'account', 'finance', 'admin')],
     '#/proc-stock': [viewProcStock, ALL_ROLES],
+    '#/proc-warehouses': [viewProcWarehouses, R('buyer', 'finance', 'admin')],
+    '#/proc-transfers': [viewProcTransfers, R('ship', 'receive', 'buyer', 'finance', 'admin')],
     '#/proc-items': [viewProcItems, R('buyer', 'finance', 'admin')],
     '#/proc-vendors': [viewProcVendors, R('buyer', 'finance', 'admin')],
     '#/proc-reports': [viewProcReports, R('finance', 'admin')],

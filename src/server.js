@@ -15,6 +15,7 @@ const { buildWorkbook } = require('./xlsx');
 const backup = require('./backup');
 const payment = require('./payment');
 const dal = require('./dal');
+const WH = require('./warehouse');
 // 非同步路由包裝：捕捉 Promise 例外交給錯誤中介層（Express 4 不會自動接）
 const ah = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -36,6 +37,8 @@ app.use(session({
 }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use('/uploads', express.static(UPLOAD_DIR));
+// 請採驗系統獨立入口：同一套程式與資料庫，只是側欄只留採購作業（/proc 與 /proc/ 都可）
+app.get(['/proc', '/proc/'], (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'proc.html')));
 
 // ---------- 稽核軌跡（audit log）----------
 const AUDIT_REDACT = new Set([
@@ -4419,20 +4422,36 @@ app.get('/api/products', requireStaff, (req, res) => {
   res.json(db.prepare('SELECT * FROM products ORDER BY active DESC, sort, id DESC').all());
 });
 
+// 商城商品可綁到「某個倉的某個品項」：綁了以後商城庫存就是那個倉的庫存，不再另外記一份
+function productBinding(p, cur) {
+  // 有送這個欄位就以送來的為準（送 null／空字串＝解除綁定），沒送才沿用原本的
+  const sent = k => Object.prototype.hasOwnProperty.call(p, k) && p[k] !== undefined;
+  const supplyId = sent('supply_id') ? Number(p.supply_id) || 0 : (cur ? cur.supply_id : 0);
+  if (!supplyId) return { supply_id: null, warehouse_id: null };
+  if (!db.prepare('SELECT 1 FROM supplies WHERE id = ?').get(supplyId)) return { error: '綁定的品項不存在' };
+  const whId = (sent('warehouse_id') && Number(p.warehouse_id)) ? Number(p.warehouse_id)
+    : (cur && cur.warehouse_id) || WH.shopWarehouseId(db);
+  if (!whId) return { error: '請先到「倉庫管理」建立倉庫' };
+  if (!db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(whId)) return { error: '倉庫不存在或已停用' };
+  return { supply_id: supplyId, warehouse_id: whId };
+}
 app.post('/api/products', requireAdmin, (req, res) => {
   const p = req.body || {};
   const price = Number(p.price);
   if (!p.name || !Number.isFinite(price) || price < 0) {
     return res.status(400).json({ error: '品名與售價必填' });
   }
+  const bind = productBinding(p, null);
+  if (bind.error) return res.status(400).json({ error: bind.error });
   const info = db.prepare(`INSERT INTO products
-    (name, category, price, cost, image, description, track_stock, stock, active, sort, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (name, category, price, cost, image, description, track_stock, stock, active, sort, created_by, supply_id, warehouse_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     p.name, p.category || '', Math.round(price), Math.round(Number(p.cost) || 0),
     p.image || '', p.description || '',
-    p.track_stock ? 1 : 0, Math.round(Number(p.stock) || 0),
+    bind.supply_id ? 1 : (p.track_stock ? 1 : 0),
+    bind.supply_id ? WH.warehouseQty(db, bind.supply_id, bind.warehouse_id) : Math.round(Number(p.stock) || 0),
     p.active === undefined ? 1 : (p.active ? 1 : 0), Math.round(Number(p.sort) || 0),
-    req.session.user.id);
+    req.session.user.id, bind.supply_id, bind.warehouse_id);
   logAudit(req, { action: 'create', entity: 'product', entity_id: info.lastInsertRowid, summary: p.name });
   res.json({ id: info.lastInsertRowid });
 });
@@ -4475,16 +4494,20 @@ app.put('/api/products/:id', requireAdmin, (req, res) => {
   const p = req.body || {};
   const price = p.price === undefined ? cur.price : Number(p.price);
   if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: '售價不正確' });
+  const bind = productBinding(p, cur);
+  if (bind.error) return res.status(400).json({ error: bind.error });
   db.prepare(`UPDATE products SET name=?, category=?, price=?, cost=?, image=?, description=?,
-    track_stock=?, stock=?, active=?, sort=? WHERE id=?`).run(
+    track_stock=?, stock=?, active=?, sort=?, supply_id=?, warehouse_id=? WHERE id=?`).run(
     p.name ?? cur.name, p.category ?? cur.category, Math.round(price),
     Math.round(p.cost === undefined ? cur.cost : Number(p.cost) || 0),
     p.image ?? cur.image, p.description ?? cur.description,
-    (p.track_stock === undefined ? cur.track_stock : (p.track_stock ? 1 : 0)),
-    Math.round(p.stock === undefined ? cur.stock : Number(p.stock) || 0),
+    bind.supply_id ? 1 : (p.track_stock === undefined ? cur.track_stock : (p.track_stock ? 1 : 0)),
+    // 綁倉的商品庫存一律以倉為準，手動改的數字不生效（要改請走盤點或調撥）
+    bind.supply_id ? WH.warehouseQty(db, bind.supply_id, bind.warehouse_id)
+      : Math.round(p.stock === undefined ? cur.stock : Number(p.stock) || 0),
     (p.active === undefined ? cur.active : (p.active ? 1 : 0)),
     Math.round(p.sort === undefined ? cur.sort : Number(p.sort) || 0),
-    cur.id);
+    bind.supply_id, bind.warehouse_id, cur.id);
   logAudit(req, { action: 'update', entity: 'product', entity_id: cur.id, summary: p.name || cur.name });
   res.json({ ok: true });
 });
@@ -4660,7 +4683,17 @@ app.post('/api/orders/:id/confirm', requireStaff, (req, res) => {
           const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(it.product_id);
           if (prod && prod.track_stock) {
             if (prod.stock < it.quantity) throw new Error(`「${prod.name}」庫存不足`);
-            db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?').run(it.quantity, prod.id);
+            if (prod.supply_id && prod.warehouse_id) {
+              // 商城庫存就是那個小倉的庫存：直接扣倉，並留下備品進出紀錄
+              const have = WH.warehouseQty(db, prod.supply_id, prod.warehouse_id);
+              if (have < it.quantity) throw new Error(`「${prod.name}」庫存不足（倉內剩 ${have}）`);
+              const balance = WH.addWarehouseQty(db, prod.supply_id, prod.warehouse_id, -it.quantity);
+              db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, dept, purpose, warehouse_id, ref_type, ref_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(prod.supply_id, 'out', it.quantity, balance,
+                `商城訂單 #${o.id}`, '', req.session.user.id, '客服', '販售', prod.warehouse_id, 'order', o.id);
+            } else {
+              db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?').run(it.quantity, prod.id);
+            }
           }
         }
         if (bookingId) {
@@ -4771,14 +4804,28 @@ function syncSupplyProduct(supplyId, userId) {
   const s = db.prepare('SELECT * FROM supplies WHERE id = ?').get(supplyId);
   if (!s || !s.front_sellable) return null;
   if (s.product_id) return null;
-  const info = db.prepare(`INSERT INTO products (name, category, price, description, track_stock, stock, active, created_by)
-    VALUES (?,?,?,?,1,0,1,?)`).run(
-    s.name, s.category || '', s.price || 0, `備品自動建檔（產品編號 ${s.code || '—'}）`, userId || null);
+  // 綁定商城出貨倉：商城庫存＝該倉庫存，不再另記一份
+  const whId = WH.shopWarehouseId(db);
+  const info = db.prepare(`INSERT INTO products (name, category, price, description, track_stock, stock, active, created_by, supply_id, warehouse_id)
+    VALUES (?,?,?,?,1,?,1,?,?,?)`).run(
+    s.name, s.category || '', s.price || 0, `備品自動建檔（產品編號 ${s.code || '—'}）`,
+    whId ? WH.warehouseQty(db, s.id, whId) : 0, userId || null, s.id, whId || null);
   db.prepare('UPDATE supplies SET product_id = ? WHERE id = ?').run(info.lastInsertRowid, s.id);
   return info.lastInsertRowid;
 }
 // 啟動時補建：既有已勾開放前台銷售、尚未建檔者（冪等，靠 product_id 連結）
 for (const row of db.prepare('SELECT id FROM supplies WHERE front_sellable = 1').all()) syncSupplyProduct(row.id, null);
+// 倉庫清單（備品模組共用；採購模組另有可維護的 /api/procurement/warehouses）
+app.get('/api/warehouses', requireStaff, (req, res) => {
+  res.json({ rows: WH.activeWarehouses(db), default_id: WH.defaultWarehouseId(db, null) });
+});
+// 單一品項的各倉庫存（盤點要逐倉盤）
+app.get('/api/supplies/:id/stocks', requireStaff, (req, res) => {
+  res.json(db.prepare(`SELECT w.id AS warehouse_id, w.name, w.kind, w.company_id,
+      (SELECT name FROM proc_companies c WHERE c.id = w.company_id) AS company_name,
+      COALESCE((SELECT qty FROM supply_stocks ss WHERE ss.supply_id = ? AND ss.warehouse_id = w.id), 0) AS qty
+    FROM warehouses w WHERE w.active = 1 ORDER BY w.company_id, w.kind DESC, w.sort_order, w.id`).all(req.params.id));
+});
 app.get('/api/supplies', requireStaff, (req, res) => {
   res.json(db.prepare('SELECT * FROM supplies ORDER BY active DESC, (stock <= safety_stock) DESC, category, name').all());
 });
@@ -4786,10 +4833,17 @@ app.post('/api/supplies', requireAdmin, (req, res) => {
   const s = req.body || {};
   if (!s.name) return res.status(400).json({ error: '品名必填' });
   const info = db.prepare(`INSERT INTO supplies (name, category, unit, stock, safety_stock, restock_level, note, active, code, price, has_expiry, front_sellable)
-    VALUES (?,?,?,?,?,?,?,1,?,?,?,?)`).run(
-    s.name, s.category || '', s.unit || '', Math.round(Number(s.stock) || 0),
+    VALUES (?,?,?,0,?,?,?,1,?,?,?,?)`).run(
+    s.name, s.category || '', s.unit || '',
     Math.round(Number(s.safety_stock) || 0), Math.round(Number(s.restock_level) || 0), s.note || '',
     String(s.code || '').slice(0, 40), Math.round(Number(s.price) || 0), s.has_expiry ? 1 : 0, s.front_sellable ? 1 : 0);
+  // 期初庫存要落在某個倉，否則下次重算分倉合計時會被歸零
+  const initStock = Math.round(Number(s.stock) || 0);
+  if (initStock > 0) {
+    const whId = Number(s.warehouse_id) || WH.defaultWarehouseId(db, null);
+    if (whId) WH.setWarehouseQty(db, info.lastInsertRowid, whId, initStock);
+    else db.prepare('UPDATE supplies SET stock = ? WHERE id = ?').run(initStock, info.lastInsertRowid);
+  }
   syncSupplyProduct(info.lastInsertRowid, req.session.user.id);
   logAudit(req, { action: 'create', entity: 'supply', entity_id: info.lastInsertRowid, summary: s.name });
   res.json({ id: info.lastInsertRowid });
@@ -4914,19 +4968,25 @@ app.post('/api/supplies/:id/txns', requireStaff, (req, res) => {
   const qty = Math.round(Number(t.quantity));
   if (!['in', 'out', 'adjust'].includes(t.txn_type)) return res.status(400).json({ error: '異動類型不正確' });
   if (!Number.isFinite(qty)) return res.status(400).json({ error: '數量不正確' });
+  // 進出一律落在某個倉；沒指定就用這個品項目前主要存放的倉
+  const whId = Number(t.warehouse_id) || WH.mainWarehouseOf(db, cur.id);
+  if (!whId) return res.status(400).json({ error: '尚未建立倉庫，請先到「倉庫管理」新增總倉' });
+  if (!db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(whId)) return res.status(400).json({ error: '倉庫不存在或已停用' });
+  const whHave = WH.warehouseQty(db, cur.id, whId);
   let delta, balance;
-  if (t.txn_type === 'in') { if (qty <= 0) return res.status(400).json({ error: '進貨數量需大於 0' }); delta = qty; balance = cur.stock + qty; }
+  if (t.txn_type === 'in') { if (qty <= 0) return res.status(400).json({ error: '進貨數量需大於 0' }); delta = qty; }
   else if (t.txn_type === 'out') {
     if (qty <= 0) return res.status(400).json({ error: '領用數量需大於 0' });
-    if (cur.stock < qty) return res.status(400).json({ error: `庫存不足（剩 ${cur.stock}）` });
-    delta = qty; balance = cur.stock - qty;
-  } else { if (qty < 0) return res.status(400).json({ error: '盤點數量不可為負' }); balance = qty; delta = qty; }
+    if (whHave < qty) return res.status(400).json({ error: `庫存不足（此倉剩 ${whHave}）` });
+    delta = qty;
+  } else { if (qty < 0) return res.status(400).json({ error: '盤點數量不可為負' }); delta = qty; }
   const tx = db.transaction(() => {
-    db.prepare('UPDATE supplies SET stock = ? WHERE id = ?').run(balance, cur.id);
-    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, area, expiry_date)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(cur.id, t.txn_type, delta, balance, t.reason || '', t.note || '', req.session.user.id,
+    balance = t.txn_type === 'adjust' ? WH.setWarehouseQty(db, cur.id, whId, qty)
+      : WH.addWarehouseQty(db, cur.id, whId, t.txn_type === 'in' ? qty : -qty);
+    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, area, expiry_date, warehouse_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, t.txn_type, delta, balance, t.reason || '', t.note || '', req.session.user.id,
       String(t.vendor || '').slice(0, 60), String(t.area || '').slice(0, 60),
-      /^\d{4}-\d{2}-\d{2}$/.test(t.expiry_date || '') ? t.expiry_date : '');
+      /^\d{4}-\d{2}-\d{2}$/.test(t.expiry_date || '') ? t.expiry_date : '', whId);
   });
   tx();
   res.json({ ok: true, stock: balance });
@@ -4946,6 +5006,10 @@ app.post('/api/supply-txns/out-batch', requireStaff, (req, res) => {
   if (!SUPPLY_PURPOSES.includes(b.purpose)) return res.status(400).json({ error: '請選擇領取用途' });
   const items = Array.isArray(b.items) ? b.items : [];
   if (!items.length) return res.status(400).json({ error: '請至少選擇一項備品' });
+  const fromWh = Number(b.warehouse_id) || 0;
+  if (fromWh && !db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(fromWh)) {
+    return res.status(400).json({ error: '倉庫不存在或已停用' });
+  }
   // 逐項檢查：品項存在、數量正確、庫存足夠、同品項不重複
   const seen = new Set();
   const rows = [];
@@ -4956,8 +5020,11 @@ app.post('/api/supply-txns/out-batch', requireStaff, (req, res) => {
     seen.add(cur.id);
     const qty = Math.round(Number(it.quantity));
     if (!(qty > 0)) return res.status(400).json({ error: `「${cur.name}」數量不正確` });
-    if (cur.stock < qty) return res.status(400).json({ error: `「${cur.name}」庫存不足（剩 ${cur.stock}）` });
-    rows.push({ cur, qty });
+    const whId = fromWh || WH.mainWarehouseOf(db, cur.id);
+    if (!whId) return res.status(400).json({ error: '尚未建立倉庫，請先到「倉庫管理」新增總倉' });
+    const have = WH.warehouseQty(db, cur.id, whId);
+    if (have < qty) return res.status(400).json({ error: `「${cur.name}」庫存不足（此倉剩 ${have}）` });
+    rows.push({ cur, qty, whId });
   }
   // 販售：每一品項須有商城同名商品，否則禁止領用
   let productOf = {};
@@ -4974,16 +5041,22 @@ app.post('/api/supply-txns/out-batch', requireStaff, (req, res) => {
   }
   const note = String(b.note || '').slice(0, 200);
   const tx = db.transaction(() => {
-    for (const { cur, qty } of rows) {
-      const balance = cur.stock - qty;
-      db.prepare('UPDATE supplies SET stock = ? WHERE id = ?').run(balance, cur.id);
-      db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, note, created_by, dept, purpose)
-        VALUES (?,?,?,?,?,?,?,?)`).run(cur.id, 'out', qty, balance, note, req.session.user.id, b.dept, b.purpose);
+    for (const { cur, qty, whId } of rows) {
       const p = productOf[cur.id];
-      if (p) db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?').run(qty, p.id); // 販售：匯入商城庫存
+      // 販售且商城商品已綁到某個倉：庫存不是領出去消耗掉，而是調撥到那個倉（商城庫存＝該倉庫存）
+      if (p && p.supply_id === cur.id && p.warehouse_id) {
+        if (p.warehouse_id === whId) throw new Error(`「${cur.name}」已經在商城的倉別，不需要領用`);
+        WH.addWarehouseQty(db, cur.id, whId, -qty);
+        WH.addWarehouseQty(db, cur.id, p.warehouse_id, qty);
+        continue;
+      }
+      const balance = WH.addWarehouseQty(db, cur.id, whId, -qty);
+      db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, note, created_by, dept, purpose, warehouse_id)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(cur.id, 'out', qty, balance, note, req.session.user.id, b.dept, b.purpose, whId);
+      if (p) db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?').run(qty, p.id); // 未綁倉的商城商品：沿用舊的匯入方式
     }
   });
-  tx();
+  try { tx(); } catch (e) { return res.status(400).json({ error: e.message }); }
   logAudit(req, { action: 'create', entity: 'supply_txns', summary: `領取出庫（${b.dept}／${b.purpose}）${rows.map(r => `${r.cur.name}×${r.qty}`).join('、')}` });
   res.json({ ok: true, count: rows.length });
 });
