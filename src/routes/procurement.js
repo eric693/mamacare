@@ -79,6 +79,138 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (isDate(q.to)) { cond.push(`${col} <= ?`); args.push(q.to); }
   }
 
+  // ---------- 採購主體（公司）----------
+  // 同一套系統替多家公司採購：請購單決定公司，採購單／請款單沿用，單據抬頭與部門別依公司列印
+  const companies = (all = false) => db.prepare(`SELECT * FROM proc_companies ${all ? '' : 'WHERE active = 1'}
+    ORDER BY is_default DESC, sort_order, id`).all();
+  const defaultCompanyId = () => (db.prepare('SELECT id FROM proc_companies WHERE active = 1 ORDER BY is_default DESC, sort_order, id LIMIT 1').get() || {}).id || null;
+  function companyId(v, fallback) {
+    const id = int(v);
+    if (!id) return fallback || defaultCompanyId();
+    if (!db.prepare('SELECT 1 FROM proc_companies WHERE id = ? AND active = 1').get(id)) throw httpErr('採購公司不存在或已停用');
+    return id;
+  }
+  const COMPANY_COLS = 'c.name AS company_name, c.request_dept AS company_request_dept, c.pay_dept AS company_pay_dept, c.tax_id AS company_tax_id';
+  const companyFilter = (cond, args, col, q) => { if (int(q.company_id)) { cond.push(`${col} = ?`); args.push(int(q.company_id)); } };
+
+  // ---------- 廠商價格表 ----------
+  // 每家廠商的供貨品項與未稅報價。來源：手動鍵入、比價報價、實際採購；比價沒選上的價格也留著供日後參考
+  function upsertVendorItem({ vendorId, supplyId, name, unit, price, source, note, userId, date }) {
+    if (!vendorId) return;
+    const nm = str(name, 100);
+    let row = supplyId
+      ? db.prepare('SELECT id FROM vendor_items WHERE vendor_id = ? AND supply_id = ?').get(vendorId, supplyId)
+      : db.prepare('SELECT id FROM vendor_items WHERE vendor_id = ? AND supply_id IS NULL AND item_name = ?').get(vendorId, nm);
+    if (!row && supplyId) {
+      // 先前只以品名記價（尚未建檔）→ 接上品項，不另開一筆
+      row = db.prepare('SELECT id FROM vendor_items WHERE vendor_id = ? AND supply_id IS NULL AND item_name = ?').get(vendorId, nm);
+      if (row) db.prepare('UPDATE vendor_items SET supply_id = ? WHERE id = ?').run(supplyId, row.id);
+    }
+    if (row) {
+      db.prepare(`UPDATE vendor_items SET item_name=?, unit=CASE WHEN ? != '' THEN ? ELSE unit END, unit_price=?, source=?,
+        note=CASE WHEN ? != '' THEN ? ELSE note END, price_date=?, updated_by=?, updated_at=datetime('now','localtime') WHERE id=?`)
+        .run(nm, str(unit, 20), str(unit, 20), Math.max(0, num(price)), source, str(note, 200), str(note, 200), date || today(), userId || null, row.id);
+    } else {
+      db.prepare(`INSERT INTO vendor_items (vendor_id, supply_id, item_name, unit, unit_price, source, note, price_date, updated_by)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(vendorId, supplyId || null, nm, str(unit, 20), Math.max(0, num(price)), source,
+        str(note, 200), date || today(), userId || null);
+    }
+    if (supplyId) db.prepare('INSERT OR IGNORE INTO supply_vendors (supply_id, vendor_id, is_default) VALUES (?,?,0)').run(supplyId, vendorId);
+  }
+  const vendorPrice = (vendorId, supplyId, name) => (supplyId
+    ? db.prepare('SELECT unit_price FROM vendor_items WHERE vendor_id = ? AND supply_id = ?').get(vendorId, supplyId)
+    : db.prepare('SELECT unit_price FROM vendor_items WHERE vendor_id = ? AND supply_id IS NULL AND item_name = ?').get(vendorId, name)) || null;
+  // 廠商表單送來的價格表：整份取代（畫面上看到的就是資料庫裡的）
+  function saveVendorItems(vendorId, list, userId) {
+    if (!Array.isArray(list)) return;
+    const seen = new Set();
+    const rows = [];
+    for (const it of list) {
+      const supplyId = int(it.supply_id) || null;
+      let name = str(it.item_name, 100), unit = str(it.unit, 20);
+      if (supplyId) {
+        const sp = db.prepare('SELECT name, unit FROM supplies WHERE id = ?').get(supplyId);
+        if (!sp) throw httpErr('價格表中的品項不存在');
+        name = sp.name; unit = unit || sp.unit;
+      }
+      if (!name) continue;
+      const key = supplyId ? `s${supplyId}` : `n${name}`;
+      if (seen.has(key)) throw httpErr(`價格表中「${name}」重複`);
+      seen.add(key);
+      if (num(it.unit_price) < 0) throw httpErr(`「${name}」價格不可為負`);
+      rows.push({ supplyId, name, unit, price: num(it.unit_price), note: str(it.note, 200),
+        source: ['manual', 'quote', 'purchase'].includes(it.source) ? it.source : 'manual',
+        date: isDate(it.price_date) ? it.price_date : today() });
+    }
+    db.prepare('DELETE FROM vendor_items WHERE vendor_id = ?').run(vendorId);
+    const ins = db.prepare(`INSERT INTO vendor_items (vendor_id, supply_id, item_name, unit, unit_price, source, note, price_date, updated_by)
+      VALUES (?,?,?,?,?,?,?,?,?)`);
+    for (const r of rows) {
+      ins.run(vendorId, r.supplyId, r.name, r.unit, r.price, r.source, r.note, r.date, userId);
+      if (r.supplyId) db.prepare('INSERT OR IGNORE INTO supply_vendors (supply_id, vendor_id, is_default) VALUES (?,?,0)').run(r.supplyId, vendorId);
+    }
+  }
+  const vendorItems = vendorId => db.prepare(`SELECT vi.*, s.code AS supply_code, u.name AS updated_name FROM vendor_items vi
+    LEFT JOIN supplies s ON s.id = vi.supply_id LEFT JOIN users u ON u.id = vi.updated_by
+    WHERE vi.vendor_id = ? ORDER BY vi.item_name`).all(vendorId);
+
+  // 查某品項（或品名）各廠商的價格：採購單比價時帶入參考價
+  router.get('/procurement/vendor-prices', requireStaff, (req, res) => {
+    const cond = [], args = [];
+    if (int(req.query.supply_id)) { cond.push('vi.supply_id = ?'); args.push(int(req.query.supply_id)); }
+    else if (str(req.query.item_name, 100)) { cond.push('vi.item_name = ?'); args.push(str(req.query.item_name, 100)); }
+    if (int(req.query.vendor_id)) { cond.push('vi.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
+    if (!cond.length) return res.json([]);
+    res.json(db.prepare(`SELECT vi.*, v.name AS vendor_name FROM vendor_items vi JOIN vendors v ON v.id = vi.vendor_id
+      WHERE ${cond.join(' AND ')} ORDER BY vi.unit_price, v.name`).all(...args));
+  });
+
+  // 採購主體維護（管理員）
+  router.get('/procurement/companies', requireStaff, (req, res) => res.json(companies(req.query.all === '1')));
+  function saveCompany(req, res, cur) {
+    if (req.session.user.role !== 'admin') return bad(res, '需要管理員權限', 403);
+    const b = req.body || {};
+    const f = {
+      name: str(b.name === undefined && cur ? cur.name : b.name, 100),
+      request_dept: str(b.request_dept === undefined && cur ? cur.request_dept : b.request_dept, 60),
+      pay_dept: str(b.pay_dept === undefined && cur ? cur.pay_dept : b.pay_dept, 60),
+      tax_id: str(b.tax_id === undefined && cur ? cur.tax_id : b.tax_id, 8),
+      address: str(b.address === undefined && cur ? cur.address : b.address, 200),
+      phone: str(b.phone === undefined && cur ? cur.phone : b.phone, 40),
+      sort_order: int(b.sort_order === undefined && cur ? cur.sort_order : b.sort_order),
+      active: b.active === undefined ? (cur ? cur.active : 1) : (b.active ? 1 : 0)
+    };
+    if (!f.name) return bad(res, '請填寫公司名稱（單據抬頭）');
+    if (f.tax_id && !/^\d{8}$/.test(f.tax_id)) return bad(res, '統一編號需為 8 碼數字');
+    const dup = db.prepare('SELECT id FROM proc_companies WHERE name = ? AND id != ?').get(f.name, cur ? cur.id : 0);
+    if (dup) return bad(res, '已有同名公司', 409);
+    const makeDefault = !!b.is_default;
+    if (cur && cur.is_default && !f.active) return bad(res, '預設公司不能停用，請先把其他公司設為預設');
+    let id;
+    db.transaction(() => {
+      if (cur) {
+        db.prepare(`UPDATE proc_companies SET name=@name, request_dept=@request_dept, pay_dept=@pay_dept, tax_id=@tax_id,
+          address=@address, phone=@phone, sort_order=@sort_order, active=@active WHERE id=@id`).run({ ...f, id: cur.id });
+        id = cur.id;
+      } else {
+        id = db.prepare(`INSERT INTO proc_companies (name, request_dept, pay_dept, tax_id, address, phone, sort_order, active)
+          VALUES (@name,@request_dept,@pay_dept,@tax_id,@address,@phone,@sort_order,@active)`).run(f).lastInsertRowid;
+      }
+      if (makeDefault) {
+        if (!f.active) throw httpErr('停用中的公司不能設為預設');
+        db.prepare('UPDATE proc_companies SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END').run(id);
+      }
+    })();
+    logAudit(req, { action: cur ? 'update' : 'create', entity: 'proc_companies', entity_id: id, summary: `採購公司 ${f.name}` });
+    res.json({ id });
+  }
+  router.post('/procurement/companies', requireStaff, (req, res) => run(res, () => saveCompany(req, res, null)));
+  router.put('/procurement/companies/:id', requireStaff, (req, res) => run(res, () => {
+    const cur = db.prepare('SELECT * FROM proc_companies WHERE id = ?').get(req.params.id);
+    if (!cur) throw httpErr('找不到公司', 404);
+    saveCompany(req, res, cur);
+  }));
+
   // ---------- 總覽 ----------
   router.get('/procurement/dashboard', requireStaff, (req, res) => {
     const low = db.prepare(`SELECT id, code, name, unit, stock, safety_stock, warehouse FROM supplies
@@ -104,7 +236,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       request_dept: s.proc_request_dept || '',
       pay_dept: s.proc_pay_dept || '',
       tax_rate: num(s.proc_tax_rate === undefined ? 5 : s.proc_tax_rate),
-      payment_terms: String(s.proc_payment_terms || '').split(',').map(x => x.trim()).filter(Boolean)
+      payment_terms: String(s.proc_payment_terms || '').split(',').map(x => x.trim()).filter(Boolean),
+      companies: companies(),
+      default_company_id: defaultCompanyId()
     };
   }
 
@@ -113,8 +247,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const cond = [], args = [];
     if (req.query.active !== 'all') cond.push('v.active = 1');
     const q = str(req.query.q, 60);
-    if (q) { cond.push('(v.name LIKE ? OR v.code LIKE ? OR v.contact LIKE ? OR v.tax_id LIKE ?)'); args.push(...Array(4).fill('%' + q + '%')); }
+    if (q) { cond.push('(v.name LIKE ? OR v.code LIKE ? OR v.contact LIKE ? OR v.tax_id LIKE ? OR EXISTS (SELECT 1 FROM vendor_items vi WHERE vi.vendor_id = v.id AND vi.item_name LIKE ?))'); args.push(...Array(5).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT v.*,
+        (SELECT COUNT(*) FROM vendor_items vi WHERE vi.vendor_id = v.id) AS item_count,
         (SELECT COUNT(*) FROM purchase_orders o WHERE o.vendor_id = v.id) AS po_count,
         (SELECT COALESCE(SUM(total_amount),0) FROM payment_requests p WHERE p.vendor_id = v.id AND p.status = 'unpaid') AS unpaid_amount
       FROM vendors v ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY v.active DESC, v.code, v.name`).all(...args));
@@ -127,7 +262,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       bank_account: str(b.bank_account, 30), bank_holder: str(b.bank_holder, 100), note: str(b.note, 500)
     };
   }
-  router.post('/procurement/vendors', requireStaff, need('purchasing_approve'), (req, res) => {
+  router.post('/procurement/vendors', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
     const f = vendorFields(req.body || {});
     if (!f.name) return bad(res, '請填寫廠商名稱');
     let code = str((req.body || {}).code, 20);
@@ -137,26 +272,33 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       while (db.prepare('SELECT 1 FROM vendors WHERE code = ?').get(code)) code = 'S' + String(parseInt(code.slice(1), 10) + 1).padStart(3, '0');
     }
     if (db.prepare('SELECT 1 FROM vendors WHERE code = ?').get(code)) return bad(res, '廠商編號已存在', 409);
-    const info = db.prepare(`INSERT INTO vendors (code, name, tax_id, payment_terms, address, contact, phone, email,
-      bank_name, bank_branch, bank_code, bank_account, bank_holder, note)
-      VALUES (@code,@name,@tax_id,@payment_terms,@address,@contact,@phone,@email,@bank_name,@bank_branch,@bank_code,@bank_account,@bank_holder,@note)`)
-      .run({ code, ...f });
-    logAudit(req, { action: 'create', entity: 'vendors', entity_id: info.lastInsertRowid, summary: `新增廠商 ${f.name}` });
-    res.json({ id: info.lastInsertRowid, code });
-  });
-  router.put('/procurement/vendors/:id', requireStaff, need('purchasing_approve'), (req, res) => {
+    let id;
+    db.transaction(() => {
+      id = db.prepare(`INSERT INTO vendors (code, name, tax_id, payment_terms, address, contact, phone, email,
+        bank_name, bank_branch, bank_code, bank_account, bank_holder, note)
+        VALUES (@code,@name,@tax_id,@payment_terms,@address,@contact,@phone,@email,@bank_name,@bank_branch,@bank_code,@bank_account,@bank_holder,@note)`)
+        .run({ code, ...f }).lastInsertRowid;
+      saveVendorItems(id, (req.body || {}).items, req.session.user.id);
+    })();
+    logAudit(req, { action: 'create', entity: 'vendors', entity_id: id, summary: `新增廠商 ${f.name}` });
+    res.json({ id, code });
+  }));
+  router.put('/procurement/vendors/:id', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
     const cur = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
-    if (!cur) return bad(res, '找不到廠商', 404);
+    if (!cur) throw httpErr('找不到廠商', 404);
     const b = req.body || {};
     const f = vendorFields({ ...cur, ...b });
-    if (!f.name) return bad(res, '請填寫廠商名稱');
-    db.prepare(`UPDATE vendors SET name=@name, tax_id=@tax_id, payment_terms=@payment_terms, address=@address, contact=@contact,
-      phone=@phone, email=@email, bank_name=@bank_name, bank_branch=@bank_branch, bank_code=@bank_code,
-      bank_account=@bank_account, bank_holder=@bank_holder, note=@note, active=@active WHERE id=@id`)
-      .run({ ...f, active: b.active === undefined ? cur.active : (b.active ? 1 : 0), id: cur.id });
+    if (!f.name) throw httpErr('請填寫廠商名稱');
+    db.transaction(() => {
+      db.prepare(`UPDATE vendors SET name=@name, tax_id=@tax_id, payment_terms=@payment_terms, address=@address, contact=@contact,
+        phone=@phone, email=@email, bank_name=@bank_name, bank_branch=@bank_branch, bank_code=@bank_code,
+        bank_account=@bank_account, bank_holder=@bank_holder, note=@note, active=@active WHERE id=@id`)
+        .run({ ...f, active: b.active === undefined ? cur.active : (b.active ? 1 : 0), id: cur.id });
+      if (b.items !== undefined) saveVendorItems(cur.id, b.items, req.session.user.id);
+    })();
     logAudit(req, { action: 'update', entity: 'vendors', entity_id: cur.id, summary: `修改廠商 ${f.name}` });
     res.json({ ok: true });
-  });
+  }));
   // 有交易紀錄的廠商只停用不刪除（請款與採購單要能追回廠商資料）
   router.delete('/procurement/vendors/:id', requireStaff, need('purchasing_approve'), (req, res) => {
     const cur = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
@@ -170,6 +312,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     }
     db.transaction(() => {
       db.prepare('DELETE FROM supply_vendors WHERE vendor_id = ?').run(cur.id);
+      db.prepare('DELETE FROM vendor_items WHERE vendor_id = ?').run(cur.id);
       db.prepare('DELETE FROM vendors WHERE id = ?').run(cur.id);
     })();
     logAudit(req, { action: 'delete', entity: 'vendors', entity_id: cur.id, summary: `刪除廠商 ${cur.name}` });
@@ -181,6 +324,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!v) return bad(res, '找不到廠商', 404);
     res.json({
       vendor: v,
+      price_list: vendorItems(v.id),
       items: db.prepare(`SELECT s.id, s.code, s.name, s.unit, sv.is_default FROM supply_vendors sv
         JOIN supplies s ON s.id = sv.supply_id WHERE sv.vendor_id = ? ORDER BY sv.is_default DESC, s.name`).all(v.id),
       purchased: db.prepare(`SELECT gi.item_name AS name, gi.unit, COUNT(DISTINCT g.id) AS times, SUM(gi.received_qty) AS total_qty,
@@ -274,6 +418,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!s) return bad(res, '找不到品項', 404);
     res.json({
       item: s, vendors: itemVendors(s.id),
+      vendor_prices: db.prepare(`SELECT vi.unit_price, vi.unit, vi.source, vi.price_date, v.name AS vendor_name
+        FROM vendor_items vi JOIN vendors v ON v.id = vi.vendor_id WHERE vi.supply_id = ? ORDER BY vi.unit_price`).all(s.id),
       orders: db.prepare(`SELECT o.id, o.no, o.po_date, o.status, v.name AS vendor_name, i.qty, i.unit_price
         FROM purchase_order_items i JOIN purchase_orders o ON o.id = i.po_id LEFT JOIN vendors v ON v.id = o.vendor_id
         WHERE i.supply_id = ? ORDER BY o.id DESC LIMIT 50`).all(s.id),
@@ -288,8 +434,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
 
   // ---------- 請購單 ----------
   function prDetail(id) {
-    const r = db.prepare(`SELECT r.*, u.name AS approved_name, uo.name AS ordered_name FROM purchase_requests r
-      LEFT JOIN users u ON u.id = r.approved_by LEFT JOIN users uo ON uo.id = r.ordered_by WHERE r.id = ?`).get(id);
+    const r = db.prepare(`SELECT r.*, u.name AS approved_name, uo.name AS ordered_name, ${COMPANY_COLS} FROM purchase_requests r
+      LEFT JOIN users u ON u.id = r.approved_by LEFT JOIN users uo ON uo.id = r.ordered_by
+      LEFT JOIN proc_companies c ON c.id = r.company_id WHERE r.id = ?`).get(id);
     if (!r) return null;
     r.items = db.prepare(`SELECT i.*, s.stock, s.safety_stock, s.code AS supply_code, v.name AS suggested_vendor_name
       FROM purchase_request_items i LEFT JOIN supplies s ON s.id = i.supply_id LEFT JOIN vendors v ON v.id = i.suggested_vendor_id
@@ -319,10 +466,12 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   router.get('/procurement/requests', requireStaff, (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'r.req_date', req.query);
+    companyFilter(cond, args, 'r.company_id', req.query);
     if (PR_STATUS.includes(req.query.status)) { cond.push('r.status = ?'); args.push(req.query.status); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(r.no LIKE ? OR r.requester LIKE ? OR r.purpose LIKE ? OR EXISTS (SELECT 1 FROM purchase_request_items i WHERE i.pr_id = r.id AND i.item_name LIKE ?))'); args.push(...Array(4).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT r.*, (SELECT name FROM users u WHERE u.id = r.approved_by) AS approved_name,
+        (SELECT name FROM proc_companies c WHERE c.id = r.company_id) AS company_name,
         (SELECT COUNT(*) FROM purchase_request_items i WHERE i.pr_id = r.id) AS item_count,
         (SELECT GROUP_CONCAT(no, '、') FROM purchase_orders o WHERE o.pr_id = r.id) AS po_nos
       FROM purchase_requests r ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY r.id DESC LIMIT 500`).all(...args));
@@ -340,9 +489,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     let id, no;
     db.transaction(() => {
       no = nextNo('purchase_requests', 'pr', reqDate);
-      id = db.prepare(`INSERT INTO purchase_requests (no, req_date, requester, urgent, purpose, budget, created_by)
-        VALUES (?,?,?,?,?,?,?)`).run(no, reqDate, requester, b.urgent ? 1 : 0, str(b.purpose, 500),
-        Math.max(0, int(b.budget)), req.session.user.id).lastInsertRowid;
+      id = db.prepare(`INSERT INTO purchase_requests (no, req_date, requester, urgent, purpose, budget, created_by, company_id)
+        VALUES (?,?,?,?,?,?,?,?)`).run(no, reqDate, requester, b.urgent ? 1 : 0, str(b.purpose, 500),
+        Math.max(0, int(b.budget)), req.session.user.id, companyId(b.company_id)).lastInsertRowid;
       const ins = db.prepare(`INSERT INTO purchase_request_items (pr_id, supply_id, item_name, unit, qty, need_date, suggested_vendor_id)
         VALUES (?,?,?,?,?,?,?)`);
       for (const it of items) ins.run(id, it.supply_id, it.item_name, it.unit, it.qty, it.need_date, it.suggested_vendor_id);
@@ -358,6 +507,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const b = req.body || {};
     const items = b.items === undefined ? null : normPrItems(b.items);
     db.transaction(() => {
+      db.prepare('UPDATE purchase_requests SET company_id=? WHERE id=?').run(companyId(b.company_id, cur.company_id), cur.id);
       db.prepare('UPDATE purchase_requests SET req_date=?, requester=?, urgent=?, purpose=?, budget=? WHERE id=?').run(
         isDate(b.req_date) ? b.req_date : cur.req_date,
         b.requester === undefined ? cur.requester : (str(b.requester, 50) || cur.requester),
@@ -417,18 +567,21 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         const no = nextNo('purchase_orders', 'po', today());
         // 預算：請購單只拆成一張時沿用請購預算，否則由採購人員於待審核時逐張填寫
         const budget = groups.size === 1 ? (pr.budget || 0) : 0;
-        const poId = db.prepare(`INSERT INTO purchase_orders (no, po_date, pr_id, vendor_id, eta, budget_amount, status, created_by)
-          VALUES (?,?,?,?,?,?,'draft',?)`).run(no, today(), pr.id, g.vendorId, g.eta, budget, req.session.user.id).lastInsertRowid;
+        const poId = db.prepare(`INSERT INTO purchase_orders (no, po_date, pr_id, vendor_id, eta, budget_amount, status, created_by, company_id)
+          VALUES (?,?,?,?,?,?,'draft',?,?)`).run(no, today(), pr.id, g.vendorId, g.eta, budget, req.session.user.id,
+          pr.company_id || defaultCompanyId()).lastInsertRowid;
         const ins = db.prepare(`INSERT INTO purchase_order_items (po_id, pr_item_id, supply_id, item_name, unit, qty, unit_price, is_new)
           VALUES (?,?,?,?,?,?,?,?)`);
         for (const it of g.items) {
-          // 參考單價：品項主檔的單價，採購時可再改
-          const price = it.supply_id ? (db.prepare('SELECT price FROM supplies WHERE id = ?').get(it.supply_id) || {}).price || 0 : 0;
+          // 參考單價：該廠商價格表 → 品項主檔單價；採購時可再改
+          const vp = vendorPrice(g.vendorId, it.supply_id, it.item_name);
+          const price = vp ? vp.unit_price
+            : it.supply_id ? (db.prepare('SELECT price FROM supplies WHERE id = ?').get(it.supply_id) || {}).price || 0 : 0;
           const poItemId = ins.run(poId, it.id, it.supply_id, it.item_name, it.unit, it.qty, price, it.supply_id ? 0 : 1).lastInsertRowid;
           // 新品項：指定的廠商先列為第一筆（預計採購）報價，其他比價廠商在採購單補上
           if (!it.supply_id) {
-            db.prepare('INSERT INTO po_item_quotes (po_item_id, vendor_id, unit_price, is_selected, created_by) VALUES (?,?,0,1,?)')
-              .run(poItemId, g.vendorId, req.session.user.id);
+            db.prepare('INSERT INTO po_item_quotes (po_item_id, vendor_id, unit_price, is_selected, created_by) VALUES (?,?,?,1,?)')
+              .run(poItemId, g.vendorId, price, req.session.user.id);
           }
         }
         created.push({ id: poId, no });
@@ -449,9 +602,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
 
   function poDetail(id) {
     const o = db.prepare(`SELECT o.*, v.name AS vendor_name, v.tax_id AS vendor_tax_id, v.payment_terms AS vendor_terms,
-        r.no AS pr_no, r.requester, r.purpose AS pr_purpose, r.budget AS pr_budget, ua.name AS approved_name
+        r.no AS pr_no, r.requester, r.purpose AS pr_purpose, r.budget AS pr_budget, ua.name AS approved_name, ${COMPANY_COLS}
       FROM purchase_orders o LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN purchase_requests r ON r.id = o.pr_id
-      LEFT JOIN users ua ON ua.id = o.approved_by WHERE o.id = ?`).get(id);
+      LEFT JOIN users ua ON ua.id = o.approved_by LEFT JOIN proc_companies c ON c.id = o.company_id WHERE o.id = ?`).get(id);
     if (!o) return null;
     o.items = db.prepare(`SELECT i.*, s.stock, s.code AS supply_code,
         COALESCE((SELECT SUM(gi.received_qty) FROM goods_receipt_items gi WHERE gi.po_item_id = i.id), 0) AS received_qty
@@ -519,6 +672,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   router.get('/procurement/orders', requireStaff, (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'o.po_date', req.query);
+    companyFilter(cond, args, 'o.company_id', req.query);
     const st = String(req.query.status || '');
     if (st === 'receivable') cond.push("o.status IN ('pending','partial')");
     else if (PO_STATUS.includes(st)) { cond.push('o.status = ?'); args.push(st); }
@@ -526,6 +680,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const q = str(req.query.q, 60);
     if (q) { cond.push('(o.no LIKE ? OR r.no LIKE ? OR v.name LIKE ? OR EXISTS (SELECT 1 FROM purchase_order_items i WHERE i.po_id = o.id AND i.item_name LIKE ?))'); args.push(...Array(4).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT o.*, v.name AS vendor_name, r.no AS pr_no,
+        (SELECT name FROM proc_companies c WHERE c.id = o.company_id) AS company_name,
         (SELECT COUNT(*) FROM purchase_order_items i WHERE i.po_id = o.id) AS item_count,
         (SELECT COALESCE(SUM(qty * unit_price),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS total,
         (SELECT COALESCE(SUM(qty),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS qty_total,
@@ -578,6 +733,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
             seen.add(vid);
             const qp = Math.max(0, num(q.unit_price));
             insQ.run(cur.id, vid, qp, str(q.note, 200), q.selected ? 1 : 0, req.session.user.id);
+            if (qp > 0) upsertVendorItem({ vendorId: vid, supplyId: cur.supply_id, name: cur.item_name, unit: cur.unit,
+              price: qp, source: 'quote', note: str(q.note, 200) || `比價 ${o.no}`, userId: req.session.user.id });
             if (q.selected) {
               if (selected) throw httpErr(`「${cur.item_name}」只能勾選一家預計採購廠商`);
               selected = { vid, qp };
@@ -721,6 +878,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
             newCount++;
           }
           db.prepare('UPDATE purchase_order_items SET supply_id = ?, unit = ? WHERE id = ?').run(supplyId, unit, it.id);
+          // 各廠商以品名記的價格一併接上新品項（已有該品項價格的廠商不重複）
+          db.prepare(`UPDATE vendor_items SET supply_id = ? WHERE supply_id IS NULL AND item_name = ?
+            AND vendor_id NOT IN (SELECT vendor_id FROM vendor_items WHERE supply_id = ?)`).run(supplyId, it.item_name, supplyId);
           db.prepare('INSERT OR IGNORE INTO supply_vendors (supply_id, vendor_id, is_default) VALUES (?,?,1)').run(supplyId, o.vendor_id);
           // 比價過的其他廠商也掛為供應廠商（非預設），之後請購可選
           for (const q of it.quotes) {
@@ -728,6 +888,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
           }
         }
         insGi.run(grId, it.id, supplyId, it.item_name, unit, it.qty, qty, price);
+        if (price > 0) upsertVendorItem({ vendorId: o.vendor_id, supplyId, name: it.item_name, unit, price, source: 'purchase',
+          note: `採購 ${o.no}`, userId: req.session.user.id, date: receiveDate });
         stockMove(supplyId, 'in', qty, req.session.user.id, {
           vendor: o.vendor_name,
           reason: `驗貨入庫 ${grNo}`,
@@ -743,16 +905,18 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       const tax = Math.round(subtotal * s.tax_rate / 100);
       payNo = nextNo('payment_requests', 'pay', today());
       payId = db.prepare(`INSERT INTO payment_requests (no, req_date, gr_id, po_id, vendor_id, invoice_no, invoice_date,
-          subtotal, tax_rate, tax_amount, total_amount, pay_due_date, pay_method)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(payNo, today(), grId, o.id, o.vendor_id, str(b.invoice_no, 30), receiveDate,
-        subtotal, s.tax_rate, tax, subtotal + tax, addDays(receiveDate, termDays(vendor.payment_terms)), '銀行轉帳').lastInsertRowid;
+          subtotal, tax_rate, tax_amount, total_amount, pay_due_date, pay_method, company_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(payNo, today(), grId, o.id, o.vendor_id, str(b.invoice_no, 30), receiveDate,
+        subtotal, s.tax_rate, tax, subtotal + tax, addDays(receiveDate, termDays(vendor.payment_terms)), '銀行轉帳',
+        o.company_id || defaultCompanyId()).lastInsertRowid;
       const insPi = db.prepare('INSERT INTO payment_request_items (pay_id, item_name, unit, qty, unit_price, amount, gr_id, po_id) VALUES (?,?,?,?,?,?,?,?)');
       for (const l of payLines) insPi.run(payId, l.name, l.unit, l.qty, l.price, Math.round(l.qty * l.price), grId, o.id);
     })();
+    const payCompany = (db.prepare('SELECT company_id FROM payment_requests WHERE id = ?').get(payId) || {}).company_id;
     const mergeWith = db.prepare(`SELECT id, no, total_amount FROM payment_requests WHERE vendor_id = ? AND id != ?
-      AND status = 'unpaid' AND substr(req_date,1,7) = substr(?,1,7) ORDER BY id`).all(o.vendor_id, payId, today());
+      AND status = 'unpaid' AND substr(req_date,1,7) = substr(?,1,7) AND company_id IS ? ORDER BY id`).all(o.vendor_id, payId, today(), payCompany);
     const monthPaid = db.prepare(`SELECT COUNT(*) c FROM payment_requests WHERE vendor_id = ? AND status = 'paid'
-      AND substr(req_date,1,7) = substr(?,1,7)`).get(o.vendor_id, today()).c;
+      AND substr(req_date,1,7) = substr(?,1,7) AND company_id IS ?`).get(o.vendor_id, today(), payCompany).c;
     logAudit(req, { action: 'create', entity: 'goods_receipts', entity_id: grId,
       summary: `驗貨入庫 ${grNo}（採購單 ${o.no} 第 ${batchNo} 批${allDone ? '，已到齊' : '，尚有未到貨'}），產生請款單 ${payNo}` });
     res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, payment_id: payId, payment_no: payNo, new_items: newCount,
@@ -763,9 +927,10 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   function payDetail(id) {
     const p = db.prepare(`SELECT p.*, v.name AS vendor_name, v.code AS vendor_code, v.tax_id AS vendor_tax_id, v.payment_terms AS vendor_terms,
         v.bank_name, v.bank_branch, v.bank_code, v.bank_account, v.bank_holder,
-        g.no AS gr_no, o.no AS po_no, u.name AS paid_name
+        g.no AS gr_no, o.no AS po_no, u.name AS paid_name, ${COMPANY_COLS}
       FROM payment_requests p LEFT JOIN vendors v ON v.id = p.vendor_id LEFT JOIN goods_receipts g ON g.id = p.gr_id
-      LEFT JOIN purchase_orders o ON o.id = p.po_id LEFT JOIN users u ON u.id = p.paid_by WHERE p.id = ?`).get(id);
+      LEFT JOIN purchase_orders o ON o.id = p.po_id LEFT JOIN users u ON u.id = p.paid_by
+      LEFT JOIN proc_companies c ON c.id = p.company_id WHERE p.id = ?`).get(id);
     if (!p) return null;
     p.items = db.prepare(`SELECT pi.*, g.no AS gr_no, o.no AS po_no FROM payment_request_items pi
       LEFT JOIN goods_receipts g ON g.id = pi.gr_id LEFT JOIN purchase_orders o ON o.id = pi.po_id
@@ -811,8 +976,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   // 同廠商同月（依請款日）其他有效請款單：公司規定一家廠商一個月只開一張，用來提醒合併
   function sameMonth(p) {
     return db.prepare(`SELECT id, no, status, total_amount, req_date FROM payment_requests
-      WHERE vendor_id = ? AND substr(req_date,1,7) = ? AND id != ? AND status != 'cancelled' ORDER BY id`)
-      .all(p.vendor_id, String(p.req_date).slice(0, 7), p.id);
+      WHERE vendor_id = ? AND substr(req_date,1,7) = ? AND id != ? AND status != 'cancelled' AND company_id IS ? ORDER BY id`)
+      .all(p.vendor_id, String(p.req_date).slice(0, 7), p.id, p.company_id);
   }
   function recomputePayment(payId) {
     const p = db.prepare('SELECT tax_rate FROM payment_requests WHERE id = ?').get(payId);
@@ -824,18 +989,20 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const cond = [], args = [];
     const col = req.query.date_field === 'due' ? 'p.pay_due_date' : 'p.req_date';
     dateRange(cond, args, col, req.query);
+    companyFilter(cond, args, 'p.company_id', req.query);
     if (['unpaid', 'paid', 'cancelled'].includes(req.query.status)) { cond.push('p.status = ?'); args.push(req.query.status); }
     if (req.query.vendor_id) { cond.push('p.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(p.no LIKE ? OR p.invoice_no LIKE ? OR v.name LIKE ?)'); args.push(...Array(3).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT p.*, v.name AS vendor_name, g.no AS gr_no, o.no AS po_no,
         (SELECT no FROM payment_requests m WHERE m.id = p.merged_into) AS merged_into_no,
+        (SELECT name FROM proc_companies c WHERE c.id = p.company_id) AS company_name,
         (SELECT GROUP_CONCAT(DISTINCT g2.no) FROM payment_request_items pi JOIN goods_receipts g2 ON g2.id = pi.gr_id WHERE pi.pay_id = p.id) AS gr_nos,
         (SELECT GROUP_CONCAT(DISTINCT o2.no) FROM payment_request_items pi JOIN purchase_orders o2 ON o2.id = pi.po_id WHERE pi.pay_id = p.id) AS po_nos,
         (SELECT COUNT(*) FROM payment_requests x WHERE x.vendor_id = p.vendor_id AND substr(x.req_date,1,7) = substr(p.req_date,1,7)
-          AND x.status != 'cancelled') AS month_count,
+          AND x.company_id IS p.company_id AND x.status != 'cancelled') AS month_count,
         (SELECT COUNT(*) FROM payment_requests x WHERE x.vendor_id = p.vendor_id AND substr(x.req_date,1,7) = substr(p.req_date,1,7)
-          AND x.status = 'unpaid') AS month_unpaid
+          AND x.company_id IS p.company_id AND x.status = 'unpaid') AS month_unpaid
       FROM payment_requests p LEFT JOIN vendors v ON v.id = p.vendor_id LEFT JOIN goods_receipts g ON g.id = p.gr_id
       LEFT JOIN purchase_orders o ON o.id = p.po_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY p.id DESC LIMIT 500`).all(...args));
@@ -891,6 +1058,15 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         .run(req.session.user.id, new Date().toLocaleString('sv-SE').slice(0, 19), paidOn, p.id);
     })();
     const after = payDetail(p.id);
+    // 實際付款單價即最終成交價，寫回廠商價格表
+    db.transaction(() => {
+      for (const it of after.items) {
+        if (!(it.unit_price > 0)) continue;
+        const gi = it.gr_id ? db.prepare('SELECT supply_id FROM goods_receipt_items WHERE gr_id = ? AND item_name = ? LIMIT 1').get(it.gr_id, it.item_name) : null;
+        upsertVendorItem({ vendorId: after.vendor_id, supplyId: gi ? gi.supply_id : null, name: it.item_name, unit: it.unit,
+          price: it.unit_price, source: 'purchase', note: `請款 ${after.no}`, userId: req.session.user.id, date: paidOn });
+      }
+    })();
     logAudit(req, { action: 'update', entity: 'payment_requests', entity_id: p.id, summary: `請款單 ${p.no} 付款完成 ${after.total_amount}` });
     res.json(after);
   }));
@@ -906,6 +1082,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       const x = db.prepare('SELECT * FROM payment_requests WHERE id = ?').get(id);
       if (!x) throw httpErr('找不到要合併的請款單');
       if (x.vendor_id !== target.vendor_id) throw httpErr(`${x.no} 不是同一家廠商`);
+      if (x.company_id !== target.company_id) throw httpErr(`${x.no} 屬於不同的採購公司，不能合併`);
       if (String(x.req_date).slice(0, 7) !== month) throw httpErr(`${x.no} 不是同一個月份`);
       if (x.status !== 'unpaid') throw httpErr(`${x.no} 已付款或已取消，不能合併（已付款者請先由管理員改回待付款）`);
       return x;
@@ -940,7 +1117,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
 
   // ---------- 出貨／領料 ----------
   function shipDetail(id) {
-    const s = db.prepare(`SELECT sh.*, u.name AS shipped_name FROM shipments sh LEFT JOIN users u ON u.id = sh.shipped_by WHERE sh.id = ?`).get(id);
+    const s = db.prepare(`SELECT sh.*, u.name AS shipped_name, ${COMPANY_COLS} FROM shipments sh LEFT JOIN users u ON u.id = sh.shipped_by
+      LEFT JOIN proc_companies c ON c.id = sh.company_id WHERE sh.id = ?`).get(id);
     if (!s) return null;
     s.items = db.prepare(`SELECT i.*, sp.stock, sp.code AS supply_code FROM shipment_items i
       LEFT JOIN supplies sp ON sp.id = i.supply_id WHERE i.shipment_id = ? ORDER BY i.id`).all(id);
@@ -967,10 +1145,12 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   router.get('/procurement/shipments', requireStaff, (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'sh.ship_date', req.query);
+    companyFilter(cond, args, 'sh.company_id', req.query);
     if (['pending', 'shipped', 'cancelled'].includes(req.query.status)) { cond.push('sh.status = ?'); args.push(req.query.status); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(sh.no LIKE ? OR sh.recipient LIKE ? OR EXISTS (SELECT 1 FROM shipment_items i WHERE i.shipment_id = sh.id AND i.item_name LIKE ?))'); args.push(...Array(3).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT sh.*, pk.no AS pick_no, pk.status AS pick_status,
+        (SELECT name FROM proc_companies c WHERE c.id = sh.company_id) AS company_name,
         (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id = sh.id) AS item_count
       FROM shipments sh LEFT JOIN pick_lists pk ON pk.shipment_id = sh.id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY sh.id DESC LIMIT 500`).all(...args));
@@ -989,8 +1169,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     let id, no, pickNo;
     db.transaction(() => {
       no = nextNo('shipments', 'ship', shipDate);
-      id = db.prepare('INSERT INTO shipments (no, ship_date, recipient, note, created_by) VALUES (?,?,?,?,?)')
-        .run(no, shipDate, recipient, str(b.note, 500), req.session.user.id).lastInsertRowid;
+      id = db.prepare('INSERT INTO shipments (no, ship_date, recipient, note, created_by, company_id) VALUES (?,?,?,?,?,?)')
+        .run(no, shipDate, recipient, str(b.note, 500), req.session.user.id, companyId(b.company_id)).lastInsertRowid;
       const ins = db.prepare('INSERT INTO shipment_items (shipment_id, supply_id, item_name, unit, qty) VALUES (?,?,?,?,?)');
       for (const it of items) ins.run(id, it.supply_id, it.item_name, it.unit, it.qty);
       pickNo = nextNo('pick_lists', 'pick', shipDate);
@@ -1008,6 +1188,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const recipient = b.recipient === undefined ? cur.recipient : str(b.recipient, 60);
     if (!recipient) throw httpErr('請填寫客戶／部門');
     db.transaction(() => {
+      db.prepare('UPDATE shipments SET company_id=? WHERE id=?').run(companyId(b.company_id, cur.company_id), cur.id);
       db.prepare('UPDATE shipments SET ship_date=?, recipient=?, note=? WHERE id=?').run(
         isDate(b.ship_date) ? b.ship_date : cur.ship_date, recipient, b.note === undefined ? cur.note : str(b.note, 500), cur.id);
       db.prepare('UPDATE pick_lists SET recipient=?, pick_date=? WHERE shipment_id=?').run(recipient, isDate(b.ship_date) ? b.ship_date : cur.ship_date, cur.id);
@@ -1054,7 +1235,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (['pending', 'picked', 'cancelled'].includes(req.query.status)) { cond.push('pk.status = ?'); args.push(req.query.status); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(pk.no LIKE ? OR sh.no LIKE ? OR pk.recipient LIKE ?)'); args.push(...Array(3).fill('%' + q + '%')); }
-    res.json(db.prepare(`SELECT pk.*, sh.no AS ship_no, (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id = sh.id) AS item_count
+    res.json(db.prepare(`SELECT pk.*, sh.no AS ship_no, (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id = sh.id) AS item_count,
+        (SELECT name FROM proc_companies c WHERE c.id = sh.company_id) AS company_name
       FROM pick_lists pk JOIN shipments sh ON sh.id = pk.shipment_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY pk.id DESC LIMIT 500`).all(...args));
   });
@@ -1313,6 +1495,49 @@ function ensureSchema(db) {
     db.exec(`UPDATE goods_receipts SET batch_no = (SELECT COUNT(*) FROM goods_receipts g2
       WHERE g2.po_id = goods_receipts.po_id AND g2.id <= goods_receipts.id)`);
   }
+  // 廠商價格表（供貨品項與未稅價；比價沒選上的價格也保留）
+  db.exec(`CREATE TABLE IF NOT EXISTS vendor_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+      supply_id INTEGER REFERENCES supplies(id),
+      item_name TEXT NOT NULL,
+      unit TEXT DEFAULT '',
+      unit_price REAL NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','quote','purchase')),
+      note TEXT DEFAULT '',
+      price_date TEXT DEFAULT '',
+      updated_by INTEGER REFERENCES users(id),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_vendor_items_vendor ON vendor_items(vendor_id);
+    CREATE INDEX IF NOT EXISTS idx_vendor_items_supply ON vendor_items(supply_id);`);
+  // 採購主體（多家公司）：既有單據全部掛到由目前機構設定建立的預設公司
+  db.exec(`CREATE TABLE IF NOT EXISTS proc_companies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      request_dept TEXT DEFAULT '',
+      pay_dept TEXT DEFAULT '',
+      tax_id TEXT DEFAULT '',
+      address TEXT DEFAULT '',
+      phone TEXT DEFAULT '',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    )`);
+  if (!db.prepare('SELECT 1 FROM proc_companies LIMIT 1').get()) {
+    const st = Object.fromEntries(db.prepare('SELECT key, value FROM settings').all().map(r => [r.key, r.value]));
+    db.prepare('INSERT INTO proc_companies (name, request_dept, pay_dept, is_default) VALUES (?,?,?,1)')
+      .run(st.center_name || '本機構', st.proc_request_dept || '', st.proc_pay_dept || '');
+  }
+  const defCo = db.prepare('SELECT id FROM proc_companies ORDER BY is_default DESC, id LIMIT 1').get().id;
+  for (const t of ['purchase_requests', 'purchase_orders', 'payment_requests', 'shipments']) {
+    const cs = db.prepare(`PRAGMA table_info(${t})`).all().map(c => c.name);
+    if (!cs.includes('company_id')) {
+      db.exec(`ALTER TABLE ${t} ADD COLUMN company_id INTEGER REFERENCES proc_companies(id)`);
+      db.prepare(`UPDATE ${t} SET company_id = ?`).run(defCo);
+    }
+  }
   // 合併請款：明細記住來源入庫單／採購單；被合併的請款單記合併去向
   const piCols = db.prepare('PRAGMA table_info(payment_request_items)').all().map(c => c.name);
   if (!piCols.includes('gr_id')) {
@@ -1324,6 +1549,23 @@ function ensureSchema(db) {
   }
   const payCols = db.prepare('PRAGMA table_info(payment_requests)').all().map(c => c.name);
   if (!payCols.includes('merged_into')) db.exec('ALTER TABLE payment_requests ADD COLUMN merged_into INTEGER REFERENCES payment_requests(id)');
+  // 既有的實際採購價先帶進廠商價格表（只在價格表還是空的時候做一次）
+  if (!db.prepare('SELECT 1 FROM vendor_items LIMIT 1').get()) {
+    db.exec(`INSERT INTO vendor_items (vendor_id, supply_id, item_name, unit, unit_price, source, note, price_date)
+      SELECT o.vendor_id, gi.supply_id, gi.item_name, gi.unit,
+        COALESCE((SELECT pi.unit_price FROM payment_request_items pi JOIN payment_requests p ON p.id = pi.pay_id
+          WHERE pi.gr_id = gi.gr_id AND pi.item_name = gi.item_name AND p.status = 'paid' AND pi.unit_price > 0 ORDER BY pi.id DESC LIMIT 1), gi.unit_price),
+        'purchase', '採購 ' || o.no, g.receive_date
+      FROM goods_receipt_items gi JOIN goods_receipts g ON g.id = gi.gr_id JOIN purchase_orders o ON o.id = g.po_id
+      WHERE gi.unit_price > 0 AND gi.id IN (SELECT MAX(gi2.id) FROM goods_receipt_items gi2 JOIN goods_receipts g2 ON g2.id = gi2.gr_id
+        JOIN purchase_orders o2 ON o2.id = g2.po_id GROUP BY o2.vendor_id, COALESCE(gi2.supply_id, gi2.item_name))`);
+    db.exec(`INSERT INTO vendor_items (vendor_id, supply_id, item_name, unit, unit_price, source, note, price_date)
+      SELECT q.vendor_id, i.supply_id, i.item_name, i.unit, q.unit_price, 'quote', '比價 ' || o.no, substr(q.created_at,1,10)
+      FROM po_item_quotes q JOIN purchase_order_items i ON i.id = q.po_item_id JOIN purchase_orders o ON o.id = i.po_id
+      WHERE q.unit_price > 0 AND NOT EXISTS (SELECT 1 FROM vendor_items vi WHERE vi.vendor_id = q.vendor_id
+        AND COALESCE(vi.supply_id, vi.item_name) = COALESCE(i.supply_id, i.item_name))
+      GROUP BY q.vendor_id, COALESCE(i.supply_id, i.item_name)`);
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_item ON po_item_quotes(po_item_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_vendor ON po_item_quotes(vendor_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_gr_po ON goods_receipts(po_id)');

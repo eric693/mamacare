@@ -71,6 +71,36 @@ test('廠商管理：新增（自動編號）→ 修改 → 列表', async () =>
   assert.strictEqual(list[0].phone, '02-2234-5678');
 });
 
+let coB;
+test('多家公司：預設公司由機構設定建立，可新增、設預設；不能停用預設公司', async () => {
+  const list = await ok('GET', '/api/procurement/companies');
+  assert.strictEqual(list.length, 1);
+  assert.strictEqual(list[0].is_default, 1);
+  coB = (await ok('POST', '/api/procurement/companies', { name: '嘉禾二館股份有限公司', request_dept: '二館行政部', pay_dept: '二館', tax_id: '87654321' })).id;
+  assert.strictEqual((await req('POST', '/api/procurement/companies', { name: '嘉禾二館股份有限公司' })).status, 409);
+  assert.strictEqual((await req('POST', '/api/procurement/companies', { name: 'x', tax_id: '12' })).status, 400);
+  assert.strictEqual((await req('PUT', `/api/procurement/companies/${list[0].id}`, { active: 0 })).status, 400);
+  await ok('PUT', `/api/procurement/companies/${coB}`, { is_default: true });
+  assert.strictEqual((await ok('GET', '/api/procurement/companies'))[0].id, coB);
+  await ok('PUT', `/api/procurement/companies/${list[0].id}`, { is_default: true });   // 還原
+  assert.strictEqual((await ok('GET', '/api/procurement/dashboard')).settings.companies.length, 2);
+});
+
+test('廠商價格表：可鍵入供貨品項、未稅價與單位（含尚未建檔的品項），整份儲存', async () => {
+  await ok('PUT', `/api/procurement/vendors/${vendorB}`, { items: [
+    { item_name: '拋棄式手套', unit: '盒', unit_price: 150, note: '每箱 10 盒' },
+    { item_name: '酒精棉片', unit: '盒', unit_price: 85 }
+  ] });
+  const d = await ok('GET', `/api/procurement/vendors/${vendorB}`);
+  assert.deepStrictEqual(d.price_list.map(i => [i.item_name, i.unit, i.unit_price, i.source]).sort(),
+    [['拋棄式手套', '盒', 150, 'manual'], ['酒精棉片', '盒', 85, 'manual']].sort());
+  assert.strictEqual((await req('PUT', `/api/procurement/vendors/${vendorB}`, { items: [{ item_name: 'a', unit_price: 1 }, { item_name: 'a', unit_price: 2 }] })).status, 400);
+  // 可用品名搜尋廠商
+  assert.ok((await ok('GET', '/api/procurement/vendors?q=' + encodeURIComponent('拋棄式'))).some(v => v.id === vendorB));
+  const prices = await ok('GET', '/api/procurement/vendor-prices?item_name=' + encodeURIComponent('酒精棉片'));
+  assert.deepStrictEqual(prices.map(p => [p.vendor_id, p.unit_price]), [[vendorB, 85]]);
+});
+
 test('品項管理：建立品項（期初庫存寫入備品進出紀錄）並指定預設廠商', async () => {
   paper = (await ok('POST', '/api/procurement/items', {
     code: 'P001', name: 'A4影印紙', unit: '包', safety_stock: 10, price: 120, warehouse: 'A倉', initial_stock: 3,
@@ -163,6 +193,7 @@ test('新品項比價：至少兩家報價、勾選一家；新廠商與報價�
   assert.strictEqual(item.needs_quotes, true);
   assert.strictEqual(item.quotes.length, 1);                 // 建單時指定的廠商先列為預計採購
   assert.strictEqual(item.quotes[0].vendor_id, vendorB);
+  assert.strictEqual(item.unit_price, 85);                   // 建單時帶入廠商價格表的價格
   // 只有一家報價 → 不能審核
   await ok('PUT', `/api/procurement/orders/${po2.id}`, { budget_amount: 500 });
   const one = await req('POST', `/api/procurement/orders/${po2.id}/approve`, {});
@@ -182,6 +213,9 @@ test('新品項比價：至少兩家報價、勾選一家；新廠商與報價�
   assert.strictEqual(vendors.length, 1);
   assert.strictEqual(vendors[0].phone, '02-1111-2222');
   quoteVendorId = vendors[0].id;
+  // 比價報價（含沒選上的）自動寫進廠商價格表
+  const qv = await ok('GET', `/api/procurement/vendors/${quoteVendorId}`);
+  assert.ok(qv.price_list.some(i => i.item_name === '酒精棉片' && i.unit_price === 95 && i.source === 'quote'));
   const vd = await ok('GET', `/api/procurement/vendors/${quoteVendorId}`);
   assert.ok(vd.quotes.some(q => q.unit_price === 95 && q.item_name === '酒精棉片' && q.note === '含運'));
   // 同名再報價不會重複建廠商
@@ -277,6 +311,10 @@ test('新品項分批：第一批到貨建檔、比價廠商都掛上供應廠�
   assert.strictEqual((await req('POST', '/api/procurement/receipts', { po_id: po2.id, inspector: 'x' })).status, 400);
   const hist = await ok('GET', `/api/procurement/items/${rows[0].id}/history`);
   assert.ok(hist.quotes.length >= 2);
+  // 到貨後廠商價格表記下實際採購價（取代手動價、來源改為採購）
+  const pb = (await ok('GET', `/api/procurement/vendors/${vendorB}`)).price_list.find(i => i.item_name === '酒精棉片');
+  assert.strictEqual(pb.unit_price, 80);
+  assert.strictEqual(pb.source, 'purchase');
 });
 
 test('合併請款：同廠商同月的待付款請款單可合併，支付憑單帶出請採驗流程', async () => {
@@ -323,9 +361,38 @@ test('請款單：改金額（手動含稅總額覆蓋）→ 付款 → 付款�
   assert.strictEqual((await req('PUT', `/api/procurement/payments/${payId}`, { remark: 'x' })).status, 400);
   const v = await ok('GET', `/api/procurement/vendors/${vendorA}`);
   assert.strictEqual(v.payables.paid, 2100);
+  // 付款單價（議價後 100）寫回廠商價格表
+  const pv = v.price_list.find(i => i.supply_id === paper);
+  assert.strictEqual(pv.unit_price, 100);
+  assert.strictEqual(pv.source, 'purchase');
   assert.ok(v.purchased.some(p => p.name === 'A4影印紙' && p.total_qty === 20 && p.times === 2));
   await ok('POST', `/api/procurement/payments/${payId}/unpay`, {});
   assert.strictEqual((await ok('GET', `/api/procurement/payments/${payId}`)).status, 'unpaid');
+});
+
+test('多家公司：請購指定公司，採購單與請款單沿用；不同公司的請款單不能合併，列表可依公司篩選', async () => {
+  const r = await ok('POST', '/api/procurement/requests', { requester: '二館', company_id: coB, items: [{ supply_id: paper, qty: 2 }] });
+  const pr = await ok('GET', `/api/procurement/requests/${r.id}`);
+  assert.strictEqual(pr.company_name, '嘉禾二館股份有限公司');
+  assert.strictEqual(pr.company_request_dept, '二館行政部');
+  await ok('POST', `/api/procurement/requests/${r.id}/approve`, {});
+  const od = await ok('POST', `/api/procurement/requests/${r.id}/order`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorA }] });
+  const poId = od.orders[0].id;
+  await ok('PUT', `/api/procurement/orders/${poId}`, { budget_amount: 500 });
+  await ok('POST', `/api/procurement/orders/${poId}/approve`, {});
+  const po = await ok('GET', `/api/procurement/orders/${poId}`);
+  assert.strictEqual(po.company_id, coB);
+  assert.strictEqual(po.company_pay_dept, '二館');
+  const gr = await ok('POST', '/api/procurement/receipts', { po_id: poId, inspector: '二館' });
+  // 同廠商同月，但公司不同 → 不列為合併對象
+  assert.deepStrictEqual(gr.merge_candidates, []);
+  const pay = await ok('GET', `/api/procurement/payments/${gr.payment_id}`);
+  assert.strictEqual(pay.company_name, '嘉禾二館股份有限公司');
+  assert.strictEqual((await req('POST', `/api/procurement/payments/${payId}/merge`, { ids: [gr.payment_id] })).status, 400);
+  const onlyB = await ok('GET', `/api/procurement/payments?company_id=${coB}`);
+  assert.deepStrictEqual(onlyB.map(x => x.id), [gr.payment_id]);
+  assert.ok((await ok('GET', `/api/procurement/requests?company_id=${coB}`)).every(x => x.company_id === coB));
+  stockBefore += 2;
 });
 
 test('出貨：建立時檢查庫存並產生領料單，確認出貨才扣庫存；取消的不扣', async () => {

@@ -8,6 +8,18 @@
   const SHIP_ST = { pending: ['待出貨', 'yellow'], shipped: ['已出貨', 'green'], cancelled: ['已取消', 'gray'] };
   const PICK_ST = { pending: ['待領料', 'yellow'], picked: ['已領料', 'green'], cancelled: ['已取消', 'gray'] };
   const PAY_METHODS = ['銀行轉帳', '支票', '現金', '其他'];
+  const SRC = { manual: '手動鍵入', quote: '比價報價', purchase: '實際採購' };
+  // 採購公司：多家時才顯示公司欄與篩選，只有一家就不打擾
+  const multiCo = st => st && st.companies && st.companies.length > 1;
+  const companySelect = (st, sel, id = 'co-sel') => `<select id="${id}">${(st.companies || []).map(c =>
+    `<option value="${c.id}" ${String(sel || st.default_company_id) === String(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`;
+  const coTag = (st, name) => multiCo(st) && name ? `<br><small class="badge gray" style="margin-top:2px">${esc(name)}</small>` : '';
+  // 單據抬頭：依單據所屬公司，沒有就用系統設定
+  const headOf = (doc, st) => ({
+    name: doc.company_name || st.center_name,
+    request_dept: doc.company_request_dept !== undefined && doc.company_id ? doc.company_request_dept : st.request_dept,
+    pay_dept: doc.company_pay_dept !== undefined && doc.company_id ? doc.company_pay_dept : st.pay_dept
+  });
   const badge = (map, s) => { const m = map[s] || [s, 'gray']; return `<span class="badge ${m[1]}">${esc(m[0])}</span>`; };
   const money = n => '$' + Math.round(Number(n || 0)).toLocaleString('en-US');
   const can = m => currentUser && (currentUser.role === 'admin' || (currentUser.modules || []).includes(m));
@@ -34,6 +46,8 @@
       Object.entries(opt.statuses).map(([k, v]) => `<option value="${k}" ${opt.status === k ? 'selected' : ''}>${esc(v[0])}</option>`).join('')}</select></div>` : '';
     const vendors = opt.vendors ? `<div class="field"><label>廠商</label><select data-f="vendor_id"><option value="">全部廠商</option>${
       opt.vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</select></div>` : '';
+    const companies = opt.companies && opt.companies.length > 1 ? `<div class="field"><label>採購公司</label><select data-f="company_id"><option value="">全部公司</option>${
+      opt.companies.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>` : '';
     const dateField = opt.dateFields ? `<div class="field"><label>日期欄位</label><select data-f="date_field">${
       opt.dateFields.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></div>` : '';
     return `
@@ -42,7 +56,7 @@
           ${dateField}
           <div class="field"><label>${esc(opt.dateLabel || '日期')}（起）</label><input type="date" data-f="from"></div>
           <div class="field"><label>${esc(opt.dateLabel || '日期')}（迄）</label><input type="date" data-f="to"></div>
-          ${statuses}${vendors}
+          ${companies}${statuses}${vendors}
           <div class="field"><label>關鍵字</label><input data-f="q" placeholder="${esc(opt.placeholder || '單號／名稱')}"></div>
           <div class="field"><label>&nbsp;</label><div class="row" style="gap:6px">
             <button class="btn small" data-f-go>查詢</button><button class="btn small secondary" data-f-clear>清除</button>
@@ -182,12 +196,13 @@
 
   /* ================= 請購單 ================= */
   async function viewProcRequests() {
+    const st = await procSettings();
     main().innerHTML = `
       <div class="page-title">請購單</div>
       <div class="card no-print"><div class="row" style="gap:8px">
         ${can('purchasing') ? '<button class="btn" id="pr-new">新增請購單</button>' : ''}
         <span style="color:var(--muted);font-size:.85rem">流程：請購（待核准）→ 主管核准 → 採購人員於「採購單」頁指定廠商建立採購單</span></div></div>
-      ${filterBar({ dateLabel: '請購日期', statuses: PR_ST, placeholder: '單號／申請人／品名' })}
+      ${filterBar({ dateLabel: '請購日期', statuses: PR_ST, companies: st.companies, placeholder: '單號／申請人／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>請購單號</th><th>請購日期</th><th>申請人</th><th>品項</th><th>狀態</th><th>採購單</th><th class="no-print"></th></tr></thead>
         <tbody id="pr-body"></tbody></table></div></div>`;
@@ -200,7 +215,7 @@
       const rows = await api('/procurement/requests?' + qs);
       setCount(rows.length);
       $('#pr-body').innerHTML = rows.map(r => `<tr>
-        <td data-label="請購單號">${esc(r.no)}${r.urgent ? ' <span class="badge red">急件</span>' : ''}</td>
+        <td data-label="請購單號">${esc(r.no)}${r.urgent ? ' <span class="badge red">急件</span>' : ''}${coTag(st, r.company_name)}</td>
         <td data-label="請購日期">${esc(r.req_date)}</td>
         <td data-label="申請人">${esc(r.requester)}</td>
         <td data-label="品項">${r.item_count} 項${r.purpose ? `<br><small style="color:var(--muted)">${esc(r.purpose)}</small>` : ''}</td>
@@ -232,7 +247,7 @@
   }
 
   async function openPrForm(pr, preset, done) {
-    const [{ rows: items }, vendors] = await Promise.all([api('/procurement/items'), api('/procurement/vendors')]);
+    const [{ rows: items }, vendors, st] = await Promise.all([api('/procurement/items'), api('/procurement/vendors'), procSettings()]);
     const lines = pr ? pr.items : (preset || [{}]);
     const rowHtml = (it = {}) => {
       const isNew = it.supply_id === undefined ? false : !it.supply_id && !!it.item_name;
@@ -252,6 +267,7 @@
     };
     openWide(pr ? `修改請購單 ${pr.no}` : '新增請購單', `
       <div class="form-grid">
+        <div class="field"><label>採購公司 <b class="req">*</b></label>${companySelect(st, pr && pr.company_id, 'prf-co')}</div>
         <div class="field"><label>申請人 <b class="req">*</b></label><input id="prf-req" value="${esc(pr ? pr.requester : currentUser.name)}"></div>
         <div class="field"><label>請購日期</label><input type="date" id="prf-date" value="${esc(pr ? pr.req_date : todayStr())}"></div>
         <div class="field"><label>件別</label><select id="prf-urgent"><option value="0">一般件</option><option value="1" ${pr && pr.urgent ? 'selected' : ''}>急件</option></select></div>
@@ -298,7 +314,7 @@
             suggested_vendor_id: g('suggested_vendor_id') ? Number(g('suggested_vendor_id')) : null };
         }).filter(l => l.supply_id || l.item_name);
         if (lineData.some(l => !l.supply_id && !l.unit)) { err.textContent = '新品項請填寫單位'; return; }
-        const payload = { requester: val(body, '#prf-req'), req_date: val(body, '#prf-date'), urgent: val(body, '#prf-urgent') === '1',
+        const payload = { company_id: Number(val(body, '#prf-co')) || null, requester: val(body, '#prf-req'), req_date: val(body, '#prf-date'), urgent: val(body, '#prf-urgent') === '1',
           budget: val(body, '#prf-budget'), purpose: val(body, '#prf-purpose'), items: lineData };
         try {
           if (pr) await api('/procurement/requests/' + pr.id, { method: 'PUT', body: payload });
@@ -313,7 +329,7 @@
     const [{ rows: items }, vendors] = await Promise.all([api('/procurement/items'), api('/procurement/vendors')]);
     openWide(`建立採購單 — 請購單 ${pr.no}`, `
       <div style="background:var(--primary-light);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:.9rem">
-        申請人：${esc(pr.requester)}　核准：${esc(pr.approved_name || '—')}　共 ${pr.items.length} 品項${pr.purpose ? `　用途：${esc(pr.purpose)}` : ''}</div>
+        ${pr.company_name ? `公司：${esc(pr.company_name)}　` : ''}申請人：${esc(pr.requester)}　核准：${esc(pr.approved_name || '—')}　共 ${pr.items.length} 品項${pr.purpose ? `　用途：${esc(pr.purpose)}` : ''}</div>
       <div class="table-wrap"><table class="data stack">
         <thead><tr><th>品項</th><th>數量</th><th>指定廠商 <b class="req">*</b></th><th>預計到貨日</th></tr></thead>
         <tbody>${pr.items.map(it => {
@@ -346,10 +362,10 @@
     const blanks = Math.max(0, 6 - r.items.length);
     const suggest = [...new Set(r.items.map(i => i.suggested_vendor_name).filter(Boolean))].join('、');
     printDoc(`請購單 ${r.no}`, `
-      <h1>${esc(s.center_name)}</h1><h2>請購採購單</h2><div class="sec">【請購作業】</div>
+      <h1>${esc(headOf(r, s).name)}</h1><h2>請購採購單</h2><div class="sec">【請購作業】</div>
       ${infoTable([
         ['件別', r.urgent ? '■急件　□一般件' : '□急件　■一般件', '請購單編號', esc(r.no)],
-        ['請購日期', esc((r.req_date || '').replace(/-/g, '/')), '請購單位', esc(s.request_dept)],
+        ['請購日期', esc((r.req_date || '').replace(/-/g, '/')), '請購單位', esc(headOf(r, s).request_dept)],
         ['申請人', esc(r.requester), '預算金額', r.budget ? money(r.budget) : ''],
         ['用途說明', `<div style="min-height:9mm">${esc(r.purpose || '')}</div>`]
       ])}
@@ -411,7 +427,7 @@
   const progress = o => o.qty_total ? `<br><small style="color:var(--muted)">到貨 ${o.received_total_qty} / ${o.qty_total}${o.receipt_count ? `（${o.receipt_count} 批）` : ''}</small>` : '';
 
   async function viewProcOrders() {
-    const [vendors, approved] = await Promise.all([api('/procurement/vendors?active=all'), api('/procurement/requests?status=approved')]);
+    const [vendors, approved, st] = await Promise.all([api('/procurement/vendors?active=all'), api('/procurement/requests?status=approved'), procSettings()]);
     main().innerHTML = `
       <div class="page-title">採購單</div>
       <div class="card">
@@ -419,7 +435,7 @@
         <div class="table-wrap"><table class="data stack">
           <thead><tr><th>請購單號</th><th>請購日期</th><th>申請人</th><th>品項</th><th>核准</th><th class="no-print"></th></tr></thead>
           <tbody>${approved.map(r => `<tr>
-            <td data-label="請購單號">${esc(r.no)}${r.urgent ? ' <span class="badge red">急件</span>' : ''}</td>
+            <td data-label="請購單號">${esc(r.no)}${r.urgent ? ' <span class="badge red">急件</span>' : ''}${coTag(st, r.company_name)}</td>
             <td data-label="請購日期">${esc(r.req_date)}</td>
             <td data-label="申請人">${esc(r.requester)}</td>
             <td data-label="品項">${r.item_count} 項${r.purpose ? `<br><small style="color:var(--muted)">${esc(r.purpose)}</small>` : ''}</td>
@@ -430,7 +446,7 @@
             || '<tr><td colspan="6"><div class="empty">目前沒有待建立採購單的請購單</div></td></tr>'}</tbody></table></div>
         <small style="color:var(--muted)">為每個品項指定預計採購廠商與到貨日；相同廠商＋相同到貨日的品項合併成一張採購單（建立後為「待審核」）。</small>
       </div>
-      ${filterBar({ dateLabel: '採購日期', statuses: PO_ST, vendors, placeholder: '採購單號／請購單號／品名' })}
+      ${filterBar({ dateLabel: '採購日期', statuses: PO_ST, vendors, companies: st.companies, placeholder: '採購單號／請購單號／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>採購單號</th><th>採購日期</th><th>來源請購單</th><th>廠商</th><th>預計到貨</th><th>未稅總額／預算</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="po-body"></tbody></table></div>
@@ -444,7 +460,7 @@
       const rows = await api('/procurement/orders?' + qs);
       setCount(rows.length);
       $('#po-body').innerHTML = rows.map(o => `<tr>
-        <td data-label="採購單號">${esc(o.no)}${o.new_count ? ' <span class="badge teal">含新品項</span>' : ''}</td>
+        <td data-label="採購單號">${esc(o.no)}${o.new_count ? ' <span class="badge teal">含新品項</span>' : ''}${coTag(st, o.company_name)}</td>
         <td data-label="採購日期">${esc(o.po_date)}</td>
         <td data-label="來源請購單">${esc(o.pr_no || '—')}</td>
         <td data-label="廠商">${esc(o.vendor_name || '')}</td>
@@ -501,7 +517,7 @@
         <div class="field"><label>採購廠商 <b class="req">*</b></label><select id="pof-vendor" ${dis}>${vOpts(o.vendor_id)}</select></div>
         <div class="field"><label>預算金額 <b class="req">*</b></label><input type="number" min="0" id="pof-budget" value="${o.budget_amount || ''}" ${dis}
           placeholder="${o.pr_budget ? '請購預算 ' + o.pr_budget : ''}"></div>
-        <div class="field"><label>來源請購單</label><input value="${esc(o.pr_no || '—')}" disabled></div>
+        <div class="field"><label>來源請購單${o.company_name ? `（${esc(o.company_name)}）` : ''}</label><input value="${esc(o.pr_no || '—')}" disabled></div>
         <div class="field"><label>預計到貨日</label><input type="date" id="pof-eta" value="${esc(o.eta || '')}" ${['draft', 'pending', 'partial'].includes(o.status) && can('purchasing') ? '' : 'disabled'}></div>
         <div class="field full"><label>備註</label><input id="pof-note" value="${esc(o.note || '')}" ${['draft', 'pending', 'partial'].includes(o.status) && can('purchasing') ? '' : 'disabled'}></div>
       </div>
@@ -548,7 +564,18 @@
       };
       const wireQuote = tr => {
         const vs = tr.querySelector('[data-q="vendor_id"]');
-        vs.onchange = () => { tr.querySelector('[data-newv]').style.display = vs.value ? 'none' : 'flex'; };
+        vs.onchange = async () => {
+          tr.querySelector('[data-newv]').style.display = vs.value ? 'none' : 'flex';
+          const priceEl = tr.querySelector('[data-q="unit_price"]');
+          if (!vs.value || Number(priceEl.value)) return;
+          // 廠商價格表有這個品項的價格就先帶入，可再改
+          const itemId = tr.closest('[data-quotes-for]').dataset.quotesFor;
+          const it = o.items.find(x => String(x.id) === itemId);
+          const qs = new URLSearchParams({ vendor_id: vs.value });
+          if (it.supply_id) qs.set('supply_id', it.supply_id); else qs.set('item_name', it.item_name);
+          const found = (await api('/procurement/vendor-prices?' + qs))[0];
+          if (found) { priceEl.value = found.unit_price; priceEl.title = `廠商價格表 ${found.price_date || ''}`; recalc(); }
+        };
         tr.querySelectorAll('input').forEach(el => { el.oninput = recalc; el.onchange = recalc; });
         const del = tr.querySelector('[data-qdel]');
         if (del) del.onclick = () => { tr.remove(); recalc(); };
@@ -636,7 +663,7 @@
     const quoted = o.items.filter(i => i.quotes && i.quotes.length);
     const within = o.budget_amount ? o.total <= o.budget_amount : null;
     printDoc(`採購單 ${o.no}`, `
-      <h1>${esc(s.center_name)}</h1><h2>請購採購單</h2><div class="sec">【採購作業】</div>
+      <h1>${esc(headOf(o, s).name)}</h1><h2>請購採購單</h2><div class="sec">【採購作業】</div>
       ${infoTable([
         ['採購單編號', esc(o.no), '採購日期', esc(o.po_date)],
         ['來源請購單', esc(o.pr_no || ''), '預算金額', o.budget_amount ? money(o.budget_amount) : ''],
@@ -788,10 +815,10 @@
 
   /* ================= 請款單 ================= */
   async function viewProcPayments() {
-    const vendors = await api('/procurement/vendors?active=all');
+    const [vendors, st] = await Promise.all([api('/procurement/vendors?active=all'), procSettings()]);
     main().innerHTML = `
       <div class="page-title">請款單</div>
-      ${filterBar({ dateLabel: '日期', dateFields: [['req', '以請款日期查詢'], ['due', '以付款到期日查詢']], statuses: PAY_ST, vendors, placeholder: '請款單號／發票號／廠商' })}
+      ${filterBar({ dateLabel: '日期', dateFields: [['req', '以請款日期查詢'], ['due', '以付款到期日查詢']], statuses: PAY_ST, vendors, companies: st.companies, placeholder: '請款單號／發票號／廠商' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>請款單號</th><th>廠商</th><th>入庫／採購單</th><th>發票號碼</th><th>含稅金額</th><th>付款到期日</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="pay-body"></tbody></table></div>
@@ -806,7 +833,7 @@
       const unpaid = rows.filter(p => p.status === 'unpaid').reduce((t, p) => t + p.total_amount, 0);
       $('#pay-sum').textContent = `本查詢待付款合計：${money(unpaid)}`;
       $('#pay-body').innerHTML = rows.map(p => `<tr>
-        <td data-label="請款單號">${esc(p.no)}<br><small>${esc(p.req_date)}</small></td>
+        <td data-label="請款單號">${esc(p.no)}<br><small>${esc(p.req_date)}</small>${coTag(st, p.company_name)}</td>
         <td data-label="廠商">${esc(p.vendor_name || '')}</td>
         <td data-label="入庫／採購單"><small>${esc(p.gr_nos || p.gr_no || '')}<br>${esc(p.po_nos || p.po_no || '')}</small></td>
         <td data-label="發票號碼">${esc(p.invoice_no || '—')}</td>
@@ -856,7 +883,7 @@
     const d = await api('/procurement/payments/' + p.id);
     const others = d.month_others.filter(x => x.status === 'unpaid');
     openWide(`合併請款 — ${d.vendor_name}（${String(d.req_date).slice(0, 7)}）`, `
-      <p style="font-size:.9rem">公司規定同一廠商一個月只開一張請款單。勾選要併入 <strong>${esc(d.no)}</strong> 的請款單，合併後明細、發票號碼與金額會彙總到這一張，被合併的請款單改為「已合併」。</p>
+      <p style="font-size:.9rem">${d.company_name ? `採購公司：${esc(d.company_name)}。` : ''}公司規定同一廠商一個月只開一張請款單（依採購公司分開計）。勾選要併入 <strong>${esc(d.no)}</strong> 的請款單，合併後明細、發票號碼與金額會彙總到這一張，被合併的請款單改為「已合併」。</p>
       <table class="data"><thead><tr><th>併入</th><th>請款單號</th><th>請款日</th><th>含稅金額</th></tr></thead>
         <tbody>${others.map(x => `<tr><td><input type="checkbox" data-m="${x.id}" checked></td><td>${esc(x.no)}</td><td>${esc(x.req_date)}</td><td>${money(x.total_amount)}</td></tr>`).join('')
           || '<tr><td colspan="4"><div class="empty">本月沒有其他待付款的請款單</div></td></tr>'}</tbody></table>
@@ -988,12 +1015,12 @@
         </table>
       </div>`;
     printDoc(`請款支付憑單 ${p.no}`, `
-      <h1>${esc(s.center_name)}</h1><h2 style="text-decoration:underline">請款支付憑單</h2>
+      <h1>${esc(headOf(p, s).name)}</h1><h2 style="text-decoration:underline">請款支付憑單</h2>
       <div class="sub"><span>${ymd(p.invoice_date || p.req_date)}</span><span>單號：${esc(p.no)}${p.merged_from && p.merged_from.length ? `（合併 ${esc(p.merged_from.map(x => x.no).join('、'))}）` : ''}</span></div>
       ${infoTable([
         ['預算編號', esc(p.budget_no || ''), '廠商名稱', esc(p.vendor_name || '')],
         ['阿米巴項目', '', '統一編號', esc(p.vendor_tax_id || '')],
-        ['部門別', esc(s.pay_dept), '發票號碼', esc(p.invoice_no || '')],
+        ['部門別', esc(headOf(p, s).pay_dept), '發票號碼', esc(p.invoice_no || '')],
         ['費用歸屬', esc(p.cost_center || ''), '付款到期日', esc(p.pay_due_date || '')],
         ['金　額', `新台幣 ${chineseAmount(p.total_amount)}　<strong>NT$ ${Number(p.total_amount).toLocaleString('en-US')}</strong>`],
         ['事　由', `${itemsText(p.items)}　未稅 ${money(p.subtotal)}${p.tax_amount ? `＋稅 ${money(p.tax_amount)}` : ''}${p.remark ? `<br>${esc(p.remark)}` : ''}`],
@@ -1020,12 +1047,13 @@
 
   /* ================= 出貨管理 ================= */
   async function viewProcShipments() {
+    const st = await procSettings();
     main().innerHTML = `
       <div class="page-title">出貨管理</div>
       <div class="card no-print"><div class="row" style="gap:8px">
         ${can('purchasing') ? '<button class="btn" id="sh-new">新增出貨單</button>' : ''}
         <span style="color:var(--muted);font-size:.85rem">建立出貨單會同時產生領料單；按「確認出貨」才從備品庫存扣除。</span></div></div>
-      ${filterBar({ dateLabel: '出貨日期', statuses: SHIP_ST, placeholder: '出貨單號／客戶部門／品名' })}
+      ${filterBar({ dateLabel: '出貨日期', statuses: SHIP_ST, companies: st.companies, placeholder: '出貨單號／客戶部門／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>出貨單號</th><th>出貨日期</th><th>客戶／部門</th><th>品項數</th><th>領料單</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="sh-body"></tbody></table></div></div>`;
@@ -1038,7 +1066,7 @@
       const rows = await api('/procurement/shipments?' + qs);
       setCount(rows.length);
       $('#sh-body').innerHTML = rows.map(s => `<tr>
-        <td data-label="出貨單號">${esc(s.no)}</td><td data-label="出貨日期">${esc(s.ship_date)}</td>
+        <td data-label="出貨單號">${esc(s.no)}${coTag(st, s.company_name)}</td><td data-label="出貨日期">${esc(s.ship_date)}</td>
         <td data-label="客戶／部門">${esc(s.recipient)}${s.note ? `<br><small style="color:var(--muted)">${esc(s.note)}</small>` : ''}</td>
         <td data-label="品項數">${s.item_count}</td>
         <td data-label="領料單">${esc(s.pick_no || '—')}</td>
@@ -1064,7 +1092,7 @@
   }
 
   async function openShipForm(s, done) {
-    const { rows: items } = await api('/procurement/items');
+    const [{ rows: items }, st] = await Promise.all([api('/procurement/items'), procSettings()]);
     const unitOf = id => (items.find(i => String(i.id) === String(id)) || {}).unit || '';
     const lineHtml = (it = {}) => `<tr data-line>
       <td data-label="品項"><select data-k="supply_id" style="min-width:240px"><option value="">-- 選擇品項 --</option>${itemOptions(items, it.supply_id)}</select></td>
@@ -1073,6 +1101,7 @@
       <td><button class="btn small danger" data-del>刪</button></td></tr>`;
     openWide(s ? `修改出貨單 ${s.no}` : '新增出貨單', `
       <div class="form-grid">
+        ${multiCo(st) ? `<div class="field"><label>公司</label>${companySelect(st, s && s.company_id, 'shf-co')}</div>` : ''}
         <div class="field"><label>客戶／部門 <b class="req">*</b></label><input id="shf-to" value="${esc(s ? s.recipient : '')}" placeholder="客戶或內部部門"></div>
         <div class="field"><label>出貨日期</label><input type="date" id="shf-date" value="${esc(s ? s.ship_date : todayStr())}"></div>
         <div class="field full"><label>備註</label><input id="shf-note" value="${esc(s ? s.note : '')}"></div>
@@ -1093,7 +1122,7 @@
       body.querySelector('#shf-add').onclick = () => { body.querySelector('#shf-lines').insertAdjacentHTML('beforeend', lineHtml()); wire(body.querySelector('#shf-lines').lastElementChild); };
       body.querySelector('#shf-save').onclick = async () => {
         const lines = [...body.querySelectorAll('[data-line]')].map(tr => ({ supply_id: Number(val(tr, '[data-k="supply_id"]')), qty: Number(val(tr, '[data-k="qty"]')) })).filter(l => l.supply_id);
-        const payload = { recipient: val(body, '#shf-to'), ship_date: val(body, '#shf-date'), note: val(body, '#shf-note'), items: lines };
+        const payload = { company_id: Number(val(body, '#shf-co')) || null, recipient: val(body, '#shf-to'), ship_date: val(body, '#shf-date'), note: val(body, '#shf-note'), items: lines };
         try {
           if (s) await api('/procurement/shipments/' + s.id, { method: 'PUT', body: payload });
           else { const r = await api('/procurement/shipments', { method: 'POST', body: payload }); alert(`出貨單 ${r.no} 已建立，領料單 ${r.pick_no} 已產生`); }
@@ -1112,7 +1141,7 @@
       ${s.pick ? `<div class="row" style="margin-top:10px;gap:8px"><span>領料單：${esc(s.pick.no)} ${badge(PICK_ST, s.pick.status)}</span>
         <button class="btn small secondary" id="shv-print">列印領料單</button></div>` : ''}`, body => {
       const b = body.querySelector('#shv-print');
-      if (b) b.onclick = () => printPick({ ...s.pick, ship_no: s.no, items: s.items });
+      if (b) b.onclick = () => printPick({ ...s.pick, ship_no: s.no, items: s.items, company_name: s.company_name, company_id: s.company_id });
     });
   }
 
@@ -1136,7 +1165,7 @@
         || '<tr><td colspan="7"><div class="empty">查無領料單</div></td></tr>';
       main().querySelectorAll('[data-print]').forEach(b => b.onclick = async () => {
         const s = await api('/procurement/shipments/' + b.dataset.print);
-        printPick({ ...s.pick, ship_no: s.no, items: s.items });
+        printPick({ ...s.pick, ship_no: s.no, items: s.items, company_name: s.company_name, company_id: s.company_id });
       });
     });
   }
@@ -1144,7 +1173,7 @@
     const s = await procSettings();
     const blanks = Math.max(0, 8 - p.items.length);
     printDoc(`領料單 ${p.no}`, `
-      <h1>${esc(s.center_name)}</h1><h2>領料單</h2>
+      <h1>${esc(headOf(p, s).name)}</h1><h2>領料單</h2>
       ${infoTable([
         ['領料單號', esc(p.no), '出貨單號', esc(p.ship_no)],
         ['領用對象', esc(p.recipient), '日期', esc(p.pick_date)]
@@ -1229,6 +1258,10 @@
       <table class="data"><thead><tr><th>採購單號</th><th>廠商</th><th>日期</th><th>數量</th><th>單價</th><th>狀態</th></tr></thead>
         <tbody>${h.orders.map(o => `<tr><td>${esc(o.no)}</td><td>${esc(o.vendor_name || '')}</td><td>${esc(o.po_date)}</td><td>${o.qty}</td><td>${money(o.unit_price)}</td><td>${badge(PO_ST, o.status)}</td></tr>`).join('')
           || '<tr><td colspan="6"><div class="empty">尚無採購紀錄</div></td></tr>'}</tbody></table>
+      ${(h.vendor_prices || []).length ? `<div class="sec-hd" style="margin-top:8px">各廠商價格（廠商價格表）</div>
+        <table class="data"><thead><tr><th>廠商</th><th>未稅單價</th><th>單位</th><th>來源</th><th>日期</th></tr></thead>
+        <tbody>${h.vendor_prices.map(v => `<tr><td>${esc(v.vendor_name)}</td><td>${money(v.unit_price)}</td><td>${esc(v.unit || '')}</td>
+          <td>${esc(SRC[v.source] || v.source)}</td><td>${esc(v.price_date || '')}</td></tr>`).join('')}</tbody></table>` : ''}
       ${(h.quotes || []).length ? `<div class="sec-hd" style="margin-top:8px">比價紀錄</div>
         <table class="data"><thead><tr><th>日期</th><th>採購單</th><th>廠商</th><th>報價單價</th><th>結果</th></tr></thead>
         <tbody>${h.quotes.map(q => `<tr><td>${esc((q.created_at || '').slice(0, 10))}</td><td>${esc(q.po_no)}</td><td>${esc(q.vendor_name || '')}</td>
@@ -1316,7 +1349,7 @@
     main().innerHTML = `
       <div class="page-title">廠商管理</div>
       <div class="card no-print"><div class="form-grid">
-        <div class="field"><label>關鍵字</label><input id="vd-q" placeholder="廠商名稱／編號／統編／聯絡人"></div>
+        <div class="field"><label>關鍵字</label><input id="vd-q" placeholder="廠商名稱／編號／統編／聯絡人／供貨品名"></div>
         <div class="field"><label>&nbsp;</label><label class="bna-chk"><input type="checkbox" id="vd-all"> 含已停用</label></div>
         <div class="field"><label>&nbsp;</label>${editable ? '<button class="btn" id="vd-new">新增廠商</button>' : ''}</div>
       </div></div>
@@ -1336,7 +1369,7 @@
         <td data-label="統編">${esc(v.tax_id || '—')}</td>
         <td data-label="聯絡人">${esc(v.contact || '—')}${v.email ? `<br><small>${esc(v.email)}</small>` : ''}</td>
         <td data-label="電話">${esc(v.phone || '—')}</td>
-        <td data-label="付款條件">${esc(v.payment_terms || '—')}</td>
+        <td data-label="付款條件">${esc(v.payment_terms || '—')}${v.item_count ? `<br><small style="color:var(--muted)">供貨 ${v.item_count} 項</small>` : ''}</td>
         <td data-label="待付款">${v.unpaid_amount ? `<strong style="color:var(--danger)">${money(v.unpaid_amount)}</strong>` : '—'}</td>
         <td data-label="操作" class="no-print">
           <button class="btn small secondary" data-detail="${v.id}">詳情</button>
@@ -1360,7 +1393,19 @@
   }
 
   async function openVendorForm(v, done) {
-    const s = await procSettings();
+    const [s, { rows: items }, detail] = await Promise.all([procSettings(), api('/procurement/items'),
+      v ? api('/procurement/vendors/' + v.id) : Promise.resolve(null)]);
+    const priceList = detail ? detail.price_list : [];
+    const unitOf = id => (items.find(i => String(i.id) === String(id)) || {}).unit || '';
+    const priceRow = (r = {}) => `<tr data-pl data-source="${esc(r.source || 'manual')}" data-date="${esc(r.price_date || '')}">
+      <td data-label="品項"><select data-p="supply_id" style="min-width:200px"><option value="">＋ 尚未建檔的品項（輸入品名）</option>${
+        items.map(i => `<option value="${i.id}" ${String(r.supply_id) === String(i.id) ? 'selected' : ''}>${esc(i.code ? i.code + ' ' : '')}${esc(i.name)}</option>`).join('')}</select>
+        <input data-p="item_name" placeholder="品名" value="${esc(r.supply_id ? '' : r.item_name || '')}" style="margin-top:4px;display:${r.supply_id ? 'none' : 'block'}"></td>
+      <td data-label="單位"><input data-p="unit" value="${esc(r.unit || unitOf(r.supply_id))}" style="max-width:70px"></td>
+      <td data-label="未稅單價"><input type="number" min="0" step="0.01" data-p="unit_price" value="${r.unit_price !== undefined ? r.unit_price : ''}" style="max-width:100px"></td>
+      <td data-label="備註"><input data-p="note" value="${esc(r.note || '')}" placeholder="包裝、最低訂量等"></td>
+      <td data-label="來源"><small>${esc(SRC[r.source] || '手動鍵入')}${r.price_date ? `<br>${esc(r.price_date)}` : ''}</small></td>
+      <td><button class="btn small danger" data-pdel>刪</button></td></tr>`;
     const terms = s.payment_terms;
     const custom = v && v.payment_terms && !terms.includes(v.payment_terms);
     const f = (id, label, value, extra = '') => `<div class="field"><label>${label}</label><input id="vf-${id}" value="${esc(value || '')}" ${extra}></div>`;
@@ -1382,14 +1427,41 @@
         <div class="field full"><label>戶名</label><input id="vf-bank_holder" value="${esc(v ? v.bank_holder : '')}"></div>
         <div class="field full"><label>備註</label><input id="vf-note" value="${esc(v ? v.note : '')}"></div>
       </div>
-      <div class="row" style="gap:8px;margin-top:8px"><button class="btn" id="vf-save">儲存</button><span class="error-msg" id="vf-err"></span></div>`, body => {
+      <div class="sec-hd" style="margin-top:10px">供貨品項及未稅價格 <small style="font-weight:400;color:var(--muted)">
+        （這家廠商可供應的品項與報價，不論是否採購過都可登錄；比價報價與實際採購價會自動更新到這裡）</small></div>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>品項</th><th>單位</th><th>未稅單價</th><th>備註</th><th>來源</th><th></th></tr></thead>
+        <tbody id="vf-prices">${priceList.map(priceRow).join('')}</tbody></table></div>
+      <button class="btn small secondary" id="vf-padd" style="margin-top:6px">新增供貨品項</button>
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn" id="vf-save">儲存</button><span class="error-msg" id="vf-err"></span></div>`, body => {
+      const wirePrice = tr => {
+        const sel = tr.querySelector('[data-p="supply_id"]');
+        sel.onchange = () => {
+          tr.querySelector('[data-p="item_name"]').style.display = sel.value ? 'none' : 'block';
+          if (sel.value) tr.querySelector('[data-p="unit"]').value = unitOf(sel.value);
+        };
+        tr.querySelector('[data-pdel]').onclick = () => tr.remove();
+        // 改了價格就視為手動更新
+        tr.querySelector('[data-p="unit_price"]').addEventListener('input', () => { tr.dataset.source = 'manual'; tr.dataset.date = ''; });
+      };
+      body.querySelectorAll('[data-pl]').forEach(wirePrice);
+      body.querySelector('#vf-padd').onclick = () => {
+        body.querySelector('#vf-prices').insertAdjacentHTML('beforeend', priceRow());
+        wirePrice(body.querySelector('#vf-prices').lastElementChild);
+      };
       body.querySelector('#vf-terms').onchange = () => { body.querySelector('#vf-terms-custom').style.display = val(body, '#vf-terms') === '__custom' ? 'block' : 'none'; };
       body.querySelector('#vf-save').onclick = async () => {
         const g = k => val(body, '#vf-' + k);
         const termSel = g('terms');
         const payload = { code: g('code'), name: g('name'), tax_id: g('tax_id'), payment_terms: termSel === '__custom' ? g('terms-custom') : termSel,
           address: g('address'), contact: g('contact'), phone: g('phone'), email: g('email'), bank_name: g('bank_name'),
-          bank_branch: g('bank_branch'), bank_code: g('bank_code'), bank_account: g('bank_account'), bank_holder: g('bank_holder'), note: g('note') };
+          bank_branch: g('bank_branch'), bank_code: g('bank_code'), bank_account: g('bank_account'), bank_holder: g('bank_holder'), note: g('note'),
+          items: [...body.querySelectorAll('[data-pl]')].map(tr => ({
+            supply_id: Number(val(tr, '[data-p="supply_id"]')) || null, item_name: val(tr, '[data-p="item_name"]'),
+            unit: val(tr, '[data-p="unit"]'), unit_price: val(tr, '[data-p="unit_price"]'), note: val(tr, '[data-p="note"]'),
+            source: tr.dataset.source, price_date: tr.dataset.date })).filter(x => x.supply_id || x.item_name) };
+        const noPrice = payload.items.find(x => x.unit_price === '');
+        if (noPrice) { body.querySelector('#vf-err').textContent = '供貨品項請填寫未稅單價'; return; }
         if (payload.tax_id && !/^\d{8}$/.test(payload.tax_id)) { body.querySelector('#vf-err').textContent = '統一編號需為 8 碼數字'; return; }
         try {
           if (v) await api('/procurement/vendors/' + v.id, { method: 'PUT', body: payload });
@@ -1413,7 +1485,13 @@
             帳號：<strong style="color:var(--primary-dark)">${esc(v.bank_account)}</strong><br>戶名：${esc(v.bank_holder)}` : '<span style="color:var(--danger)">尚未填寫</span>'}
           <br><strong>應付帳款</strong><br>待付款 ${d.payables.unpaid_count || 0} 張：<strong style="color:var(--danger)">${money(d.payables.unpaid)}</strong>　已付款累計：${money(d.payables.paid)}</div>
       </div>
-      <div class="sec-hd">供應品項</div>
+      <div class="sec-hd">供貨品項及未稅價格（${(d.price_list || []).length} 項）</div>
+      <table class="data"><thead><tr><th>品項</th><th>單位</th><th>未稅單價</th><th>來源</th><th>日期</th><th>備註</th></tr></thead>
+        <tbody>${(d.price_list || []).map(i => `<tr><td>${esc(i.supply_code ? i.supply_code + ' ' : '')}${esc(i.item_name)}${i.supply_id ? '' : ' <span class="badge gray">未建檔</span>'}</td>
+          <td>${esc(i.unit || '')}</td><td>${money(i.unit_price)}</td><td>${esc(SRC[i.source] || i.source)}</td>
+          <td>${esc(i.price_date || '')}</td><td>${esc(i.note || '')}</td></tr>`).join('')
+          || '<tr><td colspan="6"><div class="empty">尚未登錄供貨品項，可在「編輯」中新增</div></td></tr>'}</tbody></table>
+      <div class="sec-hd" style="margin-top:8px">設為供應廠商的品項（品項管理）</div>
       <div style="margin-bottom:8px">${d.items.map(i => `<span class="badge ${i.is_default ? 'teal' : 'gray'}">${esc(i.name)}${i.is_default ? '（預設）' : ''}</span>`).join(' ') || '<span style="color:var(--muted)">尚未有品項設定此廠商</span>'}</div>
       <div class="sec-hd">歷史進貨統計</div>
       <table class="data"><thead><tr><th>品項</th><th>進貨次數</th><th>累計到貨量</th><th>未稅累計金額</th></tr></thead>
@@ -1433,29 +1511,74 @@
 
   /* ================= 採購設定 ================= */
   async function viewProcSettings() {
-    const s = await api('/settings');
+    const [s, list] = await Promise.all([api('/settings'), api('/procurement/companies?all=1')]);
     const isAdmin = currentUser.role === 'admin';
     const dis = isAdmin ? '' : 'disabled';
     main().innerHTML = `
       <div class="page-title">採購設定</div>
       <div class="card">
+        <div class="row between"><h3>採購公司（單據抬頭）</h3>${isAdmin ? '<button class="btn small" id="ps-co-new">新增公司</button>' : ''}</div>
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>公司名稱（單據抬頭）</th><th>請購單位（請購採購單）</th><th>部門別（請款支付憑單）</th><th>統一編號</th><th>狀態</th><th class="no-print"></th></tr></thead>
+          <tbody>${list.map(c => `<tr style="${c.active ? '' : 'opacity:.55'}">
+            <td data-label="公司名稱"><strong>${esc(c.name)}</strong>${c.is_default ? ' <span class="badge teal">預設</span>' : ''}${c.address ? `<br><small style="color:var(--muted)">${esc(c.address)}</small>` : ''}</td>
+            <td data-label="請購單位">${esc(c.request_dept || '—')}</td>
+            <td data-label="部門別">${esc(c.pay_dept || '—')}</td>
+            <td data-label="統一編號">${esc(c.tax_id || '—')}</td>
+            <td data-label="狀態">${c.active ? '<span class="badge green">使用中</span>' : '<span class="badge gray">停用</span>'}</td>
+            <td data-label="操作" class="no-print">${isAdmin ? `<button class="btn small secondary" data-co="${c.id}">編輯</button>
+              ${!c.is_default && c.active ? `<button class="btn small secondary" data-co-def="${c.id}">設為預設</button>` : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>
+        <small style="color:var(--muted)">請購單建立時選擇採購公司，採購單、請款單沿用；單據抬頭與部門別依公司列印。新增請購單時預設帶入「預設」公司。同一廠商每月一張請款單的規定依公司分開計算。</small>
+      </div>
+      <div class="card">
+        <h3>共用參數</h3>
         <div class="form-grid">
-          <div class="field"><label>機構名稱<small>（單據抬頭，於系統設定維護）</small></label><input value="${esc(s.center_name || '')}" disabled></div>
-          <div class="field"><label>請購單位（部門）<small>（請購採購單）</small></label><input id="ps-req" value="${esc(s.proc_request_dept || '')}" ${dis}></div>
-          <div class="field"><label>部門別<small>（請款支付憑單）</small></label><input id="ps-pay" value="${esc(s.proc_pay_dept || '')}" ${dis}></div>
           <div class="field"><label>請款單預設稅率（%）</label><input type="number" min="0" max="100" step="0.1" id="ps-tax" value="${esc(s.proc_tax_rate || '5')}" ${dis}></div>
           <div class="field full"><label>廠商付款條件選項<small>（逗號分隔；含數字者視為天數，用來算付款到期日）</small></label>
             <input id="ps-terms" value="${esc(s.proc_payment_terms || '')}" ${dis}></div>
         </div>
-        <div class="row" style="gap:8px;margin-top:8px">${isAdmin ? '<button class="btn" id="ps-save">儲存設定</button>' : '<small style="color:var(--muted)">僅管理員可修改</small>'}<span class="error-msg" id="ps-err"></span></div>
+        <div class="row" style="gap:8px;margin-top:8px">${isAdmin ? '<button class="btn" id="ps-save">儲存參數</button>' : '<small style="color:var(--muted)">僅管理員可修改</small>'}<span class="error-msg" id="ps-err"></span></div>
       </div>`;
+    const reload = () => { SETTINGS_CACHE = null; viewProcSettings(); };
+    const openCo = c => openModal(c ? `編輯公司 — ${c.name}` : '新增採購公司', `
+      <div class="form-grid">
+        <div class="field full"><label>公司名稱（單據抬頭） <b class="req">*</b></label><input id="co-name" value="${esc(c ? c.name : '')}" placeholder="例：嘉禾產後護理之家"></div>
+        <div class="field"><label>請購單位（部門）</label><input id="co-req" value="${esc(c ? c.request_dept : '')}" placeholder="例：健康生活事業處"></div>
+        <div class="field"><label>部門別（支付憑單）</label><input id="co-pay" value="${esc(c ? c.pay_dept : '')}" placeholder="例：月子中心"></div>
+        <div class="field"><label>統一編號</label><input id="co-tax" maxlength="8" value="${esc(c ? c.tax_id : '')}"></div>
+        <div class="field"><label>電話</label><input id="co-phone" value="${esc(c ? c.phone : '')}"></div>
+        <div class="field full"><label>地址</label><input id="co-addr" value="${esc(c ? c.address : '')}"></div>
+        <div class="field"><label>排序</label><input type="number" id="co-sort" value="${c ? c.sort_order : 0}"></div>
+        <div class="field"><label>狀態</label><select id="co-active"><option value="1">使用中</option><option value="0" ${c && !c.active ? 'selected' : ''}>停用</option></select></div>
+        <div class="field full"><label class="bna-chk"><input type="checkbox" id="co-def" ${c && c.is_default ? 'checked disabled' : ''}> 設為預設公司</label></div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px"><button class="btn" id="co-save">儲存</button><span class="error-msg" id="co-err"></span></div>`, body => {
+      body.querySelector('#co-save').onclick = async () => {
+        const payload = { name: val(body, '#co-name'), request_dept: val(body, '#co-req'), pay_dept: val(body, '#co-pay'),
+          tax_id: val(body, '#co-tax'), phone: val(body, '#co-phone'), address: val(body, '#co-addr'),
+          sort_order: Number(val(body, '#co-sort')) || 0, active: val(body, '#co-active') === '1',
+          is_default: body.querySelector('#co-def').checked && !body.querySelector('#co-def').disabled };
+        try {
+          if (c) await api('/procurement/companies/' + c.id, { method: 'PUT', body: payload });
+          else await api('/procurement/companies', { method: 'POST', body: payload });
+          closeModal(); reload();
+        } catch (e) { body.querySelector('#co-err').textContent = e.message; }
+      };
+    });
+    const nb = main().querySelector('#ps-co-new');
+    if (nb) nb.onclick = () => openCo(null);
+    main().querySelectorAll('[data-co]').forEach(b => b.onclick = () => openCo(list.find(c => String(c.id) === b.dataset.co)));
+    main().querySelectorAll('[data-co-def]').forEach(b => b.onclick = async () => {
+      try { await api('/procurement/companies/' + b.dataset.coDef, { method: 'PUT', body: { is_default: true } }); reload(); }
+      catch (e) { alert(e.message); }
+    });
     const b = main().querySelector('#ps-save');
     if (b) b.onclick = async () => {
       const tax = Number($('#ps-tax').value);
       if (!(tax >= 0 && tax <= 100)) { $('#ps-err').textContent = '稅率需介於 0 到 100'; return; }
       try {
-        await api('/settings', { method: 'PUT', body: { proc_request_dept: $('#ps-req').value.trim(), proc_pay_dept: $('#ps-pay').value.trim(),
-          proc_tax_rate: String(tax), proc_payment_terms: $('#ps-terms').value.split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',') } });
+        await api('/settings', { method: 'PUT', body: { proc_tax_rate: String(tax),
+          proc_payment_terms: $('#ps-terms').value.split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',') } });
         SETTINGS_CACHE = null;
         $('#ps-err').textContent = '';
         alert('已儲存');
