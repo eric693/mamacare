@@ -1,5 +1,5 @@
 // 採購作業整合測試：請購 → 核准 → 建採購單（依廠商拆單）→ 比價／預算 → 審核 → 分批驗貨入庫 → 請款付款，
-// 出貨扣庫存與領料單，以及三層權限。
+// 出貨扣庫存與領料單、批次（便宜先出）與四張報表，以及七種角色權限。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { spawn, spawnSync } = require('node:child_process');
@@ -424,27 +424,204 @@ test('總覽：待辦計數與低庫存', async () => {
   assert.ok(d.settings.payment_terms.includes('月結30天'));
 });
 
-test('權限：採購作業可請購、建採購單與鍵入預算，不能核准、審核或付款；沒有任何採購權限的人整個被擋', async () => {
-  await ok('POST', '/api/users', { username: 'buyer1', password: 'buyer12345', name: '採購員', role: 'nurse', permissions: ['purchasing'], modules: ['purchasing'] });
-  await ok('POST', '/api/users', { username: 'nurse9', password: 'nurse12345', name: '護理師', role: 'nurse', permissions: ['meals'], modules: ['meals'] });
-  await login('buyer1', 'buyer12345');
-  const r = await req('POST', '/api/procurement/requests', { requester: '採購員', items: [{ supply_id: paper, qty: 1 }] });
+test('權限：七種角色各自只能瀏覽／key 自己的單據', async () => {
+  const mk = async (username, perms) => ok('POST', '/api/users', { username, password: 'pass12345', name: username, role: 'nurse', permissions: perms, modules: perms });
+  await mk('u_req', ['proc_request']);
+  await mk('u_buy', ['proc_buyer']);
+  await mk('u_rcv', ['proc_receive']);
+  await mk('u_shp', ['proc_ship']);
+  await mk('u_acc', ['proc_account']);
+  await mk('u_fin', ['proc_finance']);
+  await mk('u_adm', ['proc_admin']);
+  await mk('nurse9', ['meals']);
+  const as = u => login(u, 'pass12345');
+  const st = async (m, p, b) => (await req(m, p, b)).status;
+
+  // 請購人員：請購單可 key，採購單／請款單看不到
+  await as('u_req');
+  const r = await req('POST', '/api/procurement/requests', { requester: '請購員', items: [{ supply_id: paper, qty: 1 }] });
   assert.strictEqual(r.status, 200, JSON.stringify(r.data));
-  const pr = await ok('GET', `/api/procurement/requests/${r.data.id}`);
-  assert.strictEqual((await req('POST', `/api/procurement/requests/${r.data.id}/approve`, {})).status, 403);
-  // 主管核准後，採購作業的人可以建立採購單
-  cookie = ''; await login('admin', 'admin123');
+  assert.strictEqual(await st('GET', '/api/procurement/items'), 200);            // 庫存總覽
+  assert.strictEqual(await st('GET', '/api/procurement/dashboard'), 200);
+  assert.strictEqual(await st('GET', '/api/procurement/orders'), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/payments'), 403);
+  assert.strictEqual(await st('POST', `/api/procurement/requests/${r.data.id}/approve`, {}), 403);
+  assert.strictEqual(await st('POST', '/api/procurement/vendors', { name: 'x' }), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/reports/inventory'), 403);
+
+  // 管理員核准
+  await as('u_adm');
   await ok('POST', `/api/procurement/requests/${r.data.id}/approve`, {});
-  await login('buyer1', 'buyer12345');
+  const pr = await ok('GET', `/api/procurement/requests/${r.data.id}`);
+
+  // 採購人員：建採購單、維護品項與廠商；不能核准請購、審核採購、驗貨、付款、出貨
+  await as('u_buy');
   const od = await req('POST', `/api/procurement/requests/${r.data.id}/order`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorA }] });
   assert.strictEqual(od.status, 200, JSON.stringify(od.data));
   const poId = od.data.orders[0].id;
-  await ok('PUT', `/api/procurement/orders/${poId}`, { budget_amount: 200 });          // 採購人員可鍵入預算
-  assert.strictEqual((await req('POST', `/api/procurement/orders/${poId}/approve`, {})).status, 403);   // 不能自己審核
-  assert.strictEqual((await req('POST', '/api/procurement/receipts', { po_id: poId, inspector: 'x' })).status, 400);   // 未審核不能驗貨
-  assert.strictEqual((await req('POST', `/api/procurement/payments/${payId}/pay`, {})).status, 403);
-  assert.strictEqual((await req('POST', '/api/procurement/vendors', { name: 'x' })).status, 403);
-  await login('nurse9', 'nurse12345');
-  assert.strictEqual((await req('GET', '/api/procurement/requests')).status, 403);
+  await ok('PUT', `/api/procurement/orders/${poId}`, { budget_amount: 200 });
+  assert.strictEqual(await st('POST', '/api/procurement/vendors', { name: '採購員建的廠商' }), 200);
+  assert.strictEqual(await st('POST', `/api/procurement/orders/${poId}/approve`, {}), 403);
+  assert.strictEqual(await st('POST', '/api/procurement/requests', { requester: 'x', items: [{ supply_id: paper, qty: 1 }] }), 403);
+  assert.strictEqual(await st('POST', '/api/procurement/receipts', { po_id: poId, inspector: 'x' }), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/payments'), 403);
+  assert.strictEqual(await st('POST', '/api/procurement/shipments', { recipient: 'x', items: [{ supply_id: paper, qty: 1 }] }), 403);
+
+  await as('u_adm');
+  await ok('POST', `/api/procurement/orders/${poId}/approve`, {});
+
+  // 驗貨人員：只能驗貨
+  await as('u_rcv');
+  assert.strictEqual(await st('GET', '/api/procurement/orders?status=receivable'), 200);
+  const gr = await req('POST', '/api/procurement/receipts', { po_id: poId, inspector: '驗貨員' });
+  assert.strictEqual(gr.status, 200, JSON.stringify(gr.data));
+  assert.strictEqual(await st('PUT', `/api/procurement/orders/${poId}`, { note: 'x' }), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/requests'), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/payments'), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/shipments'), 403);
+
+  // 出貨人員：出貨與領料；看不到採購與請款
+  await as('u_shp');
+  const sh = await req('POST', '/api/procurement/shipments', { recipient: '出貨員', items: [{ supply_id: paper, qty: 1 }] });
+  assert.strictEqual(sh.status, 200, JSON.stringify(sh.data));
+  assert.strictEqual(await st('POST', `/api/procurement/shipments/${sh.data.id}/confirm`, {}), 200);
+  assert.strictEqual(await st('GET', '/api/procurement/picks'), 200);
+  assert.strictEqual(await st('GET', '/api/procurement/orders'), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/payments'), 403);
+
+  // 記帳人員：請款單可 key；請購、採購、驗貨、領料可看不可改；不能出貨
+  await as('u_acc');
+  for (const p of ['/api/procurement/requests', '/api/procurement/orders', '/api/procurement/receipts', '/api/procurement/picks', '/api/procurement/items', '/api/procurement/payments']) {
+    assert.strictEqual(await st('GET', p), 200, p);
+  }
+  assert.strictEqual(await st('PUT', `/api/procurement/payments/${gr.data.payment_id}`, { remark: '記帳員備註' }), 200);
+  assert.strictEqual(await st('POST', '/api/procurement/requests', { requester: 'x', items: [{ supply_id: paper, qty: 1 }] }), 403);
+  assert.strictEqual(await st('PUT', `/api/procurement/orders/${poId}`, { note: 'x' }), 403);
+  assert.strictEqual(await st('POST', '/api/procurement/shipments', { recipient: 'x', items: [{ supply_id: paper, qty: 1 }] }), 403);
+  assert.strictEqual(await st('GET', '/api/procurement/reports/inventory'), 403);
+
+  // 財務人員：全部可看，一律不能 key
+  await as('u_fin');
+  for (const p of ['/api/procurement/dashboard', '/api/procurement/requests', '/api/procurement/orders', '/api/procurement/receipts',
+    '/api/procurement/payments', '/api/procurement/shipments', '/api/procurement/picks', '/api/procurement/items', '/api/procurement/vendors',
+    '/api/procurement/reports/inventory', '/api/procurement/reports/shipments', '/api/procurement/reports/receipts', '/api/procurement/reports/payables']) {
+    assert.strictEqual(await st('GET', p), 200, p);
+  }
+  for (const [m, p, b] of [
+    ['POST', '/api/procurement/requests', { requester: 'x', items: [{ supply_id: paper, qty: 1 }] }],
+    ['PUT', `/api/procurement/orders/${poId}`, { note: 'x' }],
+    ['POST', '/api/procurement/receipts', { po_id: poId, inspector: 'x' }],
+    ['PUT', `/api/procurement/payments/${gr.data.payment_id}`, { remark: 'x' }],
+    ['POST', '/api/procurement/shipments', { recipient: 'x', items: [{ supply_id: paper, qty: 1 }] }],
+    ['POST', '/api/procurement/vendors', { name: 'x' }],
+    ['PUT', '/api/procurement/settings', { tax_rate: 5 }],
+    ['POST', '/api/procurement/companies', { name: 'x公司' }]
+  ]) assert.strictEqual(await st(m, p, b), 403, `${m} ${p}`);
+
+  // 採購作業管理員：採購作業全部可 key，含設定與公司
+  await as('u_adm');
+  assert.strictEqual(await st('PUT', '/api/procurement/settings', { tax_rate: 5, payment_terms: '月結30天,貨到付款,月結45天,月結60天,預付款' }), 200);
+  assert.strictEqual(await st('POST', '/api/procurement/companies', { name: '管理員新增公司' }), 200);
+  assert.strictEqual(await st('GET', '/api/procurement/reports/payables'), 200);
+
+  // 沒有任何採購角色的人整個被擋
+  await as('nurse9');
+  assert.strictEqual(await st('GET', '/api/procurement/items'), 403);
   await login('admin', 'admin123');
+  stockBefore += 0;
+});
+
+// ---- 批次（便宜先出）與報表 ----
+async function buy(itemId, vendorId, qty, price) {
+  const r = await ok('POST', '/api/procurement/requests', { requester: '報表測試', items: [{ supply_id: itemId, qty }] });
+  await ok('POST', `/api/procurement/requests/${r.id}/approve`, {});
+  const pr = await ok('GET', `/api/procurement/requests/${r.id}`);
+  const od = await ok('POST', `/api/procurement/requests/${r.id}/order`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorId }] });
+  const po = await ok('GET', `/api/procurement/orders/${od.orders[0].id}`);
+  await ok('PUT', `/api/procurement/orders/${po.id}`, { budget_amount: qty * price + 1, items: [{ id: po.items[0].id, unit_price: price }] });
+  await ok('POST', `/api/procurement/orders/${po.id}/approve`, {});
+  return ok('POST', '/api/procurement/receipts', { po_id: po.id, inspector: '報表測試', invoice_no: `INV${price}` });
+}
+const ymNow = D(0).slice(0, 7).replace('-', '');
+const nextMonth = (() => { const [y, m] = D(0).split('-').map(Number); return m === 12 ? `${y + 1}01` : `${y}${String(m + 1).padStart(2, '0')}`; })();
+
+let lotItem;
+test('批次：同廠商同價併同一批、價格變動才開新批（批號 yyyymm01 起），出貨從最便宜的批次先扣', async () => {
+  lotItem = (await ok('POST', '/api/procurement/items', { code: 'LOT1', name: '批次測試棉棒', unit: '包', price: 10, initial_stock: 5 })).id;
+  await buy(lotItem, vendorA, 10, 12);
+  await buy(lotItem, vendorA, 10, 12);                 // 同價 → 同一批
+  await buy(lotItem, vendorB, 10, 9);                  // 不同廠商、較便宜 → 新批
+  const rep = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}&supply_id=${lotItem}`);
+  assert.strictEqual(rep.rows.length, 3, JSON.stringify(rep.rows));
+  for (const x of rep.rows) assert.match(x.lot_no, new RegExp(`^${ymNow}\\d{2}$`));
+  const byPrice = p => rep.rows.find(x => x.unit_price === p);
+  assert.strictEqual(byPrice(12).in_qty, 20);
+  assert.strictEqual(byPrice(12).vendor_name, '台灣文具有限公司');
+  assert.strictEqual(byPrice(9).in_qty, 10);
+  assert.strictEqual(byPrice(10).in_qty, 5);           // 期初庫存（建品項時輸入）
+  // 出貨 8：全從 $9 那批扣
+  const s1 = await ok('POST', '/api/procurement/shipments', { recipient: '護理站', items: [{ supply_id: lotItem, qty: 8 }] });
+  await ok('POST', `/api/procurement/shipments/${s1.id}/confirm`, {});
+  // 出貨 5：$9 剩 2、再從 $10 扣 3
+  const s2 = await ok('POST', '/api/procurement/shipments', { recipient: '客服部', items: [{ supply_id: lotItem, qty: 5 }] });
+  await ok('POST', `/api/procurement/shipments/${s2.id}/confirm`, {});
+  const r2 = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}&supply_id=${lotItem}`);
+  const p2 = p => r2.rows.find(x => x.unit_price === p);
+  assert.deepStrictEqual([p2(9).out_qty, p2(9).end_qty], [10, 0]);
+  assert.deepStrictEqual([p2(10).out_qty, p2(10).end_qty], [3, 2]);
+  assert.deepStrictEqual([p2(12).out_qty, p2(12).end_qty], [0, 20]);
+  assert.strictEqual(r2.totals.end_qty, 22);
+  assert.strictEqual(r2.totals.end_amt, 2 * 10 + 20 * 12);
+  // 盤點少 2：從最便宜的 $10 批扣，列在調整
+  await ok('POST', `/api/supplies/${lotItem}/txns`, { txn_type: 'adjust', quantity: 20 });
+  const r3 = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}&supply_id=${lotItem}`);
+  assert.strictEqual(r3.rows.find(x => x.unit_price === 10).adj_qty, -2);
+  assert.strictEqual(r3.totals.end_qty, 20);
+  // 下個月：本月期末＝下月期初
+  const nx = await ok('GET', `/api/procurement/reports/inventory?month=${nextMonth}&supply_id=${lotItem}`);
+  assert.strictEqual(nx.totals.open_qty, 20);
+  assert.strictEqual(nx.totals.in_qty, 0);
+  assert.strictEqual(nx.rows.find(x => x.unit_price === 12).open_qty, 20);
+  // 出貨明細金額＝實際扣到的批次成本
+  const sd = await ok('GET', `/api/procurement/reports/shipments?from=${D(0)}&to=${D(0)}&q=${encodeURIComponent('批次測試')}`);
+  assert.deepStrictEqual(sd.rows.map(x => [x.recipient, x.qty, x.amount]), [['護理站', 8, 72], ['客服部', 5, 48]]);
+  assert.strictEqual(sd.total.amount, 120);
+  const sdr = await ok('GET', `/api/procurement/reports/shipments?from=${D(0)}&to=${D(0)}&recipient=${encodeURIComponent('客服')}&supply_id=${lotItem}`);
+  assert.strictEqual(sdr.rows.length, 1);
+});
+
+test('批次：直接改庫存或舊資料（沒有異動紀錄）也會補成期初／校正，期末永遠等於系統庫存', async () => {
+  const legacy = (await ok('POST', '/api/supplies', { name: '舊庫存品項', unit: '個', stock: 7, price: 3 })).id;
+  const rep = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}&supply_id=${legacy}`);
+  assert.strictEqual(rep.rows.length, 1);
+  assert.deepStrictEqual([rep.rows[0].open_qty, rep.rows[0].end_qty, rep.rows[0].end_amt], [7, 7, 21]);
+  // 全部品項：報表期末數量合計＝系統庫存合計
+  const all = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}`);
+  const stock = (await ok('GET', '/api/supplies/stock-summary')).reduce((t, x) => t + x.stock, 0);
+  assert.strictEqual(all.totals.end_qty, stock);
+});
+
+test('報表：進貨明細、廠商請款明細（稅額分攤合計一致）、Excel 匯出', async () => {
+  const rc = await ok('GET', `/api/procurement/reports/receipts?from=${D(0)}&to=${D(0)}&supply_id=${lotItem}`);
+  assert.deepStrictEqual(rc.rows.map(x => [x.vendor_name, x.qty, x.amount]).sort(),
+    [['台灣文具有限公司', 10, 120], ['台灣文具有限公司', 10, 120], ['好醫療器材行', 10, 90]].sort());
+  assert.strictEqual(rc.total.amount, 330);
+  assert.ok(rc.summary.some(g => g.vendor_name === '台灣文具有限公司' && g.qty === 20 && g.amount === 240));
+  const pay = await ok('GET', `/api/procurement/reports/payables?from=${D(0)}&to=${D(0)}&vendor_id=${vendorA}`);
+  assert.ok(pay.rows.length > 0);
+  assert.ok(pay.rows.every(x => x.vendor_name === '台灣文具有限公司'));
+  // 每張請款單：明細總額合計＝請款單含稅總額
+  const heads = (await ok('GET', `/api/procurement/payments?vendor_id=${vendorA}`)).filter(p => p.status !== 'cancelled');
+  for (const h of heads) {
+    const lines = pay.rows.filter(x => x.pay_no === h.no);
+    if (!lines.length) continue;
+    assert.strictEqual(lines.reduce((t, x) => t + x.total, 0), h.total_amount, h.no);
+    assert.strictEqual(lines.reduce((t, x) => t + x.tax, 0), h.tax_amount, h.no);
+  }
+  assert.ok(pay.rows.some(x => x.invoice_no === 'INV12'));
+  for (const kind of ['inventory', 'shipments', 'receipts', 'payables']) {
+    const res = await fetch(`${BASE}/api/procurement/reports/${kind}?format=xlsx`, { headers: { Cookie: cookie } });
+    assert.strictEqual(res.status, 200, kind);
+    assert.match(res.headers.get('content-type'), /spreadsheetml/);
+  }
 });

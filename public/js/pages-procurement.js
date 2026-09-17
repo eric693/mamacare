@@ -22,7 +22,18 @@
   });
   const badge = (map, s) => { const m = map[s] || [s, 'gray']; return `<span class="badge ${m[1]}">${esc(m[0])}</span>`; };
   const money = n => '$' + Math.round(Number(n || 0)).toLocaleString('en-US');
-  const can = m => currentUser && (currentUser.role === 'admin' || (currentUser.modules || []).includes(m));
+  // 七種採購角色（帳號管理勾選）→ 可做的事；與 src/routes/procurement.js 的 PERMS 同一份對照
+  const ROLE = { request: 'proc_request', buyer: 'proc_buyer', receive: 'proc_receive', ship: 'proc_ship',
+    account: 'proc_account', finance: 'proc_finance', admin: 'proc_admin' };
+  const R = (...k) => k.map(x => ROLE[x]);
+  const ALL_ROLES = Object.values(ROLE);
+  const PERMS = {
+    requests_write: R('request', 'admin'), requests_approve: R('admin'),
+    orders_write: R('buyer', 'admin'), orders_approve: R('admin'),
+    receipts_write: R('receive', 'admin'), payments_write: R('account', 'admin'),
+    ship_write: R('ship', 'admin'), master_write: R('buyer', 'admin'), settings_write: R('admin'), reports: R('finance', 'admin')
+  };
+  const can = perm => currentUser && (currentUser.role === 'admin' || (PERMS[perm] || []).some(k => (currentUser.modules || []).includes(k)));
   const val = (root, sel) => { const el = root.querySelector(sel); return el ? el.value.trim() : ''; };
   let SETTINGS_CACHE = null;
 
@@ -172,7 +183,7 @@
       </div>
       <div class="card">
         <div class="row between"><h3>庫存警示（低於安全庫存）</h3>
-          ${d.low_stock.length && can('purchasing') ? '<button class="btn small" id="pd-req">低庫存一鍵請購</button>' : ''}</div>
+          ${d.low_stock.length && can('requests_write') ? '<button class="btn small" id="pd-req">低庫存一鍵請購</button>' : ''}</div>
         ${d.low_stock.length ? `<div class="table-wrap"><table class="data stack">
           <thead><tr><th>品項</th><th>倉庫別</th><th>目前庫存</th><th>安全庫存</th></tr></thead>
           <tbody>${d.low_stock.map(s => `<tr>
@@ -200,7 +211,7 @@
     main().innerHTML = `
       <div class="page-title">請購單</div>
       <div class="card no-print"><div class="row" style="gap:8px">
-        ${can('purchasing') ? '<button class="btn" id="pr-new">新增請購單</button>' : ''}
+        ${can('requests_write') ? '<button class="btn" id="pr-new">新增請購單</button>' : ''}
         <span style="color:var(--muted);font-size:.85rem">流程：請購（待核准）→ 主管核准 → 採購人員於「採購單」頁指定廠商建立採購單</span></div></div>
       ${filterBar({ dateLabel: '請購日期', statuses: PR_ST, companies: st.companies, placeholder: '單號／申請人／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
@@ -223,10 +234,10 @@
         <td data-label="採購單"><small>${esc(r.po_nos || '—')}</small></td>
         <td data-label="操作" class="no-print">
           <button class="btn small secondary" data-view="${r.id}">查看／列印</button>
-          ${r.status === 'pending' && can('purchasing') ? `<button class="btn small secondary" data-edit="${r.id}">修改</button>` : ''}
-          ${r.status === 'pending' && can('purchasing_approve') ? `<button class="btn small" data-approve="${r.id}" data-no="${esc(r.no)}">核准</button>` : ''}
-          ${r.status === 'approved' && can('purchasing') ? `<button class="btn small" data-order="${r.id}">建立採購單</button>` : ''}
-          ${['pending', 'approved'].includes(r.status) && can('purchasing') ? `<button class="btn small danger" data-cancel="${r.id}">取消</button>` : ''}
+          ${r.status === 'pending' && can('requests_write') ? `<button class="btn small secondary" data-edit="${r.id}">修改</button>` : ''}
+          ${r.status === 'pending' && can('requests_approve') ? `<button class="btn small" data-approve="${r.id}" data-no="${esc(r.no)}">核准</button>` : ''}
+          ${r.status === 'approved' && can('orders_write') ? `<button class="btn small" data-order="${r.id}">建立採購單</button>` : ''}
+          ${['pending', 'approved'].includes(r.status) && can('requests_write') ? `<button class="btn small danger" data-cancel="${r.id}">取消</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">查無請購單</div></td></tr>';
       main().querySelectorAll('[data-view]').forEach(b => b.onclick = async () => printRequest(await api('/procurement/requests/' + b.dataset.view)));
       main().querySelectorAll('[data-edit]').forEach(b => b.onclick = async () => openPrForm(await api('/procurement/requests/' + b.dataset.edit), null, reload));
@@ -390,14 +401,14 @@
   // 採購單列表的操作按鈕（採購單頁與驗貨頁共用）
   function poActions(o) {
     const b = [];
-    const editLabel = o.status === 'draft' && can('purchasing') ? '編輯／比價' : '查看';
+    const editLabel = o.status === 'draft' && can('orders_write') ? '編輯／比價' : '查看';
     b.push(`<button class="btn small secondary" data-po-view="${o.id}">${editLabel}</button>`);
     b.push(`<button class="btn small secondary" data-po-print="${o.id}">列印</button>`);
-    if (o.status === 'draft' && can('purchasing_approve')) b.push(`<button class="btn small" data-po-approve="${o.id}">審核</button>`);
-    if (['pending', 'partial'].includes(o.status) && can('purchasing')) b.push(`<button class="btn small" data-po-recv="${o.id}">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>`);
-    if (o.status === 'pending' && !o.receipt_count && can('purchasing_approve')) b.push(`<button class="btn small secondary" data-po-return="${o.id}">退回修改</button>`);
-    if (o.status === 'partial' && can('purchasing_approve')) b.push(`<button class="btn small secondary" data-po-close="${o.id}">結案</button>`);
-    if (['draft', 'pending'].includes(o.status) && !o.receipt_count && can('purchasing_approve')) b.push(`<button class="btn small danger" data-po-cancel="${o.id}">取消</button>`);
+    if (o.status === 'draft' && can('orders_approve')) b.push(`<button class="btn small" data-po-approve="${o.id}">審核</button>`);
+    if (['pending', 'partial'].includes(o.status) && can('receipts_write')) b.push(`<button class="btn small" data-po-recv="${o.id}">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>`);
+    if (o.status === 'pending' && !o.receipt_count && can('orders_approve')) b.push(`<button class="btn small secondary" data-po-return="${o.id}">退回修改</button>`);
+    if (o.status === 'partial' && can('orders_approve')) b.push(`<button class="btn small secondary" data-po-close="${o.id}">結案</button>`);
+    if (['draft', 'pending'].includes(o.status) && !o.receipt_count && can('orders_approve')) b.push(`<button class="btn small danger" data-po-cancel="${o.id}">取消</button>`);
     return b.join(' ');
   }
   function wirePoActions(root, reload) {
@@ -442,7 +453,7 @@
             <td data-label="核准">${esc(r.approved_name || '—')}<br><small>${esc((r.approved_at || '').slice(0, 16))}</small></td>
             <td data-label="操作" class="no-print">
               <button class="btn small secondary" data-prview="${r.id}">查看</button>
-              ${can('purchasing') ? `<button class="btn small" data-order="${r.id}">建立採購單</button>` : ''}</td></tr>`).join('')
+              ${can('orders_write') ? `<button class="btn small" data-order="${r.id}">建立採購單</button>` : ''}</td></tr>`).join('')
             || '<tr><td colspan="6"><div class="empty">目前沒有待建立採購單的請購單</div></td></tr>'}</tbody></table></div>
         <small style="color:var(--muted)">為每個品項指定預計採購廠商與到貨日；相同廠商＋相同到貨日的品項合併成一張採購單（建立後為「待審核」）。</small>
       </div>
@@ -476,7 +487,7 @@
   // 採購單視窗：待審核可編輯（廠商、預算、單價、新品項比價）；審核者在同一視窗按「審核通過」
   async function openPoForm(o, done) {
     const draft = o.status === 'draft';
-    const editable = draft && can('purchasing');
+    const editable = draft && can('orders_write');
     const vendors = await api('/procurement/vendors');
     const dis = editable ? '' : 'disabled';
     const vOpts = sel => vendors.map(v => `<option value="${v.id}" ${String(sel) === String(v.id) ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
@@ -518,8 +529,8 @@
         <div class="field"><label>預算金額 <b class="req">*</b></label><input type="number" min="0" id="pof-budget" value="${o.budget_amount || ''}" ${dis}
           placeholder="${o.pr_budget ? '請購預算 ' + o.pr_budget : ''}"></div>
         <div class="field"><label>來源請購單${o.company_name ? `（${esc(o.company_name)}）` : ''}</label><input value="${esc(o.pr_no || '—')}" disabled></div>
-        <div class="field"><label>預計到貨日</label><input type="date" id="pof-eta" value="${esc(o.eta || '')}" ${['draft', 'pending', 'partial'].includes(o.status) && can('purchasing') ? '' : 'disabled'}></div>
-        <div class="field full"><label>備註</label><input id="pof-note" value="${esc(o.note || '')}" ${['draft', 'pending', 'partial'].includes(o.status) && can('purchasing') ? '' : 'disabled'}></div>
+        <div class="field"><label>預計到貨日</label><input type="date" id="pof-eta" value="${esc(o.eta || '')}" ${['draft', 'pending', 'partial'].includes(o.status) && can('orders_write') ? '' : 'disabled'}></div>
+        <div class="field full"><label>備註</label><input id="pof-note" value="${esc(o.note || '')}" ${['draft', 'pending', 'partial'].includes(o.status) && can('orders_write') ? '' : 'disabled'}></div>
       </div>
       <div class="table-wrap"><table class="data stack">
         <thead><tr><th>品項</th><th>數量</th><th>未稅單價</th><th>未稅小計</th></tr></thead>
@@ -533,10 +544,10 @@
       ${draft ? `<div id="pof-problems" style="margin:8px 0"></div>` : ''}
       <div class="row" style="gap:8px;flex-wrap:wrap">
         ${editable ? '<button class="btn secondary" id="pof-save">儲存</button>' : ''}
-        ${draft && can('purchasing_approve') ? '<button class="btn" id="pof-approve">審核通過</button>' : ''}
-        ${!draft && ['pending', 'partial'].includes(o.status) && can('purchasing') ? '<button class="btn secondary" id="pof-save-eta">儲存到貨日／備註</button>' : ''}
+        ${draft && can('orders_approve') ? '<button class="btn" id="pof-approve">審核通過</button>' : ''}
+        ${!draft && ['pending', 'partial'].includes(o.status) && can('orders_write') ? '<button class="btn secondary" id="pof-save-eta">儲存到貨日／備註</button>' : ''}
         <button class="btn secondary" id="pof-print">列印</button>
-        ${['pending', 'partial'].includes(o.status) && can('purchasing') ? `<button class="btn secondary" id="pof-recv">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>` : ''}
+        ${['pending', 'partial'].includes(o.status) && can('receipts_write') ? `<button class="btn secondary" id="pof-recv">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>` : ''}
         <span class="error-msg" id="pof-err"></span></div>`, body => {
       const showProblems = list => {
         const box = body.querySelector('#pof-problems');
@@ -842,8 +853,8 @@
         <td data-label="狀態">${p.merged_into ? `<span class="badge gray">已合併</span><br><small>併入 ${esc(p.merged_into_no || '')}</small>` : badge(PAY_ST, p.status)}${p.status === 'paid' ? `<br><small>${esc(p.paid_on || '')} ${esc(p.pay_method || '')}</small>` : ''}
           ${p.status !== 'cancelled' && p.month_count > 1 ? `<br><span class="badge red" title="公司規定同一廠商每月只開一張請款單">本月同廠商 ${p.month_count} 張</span>` : ''}</td>
         <td data-label="操作" class="no-print">
-          ${p.status === 'unpaid' && can('payables') ? `<button class="btn small" data-pay="${p.id}">填金額／付款</button>` : ''}
-          ${p.status === 'unpaid' && p.month_unpaid > 1 && can('payables') ? `<button class="btn small secondary" data-merge="${p.id}">合併請款</button>` : ''}
+          ${p.status === 'unpaid' && can('payments_write') ? `<button class="btn small" data-pay="${p.id}">填金額／付款</button>` : ''}
+          ${p.status === 'unpaid' && p.month_unpaid > 1 && can('payments_write') ? `<button class="btn small secondary" data-merge="${p.id}">合併請款</button>` : ''}
           <button class="btn small secondary" data-print="${p.id}">支付憑單</button>
           ${p.status === 'paid' && currentUser.role === 'admin' ? `<button class="btn small danger" data-unpay="${p.id}">改回待付款</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無請款單</div></td></tr>';
@@ -865,7 +876,7 @@
       if (r.month_paid) alert(`提醒：「${r.vendor_name}」本月已有已付款的請款單，依規定同一廠商每月只開一張請款單。\n如需合併，請由管理員將已付款單改回待付款後，於請款單頁合併。`);
       return;
     }
-    if (!can('payables')) {
+    if (!can('payments_write')) {
       alert(`提醒：「${r.vendor_name}」本月已有待付款請款單 ${cands.map(c => c.no).join('、')}，依規定應合併請款，請通知財務於請款單頁合併。`);
       return;
     }
@@ -1051,7 +1062,7 @@
     main().innerHTML = `
       <div class="page-title">出貨管理</div>
       <div class="card no-print"><div class="row" style="gap:8px">
-        ${can('purchasing') ? '<button class="btn" id="sh-new">新增出貨單</button>' : ''}
+        ${can('ship_write') ? '<button class="btn" id="sh-new">新增出貨單</button>' : ''}
         <span style="color:var(--muted);font-size:.85rem">建立出貨單會同時產生領料單；按「確認出貨」才從備品庫存扣除。</span></div></div>
       ${filterBar({ dateLabel: '出貨日期', statuses: SHIP_ST, companies: st.companies, placeholder: '出貨單號／客戶部門／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
@@ -1073,7 +1084,7 @@
         <td data-label="狀態">${badge(SHIP_ST, s.status)}</td>
         <td data-label="操作" class="no-print">
           <button class="btn small secondary" data-view="${s.id}">查看</button>
-          ${s.status === 'pending' && can('purchasing') ? `<button class="btn small secondary" data-edit="${s.id}">修改</button>
+          ${s.status === 'pending' && can('ship_write') ? `<button class="btn small secondary" data-edit="${s.id}">修改</button>
             <button class="btn small" data-confirm="${s.id}">確認出貨</button>
             <button class="btn small danger" data-cancel="${s.id}">取消</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">查無出貨單</div></td></tr>';
@@ -1231,7 +1242,7 @@
           <td data-label="未稅庫存值">${r.price ? money(r.stock * r.price) : '—'}</td>
           <td data-label="狀態">${isLow ? '<span class="badge red">庫存不足</span>' : '<span class="badge green">正常</span>'}</td>
           <td data-label="操作" class="no-print">
-            ${can('purchasing') ? `<button class="btn small" data-req="${r.id}">請購</button>` : ''}
+            ${can('requests_write') ? `<button class="btn small" data-req="${r.id}">請購</button>` : ''}
             <button class="btn small secondary" data-hist="${r.id}">歷史</button></td></tr>`;
       }).join('') || '<tr><td colspan="9"><div class="empty">查無品項</div></td></tr>';
       main().querySelectorAll('[data-req]').forEach(b => b.onclick = () => {
@@ -1271,7 +1282,7 @@
 
   /* ================= 品項管理 ================= */
   async function viewProcItems() {
-    const editable = can('purchasing_approve');
+    const editable = can('master_write');
     const vendors = await api('/procurement/vendors');
     main().innerHTML = `
       <div class="page-title">品項管理</div>
@@ -1345,7 +1356,7 @@
 
   /* ================= 廠商管理 ================= */
   async function viewProcVendors() {
-    const editable = can('purchasing_approve');
+    const editable = can('master_write');
     main().innerHTML = `
       <div class="page-title">廠商管理</div>
       <div class="card no-print"><div class="form-grid">
@@ -1511,8 +1522,9 @@
 
   /* ================= 採購設定 ================= */
   async function viewProcSettings() {
-    const [s, list] = await Promise.all([api('/settings'), api('/procurement/companies?all=1')]);
-    const isAdmin = currentUser.role === 'admin';
+    SETTINGS_CACHE = null;
+    const [st, list] = await Promise.all([procSettings(), api('/procurement/companies?all=1')]);
+    const isAdmin = can('settings_write');
     const dis = isAdmin ? '' : 'disabled';
     main().innerHTML = `
       <div class="page-title">採購設定</div>
@@ -1533,11 +1545,11 @@
       <div class="card">
         <h3>共用參數</h3>
         <div class="form-grid">
-          <div class="field"><label>請款單預設稅率（%）</label><input type="number" min="0" max="100" step="0.1" id="ps-tax" value="${esc(s.proc_tax_rate || '5')}" ${dis}></div>
+          <div class="field"><label>請款單預設稅率（%）</label><input type="number" min="0" max="100" step="0.1" id="ps-tax" value="${esc(st.tax_rate)}" ${dis}></div>
           <div class="field full"><label>廠商付款條件選項<small>（逗號分隔；含數字者視為天數，用來算付款到期日）</small></label>
-            <input id="ps-terms" value="${esc(s.proc_payment_terms || '')}" ${dis}></div>
+            <input id="ps-terms" value="${esc(st.payment_terms.join(','))}" ${dis}></div>
         </div>
-        <div class="row" style="gap:8px;margin-top:8px">${isAdmin ? '<button class="btn" id="ps-save">儲存參數</button>' : '<small style="color:var(--muted)">僅管理員可修改</small>'}<span class="error-msg" id="ps-err"></span></div>
+        <div class="row" style="gap:8px;margin-top:8px">${isAdmin ? '<button class="btn" id="ps-save">儲存參數</button>' : '<small style="color:var(--muted)">僅採購作業管理員可修改</small>'}<span class="error-msg" id="ps-err"></span></div>
       </div>`;
     const reload = () => { SETTINGS_CACHE = null; viewProcSettings(); };
     const openCo = c => openModal(c ? `編輯公司 — ${c.name}` : '新增採購公司', `
@@ -1577,8 +1589,7 @@
       const tax = Number($('#ps-tax').value);
       if (!(tax >= 0 && tax <= 100)) { $('#ps-err').textContent = '稅率需介於 0 到 100'; return; }
       try {
-        await api('/settings', { method: 'PUT', body: { proc_tax_rate: String(tax),
-          proc_payment_terms: $('#ps-terms').value.split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',') } });
+        await api('/procurement/settings', { method: 'PUT', body: { tax_rate: tax, payment_terms: $('#ps-terms').value } });
         SETTINGS_CACHE = null;
         $('#ps-err').textContent = '';
         alert('已儲存');
@@ -1586,20 +1597,129 @@
     };
   }
 
+  /* ================= 採購報表 ================= */
+  const REPORTS = {
+    inventory: { label: '進銷存一覽表', api: 'inventory' },
+    shipments: { label: '出貨明細', api: 'shipments' },
+    receipts: { label: '進貨明細', api: 'receipts' },
+    payables: { label: '廠商請款明細', api: 'payables' }
+  };
+  const NUM_KEYS = new Set(['unit_price', 'open_qty', 'open_amt', 'in_qty', 'in_amt', 'out_qty', 'out_amt', 'adj_qty', 'adj_amt',
+    'end_qty', 'end_amt', 'qty', 'amount', 'tax', 'total']);
+  const MONEY_KEYS = new Set(['unit_price', 'open_amt', 'in_amt', 'out_amt', 'adj_amt', 'end_amt', 'amount', 'tax', 'total']);
+  const cell = (k, v) => MONEY_KEYS.has(k) ? money(v) : NUM_KEYS.has(k) ? Number(v || 0).toLocaleString('en-US') : esc(v === null || v === undefined ? '' : v);
+
+  async function viewProcReports() {
+    const kind = REPORTS[(location.hash.split('?r=')[1] || '').split('&')[0]] ? location.hash.split('?r=')[1].split('&')[0] : 'inventory';
+    const [st, vendors, { rows: items }] = await Promise.all([procSettings(), api('/procurement/vendors?active=all'), api('/procurement/items')]);
+    const ym = todayStr().slice(0, 7);
+    const [mf, mt] = [ym + '-01', (() => { const d = new Date(ym + '-01T00:00:00'); d.setMonth(d.getMonth() + 1); d.setDate(0); return `${ym}-${String(d.getDate()).padStart(2, '0')}`; })()];
+    const vendorSel = `<select id="rp-vendor"><option value="">全部廠商</option>${vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</select>`;
+    const itemSel = `<select id="rp-item"><option value="">全部品項</option>${items.map(i => `<option value="${i.id}">${esc(i.code ? i.code + ' ' : '')}${esc(i.name)}</option>`).join('')}</select>`;
+    const coSel = multiCo(st) ? `<div class="field"><label>採購公司</label><select id="rp-co"><option value="">全部公司</option>${st.companies.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>` : '';
+    const dates = `<div class="field"><label>日期（起）</label><input type="date" id="rp-from" value="${mf}"></div>
+      <div class="field"><label>日期（迄）</label><input type="date" id="rp-to" value="${mt}"></div>`;
+    const filters = {
+      inventory: `<div class="field"><label>年月（yyyymm）</label><input type="month" id="rp-month" value="${ym}"></div>
+        <div class="field"><label>品項</label>${itemSel}</div><div class="field"><label>廠商</label>${vendorSel}</div>
+        <div class="field"><label>關鍵字</label><input id="rp-q" placeholder="品名／編號／批次"></div>`,
+      shipments: `${dates}<div class="field"><label>客戶／部門</label><input id="rp-recipient" list="rp-recipients" placeholder="全部"><datalist id="rp-recipients"></datalist></div>
+        <div class="field"><label>品項</label>${itemSel}</div>${coSel}`,
+      receipts: `${dates}<div class="field"><label>品項</label>${itemSel}</div><div class="field"><label>廠商</label>${vendorSel}</div>${coSel}`,
+      payables: `${dates}<div class="field"><label>日期欄位</label><select id="rp-df"><option value="req">請款日期</option><option value="invoice">發票日期</option></select></div>
+        <div class="field"><label>廠商</label>${vendorSel}</div>
+        <div class="field"><label>狀態</label><select id="rp-status"><option value="">全部</option><option value="unpaid">待付款</option><option value="paid">已付款</option></select></div>${coSel}`
+    }[kind];
+    main().innerHTML = `
+      <div class="page-title">採購報表</div>
+      <div class="card no-print">
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">${Object.entries(REPORTS).map(([k, r]) =>
+          `<a class="btn small ${k === kind ? '' : 'secondary'}" href="#/proc-reports?r=${k}">${r.label}</a>`).join('')}</div>
+        <div class="form-grid">${filters}
+          <div class="field"><label>&nbsp;</label><div class="row" style="gap:6px">
+            <button class="btn small" id="rp-go">查詢</button>
+            <button class="btn small secondary" id="rp-xlsx">匯出 Excel</button>
+            <button class="btn small secondary" id="rp-print">列印</button></div></div>
+        </div>
+        ${kind === 'inventory' ? '<small style="color:var(--muted)">依批次列示：同一品項、同一廠商、同一單價為一批（價格沒變不另開批次，批號 yyyymm01 起）；出貨從單價最低的批次先扣。盤點盤盈盤虧另列「盤點調整」，期初＋進貨−出貨±調整＝期末。</small>' : ''}
+        ${kind === 'shipments' ? '<small style="color:var(--muted)">出貨金額為實際扣到的批次成本（未稅）。</small>' : ''}
+        ${kind === 'payables' ? '<small style="color:var(--muted)">不含已合併／已取消的請款單；稅額依品項金額分攤，合計等於請款單。</small>' : ''}
+      </div>
+      <div class="card" id="rp-out"><div class="empty">查詢中…</div></div>`;
+    const qs = () => {
+      const p = new URLSearchParams();
+      const g = id => { const el = main().querySelector(id); return el ? el.value.trim() : ''; };
+      if (kind === 'inventory') { if (g('#rp-month')) p.set('month', g('#rp-month').replace('-', '')); if (g('#rp-q')) p.set('q', g('#rp-q')); }
+      else { p.set('from', g('#rp-from')); p.set('to', g('#rp-to')); }
+      if (g('#rp-item')) p.set('supply_id', g('#rp-item'));
+      if (g('#rp-vendor')) p.set('vendor_id', g('#rp-vendor'));
+      if (g('#rp-recipient')) p.set('recipient', g('#rp-recipient'));
+      if (g('#rp-df')) p.set('date_field', g('#rp-df'));
+      if (g('#rp-status')) p.set('status', g('#rp-status'));
+      if (g('#rp-co')) p.set('company_id', g('#rp-co'));
+      return p;
+    };
+    let last = null;
+    const load = async () => {
+      const out = $('#rp-out');
+      try {
+        const d = last = await api(`/procurement/reports/${REPORTS[kind].api}?${qs()}`);
+        const dl = main().querySelector('#rp-recipients');
+        if (dl && d.recipients) dl.innerHTML = d.recipients.map(r => `<option value="${esc(r)}">`).join('');
+        const tot = d.totals || d.total || {};
+        const totalRow = `<tr style="font-weight:700;background:var(--primary-light)">${d.columns.map((c, i) =>
+          `<td>${i === 0 ? '合計' : tot[c.key] !== undefined ? cell(c.key, tot[c.key]) : ''}</td>`).join('')}</tr>`;
+        const summary = d.summary && d.summary.length ? `
+          <div class="sec-hd" style="margin-top:12px">彙總（依${kind === 'receipts' ? '廠商＋品項' : '品項'}）</div>
+          <table class="data"><thead><tr>${kind === 'receipts' ? '<th>廠商</th>' : ''}<th>品項</th><th>單位</th><th>數量</th><th>金額</th></tr></thead>
+          <tbody>${d.summary.map(g => `<tr>${kind === 'receipts' ? `<td>${esc(g.vendor_name || '')}</td>` : ''}<td>${esc(g.item)}</td><td>${esc(g.unit || '')}</td>
+            <td>${g.qty.toLocaleString('en-US')}</td><td>${money(g.amount)}</td></tr>`).join('')}</tbody></table>` : '';
+        out.innerHTML = `
+          <h3>${esc(d.title)}${d.count !== undefined ? `（請款單 ${d.count} 張）` : ''}</h3>
+          <div class="table-wrap"><table class="data stack">
+            <thead><tr>${d.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead>
+            <tbody>${d.rows.map(r => `<tr>${d.columns.map(c => `<td data-label="${esc(c.label)}" style="${NUM_KEYS.has(c.key) ? 'text-align:right' : ''}">${cell(c.key, r[c.key])}</td>`).join('')}</tr>`).join('')
+              || `<tr><td colspan="${d.columns.length}"><div class="empty">查無資料</div></td></tr>`}
+              ${d.rows.length ? totalRow : ''}</tbody></table></div>${summary}`;
+      } catch (e) { out.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`; }
+    };
+    $('#rp-go').onclick = load;
+    $('#rp-xlsx').onclick = () => { const p = qs(); p.set('format', 'xlsx'); location.href = `/api/procurement/reports/${REPORTS[kind].api}?${p}`; };
+    $('#rp-print').onclick = () => {
+      if (!last) return;
+      const w = window.open('', '_blank');
+      w.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>${esc(last.title)}</title>
+        <style>@page{size:A4 landscape;margin:10mm}body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;font-size:9pt}
+        h1{font-size:13pt;text-align:center;margin:0 0 2mm}h2{font-size:10pt;text-align:center;margin:0 0 3mm;font-weight:400}
+        table{width:100%;border-collapse:collapse}td,th{border:0.6pt solid #000;padding:1mm 1.5mm}th{background:#eee}
+        td.n{text-align:right}@media print{.noprint{display:none}}</style></head><body>
+        <h1>${esc(st.center_name || '')}</h1><h2>${esc(last.title)}</h2>
+        <table><thead><tr>${last.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>
+        ${last.rows.map(r => `<tr>${last.columns.map(c => `<td class="${NUM_KEYS.has(c.key) ? 'n' : ''}">${cell(c.key, r[c.key])}</td>`).join('')}</tr>`).join('')}
+        <tr>${last.columns.map((c, i) => { const t = last.totals || last.total || {}; return `<th class="${NUM_KEYS.has(c.key) ? 'n' : ''}">${i === 0 ? '合計' : t[c.key] !== undefined ? cell(c.key, t[c.key]) : ''}</th>`; }).join('')}</tr>
+        </tbody></table>
+        <div class="noprint" style="text-align:center;margin-top:12px"><button onclick="window.print()">列印 / 另存 PDF（A4 橫式）</button></div></body></html>`);
+      w.document.close();
+    };
+    main().querySelectorAll('select').forEach(el => { el.onchange = load; });
+    load();
+  }
+
   /* ---------- 註冊路由與權限 ---------- */
-  const ALL = ['purchasing', 'purchasing_approve', 'payables'];
+  // 各頁可瀏覽的角色（採購作業權限設定）
   const pages = {
-    '#/proc-dashboard': [viewProcDashboard, ALL],
-    '#/proc-requests': [viewProcRequests, ['purchasing', 'purchasing_approve']],
-    '#/proc-orders': [viewProcOrders, ['purchasing', 'purchasing_approve']],
-    '#/proc-receiving': [viewProcReceiving, ['purchasing', 'purchasing_approve']],
-    '#/proc-payments': [viewProcPayments, ALL],
-    '#/proc-shipments': [viewProcShipments, ['purchasing', 'purchasing_approve']],
-    '#/proc-picks': [viewProcPicks, ['purchasing', 'purchasing_approve']],
-    '#/proc-stock': [viewProcStock, ALL],
-    '#/proc-items': [viewProcItems, ALL],
-    '#/proc-vendors': [viewProcVendors, ALL],
-    '#/proc-settings': [viewProcSettings, ALL]
+    '#/proc-dashboard': [viewProcDashboard, R('request', 'account', 'finance', 'admin')],
+    '#/proc-requests': [viewProcRequests, R('request', 'account', 'finance', 'admin')],
+    '#/proc-orders': [viewProcOrders, R('buyer', 'account', 'finance', 'admin')],
+    '#/proc-receiving': [viewProcReceiving, R('receive', 'account', 'finance', 'admin')],
+    '#/proc-payments': [viewProcPayments, R('account', 'finance', 'admin')],
+    '#/proc-shipments': [viewProcShipments, R('ship', 'finance', 'admin')],
+    '#/proc-picks': [viewProcPicks, R('ship', 'account', 'finance', 'admin')],
+    '#/proc-stock': [viewProcStock, ALL_ROLES],
+    '#/proc-items': [viewProcItems, R('buyer', 'finance', 'admin')],
+    '#/proc-vendors': [viewProcVendors, R('buyer', 'finance', 'admin')],
+    '#/proc-reports': [viewProcReports, R('finance', 'admin')],
+    '#/proc-settings': [viewProcSettings, R('finance', 'admin')]
   };
   for (const [hash, [fn, perm]] of Object.entries(pages)) {
     routes[hash] = fn;

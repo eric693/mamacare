@@ -148,17 +148,18 @@
       <div class="nav-group" data-nav-group>
         <button type="button" class="nav-group-hd">採購作業<span class="chev">▾</span></button>
         <div class="nav-group-body">
-          <a href="#/proc-dashboard" data-nav data-perm="purchasing,purchasing_approve,payables">採購總覽</a>
-          <a href="#/proc-requests" data-nav data-perm="purchasing,purchasing_approve">請購單</a>
-          <a href="#/proc-orders" data-nav data-perm="purchasing,purchasing_approve">採購單</a>
-          <a href="#/proc-receiving" data-nav data-perm="purchasing,purchasing_approve">驗貨入庫</a>
-          <a href="#/proc-payments" data-nav data-perm="purchasing,purchasing_approve,payables">請款單</a>
-          <a href="#/proc-shipments" data-nav data-perm="purchasing,purchasing_approve">出貨管理</a>
-          <a href="#/proc-picks" data-nav data-perm="purchasing,purchasing_approve">領料單</a>
-          <a href="#/proc-stock" data-nav data-perm="purchasing,purchasing_approve,payables">庫存總覽</a>
-          <a href="#/proc-items" data-nav data-perm="purchasing,purchasing_approve,payables">品項管理</a>
-          <a href="#/proc-vendors" data-nav data-perm="purchasing,purchasing_approve,payables">廠商管理</a>
-          <a href="#/proc-settings" data-nav data-perm="purchasing,purchasing_approve,payables">採購設定</a>
+          <a href="#/proc-dashboard" data-nav data-perm="proc_request,proc_account,proc_finance,proc_admin">採購總覽</a>
+          <a href="#/proc-requests" data-nav data-perm="proc_request,proc_account,proc_finance,proc_admin">請購單</a>
+          <a href="#/proc-orders" data-nav data-perm="proc_buyer,proc_account,proc_finance,proc_admin">採購單</a>
+          <a href="#/proc-receiving" data-nav data-perm="proc_receive,proc_account,proc_finance,proc_admin">驗貨入庫</a>
+          <a href="#/proc-payments" data-nav data-perm="proc_account,proc_finance,proc_admin">請款單</a>
+          <a href="#/proc-shipments" data-nav data-perm="proc_ship,proc_finance,proc_admin">出貨管理</a>
+          <a href="#/proc-picks" data-nav data-perm="proc_ship,proc_account,proc_finance,proc_admin">領料單</a>
+          <a href="#/proc-stock" data-nav data-perm="proc_request,proc_buyer,proc_receive,proc_ship,proc_account,proc_finance,proc_admin">庫存總覽</a>
+          <a href="#/proc-items" data-nav data-perm="proc_buyer,proc_finance,proc_admin">品項管理</a>
+          <a href="#/proc-vendors" data-nav data-perm="proc_buyer,proc_finance,proc_admin">廠商管理</a>
+          <a href="#/proc-reports" data-nav data-perm="proc_finance,proc_admin">採購報表</a>
+          <a href="#/proc-settings" data-nav data-perm="proc_finance,proc_admin">採購設定</a>
         </div>
       </div>
       <div class="nav-group" data-nav-group>

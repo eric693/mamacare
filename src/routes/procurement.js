@@ -3,28 +3,62 @@
 // 庫存不另立一份：品項就是既有的「備品」（supplies），驗貨入庫與出貨都寫 supply_txns，
 // 所以備品庫存管理、盤點、進出明細看到的是同一個數字。
 //
-// 權限分三層（由 server.js 的 MODULE_RULES 先擋「完全沒有採購權限」的人）：
-//   purchasing          建請購單、建採購單並鍵入廠商／預算／比價、驗貨入庫（可分批）、出貨／領料
-//   purchasing_approve  核准請購、審核採購單（退回／取消／結案）、維護廠商與品項
-//   payables            請款單填金額與付款
+// 權限為七種角色（帳號管理勾選，可複選；server.js 的 MODULE_RULES 先擋「完全沒有採購角色」的人），
+// 每個動作可用的角色見下方 PERMS，前端 pages-procurement.js 有同一份對照。
 const express = require('express');
+const { ensureLotSchema, syncLots } = require('../proc-lots');
+
+const ROLE = {
+  request: 'proc_request',   // 請購人員
+  buyer: 'proc_buyer',       // 採購人員
+  receive: 'proc_receive',   // 驗貨人員
+  ship: 'proc_ship',         // 出貨人員
+  account: 'proc_account',   // 記帳人員
+  finance: 'proc_finance',   // 財務人員（全部可瀏覽）
+  admin: 'proc_admin'        // 採購作業管理員（全部可瀏覽、key 單）
+};
+const ALL_ROLES = Object.values(ROLE);
+const r = (...keys) => keys.map(k => ROLE[k]);
+const PERMS = {
+  read: [ALL_ROLES, '採購作業'],
+  requests_read: [r('request', 'buyer', 'account', 'finance', 'admin'), '請購單瀏覽'],
+  requests_write: [r('request', 'admin'), '請購單建立'],
+  requests_approve: [r('admin'), '請購核准'],
+  orders_read: [r('buyer', 'receive', 'account', 'finance', 'admin'), '採購單瀏覽'],
+  orders_write: [r('buyer', 'admin'), '採購單建立'],
+  orders_approve: [r('admin'), '採購單審核'],
+  receipts_read: [r('buyer', 'receive', 'account', 'finance', 'admin'), '驗貨入庫瀏覽'],
+  receipts_write: [r('receive', 'admin'), '驗貨入庫'],
+  payments_read: [r('account', 'finance', 'admin'), '請款單瀏覽'],
+  payments_write: [r('account', 'admin'), '請款單'],
+  ship_read: [r('ship', 'account', 'finance', 'admin'), '出貨／領料瀏覽'],
+  ship_write: [r('ship', 'admin'), '出貨管理'],
+  master_write: [r('buyer', 'admin'), '品項與廠商管理'],
+  settings_write: [r('admin'), '採購設定'],
+  reports: [r('finance', 'admin'), '採購報表']
+};
+// 舊版三個權限 → 新角色（帳號資料一次轉換）
+const LEGACY = { purchasing: r('request', 'buyer', 'receive', 'ship'), purchasing_approve: r('admin'), payables: r('account') };
 
 const PREFIX = { pr: 'PR', po: 'PO', gr: 'REC', pay: 'PAY', ship: 'SHP', pick: 'PICK' };
 const PR_STATUS = ['pending', 'approved', 'ordered', 'cancelled'];
 const PAY_METHODS = ['銀行轉帳', '支票', '現金', '其他'];
 
-module.exports = function procurementRouter({ db, requireStaff, logAudit, getSettings, today }) {
+module.exports = function procurementRouter({ db, requireStaff, logAudit, getSettings, today, buildWorkbook }) {
   ensureSchema(db);
+  migrateLegacyPerms(db);
   const router = express.Router();
 
   // ---------- 共用 ----------
-  function can(req, mod) {
+  function can(req, perm) {
     const u = req.session.user;
-    return u.role === 'admin' || (Array.isArray(u.permissions) && u.permissions.includes(mod));
+    if (!u) return false;
+    if (u.role === 'admin') return true;
+    const mine = Array.isArray(u.permissions) ? u.permissions : [];
+    return PERMS[perm][0].some(k => mine.includes(k));
   }
-  const need = mod => (req, res, next) => (can(req, mod) ? next()
-    : res.status(403).json({ error: `您沒有「${MOD_LABEL[mod]}」的權限` }));
-  const MOD_LABEL = { purchasing: '採購作業', purchasing_approve: '採購核准', payables: '請款付款' };
+  const need = perm => (req, res, next) => (can(req, perm) ? next()
+    : res.status(403).json({ error: `您沒有「${PERMS[perm][1]}」的權限` }));
 
   const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
   const str = (v, max = 200) => String(v === undefined || v === null ? '' : v).trim().slice(0, max);
@@ -64,9 +98,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       balance = cur.stock - qty;
     }
     db.prepare('UPDATE supplies SET stock = ? WHERE id = ?').run(balance, cur.id);
-    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, dept, purpose)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
-      str(extra.vendor, 60), str(extra.dept, 60), str(extra.purpose, 60));
+    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, dept, purpose,
+        unit_price, vendor_id, ref_type, ref_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
+      str(extra.vendor, 60), str(extra.dept, 60), str(extra.purpose, 60),
+      extra.unitPrice === undefined ? null : extra.unitPrice, extra.vendorId || null, extra.refType || '', extra.refId || null);
     return balance;
   }
   function httpErr(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
@@ -155,7 +191,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     WHERE vi.vendor_id = ? ORDER BY vi.item_name`).all(vendorId);
 
   // 查某品項（或品名）各廠商的價格：採購單比價時帶入參考價
-  router.get('/procurement/vendor-prices', requireStaff, (req, res) => {
+  router.get('/procurement/vendor-prices', requireStaff, need('read'), (req, res) => {
     const cond = [], args = [];
     if (int(req.query.supply_id)) { cond.push('vi.supply_id = ?'); args.push(int(req.query.supply_id)); }
     else if (str(req.query.item_name, 100)) { cond.push('vi.item_name = ?'); args.push(str(req.query.item_name, 100)); }
@@ -166,9 +202,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   });
 
   // 採購主體維護（管理員）
-  router.get('/procurement/companies', requireStaff, (req, res) => res.json(companies(req.query.all === '1')));
+  router.get('/procurement/companies', requireStaff, need('read'), (req, res) => res.json(companies(req.query.all === '1')));
   function saveCompany(req, res, cur) {
-    if (req.session.user.role !== 'admin') return bad(res, '需要管理員權限', 403);
+    if (!can(req, 'settings_write')) return bad(res, '需要採購作業管理員權限', 403);
     const b = req.body || {};
     const f = {
       name: str(b.name === undefined && cur ? cur.name : b.name, 100),
@@ -211,8 +247,21 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     saveCompany(req, res, cur);
   }));
 
+  router.put('/procurement/settings', requireStaff, need('settings_write'), (req, res) => {
+    const b = req.body || {};
+    const tax = Number(b.tax_rate);
+    if (b.tax_rate !== undefined && !(tax >= 0 && tax <= 100)) return bad(res, '稅率需介於 0 到 100');
+    const set = (k, v) => db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(String(v), k);
+    if (b.tax_rate !== undefined) set('proc_tax_rate', tax);
+    if (b.payment_terms !== undefined) {
+      set('proc_payment_terms', String(b.payment_terms).split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',').slice(0, 500));
+    }
+    logAudit(req, { action: 'update', entity: 'settings', entity_id: 'proc', summary: '修改採購設定（稅率／付款條件）' });
+    res.json({ ok: true, settings: procSettings() });
+  });
+
   // ---------- 總覽 ----------
-  router.get('/procurement/dashboard', requireStaff, (req, res) => {
+  router.get('/procurement/dashboard', requireStaff, need('read'), (req, res) => {
     const low = db.prepare(`SELECT id, code, name, unit, stock, safety_stock, warehouse FROM supplies
       WHERE active = 1 AND stock < safety_stock ORDER BY name`).all();
     res.json({
@@ -225,7 +274,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       pending_ship: db.prepare("SELECT COUNT(*) c FROM shipments WHERE status = 'pending'").get().c,
       recent_pr: db.prepare('SELECT id, no, req_date, requester, status FROM purchase_requests ORDER BY id DESC LIMIT 5').all(),
       recent_ship: db.prepare('SELECT id, no, ship_date, recipient, status FROM shipments ORDER BY id DESC LIMIT 5').all(),
-      can: { approve: can(req, 'purchasing_approve'), pay: can(req, 'payables'), purchasing: can(req, 'purchasing') },
+      perms: Object.fromEntries(Object.keys(PERMS).map(k => [k, can(req, k)])),
       settings: procSettings()
     });
   });
@@ -243,7 +292,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   }
 
   // ---------- 廠商管理 ----------
-  router.get('/procurement/vendors', requireStaff, (req, res) => {
+  router.get('/procurement/vendors', requireStaff, need('read'), (req, res) => {
     const cond = [], args = [];
     if (req.query.active !== 'all') cond.push('v.active = 1');
     const q = str(req.query.q, 60);
@@ -262,7 +311,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       bank_account: str(b.bank_account, 30), bank_holder: str(b.bank_holder, 100), note: str(b.note, 500)
     };
   }
-  router.post('/procurement/vendors', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
+  router.post('/procurement/vendors', requireStaff, need('master_write'), (req, res) => run(res, () => {
     const f = vendorFields(req.body || {});
     if (!f.name) return bad(res, '請填寫廠商名稱');
     let code = str((req.body || {}).code, 20);
@@ -283,7 +332,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'create', entity: 'vendors', entity_id: id, summary: `新增廠商 ${f.name}` });
     res.json({ id, code });
   }));
-  router.put('/procurement/vendors/:id', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
+  router.put('/procurement/vendors/:id', requireStaff, need('master_write'), (req, res) => run(res, () => {
     const cur = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
     if (!cur) throw httpErr('找不到廠商', 404);
     const b = req.body || {};
@@ -300,7 +349,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true });
   }));
   // 有交易紀錄的廠商只停用不刪除（請款與採購單要能追回廠商資料）
-  router.delete('/procurement/vendors/:id', requireStaff, need('purchasing_approve'), (req, res) => {
+  router.delete('/procurement/vendors/:id', requireStaff, need('master_write'), (req, res) => {
     const cur = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
     if (!cur) return bad(res, '找不到廠商', 404);
     const used = db.prepare(`SELECT 1 FROM purchase_orders WHERE vendor_id = ? UNION SELECT 1 FROM payment_requests WHERE vendor_id = ?
@@ -319,7 +368,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true });
   });
   // 廠商詳情：供應品項、歷史採購統計、最近採購單、請款（應付）彙總
-  router.get('/procurement/vendors/:id', requireStaff, (req, res) => {
+  router.get('/procurement/vendors/:id', requireStaff, need('read'), (req, res) => {
     const v = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
     if (!v) return bad(res, '找不到廠商', 404);
     res.json({
@@ -351,7 +400,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     return db.prepare(`SELECT v.id, v.name, sv.is_default FROM supply_vendors sv JOIN vendors v ON v.id = sv.vendor_id
       WHERE sv.supply_id = ? ORDER BY sv.is_default DESC, v.name`).all(supplyId);
   }
-  router.get('/procurement/items', requireStaff, (req, res) => {
+  router.get('/procurement/items', requireStaff, need('read'), (req, res) => {
     const cond = ['s.active = 1'], args = [];
     const q = str(req.query.q, 60);
     if (q) { cond.push('(s.name LIKE ? OR s.code LIKE ?)'); args.push('%' + q + '%', '%' + q + '%'); }
@@ -365,6 +414,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const warehouses = db.prepare("SELECT DISTINCT warehouse FROM supplies WHERE active = 1 AND warehouse != '' ORDER BY warehouse").all().map(r => r.warehouse);
     res.json({ rows, warehouses });
   });
+  const defaultVendorOf = list => {
+    const arr = Array.isArray(list) ? list : [];
+    const d = arr.find(v => v.is_default) || arr[0];
+    return d ? int(d.vendor_id) || null : null;
+  };
   function saveItemVendors(supplyId, list) {
     db.prepare('DELETE FROM supply_vendors WHERE supply_id = ?').run(supplyId);
     const ids = [...new Set((Array.isArray(list) ? list : []).map(v => int(v.vendor_id)).filter(Boolean))];
@@ -376,7 +430,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       ins.run(supplyId, id, id === defId ? 1 : 0);
     }
   }
-  router.post('/procurement/items', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
+  router.post('/procurement/items', requireStaff, need('master_write'), (req, res) => run(res, () => {
     const b = req.body || {};
     const name = str(b.name, 100), unit = str(b.unit, 20);
     if (!name || !unit) throw httpErr('請填寫品項名稱與單位');
@@ -389,12 +443,13 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         code, Math.max(0, int(b.price)), str(b.warehouse, 40)).lastInsertRowid;
       saveItemVendors(id, b.vendors);
       const init = Math.max(0, int(b.initial_stock));
-      if (init > 0) stockMove(id, 'in', init, req.session.user.id, { reason: '期初庫存', note: '品項管理建立時輸入' });
+      if (init > 0) stockMove(id, 'in', init, req.session.user.id, { reason: '期初庫存', note: '品項管理建立時輸入',
+        unitPrice: Math.max(0, int(b.price)), vendorId: (defaultVendorOf(b.vendors) || null), refType: 'initial' });
     })();
     logAudit(req, { action: 'create', entity: 'supplies', entity_id: id, summary: `採購品項新增 ${name}` });
     res.json({ id });
   }));
-  router.put('/procurement/items/:id', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
+  router.put('/procurement/items/:id', requireStaff, need('master_write'), (req, res) => run(res, () => {
     const cur = db.prepare('SELECT * FROM supplies WHERE id = ?').get(req.params.id);
     if (!cur) throw httpErr('找不到品項', 404);
     const b = req.body || {};
@@ -413,7 +468,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'supplies', entity_id: cur.id, summary: `採購品項修改 ${name}` });
     res.json({ ok: true });
   }));
-  router.get('/procurement/items/:id/history', requireStaff, (req, res) => {
+  router.get('/procurement/items/:id/history', requireStaff, need('read'), (req, res) => {
     const s = db.prepare('SELECT id, code, name, unit, stock, warehouse FROM supplies WHERE id = ?').get(req.params.id);
     if (!s) return bad(res, '找不到品項', 404);
     res.json({
@@ -463,7 +518,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!out.length) throw httpErr('請至少填一個品項與數量');
     return out;
   }
-  router.get('/procurement/requests', requireStaff, (req, res) => {
+  router.get('/procurement/requests', requireStaff, need('requests_read'), (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'r.req_date', req.query);
     companyFilter(cond, args, 'r.company_id', req.query);
@@ -476,11 +531,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         (SELECT GROUP_CONCAT(no, '、') FROM purchase_orders o WHERE o.pr_id = r.id) AS po_nos
       FROM purchase_requests r ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY r.id DESC LIMIT 500`).all(...args));
   });
-  router.get('/procurement/requests/:id', requireStaff, (req, res) => {
+  router.get('/procurement/requests/:id', requireStaff, need('requests_read'), (req, res) => {
     const r = prDetail(req.params.id);
     return r ? res.json(r) : bad(res, '找不到請購單', 404);
   });
-  router.post('/procurement/requests', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.post('/procurement/requests', requireStaff, need('requests_write'), (req, res) => run(res, () => {
     const b = req.body || {};
     const requester = str(b.requester, 50);
     if (!requester) throw httpErr('請填寫申請人');
@@ -500,7 +555,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ id, no });
   }));
   // 待核准的請購單可修改（核准後內容已拆到採購單，不再異動）
-  router.put('/procurement/requests/:id', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.put('/procurement/requests/:id', requireStaff, need('requests_write'), (req, res) => run(res, () => {
     const cur = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
     if (!cur) throw httpErr('找不到請購單', 404);
     if (cur.status !== 'pending') throw httpErr('請購單已核准或取消，不能再修改');
@@ -524,7 +579,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: cur.id, summary: `修改請購單 ${cur.no}` });
     res.json({ ok: true });
   }));
-  router.post('/procurement/requests/:id/cancel', requireStaff, need('purchasing'), (req, res) => {
+  router.post('/procurement/requests/:id/cancel', requireStaff, need('requests_write'), (req, res) => {
     const cur = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
     if (!cur) return bad(res, '找不到請購單', 404);
     if (!['pending', 'approved'].includes(cur.status)) return bad(res, '已建立採購單的請購單不能取消，請改取消採購單');
@@ -533,7 +588,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true });
   });
   // 核准：主管只決定「准不准買」；廠商與價格交給採購建單
-  router.post('/procurement/requests/:id/approve', requireStaff, need('purchasing_approve'), (req, res) => {
+  router.post('/procurement/requests/:id/approve', requireStaff, need('requests_approve'), (req, res) => {
     const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
     if (!pr) return bad(res, '找不到請購單', 404);
     if (pr.status !== 'pending') return bad(res, '只有待核准的請購單可以核准');
@@ -543,7 +598,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true });
   });
   // 建立採購單（採購作業）：已核准的請購單，每個品項指定廠商與預計到貨日，同廠商＋同到貨日合併成一張
-  router.post('/procurement/requests/:id/order', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.post('/procurement/requests/:id/order', requireStaff, need('orders_write'), (req, res) => run(res, () => {
     const pr = prDetail(req.params.id);
     if (!pr) throw httpErr('找不到請購單', 404);
     if (pr.status === 'pending') throw httpErr('請購單尚未核准，不能建立採購單');
@@ -669,7 +724,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     return vid;
   }
 
-  router.get('/procurement/orders', requireStaff, (req, res) => {
+  router.get('/procurement/orders', requireStaff, need('orders_read'), (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'o.po_date', req.query);
     companyFilter(cond, args, 'o.company_id', req.query);
@@ -690,7 +745,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       FROM purchase_orders o LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN purchase_requests r ON r.id = o.pr_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY o.id DESC LIMIT 500`).all(...args));
   });
-  router.get('/procurement/orders/:id', requireStaff, (req, res) => {
+  router.get('/procurement/orders/:id', requireStaff, need('orders_read'), (req, res) => {
     const o = poDetail(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     o.problems = o.status === 'draft' ? poProblems(o) : [];
@@ -699,7 +754,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
 
   // 待審核：採購人員鍵入廠商、預算金額、單價，新品項填比價報價（新廠商自動存入廠商管理）
   // 審核通過後：只能改預計到貨日與備註（價格與廠商已核定）
-  router.put('/procurement/orders/:id', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.put('/procurement/orders/:id', requireStaff, need('orders_write'), (req, res) => run(res, () => {
     const o = poDetail(req.params.id);
     if (!o) throw httpErr('找不到採購單', 404);
     const b = req.body || {};
@@ -764,7 +819,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json(after);
   }));
   // 審核通過：檢核廠商、預算、單價、新品項比價，通過後才能驗貨
-  router.post('/procurement/orders/:id/approve', requireStaff, need('purchasing_approve'), (req, res) => {
+  router.post('/procurement/orders/:id/approve', requireStaff, need('orders_approve'), (req, res) => {
     const o = poDetail(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     if (o.status !== 'draft') return bad(res, '只有待審核的採購單可以審核');
@@ -776,7 +831,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true, over_budget: o.total > o.budget_amount });
   });
   // 退回修改：審核通過但尚未到貨的採購單，可退回待審核重新調整
-  router.post('/procurement/orders/:id/return', requireStaff, need('purchasing_approve'), (req, res) => {
+  router.post('/procurement/orders/:id/return', requireStaff, need('orders_approve'), (req, res) => {
     const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     if (o.status !== 'pending') return bad(res, '只有待入庫且尚未到貨的採購單可以退回');
@@ -786,7 +841,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `退回採購單 ${o.no} 至待審核` });
     res.json({ ok: true });
   });
-  router.post('/procurement/orders/:id/cancel', requireStaff, need('purchasing_approve'), (req, res) => {
+  router.post('/procurement/orders/:id/cancel', requireStaff, need('orders_approve'), (req, res) => {
     const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     if (!['draft', 'pending'].includes(o.status)) return bad(res, '已有到貨的採購單不能取消，請改用「結案」');
@@ -796,7 +851,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true });
   });
   // 結案：分批到貨但剩餘數量不再交貨（廠商缺貨、改向他處採購等），剩下的不再等
-  router.post('/procurement/orders/:id/close', requireStaff, need('purchasing_approve'), (req, res) => {
+  router.post('/procurement/orders/:id/close', requireStaff, need('orders_approve'), (req, res) => {
     const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     if (o.status !== 'partial') return bad(res, '只有部分到貨的採購單可以結案');
@@ -809,7 +864,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   });
 
   // ---------- 驗貨入庫 ----------
-  router.get('/procurement/receipts', requireStaff, (req, res) => {
+  router.get('/procurement/receipts', requireStaff, need('receipts_read'), (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'g.receive_date', req.query);
     if (req.query.vendor_id) { cond.push('o.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
@@ -822,7 +877,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       LEFT JOIN payment_requests p ON p.gr_id = g.id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY g.id DESC LIMIT 500`).all(...args));
   });
-  router.get('/procurement/receipts/:id', requireStaff, (req, res) => {
+  router.get('/procurement/receipts/:id', requireStaff, need('receipts_read'), (req, res) => {
     const g = db.prepare(`SELECT g.*, o.no AS po_no, v.name AS vendor_name FROM goods_receipts g
       JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id WHERE g.id = ?`).get(req.params.id);
     if (!g) return bad(res, '找不到入庫單', 404);
@@ -833,7 +888,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   });
   // 驗貨（可分批）：本批到貨數量進備品庫存、新品項第一次到貨時建檔、本批自動產生一張請款單；
   // 全部到齊→已入庫，還有未到→部分到貨（之後可繼續驗貨或結案）
-  router.post('/procurement/receipts', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.post('/procurement/receipts', requireStaff, need('receipts_write'), (req, res) => run(res, () => {
     const b = req.body || {};
     const o = poDetail(int(b.po_id));
     if (!o) throw httpErr('找不到採購單', 404);
@@ -891,7 +946,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         if (price > 0) upsertVendorItem({ vendorId: o.vendor_id, supplyId, name: it.item_name, unit, price, source: 'purchase',
           note: `採購 ${o.no}`, userId: req.session.user.id, date: receiveDate });
         stockMove(supplyId, 'in', qty, req.session.user.id, {
-          vendor: o.vendor_name,
+          vendor: o.vendor_name, vendorId: o.vendor_id, unitPrice: price, refType: 'receipt', refId: grId,
           reason: `驗貨入庫 ${grNo}`,
           note: `採購單 ${o.no} 第 ${batchNo} 批${b.invoice_no ? `／發票 ${str(b.invoice_no, 30)}` : ''}`
         });
@@ -985,7 +1040,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const tax = Math.round(sub * p.tax_rate / 100);
     db.prepare('UPDATE payment_requests SET subtotal=?, tax_amount=?, total_amount=? WHERE id=?').run(sub, tax, sub + tax, payId);
   }
-  router.get('/procurement/payments', requireStaff, (req, res) => {
+  router.get('/procurement/payments', requireStaff, need('payments_read'), (req, res) => {
     const cond = [], args = [];
     const col = req.query.date_field === 'due' ? 'p.pay_due_date' : 'p.req_date';
     dateRange(cond, args, col, req.query);
@@ -1007,7 +1062,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       LEFT JOIN purchase_orders o ON o.id = p.po_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY p.id DESC LIMIT 500`).all(...args));
   });
-  router.get('/procurement/payments/:id', requireStaff, (req, res) => {
+  router.get('/procurement/payments/:id', requireStaff, need('payments_read'), (req, res) => {
     const p = payDetail(req.params.id);
     return p ? res.json(p) : bad(res, '找不到請款單', 404);
   });
@@ -1038,7 +1093,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       b.budget_no === undefined ? p.budget_no : str(b.budget_no, 40),
       b.cost_center === undefined ? p.cost_center : str(b.cost_center, 60), p.id);
   }
-  router.put('/procurement/payments/:id', requireStaff, need('payables'), (req, res) => run(res, () => {
+  router.put('/procurement/payments/:id', requireStaff, need('payments_write'), (req, res) => run(res, () => {
     const p = payDetail(req.params.id);
     if (!p) throw httpErr('找不到請款單', 404);
     if (p.status !== 'unpaid') throw httpErr('請款單已付款或取消，不能再修改');
@@ -1046,7 +1101,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'payment_requests', entity_id: p.id, summary: `修改請款單 ${p.no}` });
     res.json(payDetail(p.id));
   }));
-  router.post('/procurement/payments/:id/pay', requireStaff, need('payables'), (req, res) => run(res, () => {
+  router.post('/procurement/payments/:id/pay', requireStaff, need('payments_write'), (req, res) => run(res, () => {
     const p = payDetail(req.params.id);
     if (!p) throw httpErr('找不到請款單', 404);
     if (p.status !== 'unpaid') throw httpErr('此請款單已付款或已取消');
@@ -1058,11 +1113,16 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         .run(req.session.user.id, new Date().toLocaleString('sv-SE').slice(0, 19), paidOn, p.id);
     })();
     const after = payDetail(p.id);
-    // 實際付款單價即最終成交價，寫回廠商價格表
+    // 實際付款單價即最終成交價，寫回廠商價格表；尚未過帳進批次的進貨異動也改用成交價
     db.transaction(() => {
+      const lastLot = parseInt((db.prepare("SELECT value FROM proc_meta WHERE key = 'lots_last_txn'").get() || {}).value || '0', 10);
       for (const it of after.items) {
         if (!(it.unit_price > 0)) continue;
         const gi = it.gr_id ? db.prepare('SELECT supply_id FROM goods_receipt_items WHERE gr_id = ? AND item_name = ? LIMIT 1').get(it.gr_id, it.item_name) : null;
+        if (gi && gi.supply_id) {
+          db.prepare("UPDATE supply_txns SET unit_price = ? WHERE ref_type = 'receipt' AND ref_id = ? AND supply_id = ? AND id > ?")
+            .run(it.unit_price, it.gr_id, gi.supply_id, lastLot);
+        }
         upsertVendorItem({ vendorId: after.vendor_id, supplyId: gi ? gi.supply_id : null, name: it.item_name, unit: it.unit,
           price: it.unit_price, source: 'purchase', note: `請款 ${after.no}`, userId: req.session.user.id, date: paidOn });
       }
@@ -1071,7 +1131,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json(after);
   }));
   // 合併請款：同廠商、同月份、皆為待付款；明細併入目標請款單，來源單改為已取消並註記合併去向
-  router.post('/procurement/payments/:id/merge', requireStaff, need('payables'), (req, res) => run(res, () => {
+  router.post('/procurement/payments/:id/merge', requireStaff, need('payments_write'), (req, res) => run(res, () => {
     const target = db.prepare('SELECT * FROM payment_requests WHERE id = ?').get(req.params.id);
     if (!target) throw httpErr('找不到請款單', 404);
     if (target.status !== 'unpaid') throw httpErr('只能合併到待付款的請款單');
@@ -1142,7 +1202,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!out.length) throw httpErr('請至少填一個品項與數量');
     return out;
   }
-  router.get('/procurement/shipments', requireStaff, (req, res) => {
+  router.get('/procurement/shipments', requireStaff, need('ship_read'), (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'sh.ship_date', req.query);
     companyFilter(cond, args, 'sh.company_id', req.query);
@@ -1155,12 +1215,12 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       FROM shipments sh LEFT JOIN pick_lists pk ON pk.shipment_id = sh.id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY sh.id DESC LIMIT 500`).all(...args));
   });
-  router.get('/procurement/shipments/:id', requireStaff, (req, res) => {
+  router.get('/procurement/shipments/:id', requireStaff, need('ship_read'), (req, res) => {
     const s = shipDetail(req.params.id);
     return s ? res.json(s) : bad(res, '找不到出貨單', 404);
   });
   // 建立出貨單同時產生領料單；此時只檢查庫存、還不扣，確認出貨才扣
-  router.post('/procurement/shipments', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.post('/procurement/shipments', requireStaff, need('ship_write'), (req, res) => run(res, () => {
     const b = req.body || {};
     const recipient = str(b.recipient, 60);
     if (!recipient) throw httpErr('請填寫客戶／部門');
@@ -1179,7 +1239,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'create', entity: 'shipments', entity_id: id, summary: `建立出貨單 ${no}，領料單 ${pickNo}` });
     res.json({ id, no, pick_no: pickNo });
   }));
-  router.put('/procurement/shipments/:id', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.put('/procurement/shipments/:id', requireStaff, need('ship_write'), (req, res) => run(res, () => {
     const cur = db.prepare('SELECT * FROM shipments WHERE id = ?').get(req.params.id);
     if (!cur) throw httpErr('找不到出貨單', 404);
     if (cur.status !== 'pending') throw httpErr('出貨單已出貨或取消，不能再修改');
@@ -1202,13 +1262,14 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true });
   }));
   // 確認出貨：扣備品庫存（寫出庫紀錄）、領料單轉已領料
-  router.post('/procurement/shipments/:id/confirm', requireStaff, need('purchasing'), (req, res) => run(res, () => {
+  router.post('/procurement/shipments/:id/confirm', requireStaff, need('ship_write'), (req, res) => run(res, () => {
     const s = shipDetail(req.params.id);
     if (!s) throw httpErr('找不到出貨單', 404);
     if (s.status !== 'pending') throw httpErr('此出貨單已出貨或已取消');
     db.transaction(() => {
       for (const it of s.items) {
         stockMove(it.supply_id, 'out', it.qty, req.session.user.id, {
+          refType: 'shipment', refId: s.id,
           reason: `出貨 ${s.no}`, note: s.pick ? `領料單 ${s.pick.no}` : '', dept: s.recipient, purpose: '出貨'
         });
       }
@@ -1218,7 +1279,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'shipments', entity_id: s.id, summary: `確認出貨 ${s.no}（已扣庫存）` });
     res.json({ ok: true });
   }));
-  router.post('/procurement/shipments/:id/cancel', requireStaff, need('purchasing'), (req, res) => {
+  router.post('/procurement/shipments/:id/cancel', requireStaff, need('ship_write'), (req, res) => {
     const s = db.prepare('SELECT * FROM shipments WHERE id = ?').get(req.params.id);
     if (!s) return bad(res, '找不到出貨單', 404);
     if (s.status !== 'pending') return bad(res, '只有待出貨的出貨單可以取消');
@@ -1229,7 +1290,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'shipments', entity_id: s.id, summary: `取消出貨單 ${s.no}` });
     res.json({ ok: true });
   });
-  router.get('/procurement/picks', requireStaff, (req, res) => {
+  router.get('/procurement/picks', requireStaff, need('ship_read'), (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'pk.pick_date', req.query);
     if (['pending', 'picked', 'cancelled'].includes(req.query.status)) { cond.push('pk.status = ?'); args.push(req.query.status); }
@@ -1241,8 +1302,22 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY pk.id DESC LIMIT 500`).all(...args));
   });
 
+  require('./procurement-reports')(router, { db, need, requireStaff, today, buildWorkbook, syncLots, str, int, isDate, companyFilter });
+
   return router;
 };
+
+function migrateLegacyPerms(db) {
+  const rows = db.prepare("SELECT id, permissions FROM users WHERE permissions LIKE '%purchas%' OR permissions LIKE '%payables%'").all();
+  for (const u of rows) {
+    let list;
+    try { list = JSON.parse(u.permissions || '[]'); } catch (e) { continue; }
+    if (!Array.isArray(list)) continue;
+    const next = new Set(list.filter(k => !(k in LEGACY)));
+    for (const k of list) if (LEGACY[k]) LEGACY[k].forEach(x => next.add(x));
+    db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(JSON.stringify([...next]), u.id);
+  }
+}
 
 // 請購單表頭。狀態：pending 待核准 → approved 已核准（待採購）→ ordered 已建立採購單；cancelled 已取消
 function prTableSql(name) {
@@ -1569,4 +1644,6 @@ function ensureSchema(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_item ON po_item_quotes(po_item_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_vendor ON po_item_quotes(vendor_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_gr_po ON goods_receipts(po_id)');
+  // 批次帳（進銷存報表）：放最後，回填時要用到上面建好的採購表與欄位
+  ensureLotSchema(db);
 }

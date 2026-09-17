@@ -108,9 +108,13 @@ const MODULES = [
   { key: 'billing', label: '收費帳務' },
   { key: 'shop', label: '商城商品' },
   { key: 'supplies', label: '耗材庫存' },
-  { key: 'purchasing', label: '採購作業（請購／驗貨入庫／出貨領料）' },
-  { key: 'purchasing_approve', label: '採購核准（核准請購／採購單價／廠商與品項）' },
-  { key: 'payables', label: '請款付款' },
+  { key: 'proc_request', label: '採購－請購人員' },
+  { key: 'proc_buyer', label: '採購－採購人員' },
+  { key: 'proc_receive', label: '採購－驗貨人員' },
+  { key: 'proc_ship', label: '採購－出貨人員' },
+  { key: 'proc_account', label: '採購－記帳人員' },
+  { key: 'proc_finance', label: '採購－財務人員（全部可瀏覽）' },
+  { key: 'proc_admin', label: '採購－採購作業管理員' },
   { key: 'programs', label: '課程與服務' },
   { key: 'members', label: '會員' },
   { key: 'meals', label: '膳食／月子餐' },
@@ -185,8 +189,8 @@ const MODULE_RULES = [
   [/^\/api\/products/, 'shop'],
   [/^\/api\/orders/, 'shop'],
   [/^\/api\/supplies/, 'supplies'],
-  // 採購作業：三個權限任一即可進入，細部（核准／付款）由 routes/procurement.js 再擋
-  [/^\/api\/procurement/, ['purchasing', 'purchasing_approve', 'payables']],
+  // 採購作業：七種角色任一即可進入，各頁瀏覽／key 單由 routes/procurement.js 依角色再擋
+  [/^\/api\/procurement/, ['proc_request', 'proc_buyer', 'proc_receive', 'proc_ship', 'proc_account', 'proc_finance', 'proc_admin']],
   [/^\/api\/supply-txns/, 'supplies'],
   [/^\/api\/(programs|signups)/, 'programs'],
   [/^\/api\/members/, 'members'],
@@ -4825,7 +4829,7 @@ app.post('/api/supplies/import', requireAdmin, (req, res) => {
 });
 
 // 採購作業（請購→採購→驗貨入庫→請款、出貨／領料、廠商）；庫存沿用 supplies
-app.use('/api', require('./routes/procurement')({ db, requireStaff, logAudit, getSettings, today }));
+app.use('/api', require('./routes/procurement')({ db, requireStaff, logAudit, getSettings, today, buildWorkbook }));
 
 // 備品庫存盤點彙總：每品項的入庫總數／出庫總數／目前庫存（期初＝目前－入庫＋出庫）
 app.get('/api/supplies/stock-summary', requireStaff, (req, res) => {
