@@ -8,8 +8,15 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const DB = path.join('/tmp', `mamacare-edit-${process.pid}.db`);
-const PORT = 3800 + (process.pid % 150);
-const BASE = `http://127.0.0.1:${PORT}`;
+// 伺服器上還有其他服務，固定埠號容易撞到；改由系統挑一個空閒埠
+let PORT, BASE;
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = require('node:net').createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+  });
+}
 let server;
 let cookie = '';
 
@@ -40,6 +47,8 @@ async function edited(method, p, body, label) {
 }
 
 before(async () => {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   cleanDb();
   const env = { ...process.env, MAMACARE_DB: DB };
   const seed = spawnSync('node', ['src/db.js', '--seed'], { cwd: ROOT, env, encoding: 'utf8' });

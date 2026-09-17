@@ -4,8 +4,8 @@
 // 所以備品庫存管理、盤點、進出明細看到的是同一個數字。
 //
 // 權限分三層（由 server.js 的 MODULE_RULES 先擋「完全沒有採購權限」的人）：
-//   purchasing          建請購單、將已核准請購單建成採購單、驗貨入庫、出貨／領料
-//   purchasing_approve  核准請購、改採購單價、維護廠商與品項
+//   purchasing          建請購單、建採購單並鍵入廠商／預算／比價、驗貨入庫（可分批）、出貨／領料
+//   purchasing_approve  核准請購、審核採購單（退回／取消／結案）、維護廠商與品項
 //   payables            請款單填金額與付款
 const express = require('express');
 
@@ -87,7 +87,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       low_stock: low,
       pending_pr: db.prepare("SELECT COUNT(*) c FROM purchase_requests WHERE status = 'pending'").get().c,
       approved_pr: db.prepare("SELECT COUNT(*) c FROM purchase_requests WHERE status = 'approved'").get().c,
-      pending_po: db.prepare("SELECT COUNT(*) c FROM purchase_orders WHERE status = 'pending'").get().c,
+      draft_po: db.prepare("SELECT COUNT(*) c FROM purchase_orders WHERE status = 'draft'").get().c,
+      pending_po: db.prepare("SELECT COUNT(*) c FROM purchase_orders WHERE status IN ('pending','partial')").get().c,
       unpaid: db.prepare("SELECT COUNT(*) c, COALESCE(SUM(total_amount),0) amt FROM payment_requests WHERE status = 'unpaid'").get(),
       pending_ship: db.prepare("SELECT COUNT(*) c FROM shipments WHERE status = 'pending'").get().c,
       recent_pr: db.prepare('SELECT id, no, req_date, requester, status FROM purchase_requests ORDER BY id DESC LIMIT 5').all(),
@@ -160,7 +161,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   router.delete('/procurement/vendors/:id', requireStaff, need('purchasing_approve'), (req, res) => {
     const cur = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
     if (!cur) return bad(res, '找不到廠商', 404);
-    const used = db.prepare('SELECT 1 FROM purchase_orders WHERE vendor_id = ? UNION SELECT 1 FROM payment_requests WHERE vendor_id = ? LIMIT 1').get(cur.id, cur.id);
+    const used = db.prepare(`SELECT 1 FROM purchase_orders WHERE vendor_id = ? UNION SELECT 1 FROM payment_requests WHERE vendor_id = ?
+      UNION SELECT 1 FROM po_item_quotes WHERE vendor_id = ? LIMIT 1`).get(cur.id, cur.id, cur.id);
     if (used) {
       db.prepare('UPDATE vendors SET active = 0 WHERE id = ?').run(cur.id);
       logAudit(req, { action: 'update', entity: 'vendors', entity_id: cur.id, summary: `停用廠商 ${cur.name}（已有交易紀錄）` });
@@ -193,7 +195,10 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
           SUM(CASE WHEN status = 'unpaid' THEN 1 ELSE 0 END) AS unpaid_count
         FROM payment_requests WHERE vendor_id = ?`).get(v.id),
       payments: db.prepare(`SELECT id, no, invoice_no, total_amount, pay_due_date, status, paid_at FROM payment_requests
-        WHERE vendor_id = ? ORDER BY id DESC LIMIT 10`).all(v.id)
+        WHERE vendor_id = ? ORDER BY id DESC LIMIT 10`).all(v.id),
+      quotes: db.prepare(`SELECT q.id, q.unit_price, q.is_selected, q.note, q.created_at, i.item_name, i.unit, o.no AS po_no, o.status AS po_status
+        FROM po_item_quotes q JOIN purchase_order_items i ON i.id = q.po_item_id JOIN purchase_orders o ON o.id = i.po_id
+        WHERE q.vendor_id = ? ORDER BY q.id DESC LIMIT 30`).all(v.id)
     });
   });
 
@@ -272,6 +277,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       orders: db.prepare(`SELECT o.id, o.no, o.po_date, o.status, v.name AS vendor_name, i.qty, i.unit_price
         FROM purchase_order_items i JOIN purchase_orders o ON o.id = i.po_id LEFT JOIN vendors v ON v.id = o.vendor_id
         WHERE i.supply_id = ? ORDER BY o.id DESC LIMIT 50`).all(s.id),
+      quotes: db.prepare(`SELECT q.unit_price, q.is_selected, q.created_at, v.name AS vendor_name, o.no AS po_no
+        FROM po_item_quotes q JOIN purchase_order_items i ON i.id = q.po_item_id JOIN purchase_orders o ON o.id = i.po_id
+        LEFT JOIN vendors v ON v.id = q.vendor_id WHERE i.supply_id = ? ORDER BY q.id DESC LIMIT 30`).all(s.id),
       vendor_stats: db.prepare(`SELECT v.name, COUNT(DISTINCT g.id) AS times, SUM(gi.received_qty) AS total_qty
         FROM goods_receipt_items gi JOIN goods_receipts g ON g.id = gi.gr_id JOIN purchase_orders o ON o.id = g.po_id
         LEFT JOIN vendors v ON v.id = o.vendor_id WHERE gi.supply_id = ? GROUP BY o.vendor_id ORDER BY times DESC`).all(s.id)
@@ -407,14 +415,21 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     db.transaction(() => {
       for (const g of groups.values()) {
         const no = nextNo('purchase_orders', 'po', today());
-        const poId = db.prepare(`INSERT INTO purchase_orders (no, po_date, pr_id, vendor_id, eta, created_by)
-          VALUES (?,?,?,?,?,?)`).run(no, today(), pr.id, g.vendorId, g.eta, req.session.user.id).lastInsertRowid;
+        // 預算：請購單只拆成一張時沿用請購預算，否則由採購人員於待審核時逐張填寫
+        const budget = groups.size === 1 ? (pr.budget || 0) : 0;
+        const poId = db.prepare(`INSERT INTO purchase_orders (no, po_date, pr_id, vendor_id, eta, budget_amount, status, created_by)
+          VALUES (?,?,?,?,?,?,'draft',?)`).run(no, today(), pr.id, g.vendorId, g.eta, budget, req.session.user.id).lastInsertRowid;
         const ins = db.prepare(`INSERT INTO purchase_order_items (po_id, pr_item_id, supply_id, item_name, unit, qty, unit_price, is_new)
           VALUES (?,?,?,?,?,?,?,?)`);
         for (const it of g.items) {
           // 參考單價：品項主檔的單價，採購時可再改
           const price = it.supply_id ? (db.prepare('SELECT price FROM supplies WHERE id = ?').get(it.supply_id) || {}).price || 0 : 0;
-          ins.run(poId, it.id, it.supply_id, it.item_name, it.unit, it.qty, price, it.supply_id ? 0 : 1);
+          const poItemId = ins.run(poId, it.id, it.supply_id, it.item_name, it.unit, it.qty, price, it.supply_id ? 0 : 1).lastInsertRowid;
+          // 新品項：指定的廠商先列為第一筆（預計採購）報價，其他比價廠商在採購單補上
+          if (!it.supply_id) {
+            db.prepare('INSERT INTO po_item_quotes (po_item_id, vendor_id, unit_price, is_selected, created_by) VALUES (?,?,0,1,?)')
+              .run(poItemId, g.vendorId, req.session.user.id);
+          }
         }
         created.push({ id: poId, no });
       }
@@ -426,65 +441,213 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   }));
 
   // ---------- 採購單 ----------
+  // 狀態：draft 待審核（採購鍵入廠商、預算、比價）→ pending 待入庫（審核通過）
+  //       → partial 部分到貨 → received 全數入庫；partial 可 closed 結案；draft／pending（未到貨）可 cancelled
+  const PO_STATUS = ['draft', 'pending', 'partial', 'received', 'closed', 'cancelled'];
+  const RECEIVABLE = ['pending', 'partial'];
+  const MIN_QUOTES = 2;
+
   function poDetail(id) {
     const o = db.prepare(`SELECT o.*, v.name AS vendor_name, v.tax_id AS vendor_tax_id, v.payment_terms AS vendor_terms,
-        r.no AS pr_no, r.requester, r.purpose AS pr_purpose
+        r.no AS pr_no, r.requester, r.purpose AS pr_purpose, r.budget AS pr_budget, ua.name AS approved_name
       FROM purchase_orders o LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN purchase_requests r ON r.id = o.pr_id
-      WHERE o.id = ?`).get(id);
+      LEFT JOIN users ua ON ua.id = o.approved_by WHERE o.id = ?`).get(id);
     if (!o) return null;
-    o.items = db.prepare(`SELECT i.*, s.stock, s.code AS supply_code FROM purchase_order_items i
-      LEFT JOIN supplies s ON s.id = i.supply_id WHERE i.po_id = ? ORDER BY i.id`).all(id);
+    o.items = db.prepare(`SELECT i.*, s.stock, s.code AS supply_code,
+        COALESCE((SELECT SUM(gi.received_qty) FROM goods_receipt_items gi WHERE gi.po_item_id = i.id), 0) AS received_qty
+      FROM purchase_order_items i LEFT JOIN supplies s ON s.id = i.supply_id WHERE i.po_id = ? ORDER BY i.id`).all(id);
+    const qs = db.prepare(`SELECT q.*, v.name AS vendor_name, v.phone AS vendor_phone, v.contact AS vendor_contact
+      FROM po_item_quotes q LEFT JOIN vendors v ON v.id = q.vendor_id WHERE q.po_item_id = ? ORDER BY q.id`);
+    for (const it of o.items) {
+      it.remaining = Math.max(0, it.qty - it.received_qty);
+      it.needs_quotes = needsQuotes(it);
+      it.quotes = qs.all(it.id);
+    }
     o.total = o.items.reduce((t, i) => t + i.qty * i.unit_price, 0);
-    o.receipts = db.prepare('SELECT id, no, receive_date FROM goods_receipts WHERE po_id = ? ORDER BY id').all(id);
+    o.received_total = o.items.reduce((t, i) => t + i.received_qty * i.unit_price, 0);
+    o.receipts = db.prepare(`SELECT g.id, g.no, g.batch_no, g.receive_date, g.inspector, g.invoice_no, p.no AS pay_no,
+        (SELECT COALESCE(SUM(received_qty * unit_price),0) FROM goods_receipt_items gi WHERE gi.gr_id = g.id) AS subtotal
+      FROM goods_receipts g LEFT JOIN payment_requests p ON p.gr_id = g.id WHERE g.po_id = ? ORDER BY g.id`).all(id);
     return o;
   }
+  // 需要比價的品項：全新品項（尚未建檔、也還沒到過貨）
+  const needsQuotes = it => !!it.is_new && !it.supply_id;
+
+  // 審核前的檢核；回傳問題清單（空陣列＝可送審核）
+  function poProblems(o) {
+    const out = [];
+    if (!o.vendor_id || !db.prepare('SELECT 1 FROM vendors WHERE id = ? AND active = 1').get(o.vendor_id)) out.push('請指定採購廠商');
+    if (!(o.budget_amount > 0)) out.push('請填寫預算金額');
+    for (const it of o.items) {
+      if (!(it.unit_price > 0)) out.push(`「${it.item_name}」請填寫單價`);
+      if (!it.needs_quotes) continue;
+      const vendors = new Set(it.quotes.map(q => q.vendor_id));
+      if (vendors.size < MIN_QUOTES) out.push(`「${it.item_name}」為新品項，需至少 ${MIN_QUOTES} 家廠商報價（目前 ${vendors.size} 家）`);
+      const sel = it.quotes.filter(q => q.is_selected);
+      if (sel.length !== 1) out.push(`「${it.item_name}」請在報價中勾選一家預計採購廠商`);
+      else if (sel[0].vendor_id !== o.vendor_id) out.push(`「${it.item_name}」選定的報價廠商與採購單廠商不同`);
+    }
+    return out;
+  }
+
+  // 報價的廠商：選既有廠商，或輸入新廠商名稱（同名沿用，否則自動建立到廠商管理）
+  function quoteVendor(q, req) {
+    const id = int(q.vendor_id);
+    if (id) {
+      if (!db.prepare('SELECT 1 FROM vendors WHERE id = ?').get(id)) throw httpErr('報價廠商不存在');
+      return id;
+    }
+    const name = str(q.vendor_name, 100);
+    if (!name) return null;
+    const exist = db.prepare('SELECT id FROM vendors WHERE name = ? ORDER BY active DESC, id LIMIT 1').get(name);
+    if (exist) {
+      // 同名廠商沿用；報價時補填的聯絡資料只補空白欄位，不覆蓋既有資料
+      db.prepare(`UPDATE vendors SET phone = CASE WHEN phone = '' THEN ? ELSE phone END,
+        contact = CASE WHEN contact = '' THEN ? ELSE contact END, active = 1 WHERE id = ?`)
+        .run(str(q.vendor_phone, 40), str(q.vendor_contact, 50), exist.id);
+      return exist.id;
+    }
+    const n = db.prepare('SELECT COUNT(*) c FROM vendors').get().c + 1;
+    let code = 'S' + String(n).padStart(3, '0');
+    while (db.prepare('SELECT 1 FROM vendors WHERE code = ?').get(code)) code = 'S' + String(parseInt(code.slice(1), 10) + 1).padStart(3, '0');
+    const vid = db.prepare(`INSERT INTO vendors (code, name, phone, contact, note) VALUES (?,?,?,?,?)`)
+      .run(code, name, str(q.vendor_phone, 40), str(q.vendor_contact, 50), '採購比價時自動建立').lastInsertRowid;
+    logAudit(req, { action: 'create', entity: 'vendors', entity_id: vid, summary: `比價自動建立廠商 ${name}` });
+    return vid;
+  }
+
   router.get('/procurement/orders', requireStaff, (req, res) => {
     const cond = [], args = [];
     dateRange(cond, args, 'o.po_date', req.query);
-    if (['pending', 'received', 'cancelled'].includes(req.query.status)) { cond.push('o.status = ?'); args.push(req.query.status); }
+    const st = String(req.query.status || '');
+    if (st === 'receivable') cond.push("o.status IN ('pending','partial')");
+    else if (PO_STATUS.includes(st)) { cond.push('o.status = ?'); args.push(st); }
     if (req.query.vendor_id) { cond.push('o.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(o.no LIKE ? OR r.no LIKE ? OR v.name LIKE ? OR EXISTS (SELECT 1 FROM purchase_order_items i WHERE i.po_id = o.id AND i.item_name LIKE ?))'); args.push(...Array(4).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT o.*, v.name AS vendor_name, r.no AS pr_no,
         (SELECT COUNT(*) FROM purchase_order_items i WHERE i.po_id = o.id) AS item_count,
-        (SELECT COALESCE(SUM(qty * unit_price),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS total
+        (SELECT COALESCE(SUM(qty * unit_price),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS total,
+        (SELECT COALESCE(SUM(qty),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS qty_total,
+        (SELECT COALESCE(SUM(gi.received_qty),0) FROM goods_receipt_items gi JOIN goods_receipts g ON g.id = gi.gr_id WHERE g.po_id = o.id) AS received_total_qty,
+        (SELECT COUNT(*) FROM goods_receipts g WHERE g.po_id = o.id) AS receipt_count,
+        (SELECT COUNT(*) FROM purchase_order_items i WHERE i.po_id = o.id AND i.is_new = 1 AND i.supply_id IS NULL) AS new_count
       FROM purchase_orders o LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN purchase_requests r ON r.id = o.pr_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY o.id DESC LIMIT 500`).all(...args));
   });
   router.get('/procurement/orders/:id', requireStaff, (req, res) => {
     const o = poDetail(req.params.id);
-    return o ? res.json(o) : bad(res, '找不到採購單', 404);
+    if (!o) return bad(res, '找不到採購單', 404);
+    o.problems = o.status === 'draft' ? poProblems(o) : [];
+    res.json(o);
   });
-  // 待入庫採購單：可改單價、預計到貨日、備註，並標記新品項的建檔資料
-  router.put('/procurement/orders/:id', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
+
+  // 待審核：採購人員鍵入廠商、預算金額、單價，新品項填比價報價（新廠商自動存入廠商管理）
+  // 審核通過後：只能改預計到貨日與備註（價格與廠商已核定）
+  router.put('/procurement/orders/:id', requireStaff, need('purchasing'), (req, res) => run(res, () => {
     const o = poDetail(req.params.id);
     if (!o) throw httpErr('找不到採購單', 404);
-    if (o.status !== 'pending') throw httpErr('採購單已入庫或取消，不能再修改');
     const b = req.body || {};
-    db.transaction(() => {
+    if (o.status === 'pending' || o.status === 'partial') {
       db.prepare('UPDATE purchase_orders SET eta=?, note=? WHERE id=?').run(
         isDate(b.eta) ? b.eta : o.eta, b.note === undefined ? o.note : str(b.note, 500), o.id);
+      logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `修改採購單 ${o.no} 到貨日／備註` });
+      return res.json(poDetail(o.id));
+    }
+    if (o.status !== 'draft') throw httpErr('採購單已入庫、結案或取消，不能再修改');
+    db.transaction(() => {
+      let vendorId = b.vendor_id === undefined ? o.vendor_id : int(b.vendor_id);
+      if (!vendorId || !db.prepare('SELECT 1 FROM vendors WHERE id = ?').get(vendorId)) throw httpErr('請指定採購廠商');
+      const items = Array.isArray(b.items) ? b.items : [];
       const upd = db.prepare('UPDATE purchase_order_items SET unit_price=?, qty=?, new_code=?, new_warehouse=?, new_safety=? WHERE id=? AND po_id=?');
-      for (const it of Array.isArray(b.items) ? b.items : []) {
+      const insQ = db.prepare('INSERT INTO po_item_quotes (po_item_id, vendor_id, unit_price, note, is_selected, created_by) VALUES (?,?,?,?,?,?)');
+      for (const it of items) {
         const cur = o.items.find(x => x.id === int(it.id));
         if (!cur) continue;
         const qty = it.qty === undefined ? cur.qty : int(it.qty);
         if (qty <= 0) throw httpErr(`「${cur.item_name}」數量需大於 0`);
-        upd.run(Math.max(0, num(it.unit_price === undefined ? cur.unit_price : it.unit_price)), qty,
+        let price = Math.max(0, num(it.unit_price === undefined ? cur.unit_price : it.unit_price));
+        if (cur.needs_quotes && Array.isArray(it.quotes)) {
+          db.prepare('DELETE FROM po_item_quotes WHERE po_item_id = ?').run(cur.id);
+          const seen = new Set();
+          let selected = null;
+          for (const q of it.quotes) {
+            const vid = quoteVendor(q, req);
+            if (!vid) continue;
+            if (seen.has(vid)) throw httpErr(`「${cur.item_name}」同一家廠商重複報價`);
+            seen.add(vid);
+            const qp = Math.max(0, num(q.unit_price));
+            insQ.run(cur.id, vid, qp, str(q.note, 200), q.selected ? 1 : 0, req.session.user.id);
+            if (q.selected) {
+              if (selected) throw httpErr(`「${cur.item_name}」只能勾選一家預計採購廠商`);
+              selected = { vid, qp };
+            }
+          }
+          if (selected) {
+            price = selected.qp;   // 選定報價即採購單價
+            if (selected.vid !== vendorId) {
+              // 只有這一個品項的採購單：廠商跟著選定報價走；多品項就請使用者自行處理，避免整張換廠商
+              if (o.items.length === 1) vendorId = selected.vid;
+              else throw httpErr(`「${cur.item_name}」選定的報價廠商與採購單廠商不同；同一張採購單只能向一家廠商採購`);
+            }
+          }
+        }
+        upd.run(price, qty,
           it.new_code === undefined ? cur.new_code : str(it.new_code, 40),
           it.new_warehouse === undefined ? cur.new_warehouse : str(it.new_warehouse, 40),
           it.new_safety === undefined ? cur.new_safety : Math.max(0, int(it.new_safety)), cur.id, o.id);
       }
+      db.prepare('UPDATE purchase_orders SET vendor_id=?, budget_amount=?, eta=?, note=? WHERE id=?').run(
+        vendorId, b.budget_amount === undefined ? o.budget_amount : Math.max(0, Math.round(num(b.budget_amount))),
+        isDate(b.eta) ? b.eta : o.eta, b.note === undefined ? o.note : str(b.note, 500), o.id);
     })();
     logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `修改採購單 ${o.no}` });
-    res.json({ ok: true });
+    const after = poDetail(o.id);
+    after.problems = poProblems(after);
+    res.json(after);
   }));
+  // 審核通過：檢核廠商、預算、單價、新品項比價，通過後才能驗貨
+  router.post('/procurement/orders/:id/approve', requireStaff, need('purchasing_approve'), (req, res) => {
+    const o = poDetail(req.params.id);
+    if (!o) return bad(res, '找不到採購單', 404);
+    if (o.status !== 'draft') return bad(res, '只有待審核的採購單可以審核');
+    const problems = poProblems(o);
+    if (problems.length) return res.status(400).json({ error: '尚不能審核通過：' + problems.join('；'), problems });
+    db.prepare("UPDATE purchase_orders SET status='pending', approved_by=?, approved_at=datetime('now','localtime') WHERE id=?")
+      .run(req.session.user.id, o.id);
+    logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `審核通過採購單 ${o.no}（${o.vendor_name}，預算 ${o.budget_amount}）` });
+    res.json({ ok: true, over_budget: o.total > o.budget_amount });
+  });
+  // 退回修改：審核通過但尚未到貨的採購單，可退回待審核重新調整
+  router.post('/procurement/orders/:id/return', requireStaff, need('purchasing_approve'), (req, res) => {
+    const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+    if (!o) return bad(res, '找不到採購單', 404);
+    if (o.status !== 'pending') return bad(res, '只有待入庫且尚未到貨的採購單可以退回');
+    if (db.prepare('SELECT 1 FROM goods_receipts WHERE po_id = ? LIMIT 1').get(o.id)) return bad(res, '已有到貨紀錄，不能退回');
+    db.prepare("UPDATE purchase_orders SET status='draft', approved_by=NULL, approved_at='', note=TRIM(note || ' 退回原因：' || ?) WHERE id=?")
+      .run(str((req.body || {}).reason, 200), o.id);
+    logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `退回採購單 ${o.no} 至待審核` });
+    res.json({ ok: true });
+  });
   router.post('/procurement/orders/:id/cancel', requireStaff, need('purchasing_approve'), (req, res) => {
     const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
-    if (o.status !== 'pending') return bad(res, '只有待入庫的採購單可以取消');
+    if (!['draft', 'pending'].includes(o.status)) return bad(res, '已有到貨的採購單不能取消，請改用「結案」');
+    if (db.prepare('SELECT 1 FROM goods_receipts WHERE po_id = ? LIMIT 1').get(o.id)) return bad(res, '已有到貨紀錄，請改用「結案」');
     db.prepare("UPDATE purchase_orders SET status='cancelled', note=TRIM(note || ' 取消原因：' || ?) WHERE id=?").run(str((req.body || {}).reason, 200), o.id);
     logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `取消採購單 ${o.no}` });
+    res.json({ ok: true });
+  });
+  // 結案：分批到貨但剩餘數量不再交貨（廠商缺貨、改向他處採購等），剩下的不再等
+  router.post('/procurement/orders/:id/close', requireStaff, need('purchasing_approve'), (req, res) => {
+    const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+    if (!o) return bad(res, '找不到採購單', 404);
+    if (o.status !== 'partial') return bad(res, '只有部分到貨的採購單可以結案');
+    const reason = str((req.body || {}).reason, 200);
+    if (!reason) return bad(res, '請填寫結案原因（例如：廠商缺貨不再出貨）');
+    db.prepare("UPDATE purchase_orders SET status='closed', closed_reason=?, closed_at=datetime('now','localtime'), closed_by=? WHERE id=?")
+      .run(reason, req.session.user.id, o.id);
+    logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `採購單 ${o.no} 結案（${reason}）` });
     res.json({ ok: true });
   });
 
@@ -493,9 +656,10 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const cond = [], args = [];
     dateRange(cond, args, 'g.receive_date', req.query);
     if (req.query.vendor_id) { cond.push('o.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
+    if (req.query.po_id) { cond.push('g.po_id = ?'); args.push(int(req.query.po_id)); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(g.no LIKE ? OR o.no LIKE ? OR g.invoice_no LIKE ? OR g.inspector LIKE ? OR v.name LIKE ?)'); args.push(...Array(5).fill('%' + q + '%')); }
-    res.json(db.prepare(`SELECT g.*, o.no AS po_no, v.name AS vendor_name, p.no AS pay_no, p.id AS pay_id,
+    res.json(db.prepare(`SELECT g.*, o.no AS po_no, o.status AS po_status, v.name AS vendor_name, p.no AS pay_no, p.id AS pay_id,
         (SELECT COALESCE(SUM(received_qty * unit_price),0) FROM goods_receipt_items i WHERE i.gr_id = g.id) AS subtotal
       FROM goods_receipts g JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id
       LEFT JOIN payment_requests p ON p.gr_id = g.id
@@ -505,37 +669,46 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const g = db.prepare(`SELECT g.*, o.no AS po_no, v.name AS vendor_name FROM goods_receipts g
       JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id WHERE g.id = ?`).get(req.params.id);
     if (!g) return bad(res, '找不到入庫單', 404);
-    g.items = db.prepare('SELECT * FROM goods_receipt_items WHERE gr_id = ? ORDER BY id').all(g.id);
+    g.items = db.prepare(`SELECT gi.*, i.qty AS order_qty,
+        COALESCE((SELECT SUM(x.received_qty) FROM goods_receipt_items x WHERE x.po_item_id = gi.po_item_id AND x.gr_id <= gi.gr_id), 0) AS cumulative_qty
+      FROM goods_receipt_items gi LEFT JOIN purchase_order_items i ON i.id = gi.po_item_id WHERE gi.gr_id = ? ORDER BY gi.id`).all(g.id);
     res.json(g);
   });
-  // 驗貨：實到數量進備品庫存、新品項自動建檔、採購單轉已入庫、自動產生請款單
+  // 驗貨（可分批）：本批到貨數量進備品庫存、新品項第一次到貨時建檔、本批自動產生一張請款單；
+  // 全部到齊→已入庫，還有未到→部分到貨（之後可繼續驗貨或結案）
   router.post('/procurement/receipts', requireStaff, need('purchasing'), (req, res) => run(res, () => {
     const b = req.body || {};
     const o = poDetail(int(b.po_id));
     if (!o) throw httpErr('找不到採購單', 404);
-    if (o.status !== 'pending') throw httpErr('此採購單已入庫或已取消');
+    if (o.status === 'draft') throw httpErr('採購單尚未審核通過，不能驗貨');
+    if (!RECEIVABLE.includes(o.status)) throw httpErr('此採購單已全數入庫、結案或取消');
     const inspector = str(b.inspector, 50);
     if (!inspector) throw httpErr('請填寫驗貨人員');
     const receiveDate = isDate(b.receive_date) ? b.receive_date : today();
     const input = new Map((Array.isArray(b.items) ? b.items : []).map(i => [int(i.po_item_id), i]));
     const s = procSettings();
-    let grId, grNo, payId, payNo, newCount = 0;
+    let grId, grNo, payId, payNo, newCount = 0, allDone = true;
+    const batchNo = o.receipts.length + 1;
     db.transaction(() => {
       grNo = nextNo('goods_receipts', 'gr', receiveDate);
-      grId = db.prepare(`INSERT INTO goods_receipts (no, po_id, receive_date, inspector, invoice_no, note, created_by)
-        VALUES (?,?,?,?,?,?,?)`).run(grNo, o.id, receiveDate, inspector, str(b.invoice_no, 30), str(b.note, 500), req.session.user.id).lastInsertRowid;
+      grId = db.prepare(`INSERT INTO goods_receipts (no, po_id, batch_no, receive_date, inspector, invoice_no, note, created_by)
+        VALUES (?,?,?,?,?,?,?,?)`).run(grNo, o.id, batchNo, receiveDate, inspector, str(b.invoice_no, 30), str(b.note, 500), req.session.user.id).lastInsertRowid;
       const insGi = db.prepare(`INSERT INTO goods_receipt_items (gr_id, po_item_id, supply_id, item_name, unit, ordered_qty, received_qty, unit_price)
         VALUES (?,?,?,?,?,?,?,?)`);
       const payLines = [];
       for (const it of o.items) {
+        if (it.remaining <= 0) continue;
         const inp = input.get(it.id) || {};
-        const qty = inp.received_qty === undefined ? it.qty : int(inp.received_qty);
-        if (qty < 0) throw httpErr(`「${it.item_name}」實到數量不可為負`);
+        const qty = inp.received_qty === undefined ? it.remaining : int(inp.received_qty);
+        if (qty < 0) throw httpErr(`「${it.item_name}」本次到貨數量不可為負`);
+        if (qty > it.remaining) throw httpErr(`「${it.item_name}」本次到貨 ${qty} 超過未到貨數量 ${it.remaining}`);
+        if (qty < it.remaining) allDone = false;
+        if (qty === 0) continue;
         const price = Math.max(0, num(inp.unit_price === undefined ? it.unit_price : inp.unit_price));
         let supplyId = it.supply_id;
         let unit = it.unit;
-        if (!supplyId && qty > 0) {
-          // 新品項：同編號已存在就併入，否則建檔（單位／倉庫別／安全庫存以驗貨畫面為準）
+        if (!supplyId) {
+          // 新品項第一次到貨：同編號已存在就併入，否則建檔（之後批次沿用同一品項）
           const code = str(inp.new_code === undefined ? it.new_code : inp.new_code, 40);
           unit = str(inp.new_unit, 20) || it.unit;
           if (!unit) throw httpErr(`新品項「${it.item_name}」請填寫單位`);
@@ -547,22 +720,26 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
               code, Math.round(price), str(inp.new_warehouse === undefined ? it.new_warehouse : inp.new_warehouse, 40)).lastInsertRowid;
             newCount++;
           }
-          db.prepare('UPDATE purchase_order_items SET supply_id = ? WHERE id = ?').run(supplyId, it.id);
+          db.prepare('UPDATE purchase_order_items SET supply_id = ?, unit = ? WHERE id = ?').run(supplyId, unit, it.id);
           db.prepare('INSERT OR IGNORE INTO supply_vendors (supply_id, vendor_id, is_default) VALUES (?,?,1)').run(supplyId, o.vendor_id);
+          // 比價過的其他廠商也掛為供應廠商（非預設），之後請購可選
+          for (const q of it.quotes) {
+            db.prepare('INSERT OR IGNORE INTO supply_vendors (supply_id, vendor_id, is_default) VALUES (?,?,0)').run(supplyId, q.vendor_id);
+          }
         }
         insGi.run(grId, it.id, supplyId, it.item_name, unit, it.qty, qty, price);
-        if (qty > 0) {
-          stockMove(supplyId, 'in', qty, req.session.user.id, {
-            vendor: o.vendor_name, reason: `驗貨入庫 ${grNo}`, note: `採購單 ${o.no}${b.invoice_no ? `／發票 ${str(b.invoice_no, 30)}` : ''}`
-          });
-          payLines.push({ supplyId, name: it.item_name, unit, qty, price });
-        }
+        stockMove(supplyId, 'in', qty, req.session.user.id, {
+          vendor: o.vendor_name,
+          reason: `驗貨入庫 ${grNo}`,
+          note: `採購單 ${o.no} 第 ${batchNo} 批${b.invoice_no ? `／發票 ${str(b.invoice_no, 30)}` : ''}`
+        });
+        payLines.push({ name: it.item_name, unit, qty, price });
       }
-      if (!payLines.length) throw httpErr('實到數量全部為 0，無法入庫');
-      db.prepare("UPDATE purchase_orders SET status='received' WHERE id=?").run(o.id);
-      // 請款單：金額帶入未稅小計與預設稅率，財務確認後付款
+      if (!payLines.length) throw httpErr('本次到貨數量全部為 0，無法入庫');
+      db.prepare('UPDATE purchase_orders SET status=? WHERE id=?').run(allDone ? 'received' : 'partial', o.id);
+      // 每一批各開一張請款單（廠商通常每批各開一張發票）
       const vendor = db.prepare('SELECT payment_terms FROM vendors WHERE id = ?').get(o.vendor_id) || {};
-      const subtotal = payLines.reduce((t, l) => t + l.qty * l.price, 0);
+      const subtotal = payLines.reduce((t, l) => t + Math.round(l.qty * l.price), 0);
       const tax = Math.round(subtotal * s.tax_rate / 100);
       payNo = nextNo('payment_requests', 'pay', today());
       payId = db.prepare(`INSERT INTO payment_requests (no, req_date, gr_id, po_id, vendor_id, invoice_no, invoice_date,
@@ -570,10 +747,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(payNo, today(), grId, o.id, o.vendor_id, str(b.invoice_no, 30), receiveDate,
         subtotal, s.tax_rate, tax, subtotal + tax, addDays(receiveDate, termDays(vendor.payment_terms)), '銀行轉帳').lastInsertRowid;
       const insPi = db.prepare('INSERT INTO payment_request_items (pay_id, item_name, unit, qty, unit_price, amount) VALUES (?,?,?,?,?,?)');
-      for (const l of payLines) insPi.run(payId, l.name, l.unit, l.qty, l.price, l.qty * l.price);
+      for (const l of payLines) insPi.run(payId, l.name, l.unit, l.qty, l.price, Math.round(l.qty * l.price));
     })();
-    logAudit(req, { action: 'create', entity: 'goods_receipts', entity_id: grId, summary: `驗貨入庫 ${grNo}（採購單 ${o.no}），產生請款單 ${payNo}` });
-    res.json({ id: grId, no: grNo, payment_id: payId, payment_no: payNo, new_items: newCount });
+    logAudit(req, { action: 'create', entity: 'goods_receipts', entity_id: grId,
+      summary: `驗貨入庫 ${grNo}（採購單 ${o.no} 第 ${batchNo} 批${allDone ? '，已到齊' : '，尚有未到貨'}），產生請款單 ${payNo}` });
+    res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, payment_id: payId, payment_no: payNo, new_items: newCount });
   }));
 
   // ---------- 請款單 ----------
@@ -810,33 +988,73 @@ function prTableSql(name) {
     );`;
 }
 
-// 舊版請購單表的狀態 CHECK 沒有 approved（核准與建採購單原本是同一步），SQLite 不能改 CHECK，只能重建表。
-// 依 SQLite 建議的步驟：關外鍵 → 交易內建新表、搬資料、刪舊表、改名 → 檢查外鍵 → 開外鍵。
-function migratePrTable(db) {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='purchase_requests'").get();
-  if (!row || row.sql.includes("'approved'")) return;
-  const cols = ['id', 'no', 'req_date', 'requester', 'urgent', 'purpose', 'budget', 'status', 'cancel_reason',
-    'approved_by', 'approved_at', 'created_by', 'created_at'].join(', ');
+// 採購單表頭。狀態：draft 待審核 → pending 待入庫 → partial 部分到貨 → received 已入庫；closed 結案、cancelled 取消
+function poTableSql(name) {
+  return `CREATE TABLE IF NOT EXISTS ${name} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      no TEXT NOT NULL UNIQUE,
+      po_date TEXT NOT NULL,
+      pr_id INTEGER REFERENCES purchase_requests(id),
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+      eta TEXT DEFAULT '',
+      budget_amount INTEGER NOT NULL DEFAULT 0,
+      note TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','pending','partial','received','closed','cancelled')),
+      approved_by INTEGER REFERENCES users(id),
+      approved_at TEXT DEFAULT '',
+      closed_reason TEXT DEFAULT '',
+      closed_by INTEGER REFERENCES users(id),
+      closed_at TEXT DEFAULT '',
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );`;
+}
+
+// SQLite 不能改 CHECK，狀態清單變了只能重建表。依 SQLite 建議的步驟：
+// 關外鍵 → 交易內建新表、搬資料、刪舊表、改名 → 檢查外鍵 → 開外鍵。其他表以名稱參照，改名後自動接回。
+function rebuildTable(db, name, createSql, cols, after) {
   db.pragma('foreign_keys = OFF');
   try {
     db.transaction(() => {
-      db.exec(prTableSql('purchase_requests_new'));
-      db.exec(`INSERT INTO purchase_requests_new (${cols}) SELECT ${cols} FROM purchase_requests`);
-      // 舊資料「已建立採購單」的核准者就是建單者
-      db.exec("UPDATE purchase_requests_new SET ordered_by = approved_by, ordered_at = approved_at WHERE status = 'ordered'");
-      db.exec('DROP TABLE purchase_requests');
-      db.exec('ALTER TABLE purchase_requests_new RENAME TO purchase_requests');
+      db.exec(createSql(`${name}_new`));
+      db.exec(`INSERT INTO ${name}_new (${cols.join(', ')}) SELECT ${cols.join(', ')} FROM ${name}`);
+      if (after) db.exec(after.replace(/@T/g, `${name}_new`));
+      db.exec(`DROP TABLE ${name}`);
+      db.exec(`ALTER TABLE ${name}_new RENAME TO ${name}`);
       const bad = db.pragma('foreign_key_check');
-      if (bad.length) throw new Error('請購單表重建後外鍵檢查失敗：' + JSON.stringify(bad.slice(0, 3)));
+      if (bad.length) throw new Error(`${name} 重建後外鍵檢查失敗：` + JSON.stringify(bad.slice(0, 3)));
     })();
   } finally {
     db.pragma('foreign_keys = ON');
   }
 }
+function tableSql(db, name) {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(name);
+  return row ? row.sql : null;
+}
+function migrateTables(db) {
+  // 請購單：核准與建採購單拆成兩步（新增 approved）
+  const pr = tableSql(db, 'purchase_requests');
+  if (pr && !pr.includes("'approved'")) {
+    rebuildTable(db, 'purchase_requests', prTableSql,
+      ['id', 'no', 'req_date', 'requester', 'urgent', 'purpose', 'budget', 'status', 'cancel_reason', 'approved_by', 'approved_at', 'created_by', 'created_at'],
+      // 舊資料「已建立採購單」的核准者就是建單者
+      "UPDATE @T SET ordered_by = approved_by, ordered_at = approved_at WHERE status = 'ordered'");
+  }
+  // 採購單：新增待審核、部分到貨、結案，以及預算與審核欄位
+  const po = tableSql(db, 'purchase_orders');
+  if (po && !po.includes("'partial'")) {
+    rebuildTable(db, 'purchase_orders', poTableSql,
+      ['id', 'no', 'po_date', 'pr_id', 'vendor_id', 'eta', 'note', 'status', 'created_by', 'created_at'],
+      // 舊版沒有審核步驟，既有採購單視為已由建單人核定；預算以採購金額帶入
+      `UPDATE @T SET approved_by = created_by, approved_at = created_at WHERE status != 'cancelled';
+       UPDATE @T SET budget_amount = (SELECT COALESCE(ROUND(SUM(qty * unit_price)),0) FROM purchase_order_items i WHERE i.po_id = @T.id)`);
+  }
+}
 
 // 資料表：採購單據各自一張表頭＋明細；品項沿用 supplies（另加倉庫別）
 function ensureSchema(db) {
-  migratePrTable(db);
+  migrateTables(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS vendors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -874,18 +1092,7 @@ function ensureSchema(db) {
       need_date TEXT DEFAULT '',
       suggested_vendor_id INTEGER REFERENCES vendors(id)
     );
-    CREATE TABLE IF NOT EXISTS purchase_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      no TEXT NOT NULL UNIQUE,
-      po_date TEXT NOT NULL,
-      pr_id INTEGER REFERENCES purchase_requests(id),
-      vendor_id INTEGER NOT NULL REFERENCES vendors(id),
-      eta TEXT DEFAULT '',
-      note TEXT DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','received','cancelled')),
-      created_by INTEGER REFERENCES users(id),
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
+    ${poTableSql('purchase_orders')}
     CREATE TABLE IF NOT EXISTS purchase_order_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       po_id INTEGER NOT NULL REFERENCES purchase_orders(id),
@@ -908,6 +1115,16 @@ function ensureSchema(db) {
       inspector TEXT NOT NULL DEFAULT '',
       invoice_no TEXT DEFAULT '',
       note TEXT DEFAULT '',
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+    CREATE TABLE IF NOT EXISTS po_item_quotes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      po_item_id INTEGER NOT NULL REFERENCES purchase_order_items(id),
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+      unit_price REAL NOT NULL DEFAULT 0,
+      note TEXT DEFAULT '',
+      is_selected INTEGER NOT NULL DEFAULT 0,
       created_by INTEGER REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
@@ -994,4 +1211,14 @@ function ensureSchema(db) {
   `);
   const cols = db.prepare('PRAGMA table_info(supplies)').all().map(c => c.name);
   if (!cols.includes('warehouse')) db.exec("ALTER TABLE supplies ADD COLUMN warehouse TEXT DEFAULT ''");
+  // 分批到貨：同一張採購單的第幾批
+  const grCols = db.prepare('PRAGMA table_info(goods_receipts)').all().map(c => c.name);
+  if (!grCols.includes('batch_no')) {
+    db.exec('ALTER TABLE goods_receipts ADD COLUMN batch_no INTEGER NOT NULL DEFAULT 1');
+    db.exec(`UPDATE goods_receipts SET batch_no = (SELECT COUNT(*) FROM goods_receipts g2
+      WHERE g2.po_id = goods_receipts.po_id AND g2.id <= goods_receipts.id)`);
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_item ON po_item_quotes(po_item_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_vendor ON po_item_quotes(vendor_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_gr_po ON goods_receipts(po_id)');
 }

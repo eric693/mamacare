@@ -1,4 +1,4 @@
-// 採購作業整合測試：請購 → 核准 → 建採購單（依廠商拆單）→ 驗貨入庫（進備品庫存、新品項建檔）→ 請款付款，
+// 採購作業整合測試：請購 → 核准 → 建採購單（依廠商拆單）→ 比價／預算 → 審核 → 分批驗貨入庫 → 請款付款，
 // 出貨扣庫存與領料單，以及三層權限。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -8,8 +8,15 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const DB = path.join('/tmp', `mamacare-proc-${process.pid}.db`);
-const PORT = 3960 + (process.pid % 30);
-const BASE = `http://127.0.0.1:${PORT}`;
+// 伺服器上還有其他服務，固定埠號容易撞到；改由系統挑一個空閒埠
+let PORT, BASE;
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = require('node:net').createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+  });
+}
 let server;
 let cookie = '';
 
@@ -33,6 +40,8 @@ const D = n => new Date(Date.now() - new Date().getTimezoneOffset() * 60000 + n 
 const login = (u, p) => { cookie = ''; return req('POST', '/api/login', { username: u, password: p }); };
 
 before(async () => {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   cleanDb();
   const env = { ...process.env, MAMACARE_DB: DB };
   const seed = spawnSync('node', ['src/db.js', '--seed'], { cwd: ROOT, env, encoding: 'utf8' });
@@ -120,58 +129,151 @@ test('請購單：建立（含既有品項與新品名）→ 修改 → 核准�
   assert.strictEqual((await req('PUT', `/api/procurement/requests/${prId}`, { purpose: 'x' })).status, 400);
 });
 
-test('採購單：可改單價，新品項帶建檔資料；列表可依廠商篩選', async () => {
+test('採購單：建立後為待審核，鍵入預算與單價才可審核；未審核不能驗貨', async () => {
   const po1 = await ok('GET', `/api/procurement/orders/${poIds[0]}`);
+  assert.strictEqual(po1.status, 'draft');
   assert.strictEqual(po1.vendor_name, '台灣文具有限公司');
   assert.strictEqual(po1.items[0].unit_price, 120);          // 帶品項參考單價
-  await ok('PUT', `/api/procurement/orders/${po1.id}`, { items: [{ id: po1.items[0].id, unit_price: 110 }] });
-  const po2 = await ok('GET', `/api/procurement/orders/${poIds[1]}`);
-  assert.strictEqual(po2.items[0].is_new, 1);
-  await ok('PUT', `/api/procurement/orders/${po2.id}`, { items: [{ id: po2.items[0].id, unit_price: 80, new_code: 'P900', new_warehouse: '護理站', new_safety: 2 }] });
+  assert.ok(po1.problems.some(p => p.includes('預算金額')));
+  // 未審核 → 不能驗貨、不能直接審核（缺預算）
+  assert.strictEqual((await req('POST', '/api/procurement/receipts', { po_id: po1.id, inspector: 'x' })).status, 400);
+  const noBudget = await req('POST', `/api/procurement/orders/${po1.id}/approve`, {});
+  assert.strictEqual(noBudget.status, 400);
+  assert.match(noBudget.data.error, /預算/);
+  const saved = await ok('PUT', `/api/procurement/orders/${po1.id}`, { budget_amount: 2500, items: [{ id: po1.items[0].id, unit_price: 110 }] });
+  assert.deepStrictEqual(saved.problems, []);
+  await ok('POST', `/api/procurement/orders/${po1.id}/approve`, {});
+  const ap = await ok('GET', `/api/procurement/orders/${po1.id}`);
+  assert.strictEqual(ap.status, 'pending');
+  assert.ok(ap.approved_name);
+  // 審核後價格鎖定：PUT 只改到貨日／備註
+  await ok('PUT', `/api/procurement/orders/${po1.id}`, { note: '請分兩批送', items: [{ id: po1.items[0].id, unit_price: 1 }] });
+  const locked = await ok('GET', `/api/procurement/orders/${po1.id}`);
+  assert.strictEqual(locked.items[0].unit_price, 110);
+  assert.strictEqual(locked.note, '請分兩批送');
   const byVendor = await ok('GET', `/api/procurement/orders?vendor_id=${vendorB}`);
-  assert.deepStrictEqual(byVendor.map(o => o.id), [po2.id]);
+  assert.deepStrictEqual(byVendor.map(o => o.id), [poIds[1]]);
+});
+
+let quoteVendorId;
+test('新品項比價：至少兩家報價、勾選一家；新廠商與報價自動存入廠商管理', async () => {
+  const po2 = await ok('GET', `/api/procurement/orders/${poIds[1]}`);
+  const item = po2.items[0];
+  assert.strictEqual(item.is_new, 1);
+  assert.strictEqual(item.needs_quotes, true);
+  assert.strictEqual(item.quotes.length, 1);                 // 建單時指定的廠商先列為預計採購
+  assert.strictEqual(item.quotes[0].vendor_id, vendorB);
+  // 只有一家報價 → 不能審核
+  await ok('PUT', `/api/procurement/orders/${po2.id}`, { budget_amount: 500 });
+  const one = await req('POST', `/api/procurement/orders/${po2.id}/approve`, {});
+  assert.strictEqual(one.status, 400);
+  assert.match(one.data.error, /至少 2 家/);
+  // 補一家新廠商報價（輸入名稱 → 自動建檔）
+  const saved = await ok('PUT', `/api/procurement/orders/${po2.id}`, {
+    budget_amount: 500,
+    items: [{ id: item.id, new_code: 'P900', new_warehouse: '護理站', new_safety: 2, quotes: [
+      { vendor_id: vendorB, unit_price: 80, selected: true },
+      { vendor_name: '康健醫材行', vendor_phone: '02-1111-2222', vendor_contact: '林小姐', unit_price: 95, note: '含運' }
+    ] }]
+  });
+  assert.deepStrictEqual(saved.problems, []);
+  assert.strictEqual(saved.items[0].unit_price, 80);         // 選定報價即採購單價
+  const vendors = await ok('GET', '/api/procurement/vendors?q=康健');
+  assert.strictEqual(vendors.length, 1);
+  assert.strictEqual(vendors[0].phone, '02-1111-2222');
+  quoteVendorId = vendors[0].id;
+  const vd = await ok('GET', `/api/procurement/vendors/${quoteVendorId}`);
+  assert.ok(vd.quotes.some(q => q.unit_price === 95 && q.item_name === '酒精棉片' && q.note === '含運'));
+  // 同名再報價不會重複建廠商
+  await ok('PUT', `/api/procurement/orders/${po2.id}`, { items: [{ id: item.id, quotes: [
+    { vendor_id: vendorB, unit_price: 80, selected: true }, { vendor_name: '康健醫材行', unit_price: 90 }] }] });
+  assert.strictEqual((await ok('GET', '/api/procurement/vendors?q=康健')).length, 1);
+  // 兩家都勾 → 擋
+  const both = await req('PUT', `/api/procurement/orders/${po2.id}`, { items: [{ id: item.id, quotes: [
+    { vendor_id: vendorB, unit_price: 80, selected: true }, { vendor_id: quoteVendorId, unit_price: 90, selected: true }] }] });
+  assert.strictEqual(both.status, 400);
+  // 單品項採購單改選另一家 → 採購單廠商跟著換；再換回來
+  const sw = await ok('PUT', `/api/procurement/orders/${po2.id}`, { items: [{ id: item.id, quotes: [
+    { vendor_id: vendorB, unit_price: 80 }, { vendor_id: quoteVendorId, unit_price: 90, selected: true }] }] });
+  assert.strictEqual(sw.vendor_id, quoteVendorId);
+  assert.strictEqual(sw.items[0].unit_price, 90);
+  await ok('PUT', `/api/procurement/orders/${po2.id}`, { items: [{ id: item.id, quotes: [
+    { vendor_id: vendorB, unit_price: 80, selected: true }, { vendor_id: quoteVendorId, unit_price: 90 }] }] });
+  await ok('POST', `/api/procurement/orders/${po2.id}/approve`, {});
+  // 退回：未到貨可退回待審核，再審核
+  await ok('POST', `/api/procurement/orders/${po2.id}/return`, { reason: '重新議價' });
+  assert.strictEqual((await ok('GET', `/api/procurement/orders/${po2.id}`)).status, 'draft');
+  await ok('POST', `/api/procurement/orders/${po2.id}/approve`, {});
 });
 
 let payId;
-test('驗貨入庫：實到數量進備品庫存、採購單轉已入庫、自動產生請款單（到期日依廠商付款條件）', async () => {
+test('分批到貨：第一批部分到貨→部分到貨＋請款單；第二批到齊→已入庫；超量擋下', async () => {
   const po1 = await ok('GET', `/api/procurement/orders/${poIds[0]}`);
+  const itemId = po1.items[0].id;                            // 訂 20
+  const over = await req('POST', '/api/procurement/receipts', { po_id: po1.id, inspector: '李驗收', items: [{ po_item_id: itemId, received_qty: 21 }] });
+  assert.strictEqual(over.status, 400);
   const gr = await ok('POST', '/api/procurement/receipts', {
     po_id: po1.id, inspector: '李驗收', invoice_no: 'AB12345678', receive_date: D(0),
-    items: [{ po_item_id: po1.items[0].id, received_qty: 18, unit_price: 110 }]
+    items: [{ po_item_id: itemId, received_qty: 18, unit_price: 110 }]
   });
-  assert.match(gr.no, /^REC-/);
-  assert.match(gr.payment_no, /^PAY-/);
+  assert.strictEqual(gr.batch_no, 1);
+  assert.strictEqual(gr.complete, false);
   payId = gr.payment_id;
+  let o = await ok('GET', `/api/procurement/orders/${po1.id}`);
+  assert.strictEqual(o.status, 'partial');
+  assert.strictEqual(o.items[0].received_qty, 18);
+  assert.strictEqual(o.items[0].remaining, 2);
+  assert.ok((await ok('GET', '/api/procurement/orders?status=receivable')).some(x => x.id === po1.id));
+  // 部分到貨不能取消（要用結案）
+  assert.strictEqual((await req('POST', `/api/procurement/orders/${po1.id}/cancel`, {})).status, 400);
   const it = (await ok('GET', '/api/procurement/items')).rows.find(r => r.id === paper);
   assert.strictEqual(it.stock, stockBefore + 18);
   const txns = await ok('GET', `/api/supplies/${paper}/txns`);
-  assert.ok(txns.some(t => t.txn_type === 'in' && t.quantity === 18 && t.vendor === '台灣文具有限公司'));
-  assert.strictEqual((await ok('GET', `/api/procurement/orders/${po1.id}`)).status, 'received');
-  // 已入庫不可重複驗貨
-  assert.strictEqual((await req('POST', '/api/procurement/receipts', { po_id: po1.id, inspector: 'x' })).status, 400);
+  assert.ok(txns.some(t => t.txn_type === 'in' && t.quantity === 18 && t.vendor === '台灣文具有限公司' && /第 1 批/.test(t.note)));
   const pay = await ok('GET', `/api/procurement/payments/${payId}`);
   assert.strictEqual(pay.subtotal, 1980);
   assert.strictEqual(pay.tax_amount, 99);
   assert.strictEqual(pay.total_amount, 2079);
   assert.strictEqual(pay.pay_due_date, D(30));               // 月結30天
   assert.strictEqual(pay.bank_account, '123-456-789');       // 請款帶出廠商匯款資料
-  assert.strictEqual(pay.invoice_no, 'AB12345678');
+  // 第二批：預設帶未到貨數量
+  const gr2 = await ok('POST', '/api/procurement/receipts', { po_id: po1.id, inspector: '李驗收', invoice_no: 'AB12345679' });
+  assert.strictEqual(gr2.batch_no, 2);
+  assert.strictEqual(gr2.complete, true);
+  o = await ok('GET', `/api/procurement/orders/${po1.id}`);
+  assert.strictEqual(o.status, 'received');
+  assert.strictEqual(o.receipts.length, 2);
+  assert.strictEqual((await ok('GET', `/api/procurement/payments/${gr2.payment_id}`)).subtotal, 220);
+  const g2 = await ok('GET', `/api/procurement/receipts/${gr2.id}`);
+  assert.strictEqual(g2.items[0].cumulative_qty, 20);
+  assert.strictEqual((await req('POST', '/api/procurement/receipts', { po_id: po1.id, inspector: 'x' })).status, 400);
+  stockBefore += 20;
 });
 
-test('驗貨入庫：新品項自動建檔並掛上廠商', async () => {
-  const po2 = await ok('GET', `/api/procurement/orders/${poIds[1]}`);
+test('新品項分批：第一批到貨建檔、比價廠商都掛上供應廠商；剩餘不再交貨可結案', async () => {
+  const po2 = await ok('GET', `/api/procurement/orders/${poIds[1]}`);   // 訂 5
   const gr = await ok('POST', '/api/procurement/receipts', {
     po_id: po2.id, inspector: '李驗收',
-    items: [{ po_item_id: po2.items[0].id, received_qty: 5, new_unit: '盒' }]
+    items: [{ po_item_id: po2.items[0].id, received_qty: 3, new_unit: '盒' }]
   });
   assert.strictEqual(gr.new_items, 1);
   const { rows } = await ok('GET', '/api/procurement/items?q=P900');
   assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].stock, 5);
+  assert.strictEqual(rows[0].stock, 3);
   assert.strictEqual(rows[0].warehouse, '護理站');
-  assert.strictEqual(rows[0].vendors[0].id, vendorB);
+  assert.deepStrictEqual(rows[0].vendors.map(v => [v.id, v.is_default]).sort(), [[vendorB, 1], [quoteVendorId, 0]].sort());
   const pay = await ok('GET', `/api/procurement/payments/${gr.payment_id}`);
   assert.strictEqual(pay.pay_due_date, D(0));                // 貨到付款
+  assert.strictEqual(pay.subtotal, 240);
+  // 結案需原因
+  assert.strictEqual((await req('POST', `/api/procurement/orders/${po2.id}/close`, {})).status, 400);
+  await ok('POST', `/api/procurement/orders/${po2.id}/close`, { reason: '廠商缺貨不再出貨' });
+  const o = await ok('GET', `/api/procurement/orders/${po2.id}`);
+  assert.strictEqual(o.status, 'closed');
+  assert.strictEqual(o.closed_reason, '廠商缺貨不再出貨');
+  assert.strictEqual((await req('POST', '/api/procurement/receipts', { po_id: po2.id, inspector: 'x' })).status, 400);
+  const hist = await ok('GET', `/api/procurement/items/${rows[0].id}/history`);
+  assert.ok(hist.quotes.length >= 2);
 });
 
 test('請款單：改金額（手動含稅總額覆蓋）→ 付款 → 付款後鎖定 → 管理員可改回待付款', async () => {
@@ -186,7 +288,7 @@ test('請款單：改金額（手動含稅總額覆蓋）→ 付款 → 付款�
   assert.strictEqual((await req('PUT', `/api/procurement/payments/${payId}`, { remark: 'x' })).status, 400);
   const v = await ok('GET', `/api/procurement/vendors/${vendorA}`);
   assert.strictEqual(v.payables.paid, 1890);
-  assert.ok(v.purchased.some(p => p.name === 'A4影印紙' && p.total_qty === 18));
+  assert.ok(v.purchased.some(p => p.name === 'A4影印紙' && p.total_qty === 20 && p.times === 2));
   await ok('POST', `/api/procurement/payments/${payId}/unpay`, {});
   assert.strictEqual((await ok('GET', `/api/procurement/payments/${payId}`)).status, 'unpaid');
 });
@@ -220,7 +322,7 @@ test('總覽：待辦計數與低庫存', async () => {
   assert.ok(d.settings.payment_terms.includes('月結30天'));
 });
 
-test('權限：採購作業可請購、建採購單，不能核准或付款；沒有任何採購權限的人整個被擋', async () => {
+test('權限：採購作業可請購、建採購單與鍵入預算，不能核准、審核或付款；沒有任何採購權限的人整個被擋', async () => {
   await ok('POST', '/api/users', { username: 'buyer1', password: 'buyer12345', name: '採購員', role: 'nurse', permissions: ['purchasing'], modules: ['purchasing'] });
   await ok('POST', '/api/users', { username: 'nurse9', password: 'nurse12345', name: '護理師', role: 'nurse', permissions: ['meals'], modules: ['meals'] });
   await login('buyer1', 'buyer12345');
@@ -234,6 +336,10 @@ test('權限：採購作業可請購、建採購單，不能核准或付款；�
   await login('buyer1', 'buyer12345');
   const od = await req('POST', `/api/procurement/requests/${r.data.id}/order`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorA }] });
   assert.strictEqual(od.status, 200, JSON.stringify(od.data));
+  const poId = od.data.orders[0].id;
+  await ok('PUT', `/api/procurement/orders/${poId}`, { budget_amount: 200 });          // 採購人員可鍵入預算
+  assert.strictEqual((await req('POST', `/api/procurement/orders/${poId}/approve`, {})).status, 403);   // 不能自己審核
+  assert.strictEqual((await req('POST', '/api/procurement/receipts', { po_id: poId, inspector: 'x' })).status, 400);   // 未審核不能驗貨
   assert.strictEqual((await req('POST', `/api/procurement/payments/${payId}/pay`, {})).status, 403);
   assert.strictEqual((await req('POST', '/api/procurement/vendors', { name: 'x' })).status, 403);
   await login('nurse9', 'nurse12345');
