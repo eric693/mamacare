@@ -4,13 +4,13 @@
 // 所以備品庫存管理、盤點、進出明細看到的是同一個數字。
 //
 // 權限分三層（由 server.js 的 MODULE_RULES 先擋「完全沒有採購權限」的人）：
-//   purchasing          建請購單、驗貨入庫、出貨／領料、看庫存總覽與廠商
-//   purchasing_approve  核准請購（拆採購單）、改採購單價、維護廠商與品項
+//   purchasing          建請購單、將已核准請購單建成採購單、驗貨入庫、出貨／領料
+//   purchasing_approve  核准請購、改採購單價、維護廠商與品項
 //   payables            請款單填金額與付款
 const express = require('express');
 
 const PREFIX = { pr: 'PR', po: 'PO', gr: 'REC', pay: 'PAY', ship: 'SHP', pick: 'PICK' };
-const PR_STATUS = ['pending', 'ordered', 'cancelled'];
+const PR_STATUS = ['pending', 'approved', 'ordered', 'cancelled'];
 const PAY_METHODS = ['銀行轉帳', '支票', '現金', '其他'];
 
 module.exports = function procurementRouter({ db, requireStaff, logAudit, getSettings, today }) {
@@ -86,6 +86,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({
       low_stock: low,
       pending_pr: db.prepare("SELECT COUNT(*) c FROM purchase_requests WHERE status = 'pending'").get().c,
+      approved_pr: db.prepare("SELECT COUNT(*) c FROM purchase_requests WHERE status = 'approved'").get().c,
       pending_po: db.prepare("SELECT COUNT(*) c FROM purchase_orders WHERE status = 'pending'").get().c,
       unpaid: db.prepare("SELECT COUNT(*) c, COALESCE(SUM(total_amount),0) amt FROM payment_requests WHERE status = 'unpaid'").get(),
       pending_ship: db.prepare("SELECT COUNT(*) c FROM shipments WHERE status = 'pending'").get().c,
@@ -279,8 +280,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
 
   // ---------- 請購單 ----------
   function prDetail(id) {
-    const r = db.prepare(`SELECT r.*, u.name AS approved_name FROM purchase_requests r
-      LEFT JOIN users u ON u.id = r.approved_by WHERE r.id = ?`).get(id);
+    const r = db.prepare(`SELECT r.*, u.name AS approved_name, uo.name AS ordered_name FROM purchase_requests r
+      LEFT JOIN users u ON u.id = r.approved_by LEFT JOIN users uo ON uo.id = r.ordered_by WHERE r.id = ?`).get(id);
     if (!r) return null;
     r.items = db.prepare(`SELECT i.*, s.stock, s.safety_stock, s.code AS supply_code, v.name AS suggested_vendor_name
       FROM purchase_request_items i LEFT JOIN supplies s ON s.id = i.supply_id LEFT JOIN vendors v ON v.id = i.suggested_vendor_id
@@ -313,7 +314,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (PR_STATUS.includes(req.query.status)) { cond.push('r.status = ?'); args.push(req.query.status); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(r.no LIKE ? OR r.requester LIKE ? OR r.purpose LIKE ? OR EXISTS (SELECT 1 FROM purchase_request_items i WHERE i.pr_id = r.id AND i.item_name LIKE ?))'); args.push(...Array(4).fill('%' + q + '%')); }
-    res.json(db.prepare(`SELECT r.*, (SELECT COUNT(*) FROM purchase_request_items i WHERE i.pr_id = r.id) AS item_count,
+    res.json(db.prepare(`SELECT r.*, (SELECT name FROM users u WHERE u.id = r.approved_by) AS approved_name,
+        (SELECT COUNT(*) FROM purchase_request_items i WHERE i.pr_id = r.id) AS item_count,
         (SELECT GROUP_CONCAT(no, '、') FROM purchase_orders o WHERE o.pr_id = r.id) AS po_nos
       FROM purchase_requests r ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY r.id DESC LIMIT 500`).all(...args));
   });
@@ -367,16 +369,27 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   router.post('/procurement/requests/:id/cancel', requireStaff, need('purchasing'), (req, res) => {
     const cur = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
     if (!cur) return bad(res, '找不到請購單', 404);
-    if (cur.status !== 'pending') return bad(res, '只有待核准的請購單可以取消');
+    if (!['pending', 'approved'].includes(cur.status)) return bad(res, '已建立採購單的請購單不能取消，請改取消採購單');
     db.prepare("UPDATE purchase_requests SET status='cancelled', cancel_reason=? WHERE id=?").run(str((req.body || {}).reason, 200), cur.id);
     logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: cur.id, summary: `取消請購單 ${cur.no}` });
     res.json({ ok: true });
   });
-  // 核准：每個品項指定廠商與預計到貨日，同廠商＋同到貨日合併成一張採購單
-  router.post('/procurement/requests/:id/approve', requireStaff, need('purchasing_approve'), (req, res) => run(res, () => {
+  // 核准：主管只決定「准不准買」；廠商與價格交給採購建單
+  router.post('/procurement/requests/:id/approve', requireStaff, need('purchasing_approve'), (req, res) => {
+    const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+    if (!pr) return bad(res, '找不到請購單', 404);
+    if (pr.status !== 'pending') return bad(res, '只有待核准的請購單可以核准');
+    db.prepare("UPDATE purchase_requests SET status='approved', approved_by=?, approved_at=datetime('now','localtime') WHERE id=?")
+      .run(req.session.user.id, pr.id);
+    logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: pr.id, summary: `核准請購單 ${pr.no}` });
+    res.json({ ok: true });
+  });
+  // 建立採購單（採購作業）：已核准的請購單，每個品項指定廠商與預計到貨日，同廠商＋同到貨日合併成一張
+  router.post('/procurement/requests/:id/order', requireStaff, need('purchasing'), (req, res) => run(res, () => {
     const pr = prDetail(req.params.id);
     if (!pr) throw httpErr('找不到請購單', 404);
-    if (pr.status !== 'pending') throw httpErr('此請購單已處理過');
+    if (pr.status === 'pending') throw httpErr('請購單尚未核准，不能建立採購單');
+    if (pr.status !== 'approved') throw httpErr('此請購單已建立採購單或已取消');
     const assign = new Map((Array.isArray((req.body || {}).items) ? req.body.items : []).map(a => [int(a.item_id), a]));
     const groups = new Map();
     for (const it of pr.items) {
@@ -405,10 +418,10 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         }
         created.push({ id: poId, no });
       }
-      db.prepare("UPDATE purchase_requests SET status='ordered', approved_by=?, approved_at=datetime('now','localtime') WHERE id=?")
+      db.prepare("UPDATE purchase_requests SET status='ordered', ordered_by=?, ordered_at=datetime('now','localtime') WHERE id=?")
         .run(req.session.user.id, pr.id);
     })();
-    logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: pr.id, summary: `核准請購單 ${pr.no}，建立採購單 ${created.map(c => c.no).join('、')}` });
+    logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: pr.id, summary: `請購單 ${pr.no} 建立採購單 ${created.map(c => c.no).join('、')}` });
     res.json({ ok: true, orders: created });
   }));
 
@@ -776,8 +789,54 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   return router;
 };
 
+// 請購單表頭。狀態：pending 待核准 → approved 已核准（待採購）→ ordered 已建立採購單；cancelled 已取消
+function prTableSql(name) {
+  return `CREATE TABLE IF NOT EXISTS ${name} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      no TEXT NOT NULL UNIQUE,
+      req_date TEXT NOT NULL,
+      requester TEXT NOT NULL DEFAULT '',
+      urgent INTEGER NOT NULL DEFAULT 0,
+      purpose TEXT DEFAULT '',
+      budget INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','ordered','cancelled')),
+      cancel_reason TEXT DEFAULT '',
+      approved_by INTEGER REFERENCES users(id),
+      approved_at TEXT DEFAULT '',
+      ordered_by INTEGER REFERENCES users(id),
+      ordered_at TEXT DEFAULT '',
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );`;
+}
+
+// 舊版請購單表的狀態 CHECK 沒有 approved（核准與建採購單原本是同一步），SQLite 不能改 CHECK，只能重建表。
+// 依 SQLite 建議的步驟：關外鍵 → 交易內建新表、搬資料、刪舊表、改名 → 檢查外鍵 → 開外鍵。
+function migratePrTable(db) {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='purchase_requests'").get();
+  if (!row || row.sql.includes("'approved'")) return;
+  const cols = ['id', 'no', 'req_date', 'requester', 'urgent', 'purpose', 'budget', 'status', 'cancel_reason',
+    'approved_by', 'approved_at', 'created_by', 'created_at'].join(', ');
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(prTableSql('purchase_requests_new'));
+      db.exec(`INSERT INTO purchase_requests_new (${cols}) SELECT ${cols} FROM purchase_requests`);
+      // 舊資料「已建立採購單」的核准者就是建單者
+      db.exec("UPDATE purchase_requests_new SET ordered_by = approved_by, ordered_at = approved_at WHERE status = 'ordered'");
+      db.exec('DROP TABLE purchase_requests');
+      db.exec('ALTER TABLE purchase_requests_new RENAME TO purchase_requests');
+      const bad = db.pragma('foreign_key_check');
+      if (bad.length) throw new Error('請購單表重建後外鍵檢查失敗：' + JSON.stringify(bad.slice(0, 3)));
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
 // 資料表：採購單據各自一張表頭＋明細；品項沿用 supplies（另加倉庫別）
 function ensureSchema(db) {
+  migratePrTable(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS vendors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -804,21 +863,7 @@ function ensureSchema(db) {
       is_default INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (supply_id, vendor_id)
     );
-    CREATE TABLE IF NOT EXISTS purchase_requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      no TEXT NOT NULL UNIQUE,
-      req_date TEXT NOT NULL,
-      requester TEXT NOT NULL DEFAULT '',
-      urgent INTEGER NOT NULL DEFAULT 0,
-      purpose TEXT DEFAULT '',
-      budget INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','ordered','cancelled')),
-      cancel_reason TEXT DEFAULT '',
-      approved_by INTEGER REFERENCES users(id),
-      approved_at TEXT DEFAULT '',
-      created_by INTEGER REFERENCES users(id),
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
+    ${prTableSql('purchase_requests')}
     CREATE TABLE IF NOT EXISTS purchase_request_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       pr_id INTEGER NOT NULL REFERENCES purchase_requests(id),

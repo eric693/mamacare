@@ -2,7 +2,7 @@
    以 defer 載入：app.js 的 routes／ROUTE_PERM 已就緒，且在 /api/me 回來前就完成註冊。
    品項與庫存就是「備品」（supplies），驗貨入庫、出貨都寫進同一份備品進出紀錄。 */
 (function () {
-  const PR_ST = { pending: ['待核准', 'yellow'], ordered: ['已建立採購單', 'teal'], cancelled: ['已取消', 'gray'] };
+  const PR_ST = { pending: ['待核准', 'yellow'], approved: ['已核准・待採購', 'teal'], ordered: ['已建立採購單', 'green'], cancelled: ['已取消', 'gray'] };
   const PO_ST = { pending: ['待入庫', 'yellow'], received: ['已入庫', 'green'], cancelled: ['已取消', 'gray'] };
   const PAY_ST = { unpaid: ['待付款', 'red'], paid: ['已付款', 'green'], cancelled: ['已取消', 'gray'] };
   const SHIP_ST = { pending: ['待出貨', 'yellow'], shipped: ['已出貨', 'green'], cancelled: ['已取消', 'gray'] };
@@ -134,6 +134,7 @@
       <div class="stat-grid">
         <div class="stat"><div class="num" style="color:${d.low_stock.length ? 'var(--danger)' : ''}">${d.low_stock.length}</div><div class="label">庫存不足品項</div></div>
         <div class="stat"><div class="num">${d.pending_pr}</div><div class="label">待核准請購單</div></div>
+        <div class="stat"><div class="num">${d.approved_pr}</div><div class="label">已核准・待建採購單</div></div>
         <div class="stat"><div class="num">${d.pending_po}</div><div class="label">待入庫採購單</div></div>
         <div class="stat"><div class="num">${d.unpaid.c}</div><div class="label">待付款請款單（${money(d.unpaid.amt)}）</div></div>
         <div class="stat"><div class="num">${d.pending_ship}</div><div class="label">待出貨</div></div>
@@ -168,7 +169,7 @@
       <div class="page-title">請購單</div>
       <div class="card no-print"><div class="row" style="gap:8px">
         ${can('purchasing') ? '<button class="btn" id="pr-new">新增請購單</button>' : ''}
-        <span style="color:var(--muted);font-size:.85rem">流程：請購（待核准）→ 核准時為每個品項指定廠商 → 自動拆成採購單</span></div></div>
+        <span style="color:var(--muted);font-size:.85rem">流程：請購（待核准）→ 主管核准 → 採購人員於「採購單」頁指定廠商建立採購單</span></div></div>
       ${filterBar({ dateLabel: '請購日期', statuses: PR_ST, placeholder: '單號／申請人／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>請購單號</th><th>請購日期</th><th>申請人</th><th>品項</th><th>狀態</th><th>採購單</th><th class="no-print"></th></tr></thead>
@@ -186,17 +187,23 @@
         <td data-label="請購日期">${esc(r.req_date)}</td>
         <td data-label="申請人">${esc(r.requester)}</td>
         <td data-label="品項">${r.item_count} 項${r.purpose ? `<br><small style="color:var(--muted)">${esc(r.purpose)}</small>` : ''}</td>
-        <td data-label="狀態">${badge(PR_ST, r.status)}</td>
+        <td data-label="狀態">${badge(PR_ST, r.status)}${r.approved_name && r.status !== 'pending' ? `<br><small style="color:var(--muted)">核准：${esc(r.approved_name)}</small>` : ''}</td>
         <td data-label="採購單"><small>${esc(r.po_nos || '—')}</small></td>
         <td data-label="操作" class="no-print">
           <button class="btn small secondary" data-view="${r.id}">查看／列印</button>
           ${r.status === 'pending' && can('purchasing') ? `<button class="btn small secondary" data-edit="${r.id}">修改</button>` : ''}
-          ${r.status === 'pending' && can('purchasing_approve') ? `<button class="btn small" data-approve="${r.id}">核准→採購單</button>` : ''}
-          ${r.status === 'pending' && can('purchasing') ? `<button class="btn small danger" data-cancel="${r.id}">取消</button>` : ''}
+          ${r.status === 'pending' && can('purchasing_approve') ? `<button class="btn small" data-approve="${r.id}" data-no="${esc(r.no)}">核准</button>` : ''}
+          ${r.status === 'approved' && can('purchasing') ? `<button class="btn small" data-order="${r.id}">建立採購單</button>` : ''}
+          ${['pending', 'approved'].includes(r.status) && can('purchasing') ? `<button class="btn small danger" data-cancel="${r.id}">取消</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">查無請購單</div></td></tr>';
       main().querySelectorAll('[data-view]').forEach(b => b.onclick = async () => printRequest(await api('/procurement/requests/' + b.dataset.view)));
       main().querySelectorAll('[data-edit]').forEach(b => b.onclick = async () => openPrForm(await api('/procurement/requests/' + b.dataset.edit), null, reload));
-      main().querySelectorAll('[data-approve]').forEach(b => b.onclick = async () => openApprove(await api('/procurement/requests/' + b.dataset.approve), reload));
+      main().querySelectorAll('[data-approve]').forEach(b => b.onclick = async () => {
+        if (!confirm(`核准請購單 ${b.dataset.no}？\n核准後由採購人員指定廠商、建立採購單。`)) return;
+        try { await api(`/procurement/requests/${b.dataset.approve}/approve`, { method: 'POST' }); reload(); }
+        catch (e) { alert(e.message); }
+      });
+      main().querySelectorAll('[data-order]').forEach(b => b.onclick = async () => openOrderFromRequest(await api('/procurement/requests/' + b.dataset.order), reload));
       main().querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
         const reason = prompt('取消請購單的原因（可留空）：', '');
         if (reason === null) return;
@@ -285,11 +292,11 @@
     });
   }
 
-  async function openApprove(pr, done) {
+  async function openOrderFromRequest(pr, done) {
     const [{ rows: items }, vendors] = await Promise.all([api('/procurement/items'), api('/procurement/vendors')]);
-    openWide(`核准請購單 ${pr.no} → 分廠商建立採購單`, `
+    openWide(`建立採購單 — 請購單 ${pr.no}`, `
       <div style="background:var(--primary-light);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:.9rem">
-        申請人：${esc(pr.requester)}　共 ${pr.items.length} 品項${pr.purpose ? `　用途：${esc(pr.purpose)}` : ''}</div>
+        申請人：${esc(pr.requester)}　核准：${esc(pr.approved_name || '—')}　共 ${pr.items.length} 品項${pr.purpose ? `　用途：${esc(pr.purpose)}` : ''}</div>
       <div class="table-wrap"><table class="data stack">
         <thead><tr><th>品項</th><th>數量</th><th>指定廠商 <b class="req">*</b></th><th>預計到貨日</th></tr></thead>
         <tbody>${pr.items.map(it => {
@@ -302,14 +309,14 @@
             <td data-label="預計到貨日"><input type="date" data-k="eta" value="${esc(it.need_date || todayStr())}"></td></tr>`;
         }).join('')}</tbody></table></div>
       <p style="font-size:.85rem;color:var(--muted)">相同廠商＋相同到貨日的品項會合併成同一張採購單。</p>
-      <div class="row" style="gap:8px"><button class="btn" id="apv-go">確認核准，建立採購單</button><span class="error-msg" id="apv-err"></span></div>`, body => {
+      <div class="row" style="gap:8px"><button class="btn" id="apv-go">建立採購單</button><span class="error-msg" id="apv-err"></span></div>`, body => {
       body.querySelector('#apv-go').onclick = async () => {
         const list = [...body.querySelectorAll('[data-item]')].map(tr => ({
           item_id: Number(tr.dataset.item), vendor_id: Number(val(tr, '[data-k="vendor"]')) || 0, eta: val(tr, '[data-k="eta"]') }));
         const missing = list.filter(l => !l.vendor_id).length;
         if (missing) { body.querySelector('#apv-err').textContent = `尚有 ${missing} 個品項未指定廠商`; return; }
         try {
-          const r = await api(`/procurement/requests/${pr.id}/approve`, { method: 'POST', body: { items: list } });
+          const r = await api(`/procurement/requests/${pr.id}/order`, { method: 'POST', body: { items: list } });
           alert(r.orders.length > 1 ? `已拆成 ${r.orders.length} 張採購單：${r.orders.map(o => o.no).join('、')}` : `採購單 ${r.orders[0].no} 已建立`);
           closeModal(); done && done();
         } catch (e) { body.querySelector('#apv-err').textContent = e.message; }
@@ -337,19 +344,37 @@
         <tr><th>覆核</th><th>審核</th><th>單位主管</th><th colspan="2">經辦</th></tr>
         <tr class="sign"><td colspan="2">${r.approved_name ? esc(r.approved_name) : ''}</td><td></td><td></td><td></td><td></td><td colspan="2">${esc(r.requester)}</td></tr>
       </table>
-      <div class="foot">請購流程：請購單位 → 核決主管 → 會辦單位 → 採購單位${r.orders && r.orders.length ? `　｜　已建立採購單：${esc(r.orders.map(o => o.no).join('、'))}` : ''}</div>`);
+      <div class="foot">請購流程：請購單位 → 核決主管 → 會辦單位 → 採購單位${r.approved_at ? `　｜　核准：${esc(r.approved_name || '')} ${esc(r.approved_at.slice(0, 16))}` : ''}${r.orders && r.orders.length ? `　｜　採購單：${esc(r.orders.map(o => o.no).join('、'))}（${esc(r.ordered_name || '')}）` : ''}</div>`);
   }
 
   /* ================= 採購單 ================= */
   async function viewProcOrders() {
-    const vendors = await api('/procurement/vendors?active=all');
+    const [vendors, approved] = await Promise.all([api('/procurement/vendors?active=all'), api('/procurement/requests?status=approved')]);
     main().innerHTML = `
       <div class="page-title">採購單</div>
+      <div class="card">
+        <h3>待建立採購單（已核准的請購單 ${approved.length} 張）</h3>
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th>請購單號</th><th>請購日期</th><th>申請人</th><th>品項</th><th>核准</th><th class="no-print"></th></tr></thead>
+          <tbody>${approved.map(r => `<tr>
+            <td data-label="請購單號">${esc(r.no)}${r.urgent ? ' <span class="badge red">急件</span>' : ''}</td>
+            <td data-label="請購日期">${esc(r.req_date)}</td>
+            <td data-label="申請人">${esc(r.requester)}</td>
+            <td data-label="品項">${r.item_count} 項${r.purpose ? `<br><small style="color:var(--muted)">${esc(r.purpose)}</small>` : ''}</td>
+            <td data-label="核准">${esc(r.approved_name || '—')}<br><small>${esc((r.approved_at || '').slice(0, 16))}</small></td>
+            <td data-label="操作" class="no-print">
+              <button class="btn small secondary" data-prview="${r.id}">查看</button>
+              ${can('purchasing') ? `<button class="btn small" data-order="${r.id}">建立採購單</button>` : ''}</td></tr>`).join('')
+            || '<tr><td colspan="6"><div class="empty">目前沒有待建立採購單的請購單</div></td></tr>'}</tbody></table></div>
+        <small style="color:var(--muted)">為每個品項指定廠商與預計到貨日；相同廠商＋相同到貨日的品項合併成一張採購單。</small>
+      </div>
       ${filterBar({ dateLabel: '採購日期', statuses: PO_ST, vendors, placeholder: '採購單號／請購單號／品名' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>採購單號</th><th>採購日期</th><th>來源請購單</th><th>廠商</th><th>預計到貨</th><th>未稅總額</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="po-body"></tbody></table></div>
-        <small style="color:var(--muted)">採購單由請購單核准時自動產生；待入庫期間可修改單價與到貨日，驗貨入庫後鎖定。</small></div>`;
+        <small style="color:var(--muted)">採購單由上方已核准的請購單建立；待入庫期間可修改單價與到貨日，驗貨入庫後鎖定。</small></div>`;
+    main().querySelectorAll('[data-order]').forEach(b => b.onclick = async () => openOrderFromRequest(await api('/procurement/requests/' + b.dataset.order), viewProcOrders));
+    main().querySelectorAll('[data-prview]').forEach(b => b.onclick = async () => printRequest(await api('/procurement/requests/' + b.dataset.prview)));
     let lastQs = '';
     const reload = () => load(lastQs, () => {});
     async function load(qs, setCount) {

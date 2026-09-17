@@ -1,4 +1,4 @@
-// 採購作業整合測試：請購 → 核准拆採購單 → 驗貨入庫（進備品庫存、新品項建檔）→ 請款付款，
+// 採購作業整合測試：請購 → 核准 → 建採購單（依廠商拆單）→ 驗貨入庫（進備品庫存、新品項建檔）→ 請款付款，
 // 出貨扣庫存與領料單，以及三層權限。
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -79,7 +79,7 @@ test('品項管理：建立品項（期初庫存寫入備品進出紀錄）並�
 });
 
 let prId, poIds;
-test('請購單：建立（含既有品項與新品名）→ 修改 → 核准後依廠商＋到貨日拆採購單', async () => {
+test('請購單：建立（含既有品項與新品名）→ 修改 → 核准（只核准）→ 採購建單依廠商＋到貨日拆單', async () => {
   const r = await ok('POST', '/api/procurement/requests', {
     requester: '王小姐', purpose: '九月耗材補貨', items: [
       { supply_id: paper, qty: 20, suggested_vendor_id: vendorA },
@@ -92,16 +92,30 @@ test('請購單：建立（含既有品項與新品名）→ 修改 → 核准�
   const pr = await ok('GET', `/api/procurement/requests/${prId}`);
   assert.strictEqual(pr.urgent, 1);
   assert.strictEqual(pr.items.length, 2);
+  // 未核准不能建採購單
+  assert.strictEqual((await req('POST', `/api/procurement/requests/${prId}/order`, { items: [] })).status, 400);
+  // 核准：只改狀態，不產生採購單
+  await ok('POST', `/api/procurement/requests/${prId}/approve`, {});
+  const approved = await ok('GET', `/api/procurement/requests/${prId}`);
+  assert.strictEqual(approved.status, 'approved');
+  assert.ok(approved.approved_name);
+  assert.strictEqual(approved.orders.length, 0);
+  assert.strictEqual((await req('POST', `/api/procurement/requests/${prId}/approve`, {})).status, 400);   // 不可重複核准
+  assert.ok((await ok('GET', '/api/procurement/requests?status=approved')).some(r => r.id === prId));
+  assert.strictEqual((await ok('GET', '/api/procurement/dashboard')).approved_pr, 1);
   // 未指定廠商 → 擋
-  const miss = await req('POST', `/api/procurement/requests/${prId}/approve`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorA }] });
+  const miss = await req('POST', `/api/procurement/requests/${prId}/order`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorA }] });
   assert.strictEqual(miss.status, 400);
-  const ap = await ok('POST', `/api/procurement/requests/${prId}/approve`, { items: [
+  const ap = await ok('POST', `/api/procurement/requests/${prId}/order`, { items: [
     { item_id: pr.items[0].id, vendor_id: vendorA, eta: D(3) },
     { item_id: pr.items[1].id, vendor_id: vendorB, eta: D(5) }
   ] });
   assert.strictEqual(ap.orders.length, 2);
   poIds = ap.orders.map(o => o.id);
-  assert.strictEqual((await ok('GET', `/api/procurement/requests/${prId}`)).status, 'ordered');
+  const ordered = await ok('GET', `/api/procurement/requests/${prId}`);
+  assert.strictEqual(ordered.status, 'ordered');
+  assert.ok(ordered.ordered_name);
+  assert.strictEqual((await req('POST', `/api/procurement/requests/${prId}/cancel`, {})).status, 400);   // 已建單不可取消
   // 已核准不可再改
   assert.strictEqual((await req('PUT', `/api/procurement/requests/${prId}`, { purpose: 'x' })).status, 400);
 });
@@ -206,14 +220,20 @@ test('總覽：待辦計數與低庫存', async () => {
   assert.ok(d.settings.payment_terms.includes('月結30天'));
 });
 
-test('權限：只有採購作業的人能請購、驗貨，但不能核准或付款；沒有任何採購權限的人整個被擋', async () => {
+test('權限：採購作業可請購、建採購單，不能核准或付款；沒有任何採購權限的人整個被擋', async () => {
   await ok('POST', '/api/users', { username: 'buyer1', password: 'buyer12345', name: '採購員', role: 'nurse', permissions: ['purchasing'], modules: ['purchasing'] });
   await ok('POST', '/api/users', { username: 'nurse9', password: 'nurse12345', name: '護理師', role: 'nurse', permissions: ['meals'], modules: ['meals'] });
   await login('buyer1', 'buyer12345');
   const r = await req('POST', '/api/procurement/requests', { requester: '採購員', items: [{ supply_id: paper, qty: 1 }] });
   assert.strictEqual(r.status, 200, JSON.stringify(r.data));
   const pr = await ok('GET', `/api/procurement/requests/${r.data.id}`);
-  assert.strictEqual((await req('POST', `/api/procurement/requests/${r.data.id}/approve`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorA }] })).status, 403);
+  assert.strictEqual((await req('POST', `/api/procurement/requests/${r.data.id}/approve`, {})).status, 403);
+  // 主管核准後，採購作業的人可以建立採購單
+  cookie = ''; await login('admin', 'admin123');
+  await ok('POST', `/api/procurement/requests/${r.data.id}/approve`, {});
+  await login('buyer1', 'buyer12345');
+  const od = await req('POST', `/api/procurement/requests/${r.data.id}/order`, { items: [{ item_id: pr.items[0].id, vendor_id: vendorA }] });
+  assert.strictEqual(od.status, 200, JSON.stringify(od.data));
   assert.strictEqual((await req('POST', `/api/procurement/payments/${payId}/pay`, {})).status, 403);
   assert.strictEqual((await req('POST', '/api/procurement/vendors', { name: 'x' })).status, 403);
   await login('nurse9', 'nurse12345');
