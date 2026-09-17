@@ -31,7 +31,9 @@
     requests_write: R('request', 'admin'), requests_approve: R('admin'),
     orders_write: R('buyer', 'admin'), orders_approve: R('admin'),
     receipts_write: R('receive', 'admin'), payments_write: R('account', 'admin'),
-    ship_write: R('ship', 'admin'), master_write: R('buyer', 'admin'), settings_write: R('admin'), reports: R('finance', 'admin')
+    ship_write: R('ship', 'admin'), master_write: R('buyer', 'admin'), settings_write: R('admin'), reports: R('finance', 'admin'),
+    // 金額：驗貨人員只核對品項與數量，入庫紀錄的金額欄不對他們顯示
+    amounts: R('buyer', 'account', 'finance', 'admin')
   };
   const can = perm => currentUser && (currentUser.role === 'admin' || (PERMS[perm] || []).some(k => (currentUser.modules || []).includes(k)));
   const val = (root, sel) => { const el = root.querySelector(sel); return el ? el.value.trim() : ''; };
@@ -230,7 +232,9 @@
         <td data-label="請購日期">${esc(r.req_date)}</td>
         <td data-label="申請人">${esc(r.requester)}</td>
         <td data-label="品項">${r.item_count} 項${r.purpose ? `<br><small style="color:var(--muted)">${esc(r.purpose)}</small>` : ''}</td>
-        <td data-label="狀態">${badge(PR_ST, r.status)}${r.approved_name && r.status !== 'pending' ? `<br><small style="color:var(--muted)">核准：${esc(r.approved_name)}</small>` : ''}</td>
+        <td data-label="狀態">${badge(PR_ST, r.status)}${r.approved_name && !['pending', 'cancelled'].includes(r.status) ? `<br><small style="color:var(--muted)">核准：${esc(r.approved_name)}</small>` : ''}${
+          r.status === 'cancelled' ? `<br><small style="color:var(--muted)">取消${r.cancelled_name ? '：' + esc(r.cancelled_name) : ''}${r.cancelled_at ? ' ' + esc(r.cancelled_at.slice(0, 16)) : ''}${
+            r.cancel_reason ? `<br>原因：${esc(r.cancel_reason)}` : '<br>原因：未填'}</small>` : ''}</td>
         <td data-label="採購單"><small>${esc(r.po_nos || '—')}</small></td>
         <td data-label="操作" class="no-print">
           <button class="btn small secondary" data-view="${r.id}">查看／列印</button>
@@ -378,7 +382,8 @@
         ['件別', r.urgent ? '■急件　□一般件' : '□急件　■一般件', '請購單編號', esc(r.no)],
         ['請購日期', esc((r.req_date || '').replace(/-/g, '/')), '請購單位', esc(headOf(r, s).request_dept)],
         ['申請人', esc(r.requester), '預算金額', r.budget ? money(r.budget) : ''],
-        ['用途說明', `<div style="min-height:9mm">${esc(r.purpose || '')}</div>`]
+        ['用途說明', `<div style="min-height:9mm">${esc(r.purpose || '')}</div>`],
+        ...(r.status === 'cancelled' ? [['取消原因', `${esc(r.cancel_reason || '未填')}${r.cancelled_name ? `（${esc(r.cancelled_name)}　${dt16(r.cancelled_at)}）` : ''}`]] : [])
       ])}
       <table>${cols([9, 47, 15, 15, 14])}
         <tr><th>項次</th><th>品名及規格</th><th>請購數量</th><th>需求日期</th><th>庫存量</th></tr>
@@ -461,7 +466,7 @@
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>採購單號</th><th>採購日期</th><th>來源請購單</th><th>廠商</th><th>預計到貨</th><th>未稅總額／預算</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="po-body"></tbody></table></div>
-        <small style="color:var(--muted)">流程：待審核（採購鍵入廠商、預算金額，新品項須兩家以上比價）→ 主管審核通過 → 待入庫（可分批到貨）→ 已入庫；剩餘不再交貨可「結案」。</small></div>`;
+        <small style="color:var(--muted)">流程：待審核（採購人員按「編輯／比價」鍵入廠商、預算與各家報價後儲存）→ 主管審核通過 → 待入庫（可分批到貨）→ 已入庫；剩餘不再交貨可「結案」。新品項須兩家以上比價。</small></div>`;
     main().querySelectorAll('[data-order]').forEach(b => b.onclick = async () => openOrderFromRequest(await api('/procurement/requests/' + b.dataset.order), viewProcOrders));
     main().querySelectorAll('[data-prview]').forEach(b => b.onclick = async () => printRequest(await api('/procurement/requests/' + b.dataset.prview)));
     let lastQs = '';
@@ -501,6 +506,8 @@
       <td><input data-q="note" value="${esc(q.note || '')}" placeholder="交期、運費等" ${dis}></td>
       <td style="text-align:center"><input type="radio" name="sel-${itemId}" data-q="selected" ${q.is_selected ? 'checked' : ''} ${dis}></td>
       <td>${editable ? '<button class="btn small danger" data-qdel>刪</button>' : ''}</td></tr>`;
+    // 比價區：新品項一定要比（至少兩家），既有品項可自行加報價；不可編輯時只在已有報價時列出
+    const showQuotes = it => it.needs_quotes || editable || it.quotes.length > 0;
     const itemBlock = it => `
       <tr data-item="${it.id}">
         <td data-label="品項">${esc(it.item_name)} ${it.needs_quotes ? '<span class="badge teal">新品項・需比價</span>' : ''}</td>
@@ -509,16 +516,18 @@
         <td data-label="未稅單價"><input type="number" min="0" step="0.01" data-k="unit_price" value="${it.unit_price}" style="max-width:110px" ${dis || (it.needs_quotes ? 'disabled title="由選定報價帶入"' : '')}></td>
         <td data-label="未稅小計" data-sub>${money(it.qty * it.unit_price)}</td>
       </tr>
-      ${it.needs_quotes ? `<tr data-quotes-for="${it.id}"><td colspan="4" style="background:var(--bg)">
-        <div style="font-weight:600;margin-bottom:4px">比價報價（至少 2 家，點選一家為預計採購廠商；新廠商會自動存入廠商管理）</div>
+      ${showQuotes(it) ? `<tr data-quotes-for="${it.id}"><td colspan="4" style="background:var(--bg)">
+        <div style="font-weight:600;margin-bottom:4px">比價報價${it.needs_quotes
+          ? '（新品項至少 2 家，點選一家為預計採購廠商；新廠商會自動存入廠商管理）'
+          : '（可自由登錄多家報價；勾選一家後，該報價即為本品項的採購單價）'}</div>
         <table class="data"><thead><tr><th>廠商</th><th>報價單價（未稅）</th><th>備註</th><th>預計採購</th><th></th></tr></thead>
           <tbody data-qbody>${(it.quotes.length ? it.quotes : [{}]).map(q => quoteRow(it.id, q)).join('')}</tbody></table>
         ${editable ? `<button class="btn small secondary" data-qadd="${it.id}" style="margin-top:4px">新增報價</button>` : ''}
-        <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+        ${it.needs_quotes ? `<div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
           <span style="color:var(--muted);font-size:.85rem">到貨時建檔：</span>
           <input data-k="new_code" placeholder="品項編號" value="${esc(it.new_code || '')}" style="max-width:110px" ${dis}>
           <input data-k="new_warehouse" placeholder="倉庫別" value="${esc(it.new_warehouse || '')}" style="max-width:110px" ${dis}>
-          <input type="number" min="0" data-k="new_safety" title="安全庫存" value="${it.new_safety}" style="max-width:80px" ${dis}></div>
+          <input type="number" min="0" data-k="new_safety" title="安全庫存" value="${it.new_safety}" style="max-width:80px" ${dis}></div>` : ''}
       </td></tr>` : ''}`;
     const statusLine = o.status === 'draft' ? ''
       : `<div style="margin-bottom:8px;font-size:.9rem">狀態：${badge(PO_ST, o.status)}　審核：${esc(o.approved_name || '—')} ${esc((o.approved_at || '').slice(0, 16))}${o.closed_reason ? `　結案原因：${esc(o.closed_reason)}` : ''}</div>`;
@@ -613,8 +622,10 @@
           const x = { id, qty: Number(val(tr, '[data-k="qty"]')), unit_price: Number(val(tr, '[data-k="unit_price"]')) };
           const qbox = body.querySelector(`[data-quotes-for="${id}"]`);
           if (qbox) {
-            Object.assign(x, { new_code: val(qbox, '[data-k="new_code"]'), new_warehouse: val(qbox, '[data-k="new_warehouse"]'),
-              new_safety: Number(val(qbox, '[data-k="new_safety"]')) });
+            if (qbox.querySelector('[data-k="new_code"]')) {
+              Object.assign(x, { new_code: val(qbox, '[data-k="new_code"]'), new_warehouse: val(qbox, '[data-k="new_warehouse"]'),
+                new_safety: Number(val(qbox, '[data-k="new_safety"]')) });
+            }
             x.quotes = [...qbox.querySelectorAll('[data-quote]')].map(r => ({
               vendor_id: Number(val(r, '[data-q="vendor_id"]')) || null,
               vendor_name: val(r, '[data-q="vendor_name"]'), vendor_contact: val(r, '[data-q="vendor_contact"]'),
@@ -719,12 +730,12 @@
             <td data-label="狀態">${badge(PO_ST, o.status)}</td>
             <td data-label="操作" class="no-print">${poActions(o)}</td></tr>`).join('')
             || '<tr><td colspan="6"><div class="empty">目前沒有待到貨的採購單（採購單須先審核通過）</div></td></tr>'}</tbody></table></div>
-        <small style="color:var(--muted)">廠商分批送貨時，每次到貨各驗一次：本批數量入庫並各自產生一張請款單；全部到齊自動轉「已入庫」，剩餘不再交貨可按「結案」。</small>
+        <small style="color:var(--muted)">廠商分批送貨時，每次到貨各驗一次：本批數量入庫並各自產生一張請款單；全部到齊自動轉「已入庫」，剩餘不再交貨可按「結案」。驗貨只核對品項與數量，金額沿用採購單已核定的單價。</small>
       </div>
       <h3 style="margin:14px 0 6px">入庫紀錄</h3>
       ${filterBar({ dateLabel: '入庫日期', vendors, placeholder: '入庫單號／採購單號／發票號／驗貨人' })}
       <div class="card"><div class="table-wrap"><table class="data stack">
-        <thead><tr><th>入庫單號</th><th>採購單號</th><th>批次</th><th>廠商</th><th>入庫日期</th><th>驗貨人員</th><th>發票號碼</th><th>未稅金額</th><th>請款單</th><th class="no-print"></th></tr></thead>
+        <thead><tr><th>入庫單號</th><th>採購單號</th><th>批次</th><th>廠商</th><th>入庫日期</th><th>驗貨人員</th><th>發票號碼</th>${can('amounts') ? '<th>未稅金額</th>' : ''}<th>請款單</th><th class="no-print"></th></tr></thead>
         <tbody id="gr-body"></tbody></table></div></div>`;
     wirePoActions($('#rcv-pending'), viewProcReceiving);
     wireFilter(main(), async (qs, setCount) => {
@@ -734,19 +745,18 @@
         <td data-label="入庫單號">${esc(g.no)}</td><td data-label="採購單號">${esc(g.po_no)}</td>
         <td data-label="批次">第 ${g.batch_no} 批</td><td data-label="廠商">${esc(g.vendor_name || '')}</td>
         <td data-label="入庫日期">${esc(g.receive_date)}</td><td data-label="驗貨人員">${esc(g.inspector)}</td>
-        <td data-label="發票號碼">${esc(g.invoice_no || '—')}</td><td data-label="未稅金額">${money(g.subtotal)}</td>
+        <td data-label="發票號碼">${esc(g.invoice_no || '—')}</td>${can('amounts') ? `<td data-label="未稅金額">${money(g.subtotal)}</td>` : ''}
         <td data-label="請款單">${g.pay_no ? `<a href="#/proc-payments">${esc(g.pay_no)}</a>` : '—'}</td>
         <td data-label="操作" class="no-print"><button class="btn small secondary" data-gr="${g.id}">查看</button></td></tr>`).join('')
-        || '<tr><td colspan="10"><div class="empty">查無入庫紀錄</div></td></tr>';
+        || `<tr><td colspan="${can('amounts') ? 10 : 9}"><div class="empty">查無入庫紀錄</div></td></tr>`;
       main().querySelectorAll('[data-gr]').forEach(b => b.onclick = async () => {
         const g = await api('/procurement/receipts/' + b.dataset.gr);
         openWide(`入庫單 ${g.no}（第 ${g.batch_no} 批）`, `
           <div style="margin-bottom:8px;font-size:.9rem">採購單：${esc(g.po_no)}　廠商：${esc(g.vendor_name || '')}　入庫日期：${esc(g.receive_date)}　驗貨人員：${esc(g.inspector)}${g.invoice_no ? `　發票：${esc(g.invoice_no)}` : ''}</div>
-          <table class="data"><thead><tr><th>品項</th><th>訂購數</th><th>本批到貨</th><th>累計到貨</th><th>未稅單價</th><th>未稅小計</th></tr></thead>
+          <table class="data"><thead><tr><th>品項</th><th>訂購數</th><th>本批到貨</th><th>累計到貨</th></tr></thead>
           <tbody>${g.items.map(i => `<tr><td>${esc(i.item_name)}</td><td>${i.ordered_qty} ${esc(i.unit)}</td>
             <td><strong>${i.received_qty}</strong></td>
-            <td style="color:${i.cumulative_qty >= i.ordered_qty ? 'var(--ok)' : 'var(--danger)'}">${i.cumulative_qty}</td>
-            <td>${money(i.unit_price)}</td><td>${money(i.received_qty * i.unit_price)}</td></tr>`).join('')}</tbody></table>
+            <td style="color:${i.cumulative_qty >= i.ordered_qty ? 'var(--ok)' : 'var(--danger)'}">${i.cumulative_qty}</td></tr>`).join('')}</tbody></table>
           ${g.note ? `<p>備註：${esc(g.note)}</p>` : ''}`);
       });
     });
@@ -766,7 +776,7 @@
         <div class="field"><label>備註</label><input id="rc-note" maxlength="500"></div>
       </div>
       <div class="table-wrap" style="margin-top:8px"><table class="data stack">
-        <thead><tr><th>品項</th><th>訂購數</th><th>已到貨</th><th>本次到貨數</th><th>未稅單價</th><th>未稅小計</th></tr></thead>
+        <thead><tr><th>品項</th><th>訂購數</th><th>已到貨</th><th>本次到貨數</th></tr></thead>
         <tbody>${open.map(it => {
           const isNew = !it.supply_id;
           return `<tr data-item="${it.id}" data-remain="${it.remaining}">
@@ -778,33 +788,27 @@
                 <input type="number" min="0" data-k="new_safety" title="安全庫存" value="${it.new_safety}" style="max-width:70px"></div>` : `<br><small style="color:var(--muted)">目前庫存 ${it.stock}</small>`}</td>
             <td data-label="訂購數">${it.qty} ${esc(it.unit)}</td>
             <td data-label="已到貨">${it.received_qty}<br><small style="color:var(--muted)">未到 ${it.remaining}</small></td>
-            <td data-label="本次到貨數"><input type="number" min="0" max="${it.remaining}" data-k="received_qty" value="${it.remaining}" style="max-width:90px"></td>
-            <td data-label="未稅單價"><input type="number" min="0" step="0.01" data-k="unit_price" value="${it.unit_price}" style="max-width:110px"></td>
-            <td data-label="未稅小計" data-sub></td></tr>`;
+            <td data-label="本次到貨數"><input type="number" min="0" max="${it.remaining}" data-k="received_qty" value="${it.remaining}" style="max-width:90px"></td></tr>`;
         }).join('')}</tbody></table></div>
-      <div style="text-align:right;font-weight:700;margin:8px 0">本批未稅合計：<span id="rc-total"></span></div>
       <p id="rc-hint" style="font-size:.85rem;color:var(--muted)"></p>
       <div class="row" style="gap:8px"><button class="btn" id="rc-go">確認本批入庫，產生請款單</button><span class="error-msg" id="rc-err"></span></div>`, body => {
+      // 驗貨單只核對品項與數量，不顯示金額；請款金額一律沿用採購單已核定的單價
       const recalc = () => {
-        let total = 0, short = 0;
+        let short = 0;
         body.querySelectorAll('[data-item]').forEach(tr => {
-          const q = Number(val(tr, '[data-k="received_qty"]')) || 0;
-          if (q < Number(tr.dataset.remain)) short++;
-          const sub = q * (Number(val(tr, '[data-k="unit_price"]')) || 0);
-          total += sub; tr.querySelector('[data-sub]').textContent = money(sub);
+          if ((Number(val(tr, '[data-k="received_qty"]')) || 0) < Number(tr.dataset.remain)) short++;
         });
-        body.querySelector('#rc-total').textContent = money(total);
         body.querySelector('#rc-hint').textContent = short
           ? `有 ${short} 個品項本次未全數到貨，入庫後採購單會標為「部分到貨」，之後到貨再按「續收到貨」；若剩餘不再交貨，可按「結案」。`
           : '本次全數到齊，入庫後採購單轉為「已入庫」。';
       };
-      body.querySelectorAll('input[data-k="received_qty"], input[data-k="unit_price"]').forEach(el => el.oninput = recalc);
+      body.querySelectorAll('input[data-k="received_qty"]').forEach(el => el.oninput = recalc);
       recalc();
       body.querySelector('#rc-go').onclick = async () => {
         const err = body.querySelector('#rc-err');
         err.textContent = '';
         const items = [...body.querySelectorAll('[data-item]')].map(tr => {
-          const x = { po_item_id: Number(tr.dataset.item), received_qty: Number(val(tr, '[data-k="received_qty"]')), unit_price: Number(val(tr, '[data-k="unit_price"]')) };
+          const x = { po_item_id: Number(tr.dataset.item), received_qty: Number(val(tr, '[data-k="received_qty"]')) };
           if (tr.querySelector('[data-k="new_unit"]')) Object.assign(x, { new_code: val(tr, '[data-k="new_code"]'), new_unit: val(tr, '[data-k="new_unit"]'),
             new_warehouse: val(tr, '[data-k="new_warehouse"]'), new_safety: Number(val(tr, '[data-k="new_safety"]')) });
           return x;

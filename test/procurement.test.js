@@ -157,6 +157,16 @@ test('請購單：建立（含既有品項與新品名）→ 修改 → 核准�
   assert.strictEqual((await req('POST', `/api/procurement/requests/${prId}/cancel`, {})).status, 400);   // 已建單不可取消
   // 已核准不可再改
   assert.strictEqual((await req('PUT', `/api/procurement/requests/${prId}`, { purpose: 'x' })).status, 400);
+  // 取消：原因、取消人與時間都留著，清單與明細都查得到
+  const tmp = await ok('POST', '/api/procurement/requests', { requester: '王小姐', items: [{ supply_id: paper, qty: 1 }] });
+  await ok('POST', `/api/procurement/requests/${tmp.id}/cancel`, { reason: '改用庫存品替代' });
+  const cancelled = await ok('GET', `/api/procurement/requests/${tmp.id}`);
+  assert.strictEqual(cancelled.status, 'cancelled');
+  assert.strictEqual(cancelled.cancel_reason, '改用庫存品替代');
+  assert.ok(cancelled.cancelled_name && cancelled.cancelled_at);
+  const listed = (await ok('GET', '/api/procurement/requests?status=cancelled')).find(r2 => r2.id === tmp.id);
+  assert.strictEqual(listed.cancel_reason, '改用庫存品替代');
+  assert.ok(listed.cancelled_name);
 });
 
 test('採購單：建立後為待審核，鍵入預算與單價才可審核；未審核不能驗貨', async () => {
@@ -170,6 +180,12 @@ test('採購單：建立後為待審核，鍵入預算與單價才可審核；�
   const noBudget = await req('POST', `/api/procurement/orders/${po1.id}/approve`, {});
   assert.strictEqual(noBudget.status, 400);
   assert.match(noBudget.data.error, /預算/);
+  // 既有品項也能比價：鍵入各家報價、勾選一家即為採購單價（新品項才強制 2 家）
+  const cmp = await ok('PUT', `/api/procurement/orders/${po1.id}`, { budget_amount: 2500, items: [{ id: po1.items[0].id, quotes: [
+    { vendor_id: vendorA, unit_price: 110, selected: true }, { vendor_id: vendorB, unit_price: 125, note: '含運' }] }] });
+  assert.strictEqual(cmp.items[0].quotes.length, 2);
+  assert.strictEqual(cmp.items[0].unit_price, 110);
+  assert.deepStrictEqual(cmp.problems, []);
   const saved = await ok('PUT', `/api/procurement/orders/${po1.id}`, { budget_amount: 2500, items: [{ id: po1.items[0].id, unit_price: 110 }] });
   assert.deepStrictEqual(saved.problems, []);
   await ok('POST', `/api/procurement/orders/${po1.id}/approve`, {});
@@ -248,7 +264,7 @@ test('分批到貨：第一批部分到貨→部分到貨＋請款單；第二�
   assert.strictEqual(over.status, 400);
   const gr = await ok('POST', '/api/procurement/receipts', {
     po_id: po1.id, inspector: '李驗收', invoice_no: 'AB12345678', receive_date: D(0),
-    items: [{ po_item_id: itemId, received_qty: 18, unit_price: 110 }]
+    items: [{ po_item_id: itemId, received_qty: 18 }]          // 驗貨單不鍵金額，單價沿用採購單核定的 110
   });
   assert.strictEqual(gr.batch_no, 1);
   assert.strictEqual(gr.complete, false);

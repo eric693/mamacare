@@ -489,8 +489,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
 
   // ---------- 請購單 ----------
   function prDetail(id) {
-    const r = db.prepare(`SELECT r.*, u.name AS approved_name, uo.name AS ordered_name, ${COMPANY_COLS} FROM purchase_requests r
+    const r = db.prepare(`SELECT r.*, u.name AS approved_name, uo.name AS ordered_name, uc.name AS cancelled_name, ${COMPANY_COLS} FROM purchase_requests r
       LEFT JOIN users u ON u.id = r.approved_by LEFT JOIN users uo ON uo.id = r.ordered_by
+      LEFT JOIN users uc ON uc.id = r.cancelled_by
       LEFT JOIN proc_companies c ON c.id = r.company_id WHERE r.id = ?`).get(id);
     if (!r) return null;
     r.items = db.prepare(`SELECT i.*, s.stock, s.safety_stock, s.code AS supply_code, v.name AS suggested_vendor_name
@@ -526,6 +527,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const q = str(req.query.q, 60);
     if (q) { cond.push('(r.no LIKE ? OR r.requester LIKE ? OR r.purpose LIKE ? OR EXISTS (SELECT 1 FROM purchase_request_items i WHERE i.pr_id = r.id AND i.item_name LIKE ?))'); args.push(...Array(4).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT r.*, (SELECT name FROM users u WHERE u.id = r.approved_by) AS approved_name,
+        (SELECT name FROM users u WHERE u.id = r.cancelled_by) AS cancelled_name,
         (SELECT name FROM proc_companies c WHERE c.id = r.company_id) AS company_name,
         (SELECT COUNT(*) FROM purchase_request_items i WHERE i.pr_id = r.id) AS item_count,
         (SELECT GROUP_CONCAT(no, '、') FROM purchase_orders o WHERE o.pr_id = r.id) AS po_nos
@@ -583,7 +585,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const cur = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
     if (!cur) return bad(res, '找不到請購單', 404);
     if (!['pending', 'approved'].includes(cur.status)) return bad(res, '已建立採購單的請購單不能取消，請改取消採購單');
-    db.prepare("UPDATE purchase_requests SET status='cancelled', cancel_reason=? WHERE id=?").run(str((req.body || {}).reason, 200), cur.id);
+    db.prepare(`UPDATE purchase_requests SET status='cancelled', cancel_reason=?, cancelled_by=?,
+      cancelled_at=datetime('now','localtime') WHERE id=?`).run(str((req.body || {}).reason, 200), req.session.user.id, cur.id);
     logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: cur.id, summary: `取消請購單 ${cur.no}` });
     res.json({ ok: true });
   });
@@ -777,7 +780,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         const qty = it.qty === undefined ? cur.qty : int(it.qty);
         if (qty <= 0) throw httpErr(`「${cur.item_name}」數量需大於 0`);
         let price = Math.max(0, num(it.unit_price === undefined ? cur.unit_price : it.unit_price));
-        if (cur.needs_quotes && Array.isArray(it.quotes)) {
+        // 比價：新品項必填（審核時檢核家數），既有品項也可以比，鍵入各家報價後勾選一家即為採購單價
+        if (Array.isArray(it.quotes)) {
           db.prepare('DELETE FROM po_item_quotes WHERE po_item_id = ?').run(cur.id);
           const seen = new Set();
           let selected = null;
@@ -1331,6 +1335,8 @@ function prTableSql(name) {
       budget INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','ordered','cancelled')),
       cancel_reason TEXT DEFAULT '',
+      cancelled_by INTEGER REFERENCES users(id),
+      cancelled_at TEXT DEFAULT '',
       approved_by INTEGER REFERENCES users(id),
       approved_at TEXT DEFAULT '',
       ordered_by INTEGER REFERENCES users(id),
@@ -1563,6 +1569,12 @@ function ensureSchema(db) {
   `);
   const cols = db.prepare('PRAGMA table_info(supplies)').all().map(c => c.name);
   if (!cols.includes('warehouse')) db.exec("ALTER TABLE supplies ADD COLUMN warehouse TEXT DEFAULT ''");
+  // 請購取消：記下是誰、什麼時候取消的（原因原本就有，只是沒地方看）
+  const prCols = db.prepare('PRAGMA table_info(purchase_requests)').all().map(c => c.name);
+  if (!prCols.includes('cancelled_by')) {
+    db.exec('ALTER TABLE purchase_requests ADD COLUMN cancelled_by INTEGER REFERENCES users(id)');
+    db.exec("ALTER TABLE purchase_requests ADD COLUMN cancelled_at TEXT DEFAULT ''");
+  }
   // 分批到貨：同一張採購單的第幾批
   const grCols = db.prepare('PRAGMA table_info(goods_receipts)').all().map(c => c.name);
   if (!grCols.includes('batch_no')) {
