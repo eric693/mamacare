@@ -68,28 +68,44 @@
     go();
   }
 
-  // 另開視窗列印（A4）：單據沿用原本紙本排版，機構名稱取自系統設定
+  // 另開視窗列印（A5 直式）：每張表都用固定欄寬（colgroup＋table-layout:fixed），
+  // 表頭、明細、簽核各自一張表，不再用跨欄湊版面，印在 A5 上欄位不會忽寬忽窄
   function printDoc(title, inner) {
     const w = window.open('', '_blank');
     w.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>${esc(title)}</title>
       <style>
-        @page{size:A4 portrait;margin:12mm}
-        body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#000;font-size:12px;margin:0 auto;max-width:190mm;padding:8mm 0}
-        h1{text-align:center;font-size:18px;margin:0 0 2px;letter-spacing:2px}
-        h2{text-align:center;font-size:16px;margin:0 0 8px;letter-spacing:6px}
-        .sec{text-align:center;font-weight:700;background:#eee;border:1px solid #999;padding:3px;margin-bottom:6px}
-        table{width:100%;border-collapse:collapse;margin-bottom:6px}
-        td,th{border:1px solid #000;padding:5px 7px;vertical-align:top}
-        th,.hd{font-weight:700;background:#f5f5f5;text-align:center}
+        @page{size:A5 portrait;margin:8mm}
+        *{box-sizing:border-box}
+        body{font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;color:#000;font-size:8.5pt;line-height:1.35;
+          margin:0 auto;width:132mm;padding:4mm 0}
+        h1{text-align:center;font-size:12pt;margin:0;letter-spacing:2pt}
+        h2{text-align:center;font-size:11pt;margin:1mm 0 2mm;letter-spacing:5pt}
+        .sub{display:flex;justify-content:space-between;font-size:8pt;margin:0 0 1.5mm}
+        .sec{text-align:center;font-weight:700;background:#eee;border:0.6pt solid #000;padding:0.8mm;margin:0 0 1.5mm}
+        table{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 1.8mm}
+        td,th{border:0.6pt solid #000;padding:0.9mm 1.2mm;vertical-align:middle;word-break:break-all;overflow-wrap:anywhere}
+        th,.hd{font-weight:700;background:#f2f2f2;text-align:center}
         .r{text-align:right}.c{text-align:center}
-        .sign td{height:48px}
-        .foot{font-size:11px;color:#555}
-        @media print{.noprint{display:none}}
+        .tall{height:13mm}
+        .blank td{height:5.5mm}
+        .sign td{height:12mm}
+        .foot{font-size:7pt;color:#333;margin-top:1mm}
+        .trail{page-break-before:always;break-before:page}
+        .trail h3{font-size:9pt;margin:2.5mm 0 1mm;border-bottom:0.8pt solid #000;padding-bottom:0.5mm}
+        .trail table{font-size:7.5pt;page-break-inside:avoid}
+        @media print{.noprint{display:none}body{padding:0}}
       </style></head><body>${inner}
-      <div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button></div>
+      <div class="noprint" style="margin-top:16px;text-align:center"><button onclick="window.print()" style="padding:8px 22px;font-size:14px">列印 / 另存 PDF（紙張 A5）</button></div>
       </body></html>`);
     w.document.close();
   }
+  // 固定欄寬的表格：widths 為百分比陣列
+  const cols = widths => `<colgroup>${widths.map(w => `<col style="width:${w}%">`).join('')}</colgroup>`;
+  // 「標籤｜內容｜標籤｜內容」四欄資料表
+  const infoTable = rows => `<table>${cols([17, 33, 17, 33])}${rows.map(r => r.length === 2
+    ? `<tr><td class="hd">${r[0]}</td><td colspan="3">${r[1]}</td></tr>`
+    : `<tr><td class="hd">${r[0]}</td><td>${r[1]}</td><td class="hd">${r[2]}</td><td>${r[3]}</td></tr>`).join('')}</table>`;
+  const dt16 = v => esc(String(v || '').slice(0, 16));
   // 中文大寫金額（請款支付憑單）：四位一組由高到低，組內與組間的「零」各自處理
   function chineseAmount(n) {
     n = Math.round(Number(n) || 0);
@@ -327,25 +343,31 @@
 
   async function printRequest(r) {
     const s = await procSettings();
-    const blanks = Math.max(0, 5 - r.items.length);
+    const blanks = Math.max(0, 6 - r.items.length);
+    const suggest = [...new Set(r.items.map(i => i.suggested_vendor_name).filter(Boolean))].join('、');
     printDoc(`請購單 ${r.no}`, `
       <h1>${esc(s.center_name)}</h1><h2>請購採購單</h2><div class="sec">【請購作業】</div>
-      <table>
-        <tr><td class="hd">件別</td><td>${r.urgent ? '■急件　□一般件' : '□急件　■一般件'}</td><td class="hd">請購日期</td><td>${esc((r.req_date || '').replace(/-/g, '/'))}</td>
-          <td class="hd">請購單位(部門)</td><td>${esc(s.request_dept)}</td><td class="hd">請購單編號</td><td>${esc(r.no)}</td></tr>
-        <tr><td class="hd" rowspan="2">用途說明</td><td colspan="4" rowspan="2" style="height:40px">${esc(r.purpose || '')}</td>
-          <td class="hd">預算金額</td><td colspan="2">${r.budget ? money(r.budget) : ''}</td></tr>
-        <tr><td class="hd">申請人</td><td colspan="2">${esc(r.requester)}</td></tr>
-        <tr><th colspan="2">項次</th><th colspan="3">品名及規格</th><th>請購數量</th><th>需求日期</th><th>庫存量</th></tr>
-        ${r.items.map((it, i) => `<tr><td colspan="2" class="c">${i + 1}</td><td colspan="3">${esc(it.item_name)}</td>
-          <td class="c">${it.qty} ${esc(it.unit)}</td><td class="c">${esc(it.need_date || '')}</td><td class="c">${it.stock === null || it.stock === undefined ? '' : it.stock}</td></tr>`).join('')}
-        ${'<tr><td colspan="2" style="height:22px"></td><td colspan="3"></td><td></td><td></td><td></td></tr>'.repeat(blanks)}
-        <tr><td colspan="8">建議事項（品質要求或建議供應商）：${esc([...new Set(r.items.map(i => i.suggested_vendor_name).filter(Boolean))].join('、'))}</td></tr>
-        <tr><th colspan="2" rowspan="2">核准</th><th rowspan="2">會簽單位</th><th colspan="5">請　購　單　位</th></tr>
-        <tr><th>覆核</th><th>審核</th><th>單位主管</th><th colspan="2">經辦</th></tr>
-        <tr class="sign"><td colspan="2">${r.approved_name ? esc(r.approved_name) : ''}</td><td></td><td></td><td></td><td></td><td colspan="2">${esc(r.requester)}</td></tr>
+      ${infoTable([
+        ['件別', r.urgent ? '■急件　□一般件' : '□急件　■一般件', '請購單編號', esc(r.no)],
+        ['請購日期', esc((r.req_date || '').replace(/-/g, '/')), '請購單位', esc(s.request_dept)],
+        ['申請人', esc(r.requester), '預算金額', r.budget ? money(r.budget) : ''],
+        ['用途說明', `<div style="min-height:9mm">${esc(r.purpose || '')}</div>`]
+      ])}
+      <table>${cols([9, 47, 15, 15, 14])}
+        <tr><th>項次</th><th>品名及規格</th><th>請購數量</th><th>需求日期</th><th>庫存量</th></tr>
+        ${r.items.map((it, i) => `<tr><td class="c">${i + 1}</td><td>${esc(it.item_name)}</td>
+          <td class="c">${it.qty} ${esc(it.unit)}</td><td class="c">${esc(it.need_date || '')}</td>
+          <td class="c">${it.stock === null || it.stock === undefined ? '' : it.stock}</td></tr>`).join('')}
+        ${'<tr class="blank"><td></td><td></td><td></td><td></td><td></td></tr>'.repeat(blanks)}
       </table>
-      <div class="foot">請購流程：請購單位 → 核決主管 → 會辦單位 → 採購單位${r.approved_at ? `　｜　核准：${esc(r.approved_name || '')} ${esc(r.approved_at.slice(0, 16))}` : ''}${r.orders && r.orders.length ? `　｜　採購單：${esc(r.orders.map(o => o.no).join('、'))}（${esc(r.ordered_name || '')}）` : ''}</div>`);
+      ${infoTable([['建議事項', `品質要求或建議供應商：${esc(suggest)}`]])}
+      <table>${cols([17, 17, 16.5, 16.5, 16.5, 16.5])}
+        <tr><th rowspan="2">核准</th><th rowspan="2">會簽單位</th><th colspan="4">請　購　單　位</th></tr>
+        <tr><th>覆核</th><th>審核</th><th>單位主管</th><th>經辦</th></tr>
+        <tr class="sign"><td class="c">${esc(r.approved_name || '')}<br><small>${dt16(r.approved_at)}</small></td><td></td><td></td><td></td><td></td>
+          <td class="c">${esc(r.requester)}</td></tr>
+      </table>
+      <div class="foot">請購流程：請購單位 → 核決主管 → 會辦單位 → 採購單位${r.orders && r.orders.length ? `　｜　採購單：${esc(r.orders.map(o => o.no).join('、'))}${r.ordered_name ? `（${esc(r.ordered_name)}）` : ''}` : ''}</div>`);
   }
 
   /* ================= 採購單 ================= */
@@ -602,38 +624,43 @@
 
   async function printOrder(o) {
     const s = await procSettings();
-    // 比價資料：新品項列出各家報價（決議欄標示預計採購），既有品項列採購廠商
+    // 比價資料：新品項列出各家報價（決議欄標示採購），既有品項列採購廠商
     const lines = [];
     for (const it of o.items) {
-      if (it.quotes && it.quotes.length) {
-        it.quotes.forEach((q, i) => lines.push(`<tr><td>${esc(q.vendor_name || '')}</td><td colspan="2">${i === 0 ? esc(it.item_name) : ''}</td>
-          <td class="c">${i === 0 ? `${it.qty} ${esc(it.unit)}` : ''}</td><td class="r">${money(q.unit_price)}</td><td class="r">${money(q.unit_price * it.qty)}</td>
-          <td>${esc(q.note || '')}</td><td>${q.is_selected ? esc(o.eta || '') : ''}</td><td class="c">${q.is_selected ? '■採購' : ''}</td></tr>`));
-      } else {
-        lines.push(`<tr><td>${esc(o.vendor_name)}</td><td colspan="2">${esc(it.item_name)}</td>
-          <td class="c">${it.qty} ${esc(it.unit)}</td><td class="r">${money(it.unit_price)}</td><td class="r">${money(it.qty * it.unit_price)}</td>
-          <td>${esc(o.vendor_terms || '')}</td><td>${esc(o.eta || '')}</td><td class="c">■採購</td></tr>`);
-      }
+      const qs = it.quotes && it.quotes.length ? it.quotes : [{ vendor_name: o.vendor_name, unit_price: it.unit_price, is_selected: 1, note: o.vendor_terms || '' }];
+      qs.forEach((q, i) => lines.push(`<tr><td>${i === 0 ? esc(it.item_name) : ''}</td><td>${esc(q.vendor_name || '')}</td>
+        <td class="c">${i === 0 ? `${it.qty} ${esc(it.unit)}` : ''}</td><td class="r">${money(q.unit_price)}</td>
+        <td class="r">${money(q.unit_price * it.qty)}</td><td>${esc(q.note || '')}</td><td class="c">${q.is_selected ? '■採購' : ''}</td></tr>`));
     }
-    const rows = Math.max(lines.length, 4);
+    const blanks = Math.max(0, 5 - lines.length);
     const quoted = o.items.filter(i => i.quotes && i.quotes.length);
+    const within = o.budget_amount ? o.total <= o.budget_amount : null;
     printDoc(`採購單 ${o.no}`, `
       <h1>${esc(s.center_name)}</h1><h2>請購採購單</h2><div class="sec">【採購作業】</div>
-      <table>
-        <tr><td class="hd">採購單編號</td><td>${esc(o.no)}</td><td class="hd">採購日期</td><td>${esc(o.po_date)}</td>
-          <td class="hd">來源請購單</td><td colspan="2">${esc(o.pr_no || '')}</td><td class="hd">預算金額</td><td colspan="2">${o.budget_amount ? money(o.budget_amount) : ''}</td></tr>
-        <tr><td class="hd" rowspan="${rows + 2}" style="vertical-align:middle">比價資料</td>
-          <th>廠商</th><th colspan="2">品名及規格</th><th>數量</th><th>單價</th><th>金額(未稅)</th><th>付款條件／備註</th><th>交期</th><th>決議</th></tr>
+      ${infoTable([
+        ['採購單編號', esc(o.no), '採購日期', esc(o.po_date)],
+        ['來源請購單', esc(o.pr_no || ''), '預算金額', o.budget_amount ? money(o.budget_amount) : ''],
+        ['採購廠商', esc(o.vendor_name), '交期', esc(o.eta || '')]
+      ])}
+      <div class="sec" style="margin-top:0">比價資料</div>
+      <table>${cols([22, 20, 11, 12, 13, 12, 10])}
+        <tr><th>品名及規格</th><th>廠商</th><th>數量</th><th>單價</th><th>金額(未稅)</th><th>備註</th><th>決議</th></tr>
         ${lines.join('')}
-        ${'<tr><td style="height:22px"></td><td colspan="2"></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>'.repeat(rows - lines.length)}
-        <tr><td colspan="5" class="r"><strong>採購未稅合計（${esc(o.vendor_name)}）</strong></td><td class="r"><strong>${money(o.total)}</strong></td><td colspan="3">${o.budget_amount && o.total > o.budget_amount ? '超出預算' : ''}</td></tr>
-        <tr><td colspan="10">是否已達到經費最小化：${o.budget_amount ? (o.total <= o.budget_amount ? '■是　□否' : '□是　■否') : '□是　□否'}</td></tr>
-        <tr><td colspan="10">建議廠商及原因：${esc(o.vendor_name)}${quoted.length ? `（${esc(quoted.map(i => `${i.item_name} 比價 ${i.quotes.length} 家`).join('、'))}）` : ''}</td></tr>
-        <tr><td colspan="10">議價說明：${esc(o.note || '')}</td></tr>
-        <tr><th colspan="2">驗收單位</th><th rowspan="2">核准</th><th rowspan="2">會簽單位</th><th colspan="6">採　購　單　位</th></tr>
-        <tr><th>驗收結果</th><th>驗收人</th><th>覆核</th><th>審核</th><th>單位主管</th><th colspan="3">經辦</th></tr>
-        <tr class="sign"><td>${o.receipts && o.receipts.length ? `${o.status === 'received' ? '全數到貨' : o.status === 'closed' ? '部分到貨結案' : '部分到貨'}` : ''}</td>
-          <td>${esc([...new Set((o.receipts || []).map(g => g.inspector))].join('、'))}</td><td>${esc(o.approved_name || '')}</td><td></td><td></td><td></td><td></td><td colspan="3"></td></tr>
+        ${'<tr class="blank"><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>'.repeat(blanks)}
+        <tr><td colspan="4" class="r"><strong>採購未稅合計</strong></td><td class="r"><strong>${money(o.total)}</strong></td>
+          <td colspan="2">${within === false ? '超出預算' : ''}</td></tr>
+      </table>
+      ${infoTable([
+        ['經費最小化', within === null ? '□是　□否' : within ? '■是　□否' : '□是　■否'],
+        ['建議廠商及原因', `${esc(o.vendor_name)}${quoted.length ? `（${esc(quoted.map(i => `${i.item_name} 比價 ${i.quotes.length} 家`).join('、'))}）` : ''}`],
+        ['議價說明', esc(o.note || '')]
+      ])}
+      <table>${cols([12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5, 12.5])}
+        <tr><th colspan="2">驗收單位</th><th rowspan="2">核准</th><th rowspan="2">會簽單位</th><th colspan="4">採　購　單　位</th></tr>
+        <tr><th>驗收結果</th><th>驗收人</th><th>覆核</th><th>審核</th><th>單位主管</th><th>經辦</th></tr>
+        <tr class="sign"><td class="c">${o.receipts && o.receipts.length ? (o.status === 'received' ? '全數到貨' : o.status === 'closed' ? '部分到貨<br>結案' : '部分到貨') : ''}</td>
+          <td class="c">${esc([...new Set((o.receipts || []).map(g => g.inspector))].join('、'))}</td>
+          <td class="c">${esc(o.approved_name || '')}<br><small>${dt16(o.approved_at)}</small></td><td></td><td></td><td></td><td></td><td></td></tr>
       </table>
       <div class="foot">採購流程：採購單位 → 核決主管 → 採購訂貨 → 驗收單位 → 請款作業${o.receipts && o.receipts.length ? `　｜　到貨：${esc(o.receipts.map(g => `第${g.batch_no}批 ${g.receive_date}`).join('、'))}` : ''}</div>`);
   }
@@ -751,7 +778,9 @@
             po_id: o.id, receive_date: val(body, '#rc-date'), inspector: val(body, '#rc-insp'),
             invoice_no: val(body, '#rc-inv'), note: val(body, '#rc-note'), items } });
           alert(`第 ${r.batch_no} 批入庫完成（${r.no}），庫存已更新${r.new_items ? `，新建 ${r.new_items} 個品項` : ''}。\n請款單 ${r.payment_no} 已自動建立。\n${r.complete ? '採購單已全數到齊。' : '尚有未到貨數量，採購單標為「部分到貨」。'}`);
-          closeModal(); done && done();
+          closeModal();
+          await askMonthlyMerge(r);
+          done && done();
         } catch (e) { err.textContent = e.message; }
       };
     });
@@ -779,18 +808,21 @@
       $('#pay-body').innerHTML = rows.map(p => `<tr>
         <td data-label="請款單號">${esc(p.no)}<br><small>${esc(p.req_date)}</small></td>
         <td data-label="廠商">${esc(p.vendor_name || '')}</td>
-        <td data-label="入庫／採購單"><small>${esc(p.gr_no || '')}<br>${esc(p.po_no || '')}</small></td>
+        <td data-label="入庫／採購單"><small>${esc(p.gr_nos || p.gr_no || '')}<br>${esc(p.po_nos || p.po_no || '')}</small></td>
         <td data-label="發票號碼">${esc(p.invoice_no || '—')}</td>
         <td data-label="含稅金額"><strong>${money(p.total_amount)}</strong><br><small>未稅 ${money(p.subtotal)}＋稅 ${money(p.tax_amount)}</small></td>
         <td data-label="付款到期日">${esc(p.pay_due_date || '—')}${p.status === 'unpaid' && p.pay_due_date && p.pay_due_date < todayStr() ? ' <span class="badge red">逾期</span>' : ''}</td>
-        <td data-label="狀態">${badge(PAY_ST, p.status)}${p.status === 'paid' ? `<br><small>${esc(p.paid_on || '')} ${esc(p.pay_method || '')}</small>` : ''}</td>
+        <td data-label="狀態">${p.merged_into ? `<span class="badge gray">已合併</span><br><small>併入 ${esc(p.merged_into_no || '')}</small>` : badge(PAY_ST, p.status)}${p.status === 'paid' ? `<br><small>${esc(p.paid_on || '')} ${esc(p.pay_method || '')}</small>` : ''}
+          ${p.status !== 'cancelled' && p.month_count > 1 ? `<br><span class="badge red" title="公司規定同一廠商每月只開一張請款單">本月同廠商 ${p.month_count} 張</span>` : ''}</td>
         <td data-label="操作" class="no-print">
           ${p.status === 'unpaid' && can('payables') ? `<button class="btn small" data-pay="${p.id}">填金額／付款</button>` : ''}
+          ${p.status === 'unpaid' && p.month_unpaid > 1 && can('payables') ? `<button class="btn small secondary" data-merge="${p.id}">合併請款</button>` : ''}
           <button class="btn small secondary" data-print="${p.id}">支付憑單</button>
           ${p.status === 'paid' && currentUser.role === 'admin' ? `<button class="btn small danger" data-unpay="${p.id}">改回待付款</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無請款單</div></td></tr>';
       main().querySelectorAll('[data-pay]').forEach(b => b.onclick = async () => openPayForm(await api('/procurement/payments/' + b.dataset.pay), reload));
       main().querySelectorAll('[data-print]').forEach(b => b.onclick = async () => printPayment(await api('/procurement/payments/' + b.dataset.print)));
+      main().querySelectorAll('[data-merge]').forEach(b => b.onclick = () => openMerge(rows.find(x => String(x.id) === b.dataset.merge), reload));
       main().querySelectorAll('[data-unpay]').forEach(b => b.onclick = async () => {
         if (!confirm('將此請款單改回「待付款」？（會留下稽核紀錄）')) return;
         try { await api(`/procurement/payments/${b.dataset.unpay}/unpay`, { method: 'POST' }); reload(); } catch (e) { alert(e.message); }
@@ -799,12 +831,59 @@
     wireFilter(main(), load);
   }
 
+  // 公司規定：同一家廠商一個月只開一張請款單。新請款單產生時，若同月已有待付款的，詢問是否合併並重出支付憑單
+  async function askMonthlyMerge(r) {
+    const cands = r.merge_candidates || [];
+    if (!cands.length) {
+      if (r.month_paid) alert(`提醒：「${r.vendor_name}」本月已有已付款的請款單，依規定同一廠商每月只開一張請款單。\n如需合併，請由管理員將已付款單改回待付款後，於請款單頁合併。`);
+      return;
+    }
+    if (!can('payables')) {
+      alert(`提醒：「${r.vendor_name}」本月已有待付款請款單 ${cands.map(c => c.no).join('、')}，依規定應合併請款，請通知財務於請款單頁合併。`);
+      return;
+    }
+    const target = cands[0];
+    if (!confirm(`「${r.vendor_name}」本月已有待付款請款單 ${cands.map(c => `${c.no}（${money(c.total_amount)}）`).join('、')}。\n\n公司規定同一廠商一個月只開一張請款單，是否將剛產生的 ${r.payment_no} 合併到 ${target.no}，並重新列印支付憑單？`)) return;
+    try {
+      const ids = [r.payment_id, ...cands.slice(1).map(c => c.id)];
+      const merged = await api(`/procurement/payments/${target.id}/merge`, { method: 'POST', body: { ids } });
+      alert(`已合併至 ${merged.no}，含稅總額 ${money(merged.total_amount)}。接著開啟支付憑單供重新列印。`);
+      printPayment(merged);
+    } catch (e) { alert('合併失敗：' + e.message); }
+  }
+
+  async function openMerge(p, done) {
+    const d = await api('/procurement/payments/' + p.id);
+    const others = d.month_others.filter(x => x.status === 'unpaid');
+    openWide(`合併請款 — ${d.vendor_name}（${String(d.req_date).slice(0, 7)}）`, `
+      <p style="font-size:.9rem">公司規定同一廠商一個月只開一張請款單。勾選要併入 <strong>${esc(d.no)}</strong> 的請款單，合併後明細、發票號碼與金額會彙總到這一張，被合併的請款單改為「已合併」。</p>
+      <table class="data"><thead><tr><th>併入</th><th>請款單號</th><th>請款日</th><th>含稅金額</th></tr></thead>
+        <tbody>${others.map(x => `<tr><td><input type="checkbox" data-m="${x.id}" checked></td><td>${esc(x.no)}</td><td>${esc(x.req_date)}</td><td>${money(x.total_amount)}</td></tr>`).join('')
+          || '<tr><td colspan="4"><div class="empty">本月沒有其他待付款的請款單</div></td></tr>'}</tbody></table>
+      ${d.month_others.some(x => x.status === 'paid') ? '<p style="color:var(--danger);font-size:.85rem">本月另有已付款的請款單，已付款的不能合併；如需合併請管理員先改回待付款。</p>' : ''}
+      <div class="row" style="gap:8px;margin-top:8px"><button class="btn" id="mg-go" ${others.length ? '' : 'disabled'}>合併並重出支付憑單</button><span class="error-msg" id="mg-err"></span></div>`, body => {
+      body.querySelector('#mg-go').onclick = async () => {
+        const ids = [...body.querySelectorAll('[data-m]:checked')].map(c => Number(c.dataset.m));
+        if (!ids.length) { body.querySelector('#mg-err').textContent = '請勾選要合併的請款單'; return; }
+        try {
+          const merged = await api(`/procurement/payments/${d.id}/merge`, { method: 'POST', body: { ids } });
+          closeModal();
+          printPayment(merged);
+          done && done();
+        } catch (e) { body.querySelector('#mg-err').textContent = e.message; }
+      };
+    });
+  }
+
   function termDays(terms) { const m = /(\d+)/.exec(terms || ''); return m ? Number(m[1]) : (/貨到|預付/.test(terms || '') ? 0 : 30); }
   function addDays(date, n) { const d = new Date(date + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 
   function openPayForm(p, done) {
     const days = termDays(p.vendor_terms);
+    const sameMonth = (p.month_others || []);
     openWide(`填寫請款資訊 — ${p.no}`, `
+      ${sameMonth.length ? `<div style="background:#fdeeee;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:.88rem">
+        提醒：「${esc(p.vendor_name)}」本月另有請款單 ${esc(sameMonth.map(x => `${x.no}（${PAY_ST[x.status] ? PAY_ST[x.status][0] : x.status}）`).join('、'))}，公司規定同一廠商每月只開一張，建議先到列表按「合併請款」。</div>` : ''}
       <div class="form-grid" style="margin-bottom:8px">
         <div class="card" style="margin:0;background:var(--bg)">
           <div style="color:var(--muted);font-size:.8rem">廠商</div><strong>${esc(p.vendor_name || '')}</strong>
@@ -828,7 +907,7 @@
         <div class="field"><label>稅額</label><input id="pf-tax" disabled></div>
         <div class="field"><label>含稅總額（應付）<small>（可手動調整，留空＝依計算）</small></label>
           <input type="number" min="0" id="pf-total" placeholder="" value="${p.total_amount !== p.subtotal + p.tax_amount ? p.total_amount : ''}"></div>
-        <div class="field"><label>發票號碼</label><input id="pf-inv" value="${esc(p.invoice_no || '')}"></div>
+        <div class="field"><label>發票號碼</label><input id="pf-inv" maxlength="200" value="${esc(p.invoice_no || '')}"></div>
         <div class="field"><label>發票日期</label><input type="date" id="pf-invdate" value="${esc(p.invoice_date || '')}"></div>
         <div class="field"><label>付款到期日 <small>（發票日＋${days} 天）</small></label><input type="date" id="pf-due" value="${esc(p.pay_due_date || '')}"></div>
         <div class="field"><label>付款方式</label><select id="pf-method">${PAY_METHODS.map(m => `<option ${p.pay_method === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
@@ -880,34 +959,63 @@
   async function printPayment(p) {
     const s = await procSettings();
     const box = on => (on ? '■' : '□');
+    const t = p.trail || { requests: [], orders: [], receipts: [] };
+    const itemsText = list => list.map(i => `${esc(i.item_name)} ×${i.qty !== undefined ? i.qty : i.received_qty}${esc(i.unit || '')}`).join('、');
+    const trail = `
+      <div class="trail">
+        <h3>請採驗流程紀錄　${esc(p.no)}（${esc(p.vendor_name || '')}）</h3>
+        <div style="font-weight:700;margin:1mm 0 0.5mm">一、請購單</div>
+        <table>${cols([19, 13, 30, 19, 19])}
+          <tr><th>請購單號</th><th>請購日</th><th>品項及數量</th><th>建立</th><th>核准</th></tr>
+          ${t.requests.map(r => `<tr><td>${esc(r.no)}</td><td class="c">${esc(r.req_date)}</td><td>${itemsText(r.items)}</td>
+            <td>${dt16(r.created_at)}<br>${esc(r.created_name || '')}（申請人 ${esc(r.requester)}）</td>
+            <td>${dt16(r.approved_at)}<br>${esc(r.approved_name || '')}</td></tr>`).join('') || '<tr><td colspan="5" class="c">—</td></tr>'}
+        </table>
+        <div style="font-weight:700;margin:1mm 0 0.5mm">二、採購單</div>
+        <table>${cols([19, 13, 30, 19, 19])}
+          <tr><th>採購單號</th><th>採購日</th><th>品項、數量、單價</th><th>建立</th><th>審核</th></tr>
+          ${t.orders.map(o => `<tr><td>${esc(o.no)}${o.quote_count ? `<br><small>比價 ${o.quote_count} 筆</small>` : ''}</td><td class="c">${esc(o.po_date)}</td>
+            <td>${o.items.map(i => `${esc(i.item_name)} ×${i.qty}${esc(i.unit)} @${money(i.unit_price)}`).join('、')}<br><small>預算 ${o.budget_amount ? money(o.budget_amount) : '—'}</small></td>
+            <td>${dt16(o.created_at)}<br>${esc(o.created_name || '')}</td>
+            <td>${dt16(o.approved_at)}<br>${esc(o.approved_name || '')}</td></tr>`).join('') || '<tr><td colspan="5" class="c">—</td></tr>'}
+        </table>
+        <div style="font-weight:700;margin:1mm 0 0.5mm">三、驗貨單</div>
+        <table>${cols([19, 13, 30, 19, 19])}
+          <tr><th>入庫單號</th><th>驗貨日</th><th>本批品項及數量</th><th>建立</th><th>驗貨人員／發票</th></tr>
+          ${t.receipts.map(g => `<tr><td>${esc(g.no)}<br><small>第 ${g.batch_no} 批</small></td><td class="c">${esc(g.receive_date)}</td>
+            <td>${itemsText(g.items)}</td><td>${dt16(g.created_at)}<br>${esc(g.created_name || '')}</td>
+            <td>${esc(g.inspector)}<br>${esc(g.invoice_no || '')}</td></tr>`).join('') || '<tr><td colspan="5" class="c">—</td></tr>'}
+        </table>
+      </div>`;
     printDoc(`請款支付憑單 ${p.no}`, `
       <h1>${esc(s.center_name)}</h1><h2 style="text-decoration:underline">請款支付憑單</h2>
-      <div class="r" style="margin-bottom:6px">${ymd(p.invoice_date || p.req_date)}　　單號：${esc(p.no)}</div>
-      <table>
-        <tr><td class="hd" style="width:80px">預算編號</td><td colspan="2">${esc(p.budget_no || '')}</td>
-          <td class="hd" rowspan="3" style="width:60px;vertical-align:middle">費用歸屬</td><td rowspan="3">${esc(p.cost_center || '')}</td>
-          <td class="hd" style="width:80px">廠商名稱</td><td colspan="3">${esc(p.vendor_name || '')}</td></tr>
-        <tr><td class="hd">阿米巴項目</td><td colspan="2"></td><td class="hd">統一編號</td><td colspan="3">${esc(p.vendor_tax_id || '')}</td></tr>
-        <tr><td class="hd">部門別</td><td colspan="2">${esc(s.pay_dept)}</td><td class="hd">發票號碼</td><td colspan="3">${esc(p.invoice_no || '')}</td></tr>
-        <tr><td class="hd">金　額</td><td colspan="8">新台幣：${chineseAmount(p.total_amount)}　　NT$ <strong>${Number(p.total_amount).toLocaleString('en-US')}</strong></td></tr>
-        <tr><td class="hd">事　由</td><td colspan="4">${esc(p.items.map(i => `${i.item_name}×${i.qty}${i.unit}`).join('、'))}　共計 ${money(p.subtotal)}（未稅）${p.tax_amount ? `＋稅 ${money(p.tax_amount)}` : ''}${p.remark ? `<br>${esc(p.remark)}` : ''}</td>
-          <td class="hd">領款方式</td><td colspan="3">□自取　□送達　□郵寄<br>${box(p.pay_method === '銀行轉帳')}匯款</td></tr>
-        <tr><td class="hd">領款人</td><td colspan="4">${esc(p.bank_holder || p.vendor_name || '')}</td>
-          <td class="hd" rowspan="2" style="vertical-align:middle">領款人簽收</td><td colspan="3" rowspan="2"></td></tr>
-        <tr><td class="hd">付款方式</td><td colspan="4">${box(p.pay_method === '現金')}現金　${box(p.pay_method === '支票')}票據，票期：____年____月____日<br>
-          帳號：${esc(p.bank_account || '________________')}　票號：________________<br>
-          ${box(p.pay_method === '銀行轉帳' || p.pay_method === '其他')}其他：${p.pay_method === '其他' ? '其他' : '匯款'}　銀行：${esc(p.bank_name || '')}${p.bank_branch ? ' ' + esc(p.bank_branch) : ''}　代碼：${esc(p.bank_code || '')}</td></tr>
-        <tr><th>核准</th><th>覆核</th><th>審核</th><th>單位主管</th><th>申請人</th><th>財務經理</th><th>會計主管</th><th>會計</th><th>出納</th></tr>
-        <tr class="sign"><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+      <div class="sub"><span>${ymd(p.invoice_date || p.req_date)}</span><span>單號：${esc(p.no)}${p.merged_from && p.merged_from.length ? `（合併 ${esc(p.merged_from.map(x => x.no).join('、'))}）` : ''}</span></div>
+      ${infoTable([
+        ['預算編號', esc(p.budget_no || ''), '廠商名稱', esc(p.vendor_name || '')],
+        ['阿米巴項目', '', '統一編號', esc(p.vendor_tax_id || '')],
+        ['部門別', esc(s.pay_dept), '發票號碼', esc(p.invoice_no || '')],
+        ['費用歸屬', esc(p.cost_center || ''), '付款到期日', esc(p.pay_due_date || '')],
+        ['金　額', `新台幣 ${chineseAmount(p.total_amount)}　<strong>NT$ ${Number(p.total_amount).toLocaleString('en-US')}</strong>`],
+        ['事　由', `${itemsText(p.items)}　未稅 ${money(p.subtotal)}${p.tax_amount ? `＋稅 ${money(p.tax_amount)}` : ''}${p.remark ? `<br>${esc(p.remark)}` : ''}`],
+        ['領款人', esc(p.bank_holder || p.vendor_name || ''), '領款方式', `□自取 □送達 □郵寄 ${box(p.pay_method === '銀行轉帳')}匯款`],
+        ['付款方式', `${box(p.pay_method === '現金')}現金　${box(p.pay_method === '支票')}票據，票期：___年___月___日　票號：__________<br>
+          ${box(p.pay_method === '銀行轉帳' || p.pay_method === '其他')}${p.pay_method === '其他' ? '其他' : '匯款'}　銀行：${esc(p.bank_name || '')}${p.bank_branch ? ' ' + esc(p.bank_branch) : ''}${p.bank_code ? `（${esc(p.bank_code)}）` : ''}　帳號：${esc(p.bank_account || '')}`],
+        ['領款人簽收', '<div style="height:9mm"></div>']
+      ])}
+      <table>${cols(Array(9).fill(100 / 9))}
+        <tr><th>核准</th><th>覆核</th><th>審核</th><th>單位<br>主管</th><th>申請人</th><th>財務<br>經理</th><th>會計<br>主管</th><th>會計</th><th>出納</th></tr>
+        <tr class="sign"><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="c">${p.status === 'paid' ? esc(p.paid_name || '') : ''}</td></tr>
       </table>
-      <table>
-        <thead><tr><th style="text-align:left">品項名稱</th><th>數量</th><th>未稅單價</th><th>未稅小計</th></tr></thead>
-        <tbody>${p.items.map(i => `<tr><td>${esc(i.item_name)}</td><td class="c">${i.qty} ${esc(i.unit)}</td><td class="r">${money(i.unit_price)}</td><td class="r">${money(i.amount)}</td></tr>`).join('')}
-          <tr><td colspan="3" class="r"><strong>未稅合計</strong></td><td class="r"><strong>${money(p.subtotal)}</strong></td></tr>
-          <tr><td colspan="3" class="r">稅額（${p.tax_rate}%）</td><td class="r">${money(p.tax_amount)}</td></tr>
-          <tr><td colspan="3" class="r"><strong>含稅總額</strong></td><td class="r"><strong>${money(p.total_amount)}</strong></td></tr></tbody>
+      <table>${cols([34, 22, 14, 15, 15])}
+        <tr><th>品項名稱</th><th>入庫單／採購單</th><th>數量</th><th>未稅單價</th><th>未稅小計</th></tr>
+        ${p.items.map(i => `<tr><td>${esc(i.item_name)}</td><td><small>${esc(i.gr_no || p.gr_no || '')}<br>${esc(i.po_no || p.po_no || '')}</small></td>
+          <td class="c">${i.qty} ${esc(i.unit)}</td><td class="r">${money(i.unit_price)}</td><td class="r">${money(i.amount)}</td></tr>`).join('')}
+        <tr><td colspan="4" class="r">未稅合計</td><td class="r">${money(p.subtotal)}</td></tr>
+        <tr><td colspan="4" class="r">稅額（${p.tax_rate}%）</td><td class="r">${money(p.tax_amount)}</td></tr>
+        <tr><td colspan="4" class="r"><strong>含稅總額</strong></td><td class="r"><strong>${money(p.total_amount)}</strong></td></tr>
       </table>
-      <div class="foot">入庫單：${esc(p.gr_no || '')}　採購單：${esc(p.po_no || '')}　付款到期日：${esc(p.pay_due_date || '')}${p.status === 'paid' ? `　已付款：${esc(p.paid_on || '')}（${esc(p.paid_name || '')}）` : ''}</div>`);
+      <div class="foot">${p.status === 'paid' ? `已付款：${esc(p.paid_on || '')}（${esc(p.paid_name || '')}，${esc(p.pay_method || '')}）` : '狀態：待付款'}</div>
+      ${trail}`);
   }
 
   /* ================= 出貨管理 ================= */
@@ -957,8 +1065,10 @@
 
   async function openShipForm(s, done) {
     const { rows: items } = await api('/procurement/items');
+    const unitOf = id => (items.find(i => String(i.id) === String(id)) || {}).unit || '';
     const lineHtml = (it = {}) => `<tr data-line>
       <td data-label="品項"><select data-k="supply_id" style="min-width:240px"><option value="">-- 選擇品項 --</option>${itemOptions(items, it.supply_id)}</select></td>
+      <td data-label="單位" data-unit>${esc(it.unit || unitOf(it.supply_id))}</td>
       <td data-label="數量"><input type="number" min="1" data-k="qty" value="${it.qty || 1}" style="max-width:90px"></td>
       <td><button class="btn small danger" data-del>刪</button></td></tr>`;
     openWide(s ? `修改出貨單 ${s.no}` : '新增出貨單', `
@@ -968,13 +1078,17 @@
         <div class="field full"><label>備註</label><input id="shf-note" value="${esc(s ? s.note : '')}"></div>
       </div>
       <div class="table-wrap" style="margin-top:8px"><table class="data stack">
-        <thead><tr><th>品項（目前庫存）</th><th>數量</th><th></th></tr></thead>
+        <thead><tr><th>品項（目前庫存）</th><th>單位</th><th>數量</th><th></th></tr></thead>
         <tbody id="shf-lines">${(s ? s.items : [{}]).map(lineHtml).join('')}</tbody></table></div>
       <div class="row" style="gap:8px;margin-top:8px">
         <button class="btn small secondary" id="shf-add">新增品項</button>
         <button class="btn" id="shf-save">${s ? '儲存修改' : '建立出貨單並產生領料單'}</button>
         <span class="error-msg" id="shf-err"></span></div>`, body => {
-      const wire = tr => { tr.querySelector('[data-del]').onclick = () => tr.remove(); };
+      const wire = tr => {
+        tr.querySelector('[data-del]').onclick = () => tr.remove();
+        const sel = tr.querySelector('[data-k="supply_id"]');
+        sel.onchange = () => { tr.querySelector('[data-unit]').textContent = unitOf(sel.value); };
+      };
       body.querySelectorAll('[data-line]').forEach(wire);
       body.querySelector('#shf-add').onclick = () => { body.querySelector('#shf-lines').insertAdjacentHTML('beforeend', lineHtml()); wire(body.querySelector('#shf-lines').lastElementChild); };
       body.querySelector('#shf-save').onclick = async () => {
@@ -1028,13 +1142,23 @@
   }
   async function printPick(p) {
     const s = await procSettings();
+    const blanks = Math.max(0, 8 - p.items.length);
     printDoc(`領料單 ${p.no}`, `
       <h1>${esc(s.center_name)}</h1><h2>領料單</h2>
-      <table><tr><td class="hd">領料單號</td><td>${esc(p.no)}</td><td class="hd">出貨單號</td><td>${esc(p.ship_no)}</td></tr>
-        <tr><td class="hd">領用對象</td><td>${esc(p.recipient)}</td><td class="hd">日期</td><td>${esc(p.pick_date)}</td></tr></table>
-      <table><thead><tr><th>項次</th><th style="text-align:left">品項名稱</th><th>單位</th><th>數量</th><th>確認</th></tr></thead>
-        <tbody>${p.items.map((i, n) => `<tr><td class="c">${n + 1}</td><td>${esc(i.item_name)}</td><td class="c">${esc(i.unit)}</td><td class="c"><strong>${i.qty}</strong></td><td class="c">□</td></tr>`).join('')}</tbody></table>
-      <table class="sign"><tr><th>領料人簽名</th><th>發料人簽名</th><th>主管</th></tr><tr><td></td><td></td><td></td></tr></table>`);
+      ${infoTable([
+        ['領料單號', esc(p.no), '出貨單號', esc(p.ship_no)],
+        ['領用對象', esc(p.recipient), '日期', esc(p.pick_date)]
+      ])}
+      <table>${cols([9, 51, 14, 14, 12])}
+        <tr><th>項次</th><th>品項名稱</th><th>單位</th><th>數量</th><th>確認</th></tr>
+        ${p.items.map((i, n) => `<tr><td class="c">${n + 1}</td><td>${esc(i.item_name)}</td><td class="c">${esc(i.unit)}</td>
+          <td class="c"><strong>${i.qty}</strong></td><td class="c">□</td></tr>`).join('')}
+        ${'<tr class="blank"><td></td><td></td><td></td><td></td><td></td></tr>'.repeat(blanks)}
+      </table>
+      <table>${cols([33.3, 33.3, 33.4])}
+        <tr><th>領料人簽名</th><th>發料人簽名</th><th>主管</th></tr>
+        <tr class="sign"><td></td><td></td><td></td></tr>
+      </table>`);
   }
 
   /* ================= 庫存總覽 ================= */

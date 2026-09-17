@@ -746,12 +746,17 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
           subtotal, tax_rate, tax_amount, total_amount, pay_due_date, pay_method)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(payNo, today(), grId, o.id, o.vendor_id, str(b.invoice_no, 30), receiveDate,
         subtotal, s.tax_rate, tax, subtotal + tax, addDays(receiveDate, termDays(vendor.payment_terms)), '銀行轉帳').lastInsertRowid;
-      const insPi = db.prepare('INSERT INTO payment_request_items (pay_id, item_name, unit, qty, unit_price, amount) VALUES (?,?,?,?,?,?)');
-      for (const l of payLines) insPi.run(payId, l.name, l.unit, l.qty, l.price, Math.round(l.qty * l.price));
+      const insPi = db.prepare('INSERT INTO payment_request_items (pay_id, item_name, unit, qty, unit_price, amount, gr_id, po_id) VALUES (?,?,?,?,?,?,?,?)');
+      for (const l of payLines) insPi.run(payId, l.name, l.unit, l.qty, l.price, Math.round(l.qty * l.price), grId, o.id);
     })();
+    const mergeWith = db.prepare(`SELECT id, no, total_amount FROM payment_requests WHERE vendor_id = ? AND id != ?
+      AND status = 'unpaid' AND substr(req_date,1,7) = substr(?,1,7) ORDER BY id`).all(o.vendor_id, payId, today());
+    const monthPaid = db.prepare(`SELECT COUNT(*) c FROM payment_requests WHERE vendor_id = ? AND status = 'paid'
+      AND substr(req_date,1,7) = substr(?,1,7)`).get(o.vendor_id, today()).c;
     logAudit(req, { action: 'create', entity: 'goods_receipts', entity_id: grId,
       summary: `驗貨入庫 ${grNo}（採購單 ${o.no} 第 ${batchNo} 批${allDone ? '，已到齊' : '，尚有未到貨'}），產生請款單 ${payNo}` });
-    res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, payment_id: payId, payment_no: payNo, new_items: newCount });
+    res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, payment_id: payId, payment_no: payNo, new_items: newCount,
+      vendor_name: o.vendor_name, merge_candidates: mergeWith, month_paid: monthPaid });
   }));
 
   // ---------- 請款單 ----------
@@ -762,8 +767,58 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       FROM payment_requests p LEFT JOIN vendors v ON v.id = p.vendor_id LEFT JOIN goods_receipts g ON g.id = p.gr_id
       LEFT JOIN purchase_orders o ON o.id = p.po_id LEFT JOIN users u ON u.id = p.paid_by WHERE p.id = ?`).get(id);
     if (!p) return null;
-    p.items = db.prepare('SELECT * FROM payment_request_items WHERE pay_id = ? ORDER BY id').all(id);
+    p.items = db.prepare(`SELECT pi.*, g.no AS gr_no, o.no AS po_no FROM payment_request_items pi
+      LEFT JOIN goods_receipts g ON g.id = pi.gr_id LEFT JOIN purchase_orders o ON o.id = pi.po_id
+      WHERE pi.pay_id = ? ORDER BY pi.id`).all(id);
+    p.merged_from = db.prepare('SELECT id, no FROM payment_requests WHERE merged_into = ? ORDER BY id').all(id);
+    p.merged_into_no = p.merged_into ? (db.prepare('SELECT no FROM payment_requests WHERE id = ?').get(p.merged_into) || {}).no : null;
+    p.trail = payTrail(p);
+    p.month_others = sameMonth(p);
     return p;
+  }
+  // 請採驗流程紀錄：讓總公司看到每一筆請款背後的請購、採購、驗貨（品項、數量、建立與核准的人和時間）
+  function payTrail(p) {
+    const grIds = [...new Set(p.items.map(i => i.gr_id).filter(Boolean))];
+    if (!grIds.length && p.gr_id) grIds.push(p.gr_id);
+    const receipts = grIds.map(id => {
+      const g = db.prepare(`SELECT g.id, g.no, g.batch_no, g.receive_date, g.inspector, g.invoice_no, g.created_at, g.po_id,
+          u.name AS created_name FROM goods_receipts g LEFT JOIN users u ON u.id = g.created_by WHERE g.id = ?`).get(id);
+      if (!g) return null;
+      g.items = db.prepare('SELECT item_name, unit, ordered_qty, received_qty, unit_price FROM goods_receipt_items WHERE gr_id = ? AND received_qty > 0 ORDER BY id').all(id);
+      return g;
+    }).filter(Boolean);
+    const poIds = [...new Set(receipts.map(g => g.po_id).concat(p.po_id ? [p.po_id] : []))];
+    const orders = poIds.map(id => {
+      const o = db.prepare(`SELECT o.id, o.no, o.po_date, o.budget_amount, o.created_at, o.approved_at, o.pr_id,
+          uc.name AS created_name, ua.name AS approved_name
+        FROM purchase_orders o LEFT JOIN users uc ON uc.id = o.created_by LEFT JOIN users ua ON ua.id = o.approved_by WHERE o.id = ?`).get(id);
+      if (!o) return null;
+      o.items = db.prepare('SELECT item_name, unit, qty, unit_price FROM purchase_order_items WHERE po_id = ? ORDER BY id').all(id);
+      o.quote_count = db.prepare(`SELECT COUNT(*) c FROM po_item_quotes q JOIN purchase_order_items i ON i.id = q.po_item_id WHERE i.po_id = ?`).get(id).c;
+      return o;
+    }).filter(Boolean);
+    const prIds = [...new Set(orders.map(o => o.pr_id).filter(Boolean))];
+    const requests = prIds.map(id => {
+      const r = db.prepare(`SELECT r.id, r.no, r.req_date, r.requester, r.purpose, r.created_at, r.approved_at,
+          uc.name AS created_name, ua.name AS approved_name
+        FROM purchase_requests r LEFT JOIN users uc ON uc.id = r.created_by LEFT JOIN users ua ON ua.id = r.approved_by WHERE r.id = ?`).get(id);
+      if (!r) return null;
+      r.items = db.prepare('SELECT item_name, unit, qty FROM purchase_request_items WHERE pr_id = ? ORDER BY id').all(id);
+      return r;
+    }).filter(Boolean);
+    return { requests, orders, receipts };
+  }
+  // 同廠商同月（依請款日）其他有效請款單：公司規定一家廠商一個月只開一張，用來提醒合併
+  function sameMonth(p) {
+    return db.prepare(`SELECT id, no, status, total_amount, req_date FROM payment_requests
+      WHERE vendor_id = ? AND substr(req_date,1,7) = ? AND id != ? AND status != 'cancelled' ORDER BY id`)
+      .all(p.vendor_id, String(p.req_date).slice(0, 7), p.id);
+  }
+  function recomputePayment(payId) {
+    const p = db.prepare('SELECT tax_rate FROM payment_requests WHERE id = ?').get(payId);
+    const sub = db.prepare('SELECT COALESCE(SUM(amount),0) s FROM payment_request_items WHERE pay_id = ?').get(payId).s;
+    const tax = Math.round(sub * p.tax_rate / 100);
+    db.prepare('UPDATE payment_requests SET subtotal=?, tax_amount=?, total_amount=? WHERE id=?').run(sub, tax, sub + tax, payId);
   }
   router.get('/procurement/payments', requireStaff, (req, res) => {
     const cond = [], args = [];
@@ -773,7 +828,14 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (req.query.vendor_id) { cond.push('p.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(p.no LIKE ? OR p.invoice_no LIKE ? OR v.name LIKE ?)'); args.push(...Array(3).fill('%' + q + '%')); }
-    res.json(db.prepare(`SELECT p.*, v.name AS vendor_name, g.no AS gr_no, o.no AS po_no
+    res.json(db.prepare(`SELECT p.*, v.name AS vendor_name, g.no AS gr_no, o.no AS po_no,
+        (SELECT no FROM payment_requests m WHERE m.id = p.merged_into) AS merged_into_no,
+        (SELECT GROUP_CONCAT(DISTINCT g2.no) FROM payment_request_items pi JOIN goods_receipts g2 ON g2.id = pi.gr_id WHERE pi.pay_id = p.id) AS gr_nos,
+        (SELECT GROUP_CONCAT(DISTINCT o2.no) FROM payment_request_items pi JOIN purchase_orders o2 ON o2.id = pi.po_id WHERE pi.pay_id = p.id) AS po_nos,
+        (SELECT COUNT(*) FROM payment_requests x WHERE x.vendor_id = p.vendor_id AND substr(x.req_date,1,7) = substr(p.req_date,1,7)
+          AND x.status != 'cancelled') AS month_count,
+        (SELECT COUNT(*) FROM payment_requests x WHERE x.vendor_id = p.vendor_id AND substr(x.req_date,1,7) = substr(p.req_date,1,7)
+          AND x.status = 'unpaid') AS month_unpaid
       FROM payment_requests p LEFT JOIN vendors v ON v.id = p.vendor_id LEFT JOIN goods_receipts g ON g.id = p.gr_id
       LEFT JOIN purchase_orders o ON o.id = p.po_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY p.id DESC LIMIT 500`).all(...args));
@@ -802,7 +864,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     for (const l of lines) upd.run(l.price, l.amount, l.id);
     db.prepare(`UPDATE payment_requests SET invoice_no=?, invoice_date=?, subtotal=?, tax_rate=?, tax_amount=?, total_amount=?,
         pay_due_date=?, pay_method=?, remark=?, budget_no=?, cost_center=? WHERE id=?`).run(
-      b.invoice_no === undefined ? p.invoice_no : str(b.invoice_no, 30), invoiceDate, subtotal, taxRate, taxAmount,
+      b.invoice_no === undefined ? p.invoice_no : str(b.invoice_no, 200), invoiceDate, subtotal, taxRate, taxAmount,
       manual === null ? subtotal + taxAmount : manual,
       isDate(b.pay_due_date) ? b.pay_due_date : p.pay_due_date, method,
       b.remark === undefined ? p.remark : str(b.remark, 500),
@@ -832,6 +894,39 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'payment_requests', entity_id: p.id, summary: `請款單 ${p.no} 付款完成 ${after.total_amount}` });
     res.json(after);
   }));
+  // 合併請款：同廠商、同月份、皆為待付款；明細併入目標請款單，來源單改為已取消並註記合併去向
+  router.post('/procurement/payments/:id/merge', requireStaff, need('payables'), (req, res) => run(res, () => {
+    const target = db.prepare('SELECT * FROM payment_requests WHERE id = ?').get(req.params.id);
+    if (!target) throw httpErr('找不到請款單', 404);
+    if (target.status !== 'unpaid') throw httpErr('只能合併到待付款的請款單');
+    const ids = [...new Set((Array.isArray((req.body || {}).ids) ? req.body.ids : []).map(int).filter(x => x && x !== target.id))];
+    if (!ids.length) throw httpErr('請選擇要合併的請款單');
+    const month = String(target.req_date).slice(0, 7);
+    const sources = ids.map(id => {
+      const x = db.prepare('SELECT * FROM payment_requests WHERE id = ?').get(id);
+      if (!x) throw httpErr('找不到要合併的請款單');
+      if (x.vendor_id !== target.vendor_id) throw httpErr(`${x.no} 不是同一家廠商`);
+      if (String(x.req_date).slice(0, 7) !== month) throw httpErr(`${x.no} 不是同一個月份`);
+      if (x.status !== 'unpaid') throw httpErr(`${x.no} 已付款或已取消，不能合併（已付款者請先由管理員改回待付款）`);
+      return x;
+    });
+    db.transaction(() => {
+      const invoices = [target.invoice_no, ...sources.map(x => x.invoice_no)].map(v => String(v || '').trim()).filter(Boolean);
+      for (const x of sources) {
+        db.prepare('UPDATE payment_request_items SET pay_id = ? WHERE pay_id = ?').run(target.id, x.id);
+        db.prepare("UPDATE payment_requests SET status='cancelled', merged_into=?, remark=TRIM(remark || ' 已合併至 ' || ?) WHERE id=?")
+          .run(target.id, target.no, x.id);
+      }
+      const dates = [target.invoice_date, ...sources.map(x => x.invoice_date)].filter(Boolean).sort();
+      db.prepare('UPDATE payment_requests SET invoice_no=?, invoice_date=? WHERE id=?')
+        .run([...new Set(invoices)].join('、').slice(0, 200), dates.length ? dates[dates.length - 1] : target.invoice_date, target.id);
+      recomputePayment(target.id);
+    })();
+    logAudit(req, { action: 'update', entity: 'payment_requests', entity_id: target.id,
+      summary: `合併請款：${sources.map(x => x.no).join('、')} 併入 ${target.no}` });
+    res.json(payDetail(target.id));
+  }));
+
   // 付錯了要能改回：限管理員，並留稽核
   router.post('/procurement/payments/:id/unpay', requireStaff, (req, res) => {
     if (req.session.user.role !== 'admin') return bad(res, '需要管理員權限', 403);
@@ -1218,6 +1313,17 @@ function ensureSchema(db) {
     db.exec(`UPDATE goods_receipts SET batch_no = (SELECT COUNT(*) FROM goods_receipts g2
       WHERE g2.po_id = goods_receipts.po_id AND g2.id <= goods_receipts.id)`);
   }
+  // 合併請款：明細記住來源入庫單／採購單；被合併的請款單記合併去向
+  const piCols = db.prepare('PRAGMA table_info(payment_request_items)').all().map(c => c.name);
+  if (!piCols.includes('gr_id')) {
+    db.exec('ALTER TABLE payment_request_items ADD COLUMN gr_id INTEGER REFERENCES goods_receipts(id)');
+    db.exec('ALTER TABLE payment_request_items ADD COLUMN po_id INTEGER REFERENCES purchase_orders(id)');
+    db.exec(`UPDATE payment_request_items SET
+      gr_id = (SELECT gr_id FROM payment_requests p WHERE p.id = payment_request_items.pay_id),
+      po_id = (SELECT po_id FROM payment_requests p WHERE p.id = payment_request_items.pay_id)`);
+  }
+  const payCols = db.prepare('PRAGMA table_info(payment_requests)').all().map(c => c.name);
+  if (!payCols.includes('merged_into')) db.exec('ALTER TABLE payment_requests ADD COLUMN merged_into INTEGER REFERENCES payment_requests(id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_item ON po_item_quotes(po_item_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_vendor ON po_item_quotes(vendor_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_gr_po ON goods_receipts(po_id)');

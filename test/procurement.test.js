@@ -206,7 +206,7 @@ test('新品項比價：至少兩家報價、勾選一家；新廠商與報價�
   await ok('POST', `/api/procurement/orders/${po2.id}/approve`, {});
 });
 
-let payId;
+let payId, secondPayId;
 test('分批到貨：第一批部分到貨→部分到貨＋請款單；第二批到齊→已入庫；超量擋下', async () => {
   const po1 = await ok('GET', `/api/procurement/orders/${poIds[0]}`);
   const itemId = po1.items[0].id;                            // 訂 20
@@ -240,6 +240,9 @@ test('分批到貨：第一批部分到貨→部分到貨＋請款單；第二�
   const gr2 = await ok('POST', '/api/procurement/receipts', { po_id: po1.id, inspector: '李驗收', invoice_no: 'AB12345679' });
   assert.strictEqual(gr2.batch_no, 2);
   assert.strictEqual(gr2.complete, true);
+  // 同廠商同月已有待付款請款單 → 回傳可合併對象，供畫面詢問
+  assert.deepStrictEqual(gr2.merge_candidates.map(x => x.id), [payId]);
+  secondPayId = gr2.payment_id;
   o = await ok('GET', `/api/procurement/orders/${po1.id}`);
   assert.strictEqual(o.status, 'received');
   assert.strictEqual(o.receipts.length, 2);
@@ -276,18 +279,50 @@ test('新品項分批：第一批到貨建檔、比價廠商都掛上供應廠�
   assert.ok(hist.quotes.length >= 2);
 });
 
+test('合併請款：同廠商同月的待付款請款單可合併，支付憑單帶出請採驗流程', async () => {
+  const list = await ok('GET', '/api/procurement/payments');
+  const row = list.find(x => x.id === payId);
+  assert.strictEqual(row.month_unpaid, 2);
+  const b = await ok('GET', `/api/procurement/payments/${secondPayId}`);
+  assert.ok(b.month_others.some(x => x.id === payId));
+  // 不同廠商不可合併
+  const other = list.find(x => x.vendor_id !== row.vendor_id && x.status === 'unpaid');
+  if (other) assert.strictEqual((await req('POST', `/api/procurement/payments/${payId}/merge`, { ids: [other.id] })).status, 400);
+  const merged = await ok('POST', `/api/procurement/payments/${payId}/merge`, { ids: [secondPayId] });
+  assert.strictEqual(merged.items.length, 2);
+  assert.strictEqual(merged.subtotal, 2200);
+  assert.strictEqual(merged.total_amount, 2310);
+  assert.strictEqual(merged.invoice_no, 'AB12345678、AB12345679');
+  assert.deepStrictEqual(merged.merged_from.map(x => x.id), [secondPayId]);
+  assert.deepStrictEqual([...new Set(merged.items.map(i => i.gr_no))].length, 2);
+  const src = await ok('GET', `/api/procurement/payments/${secondPayId}`);
+  assert.strictEqual(src.status, 'cancelled');
+  assert.strictEqual(src.merged_into_no, merged.no);
+  // 流程紀錄：請購（申請人、建立人、核准人）→ 採購（建立、審核）→ 兩批驗貨
+  const t = merged.trail;
+  assert.strictEqual(t.requests.length, 1);
+  assert.ok(t.requests[0].approved_name && t.requests[0].created_name && t.requests[0].items.length === 2);
+  assert.strictEqual(t.orders.length, 1);
+  assert.ok(t.orders[0].approved_name && t.orders[0].approved_at);
+  assert.strictEqual(t.receipts.length, 2);
+  assert.deepStrictEqual(t.receipts.map(g => g.batch_no), [1, 2]);
+  assert.deepStrictEqual(t.receipts.map(g => g.items[0].received_qty), [18, 2]);
+  // 已取消（被合併）的不能再合併
+  assert.strictEqual((await req('POST', `/api/procurement/payments/${payId}/merge`, { ids: [secondPayId] })).status, 400);
+});
+
 test('請款單：改金額（手動含稅總額覆蓋）→ 付款 → 付款後鎖定 → 管理員可改回待付款', async () => {
   const pay = await ok('GET', `/api/procurement/payments/${payId}`);
   const upd = await ok('PUT', `/api/procurement/payments/${payId}`, {
-    items: [{ id: pay.items[0].id, unit_price: 100 }], tax_rate: 5, total_amount: 1890, remark: '議價後'
+    items: pay.items.map(i => ({ id: i.id, unit_price: 100 })), tax_rate: 5, total_amount: 2100, remark: '議價後'
   });
-  assert.strictEqual(upd.subtotal, 1800);
-  assert.strictEqual(upd.total_amount, 1890);
+  assert.strictEqual(upd.subtotal, 2000);
+  assert.strictEqual(upd.total_amount, 2100);
   const paid = await ok('POST', `/api/procurement/payments/${payId}/pay`, { pay_method: '銀行轉帳', paid_on: D(0) });
   assert.strictEqual(paid.status, 'paid');
   assert.strictEqual((await req('PUT', `/api/procurement/payments/${payId}`, { remark: 'x' })).status, 400);
   const v = await ok('GET', `/api/procurement/vendors/${vendorA}`);
-  assert.strictEqual(v.payables.paid, 1890);
+  assert.strictEqual(v.payables.paid, 2100);
   assert.ok(v.purchased.some(p => p.name === 'A4影印紙' && p.total_qty === 20 && p.times === 2));
   await ok('POST', `/api/procurement/payments/${payId}/unpay`, {});
   assert.strictEqual((await ok('GET', `/api/procurement/payments/${payId}`)).status, 'unpaid');
