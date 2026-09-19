@@ -33,7 +33,8 @@
     receipts_write: R('receive', 'admin'), payments_write: R('account', 'admin'),
     ship_write: R('ship', 'admin'), master_write: R('buyer', 'admin'), settings_write: R('admin'), reports: R('finance', 'admin'),
     // 金額：驗貨人員只核對品項與數量，入庫紀錄的金額欄不對他們顯示
-    amounts: R('buyer', 'account', 'finance', 'admin')
+    amounts: R('buyer', 'account', 'finance', 'admin'),
+    returns: R('admin')
   };
   const can = perm => currentUser && (currentUser.role === 'admin' || (PERMS[perm] || []).some(k => (currentUser.modules || []).includes(k)));
   const val = (root, sel) => { const el = root.querySelector(sel); return el ? el.value.trim() : ''; };
@@ -45,7 +46,8 @@
     return SETTINGS_CACHE;
   }
   // 倉庫下拉：總倉在前、小倉縮排列在所屬總倉之下；多家公司時標出公司名
-  const whLabel = (w, st) => `${w.kind === 'sub' ? '　└ ' : ''}${w.name}${multiCo(st) && w.company_name ? `（${w.company_name}）` : ''}`;
+  const whLabel = (w, st) => `${w.kind === 'sub' ? '　└ ' : ''}${w.name}${multiCo(st) && w.company_name ? `（${w.company_name}）` : ''}${
+    st.shop_warehouse_set && String(st.shop_warehouse_id) === String(w.id) ? '【商城庫存倉】' : ''}`;
   function warehouseSelect(st, sel, id, opt = {}) {
     const list = st.warehouses || [];
     const blank = opt.blank ? `<option value="">${esc(opt.blank)}</option>` : '';
@@ -53,6 +55,15 @@
     return `<select id="${id}" ${opt.attrs || ''}>${blank}${list.map(w =>
       `<option value="${w.id}" ${String(pick) === String(w.id) ? 'selected' : ''}>${esc(whLabel(w, st))}</option>`).join('')}</select>`;
   }
+  // 退回修改（管理員）：問原因後呼叫各單據的 /return
+  async function askReturn(url, what, done) {
+    const reason = prompt(`退回修改「${what}」的原因（會顯示給經辦人員）：`, '');
+    if (reason === null) return;
+    if (!reason.trim()) { alert('請填寫退回原因，經辦人員才知道要改什麼'); return; }
+    try { await api(url, { method: 'POST', body: { reason } }); done && done(); } catch (e) { alert(e.message); }
+  }
+  const returnedNote = (reason, by, at) => reason
+    ? `<br><small style="color:var(--danger)">已退回修改${by ? '（' + esc(by) + '）' : ''}${at ? ' ' + esc(String(at).slice(0, 16)) : ''}：${esc(reason)}</small>` : '';
   const whName = (st, id) => { const w = (st.warehouses || []).find(x => String(x.id) === String(id)); return w ? w.name : ''; };
 
   // 明細編輯需要較寬的對話框；關閉時還原，不影響其他頁面的對話框
@@ -244,6 +255,7 @@
         <td data-label="申請人">${esc(r.requester)}</td>
         <td data-label="品項">${r.item_count} 項${r.purpose ? `<br><small style="color:var(--muted)">${esc(r.purpose)}</small>` : ''}</td>
         <td data-label="狀態">${badge(PR_ST, r.status)}${r.approved_name && !['pending', 'cancelled'].includes(r.status) ? `<br><small style="color:var(--muted)">核准：${esc(r.approved_name)}</small>` : ''}${
+          r.status === 'pending' ? returnedNote(r.return_reason, r.returned_name, r.returned_at) : ''}${
           r.status === 'cancelled' ? `<br><small style="color:var(--muted)">取消${r.cancelled_name ? '：' + esc(r.cancelled_name) : ''}${r.cancelled_at ? ' ' + esc(r.cancelled_at.slice(0, 16)) : ''}${
             r.cancel_reason ? `<br>原因：${esc(r.cancel_reason)}` : '<br>原因：未填'}</small>` : ''}</td>
         <td data-label="採購單"><small>${esc(r.po_nos || '—')}</small></td>
@@ -252,8 +264,11 @@
           ${r.status === 'pending' && can('requests_write') ? `<button class="btn small secondary" data-edit="${r.id}">修改</button>` : ''}
           ${r.status === 'pending' && can('requests_approve') ? `<button class="btn small" data-approve="${r.id}" data-no="${esc(r.no)}">核准</button>` : ''}
           ${r.status === 'approved' && can('orders_write') ? `<button class="btn small" data-order="${r.id}">建立採購單</button>` : ''}
+          ${['approved', 'ordered'].includes(r.status) && can('returns') ? `<button class="btn small secondary" data-return="${r.id}" data-no="${esc(r.no)}">退回修改</button>` : ''}
           ${['pending', 'approved'].includes(r.status) && can('requests_write') ? `<button class="btn small danger" data-cancel="${r.id}">取消</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">查無請購單</div></td></tr>';
+      main().querySelectorAll('[data-return]').forEach(b => b.onclick = () =>
+        askReturn(`/procurement/requests/${b.dataset.return}/return`, `請購單 ${b.dataset.no}`, reload));
       main().querySelectorAll('[data-view]').forEach(b => b.onclick = async () => printRequest(await api('/procurement/requests/' + b.dataset.view)));
       main().querySelectorAll('[data-edit]').forEach(b => b.onclick = async () => openPrForm(await api('/procurement/requests/' + b.dataset.edit), null, reload));
       main().querySelectorAll('[data-approve]').forEach(b => b.onclick = async () => {
@@ -424,7 +439,7 @@
     if (!receiving || can('amounts')) b.push(`<button class="btn small secondary" data-po-print="${o.id}">列印</button>`);
     if (!receiving && o.status === 'draft' && can('orders_approve')) b.push(`<button class="btn small" data-po-approve="${o.id}">審核</button>`);
     if (receiving && ['pending', 'partial'].includes(o.status) && can('receipts_write')) b.push(`<button class="btn small" data-po-recv="${o.id}">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>`);
-    if (o.status === 'pending' && !o.receipt_count && can('orders_approve')) b.push(`<button class="btn small secondary" data-po-return="${o.id}">退回修改</button>`);
+    if (o.status === 'pending' && !o.receipt_count && can('returns')) b.push(`<button class="btn small secondary" data-po-return="${o.id}">退回修改</button>`);
     if (o.status === 'partial' && can('orders_approve')) b.push(`<button class="btn small secondary" data-po-close="${o.id}">結案</button>`);
     if (['draft', 'pending'].includes(o.status) && !o.receipt_count && can('orders_approve')) b.push(`<button class="btn small danger" data-po-cancel="${o.id}">取消</button>`);
     return b.join(' ');
@@ -436,11 +451,7 @@
     act('[data-po-print]', async id => printOrder(await api('/procurement/orders/' + id)));
     act('[data-po-approve]', async id => openPoForm(await api('/procurement/orders/' + id), reload));
     act('[data-po-recv]', async id => openReceiving(await api('/procurement/orders/' + id), reload));
-    act('[data-po-return]', async id => {
-      const reason = prompt('退回待審核的原因（可留空）：', '');
-      if (reason === null) return;
-      try { await api(`/procurement/orders/${id}/return`, { method: 'POST', body: { reason } }); reload(); } catch (e) { alert(e.message); }
-    });
+    act('[data-po-return]', async id => askReturn(`/procurement/orders/${id}/return`, '採購單', reload));
     act('[data-po-close]', async id => {
       const reason = prompt('結案原因（例如：廠商缺貨不再出貨；剩餘數量將不再等候）：', '');
       if (reason === null) return;
@@ -496,7 +507,7 @@
         <td data-label="廠商">${esc(o.vendor_name || '')}</td>
         <td data-label="預計到貨">${esc(o.eta || '—')}${['pending', 'partial'].includes(o.status) && o.eta && o.eta < todayStr() ? ' <span class="badge red">逾期</span>' : ''}</td>
         <td data-label="未稅總額／預算">${money(o.total)}<br><small style="color:${o.budget_amount && o.total > o.budget_amount ? 'var(--danger)' : 'var(--muted)'}">預算 ${o.budget_amount ? money(o.budget_amount) : '未填'}</small></td>
-        <td data-label="狀態">${badge(PO_ST, o.status)}${progress(o)}</td>
+        <td data-label="狀態">${badge(PO_ST, o.status)}${progress(o)}${o.status === 'draft' ? returnedNote(o.return_reason, '', o.returned_at) : ''}</td>
         <td data-label="操作" class="no-print">${poActions(o)}</td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無採購單</div></td></tr>';
       wirePoActions($('#po-body'), reload);
     }
@@ -543,7 +554,8 @@
           <input data-k="new_warehouse" placeholder="倉庫別" value="${esc(it.new_warehouse || '')}" style="max-width:110px" ${dis}>
           <input type="number" min="0" data-k="new_safety" title="安全庫存" value="${it.new_safety}" style="max-width:80px" ${dis}></div>` : ''}
       </td></tr>` : ''}`;
-    const statusLine = o.status === 'draft' ? ''
+    const statusLine = o.status === 'draft'
+      ? (o.return_reason ? `<div style="background:#fdeeee;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:.9rem">主管退回修改：${esc(o.return_reason)}　<small>${esc(String(o.returned_at || '').slice(0, 16))}</small></div>` : '')
       : `<div style="margin-bottom:8px;font-size:.9rem">狀態：${badge(PO_ST, o.status)}　審核：${esc(o.approved_name || '—')} ${esc((o.approved_at || '').slice(0, 16))}${o.closed_reason ? `　結案原因：${esc(o.closed_reason)}` : ''}</div>`;
     openWide(`採購單 ${o.no}${draft ? '（待審核）' : ''}`, `
       ${statusLine}
@@ -766,23 +778,29 @@
     wireFilter(main(), async (qs, setCount) => {
       const rows = await api('/procurement/receipts?' + qs);
       setCount(rows.length);
-      $('#gr-body').innerHTML = rows.map(g => `<tr>
-        <td data-label="入庫單號">${esc(g.no)}</td><td data-label="採購單號">${esc(g.po_no)}</td>
+      $('#gr-body').innerHTML = rows.map(g => `<tr style="${g.status === 'returned' ? 'opacity:.6' : ''}">
+        <td data-label="入庫單號">${esc(g.no)}${g.status === 'returned' ? ' <span class="badge gray">已退回</span>' + returnedNote(g.return_reason, g.returned_name, g.returned_at) : ''}</td><td data-label="採購單號">${esc(g.po_no)}</td>
         <td data-label="批次">第 ${g.batch_no} 批</td><td data-label="廠商">${esc(g.vendor_name || '')}</td>
         <td data-label="入庫倉庫">${esc(g.warehouse_name || '—')}</td>
         <td data-label="入庫日期">${esc(g.receive_date)}</td><td data-label="驗貨人員">${esc(g.inspector)}</td>
         <td data-label="發票號碼">${esc(g.invoice_no || '—')}</td>${can('amounts') ? `<td data-label="未稅金額">${money(g.subtotal)}</td>` : ''}
         <td data-label="請款單">${g.pay_no ? `<a href="#/proc-payments">${esc(g.pay_no)}</a>` : '—'}</td>
-        <td data-label="操作" class="no-print"><button class="btn small secondary" data-gr="${g.id}">查看</button></td></tr>`).join('')
+        <td data-label="操作" class="no-print"><button class="btn small secondary" data-gr="${g.id}">查看</button>
+          ${g.status !== 'returned' && can('returns') ? `<button class="btn small secondary" data-gr-return="${g.id}" data-no="${esc(g.no)}">退回修改</button>` : ''}</td></tr>`).join('')
         || `<tr><td colspan="${can('amounts') ? 11 : 10}"><div class="empty">查無入庫紀錄</div></td></tr>`;
+      main().querySelectorAll('[data-gr-return]').forEach(b => b.onclick = () => {
+        if (!confirm(`退回入庫單 ${b.dataset.no}？\n本批入庫的數量會從入庫倉沖回、本批的請款明細會拿掉，採購單回到待入庫，由驗貨人員重新驗貨。`)) return;
+        askReturn(`/procurement/receipts/${b.dataset.grReturn}/return`, `入庫單 ${b.dataset.no}`, viewProcReceiving);
+      });
       main().querySelectorAll('[data-gr]').forEach(b => b.onclick = async () => {
         const g = await api('/procurement/receipts/' + b.dataset.gr);
         openWide(`入庫單 ${g.no}（第 ${g.batch_no} 批）`, `
+          ${g.status === 'returned' ? `<div style="background:#fdeeee;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:.9rem">此入庫單已退回（${esc(g.returned_name || '')} ${esc(String(g.returned_at || '').slice(0, 16))}）：${esc(g.return_reason || '')}；以下為退回前的內容，庫存已沖回。</div>` : ''}
           <div style="margin-bottom:8px;font-size:.9rem">採購單：${esc(g.po_no)}　廠商：${esc(g.vendor_name || '')}　入庫倉庫：${esc(g.warehouse_name || '—')}　入庫日期：${esc(g.receive_date)}　驗貨人員：${esc(g.inspector)}${g.invoice_no ? `　發票：${esc(g.invoice_no)}` : ''}</div>
           <table class="data"><thead><tr><th>品項</th><th>訂購數</th><th>本批到貨</th><th>累計到貨</th></tr></thead>
           <tbody>${g.items.map(i => `<tr><td>${esc(i.item_name)}</td><td>${i.ordered_qty} ${esc(i.unit)}</td>
             <td><strong>${i.received_qty}</strong></td>
-            <td style="color:${i.cumulative_qty >= i.ordered_qty ? 'var(--ok)' : 'var(--danger)'}">${i.cumulative_qty}</td></tr>`).join('')}</tbody></table>
+            <td style="color:${i.cumulative_qty >= i.ordered_qty ? 'var(--ok)' : 'var(--danger)'}">${i.cumulative_qty === null ? '—' : i.cumulative_qty}</td></tr>`).join('')}</tbody></table>
           ${g.note ? `<p>備註：${esc(g.note)}</p>` : ''}`);
       });
     });
@@ -1094,15 +1112,20 @@
         <td data-label="出貨倉庫">${esc(s.warehouse_name || '—')}</td>
         <td data-label="品項數">${s.item_count}</td>
         <td data-label="領料單">${esc(s.pick_no || '—')}</td>
-        <td data-label="狀態">${badge(SHIP_ST, s.status)}</td>
+        <td data-label="狀態">${badge(SHIP_ST, s.status)}${s.status === 'pending' ? returnedNote(s.return_reason, '', s.returned_at) : ''}</td>
         <td data-label="操作" class="no-print">
           <button class="btn small secondary" data-view="${s.id}">查看</button>
+          ${s.status === 'shipped' && can('returns') ? `<button class="btn small secondary" data-ship-return="${s.id}" data-no="${esc(s.no)}">退回修改</button>` : ''}
           ${s.status === 'pending' && can('ship_write') ? `<button class="btn small secondary" data-edit="${s.id}">修改</button>
             <button class="btn small" data-confirm="${s.id}">確認出貨</button>
             <button class="btn small danger" data-cancel="${s.id}">取消</button>` : ''}
         </td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無出貨單</div></td></tr>';
       main().querySelectorAll('[data-view]').forEach(b => b.onclick = async () => showShipment(await api('/procurement/shipments/' + b.dataset.view)));
       main().querySelectorAll('[data-edit]').forEach(b => b.onclick = async () => openShipForm(await api('/procurement/shipments/' + b.dataset.edit), reload));
+      main().querySelectorAll('[data-ship-return]').forEach(b => b.onclick = () => {
+        if (!confirm(`退回出貨單 ${b.dataset.no}？\n已扣的庫存會沖回出貨倉、領料單回到待領料，由出貨人員修改後重新確認出貨。`)) return;
+        askReturn(`/procurement/shipments/${b.dataset.shipReturn}/return`, `出貨單 ${b.dataset.no}`, reload);
+      });
       main().querySelectorAll('[data-confirm]').forEach(b => b.onclick = async () => {
         if (!confirm('確認出貨？將從備品庫存扣除並將領料單改為已領料。')) return;
         try { await api(`/procurement/shipments/${b.dataset.confirm}/confirm`, { method: 'POST' }); reload(); } catch (e) { alert(e.message); }
@@ -1317,15 +1340,18 @@
       <div class="card"><div class="table-wrap"><table class="data stack">
         <thead><tr><th>倉庫編號</th><th>倉庫名稱</th><th>所屬公司</th><th>類別</th><th>所屬總倉</th><th>品項數</th><th>庫存合計</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="wh-body"></tbody></table></div>
-        <small style="color:var(--muted)">停用倉庫前要先把庫存調撥出去；商城商品的庫存倉在「採購設定」指定。</small></div>`;
+        <div id="wh-shop-hint"></div>
+        <small style="color:var(--muted)">停用倉庫前要先把庫存調撥出去；按「設為商城庫存倉」指定商城賣的是哪個倉的庫存（採購設定也可以改）。</small></div>`;
     const nb = main().querySelector('#wh-new');
     if (nb) nb.onclick = () => openWhForm(null, load);
     async function load() {
-      const { rows, shop_warehouse_id: shopWh } = await api('/procurement/warehouses?active=all');
+      const { rows, shop_warehouse_id: shopWh, shop_warehouse_set: shopSet } = await api('/procurement/warehouses?active=all');
+      $('#wh-shop-hint').innerHTML = shopSet ? '' : `<div style="background:#fff4e0;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:.9rem">
+        尚未指定商城庫存倉：商城商品目前暫用預設總倉。請在要給商城用的倉（例如商城小倉）按「設為商城庫存倉」。</div>`;
       $('#wh-body').innerHTML = rows.map(w => `<tr>
         <td data-label="倉庫編號">${esc(w.code || '—')}</td>
         <td data-label="倉庫名稱"><strong>${esc(w.name)}</strong>${w.is_default ? ' <span class="badge teal">預設</span>' : ''}${
-          String(w.id) === String(shopWh) ? ' <span class="badge purple">商城庫存倉</span>' : ''}${
+          shopSet && String(w.id) === String(shopWh) ? ' <span class="badge purple">商城庫存倉</span>' : ''}${
           w.note ? `<br><small style="color:var(--muted)">${esc(w.note)}</small>` : ''}</td>
         <td data-label="所屬公司">${esc(w.company_name || '—')}</td>
         <td data-label="類別">${w.kind === 'main' ? '<span class="badge green">總倉</span>' : '<span class="badge gray">小倉</span>'}</td>
@@ -1335,10 +1361,16 @@
         <td data-label="狀態">${w.active ? '<span class="badge green">啟用</span>' : '<span class="badge gray">停用</span>'}</td>
         <td data-label="操作" class="no-print">
           <button class="btn small secondary" data-stock="${w.id}">庫存明細</button>
-          ${can('master_write') ? `<button class="btn small secondary" data-edit="${w.id}">修改</button>` : ''}</td></tr>`).join('')
+          ${can('master_write') ? `<button class="btn small secondary" data-edit="${w.id}">修改</button>` : ''}
+          ${can('settings_write') && w.active && !(shopSet && String(w.id) === String(shopWh)) ? `<button class="btn small secondary" data-shop="${w.id}" data-name="${esc(w.name)}">設為商城庫存倉</button>` : ''}</td></tr>`).join('')
         || '<tr><td colspan="9"><div class="empty">尚未建立倉庫</div></td></tr>';
       main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openWhForm(rows.find(w => String(w.id) === b.dataset.edit), load));
       main().querySelectorAll('[data-stock]').forEach(b => b.onclick = () => showWhStock(rows.find(w => String(w.id) === b.dataset.stock)));
+      main().querySelectorAll('[data-shop]').forEach(b => b.onclick = async () => {
+        if (!confirm(`把「${b.dataset.name}」設為商城庫存倉？\n商城商品的庫存會改看這個倉；原本綁在舊商城倉的商品會一起改綁過來。`)) return;
+        try { await api('/procurement/settings', { method: 'PUT', body: { shop_warehouse_id: b.dataset.shop } }); SETTINGS_CACHE = null; load(); }
+        catch (e) { alert(e.message); }
+      });
     }
     load();
   }
@@ -1785,7 +1817,7 @@
           <div class="field full"><label>廠商付款條件選項<small>（逗號分隔；含數字者視為天數，用來算付款到期日）</small></label>
             <input id="ps-terms" value="${esc(st.payment_terms.join(','))}" ${dis}></div>
           <div class="field"><label>商城庫存倉<small>（商城商品賣的就是這個倉的庫存）</small></label>
-            ${warehouseSelect(st, st.shop_warehouse_id, 'ps-shopwh', { attrs: dis })}</div>
+            ${warehouseSelect(st, st.shop_warehouse_set ? st.shop_warehouse_id : '', 'ps-shopwh', { attrs: dis, noDefault: true, blank: '未指定（暫用預設總倉）' })}</div>
         </div>
         <div class="row" style="gap:8px;margin-top:8px">${isAdmin ? '<button class="btn" id="ps-save">儲存參數</button>' : '<small style="color:var(--muted)">僅採購作業管理員可修改</small>'}<span class="error-msg" id="ps-err"></span></div>
       </div>`;

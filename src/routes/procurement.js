@@ -37,6 +37,8 @@ const PERMS = {
   master_write: [r('buyer', 'admin'), '品項與廠商管理'],
   settings_write: [r('admin'), '採購設定'],
   reports: [r('finance', 'admin'), '採購報表'],
+  // 退回修改：請購／採購／驗貨／出貨單據退回給原經辦重新處理，只有管理員可以
+  returns: [r('admin'), '退回修改'],
   // 看得到採購金額（單價、預算、比價）：驗貨人員只核對品項與數量，不給金額
   amounts: [r('buyer', 'account', 'finance', 'admin'), '採購金額']
 };
@@ -102,10 +104,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     }
     const balance = WH.addWarehouseQty(db, supplyId, whId, type === 'in' ? qty : -qty);
     db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, dept, purpose,
-        unit_price, vendor_id, ref_type, ref_id, warehouse_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
+        unit_price, vendor_id, ref_type, ref_id, warehouse_id, reverses_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
       str(extra.vendor, 60), str(extra.dept, 60), str(extra.purpose, 60),
-      extra.unitPrice === undefined ? null : extra.unitPrice, extra.vendorId || null, extra.refType || '', extra.refId || null, whId);
+      extra.unitPrice === undefined ? null : extra.unitPrice, extra.vendorId || null, extra.refType || '', extra.refId || null, whId,
+      extra.reversesId || null);
     return balance;
   }
   const warehouseName = id => (db.prepare('SELECT name FROM warehouses WHERE id = ?').get(id) || {}).name || '倉庫';
@@ -275,8 +278,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (b.shop_warehouse_id !== undefined) {
       const w = int(b.shop_warehouse_id);
       if (w && !db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(w)) return bad(res, '倉庫不存在或已停用');
-      db.prepare(`INSERT INTO settings (key, value) VALUES ('shop_warehouse_id', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(w || ''));
+      WH.setShopWarehouse(db, w);
     }
     logAudit(req, { action: 'update', entity: 'settings', entity_id: 'proc', summary: '修改採購設定（稅率／付款條件／商城倉）' });
     res.json({ ok: true, settings: procSettings() });
@@ -312,7 +314,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       default_company_id: defaultCompanyId(),
       warehouses: WH.activeWarehouses(db),
       default_warehouse_id: WH.defaultWarehouseId(db, null),
-      shop_warehouse_id: WH.shopWarehouseId(db)
+      shop_warehouse_id: WH.shopWarehouseId(db),
+      shop_warehouse_set: WH.shopWarehouseSet(db)
     };
   }
 
@@ -569,6 +572,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (q) { cond.push('(r.no LIKE ? OR r.requester LIKE ? OR r.purpose LIKE ? OR EXISTS (SELECT 1 FROM purchase_request_items i WHERE i.pr_id = r.id AND i.item_name LIKE ?))'); args.push(...Array(4).fill('%' + q + '%')); }
     res.json(db.prepare(`SELECT r.*, (SELECT name FROM users u WHERE u.id = r.approved_by) AS approved_name,
         (SELECT name FROM users u WHERE u.id = r.cancelled_by) AS cancelled_name,
+        (SELECT name FROM users u WHERE u.id = r.returned_by) AS returned_name,
         (SELECT name FROM proc_companies c WHERE c.id = r.company_id) AS company_name,
         (SELECT COUNT(*) FROM purchase_request_items i WHERE i.pr_id = r.id) AS item_count,
         (SELECT GROUP_CONCAT(no, '、') FROM purchase_orders o WHERE o.pr_id = r.id) AS po_nos
@@ -629,6 +633,19 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     db.prepare(`UPDATE purchase_requests SET status='cancelled', cancel_reason=?, cancelled_by=?,
       cancelled_at=datetime('now','localtime') WHERE id=?`).run(str((req.body || {}).reason, 200), req.session.user.id, cur.id);
     logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: cur.id, summary: `取消請購單 ${cur.no}` });
+    res.json({ ok: true });
+  });
+  // 退回修改（管理員）：已核准、或建的採購單全都取消了的請購單，退回「待核准」給請購人員修改後重新送出
+  router.post('/procurement/requests/:id/return', requireStaff, need('returns'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(req.params.id);
+    if (!cur) return bad(res, '找不到請購單', 404);
+    const livePo = db.prepare("SELECT no FROM purchase_orders WHERE pr_id = ? AND status != 'cancelled'").all(cur.id);
+    if (cur.status === 'ordered' && livePo.length) return bad(res, `已建立採購單 ${livePo.map(x => x.no).join('、')}，請先把採購單取消再退回請購單`);
+    if (!['approved', 'ordered'].includes(cur.status)) return bad(res, '只有已核准的請購單可以退回修改');
+    db.prepare(`UPDATE purchase_requests SET status='pending', approved_by=NULL, approved_at='', ordered_by=NULL, ordered_at='',
+      return_reason=?, returned_by=?, returned_at=datetime('now','localtime') WHERE id=?`)
+      .run(str((req.body || {}).reason, 200) || '（未填原因）', req.session.user.id, cur.id);
+    logAudit(req, { action: 'update', entity: 'purchase_requests', entity_id: cur.id, summary: `退回請購單 ${cur.no} 至待核准` });
     res.json({ ok: true });
   });
   // 核准：主管只決定「准不准買」；廠商與價格交給採購建單
@@ -719,7 +736,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     o.received_total = o.items.reduce((t, i) => t + i.received_qty * i.unit_price, 0);
     o.receipts = db.prepare(`SELECT g.id, g.no, g.batch_no, g.receive_date, g.inspector, g.invoice_no, p.no AS pay_no,
         (SELECT COALESCE(SUM(received_qty * unit_price),0) FROM goods_receipt_items gi WHERE gi.gr_id = g.id) AS subtotal
-      FROM goods_receipts g LEFT JOIN payment_requests p ON p.gr_id = g.id WHERE g.po_id = ? ORDER BY g.id`).all(id);
+      FROM goods_receipts g LEFT JOIN payment_requests p ON p.gr_id = g.id WHERE g.po_id = ? AND g.status != 'returned' ORDER BY g.id`).all(id);
     return o;
   }
   // 驗貨人員看的採購單：只留品項、數量、廠商與到貨進度
@@ -792,7 +809,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         (SELECT COALESCE(SUM(qty * unit_price),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS total,
         (SELECT COALESCE(SUM(qty),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS qty_total,
         (SELECT COALESCE(SUM(gi.received_qty),0) FROM goods_receipt_items gi JOIN goods_receipts g ON g.id = gi.gr_id WHERE g.po_id = o.id) AS received_total_qty,
-        (SELECT COUNT(*) FROM goods_receipts g WHERE g.po_id = o.id) AS receipt_count,
+        (SELECT COUNT(*) FROM goods_receipts g WHERE g.po_id = o.id AND g.status != 'returned') AS receipt_count,
         (SELECT COUNT(*) FROM purchase_order_items i WHERE i.po_id = o.id AND i.is_new = 1 AND i.supply_id IS NULL) AS new_count
       FROM purchase_orders o LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN purchase_requests r ON r.id = o.pr_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY o.id DESC LIMIT 500`).all(...args);
@@ -886,13 +903,13 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ ok: true, over_budget: o.total > o.budget_amount });
   });
   // 退回修改：審核通過但尚未到貨的採購單，可退回待審核重新調整
-  router.post('/procurement/orders/:id/return', requireStaff, need('orders_approve'), (req, res) => {
+  router.post('/procurement/orders/:id/return', requireStaff, need('returns'), (req, res) => {
     const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     if (o.status !== 'pending') return bad(res, '只有待入庫且尚未到貨的採購單可以退回');
-    if (db.prepare('SELECT 1 FROM goods_receipts WHERE po_id = ? LIMIT 1').get(o.id)) return bad(res, '已有到貨紀錄，不能退回');
-    db.prepare("UPDATE purchase_orders SET status='draft', approved_by=NULL, approved_at='', note=TRIM(note || ' 退回原因：' || ?) WHERE id=?")
-      .run(str((req.body || {}).reason, 200), o.id);
+    if (db.prepare("SELECT 1 FROM goods_receipts WHERE po_id = ? AND status != 'returned' LIMIT 1").get(o.id)) return bad(res, '已有到貨紀錄，請先把入庫單退回修改');
+    db.prepare(`UPDATE purchase_orders SET status='draft', approved_by=NULL, approved_at='', return_reason=?, returned_by=?,
+      returned_at=datetime('now','localtime') WHERE id=?`).run(str((req.body || {}).reason, 200) || '（未填原因）', req.session.user.id, o.id);
     logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `退回採購單 ${o.no} 至待審核` });
     res.json({ ok: true });
   });
@@ -900,7 +917,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const o = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     if (!['draft', 'pending'].includes(o.status)) return bad(res, '已有到貨的採購單不能取消，請改用「結案」');
-    if (db.prepare('SELECT 1 FROM goods_receipts WHERE po_id = ? LIMIT 1').get(o.id)) return bad(res, '已有到貨紀錄，請改用「結案」');
+    if (db.prepare("SELECT 1 FROM goods_receipts WHERE po_id = ? AND status != 'returned' LIMIT 1").get(o.id)) return bad(res, '已有到貨紀錄，請改用「結案」');
     db.prepare("UPDATE purchase_orders SET status='cancelled', note=TRIM(note || ' 取消原因：' || ?) WHERE id=?").run(str((req.body || {}).reason, 200), o.id);
     logAudit(req, { action: 'update', entity: 'purchase_orders', entity_id: o.id, summary: `取消採購單 ${o.no}` });
     res.json({ ok: true });
@@ -927,12 +944,12 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const q = str(req.query.q, 60);
     if (q) { cond.push('(g.no LIKE ? OR o.no LIKE ? OR g.invoice_no LIKE ? OR g.inspector LIKE ? OR v.name LIKE ?)'); args.push(...Array(5).fill('%' + q + '%')); }
     const rows = db.prepare(`SELECT g.*, o.no AS po_no, o.status AS po_status, v.name AS vendor_name, p.no AS pay_no, p.id AS pay_id,
-        w.name AS warehouse_name,
+        w.name AS warehouse_name, (SELECT name FROM users u WHERE u.id = g.returned_by) AS returned_name,
         (SELECT COALESCE(SUM(received_qty * unit_price),0) FROM goods_receipt_items i WHERE i.gr_id = g.id) AS subtotal
       FROM goods_receipts g JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id
       LEFT JOIN payment_requests p ON p.gr_id = g.id LEFT JOIN warehouses w ON w.id = g.warehouse_id
       ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY g.id DESC LIMIT 500`).all(...args);
-    if (!can(req, 'amounts')) for (const g of rows) delete g.subtotal;
+    for (const g of rows) { delete g.returned_items; if (!can(req, 'amounts')) delete g.subtotal; }
     res.json(rows);
   });
   router.get('/procurement/receipts/:id', requireStaff, need('receipts_read'), (req, res) => {
@@ -943,6 +960,12 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     g.items = db.prepare(`SELECT gi.*, i.qty AS order_qty,
         COALESCE((SELECT SUM(x.received_qty) FROM goods_receipt_items x WHERE x.po_item_id = gi.po_item_id AND x.gr_id <= gi.gr_id), 0) AS cumulative_qty
       FROM goods_receipt_items gi LEFT JOIN purchase_order_items i ON i.id = gi.po_item_id WHERE gi.gr_id = ? ORDER BY gi.id`).all(g.id);
+    // 已退回的入庫單明細已拿掉，改列退回當時的快照（僅供查閱）
+    if (g.status === 'returned') {
+      try { g.items = JSON.parse(g.returned_items || '[]').map(i => ({ ...i, cumulative_qty: null })); } catch (e) { g.items = []; }
+      g.returned_name = (db.prepare('SELECT name FROM users WHERE id = ?').get(g.returned_by) || {}).name || '';
+    }
+    delete g.returned_items;
     if (!can(req, 'amounts')) for (const i of g.items) delete i.unit_price;
     res.json(g);
   });
@@ -962,7 +985,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const input = new Map((Array.isArray(b.items) ? b.items : []).map(i => [int(i.po_item_id), i]));
     const s = procSettings();
     let grId, grNo, payId, payNo, newCount = 0, allDone = true;
-    const batchNo = o.receipts.length + 1;
+    const batchNo = db.prepare('SELECT COALESCE(MAX(batch_no),0) + 1 n FROM goods_receipts WHERE po_id = ?').get(o.id).n;
     db.transaction(() => {
       grNo = nextNo('goods_receipts', 'gr', receiveDate);
       grId = db.prepare(`INSERT INTO goods_receipts (no, po_id, batch_no, receive_date, inspector, invoice_no, note, created_by, warehouse_id)
@@ -1041,6 +1064,57 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, warehouse_id: whId, warehouse_name: warehouseName(whId),
     payment_id: payId, payment_no: payNo, new_items: newCount,
       vendor_name: o.vendor_name, merge_candidates: mergeWith, month_paid: monthPaid });
+  }));
+
+  // 退回修改（管理員）：驗貨數量有誤時整張入庫單退回——
+  //   本批入庫的數量從入庫倉沖回（沖銷異動，進銷存報表會互相抵掉）、
+  //   本批產生的請款明細拿掉（請款單沒明細了就取消，合併過的就重算金額），
+  //   採購單回到待入庫／部分到貨，由驗貨人員重新驗貨入庫。已付款的不能退。
+  router.post('/procurement/receipts/:id/return', requireStaff, need('returns'), (req, res) => run(res, () => {
+    const g = db.prepare('SELECT * FROM goods_receipts WHERE id = ?').get(req.params.id);
+    if (!g) throw httpErr('找不到入庫單', 404);
+    if (g.status === 'returned') throw httpErr('這張入庫單已經退回過了');
+    const paid = db.prepare(`SELECT DISTINCT p.no FROM payment_request_items pi JOIN payment_requests p ON p.id = pi.pay_id
+      WHERE pi.gr_id = ? AND p.status = 'paid'`).all(g.id);
+    if (paid.length) throw httpErr(`本批的請款單 ${paid.map(x => x.no).join('、')} 已付款，請先由管理員取消付款再退回`);
+    const items = db.prepare('SELECT * FROM goods_receipt_items WHERE gr_id = ? ORDER BY id').all(g.id);
+    const reason = str((req.body || {}).reason, 200) || '（未填原因）';
+    const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(g.po_id);
+    db.transaction(() => {
+      for (const it of items) {
+        if (!it.received_qty || !it.supply_id) continue;
+        const orig = db.prepare(`SELECT id, warehouse_id FROM supply_txns WHERE ref_type = 'receipt' AND ref_id = ? AND supply_id = ?
+          AND txn_type = 'in' ORDER BY id LIMIT 1`).get(g.id, it.supply_id);
+        const whId = (orig && orig.warehouse_id) || g.warehouse_id;
+        const have = WH.warehouseQty(db, it.supply_id, whId);
+        if (have < it.received_qty) {
+          throw httpErr(`「${it.item_name}」本批入庫 ${it.received_qty}，但${warehouseName(whId)}現在只剩 ${have}（已被領用或調撥），請先把貨調回再退回`);
+        }
+        stockMove(it.supply_id, 'out', it.received_qty, req.session.user.id, {
+          warehouseId: whId, refType: 'receipt_return', refId: g.id, reversesId: orig ? orig.id : null,
+          unitPrice: it.unit_price, vendorId: po.vendor_id, reason: `驗貨退回 ${g.no}`, note: `退回原因：${reason}`
+        });
+      }
+      // 請款：拿掉本批明細；請款單空了就取消，還有別批明細（合併過）就重算
+      const pays = db.prepare('SELECT DISTINCT pay_id FROM payment_request_items WHERE gr_id = ?').all(g.id).map(r => r.pay_id);
+      db.prepare('DELETE FROM payment_request_items WHERE gr_id = ?').run(g.id);
+      for (const pid of pays) {
+        const left = db.prepare('SELECT COUNT(*) c FROM payment_request_items WHERE pay_id = ?').get(pid).c;
+        if (left) recomputePayment(pid);
+        else db.prepare("UPDATE payment_requests SET status='cancelled', remark=TRIM(remark || ' 入庫單 ' || ? || ' 退回，本單取消') WHERE id=?").run(g.no, pid);
+      }
+      db.prepare(`UPDATE goods_receipts SET status='returned', return_reason=?, returned_by=?, returned_at=datetime('now','localtime'),
+        returned_items=? WHERE id=?`).run(reason, req.session.user.id, JSON.stringify(items), g.id);
+      db.prepare('DELETE FROM goods_receipt_items WHERE gr_id = ?').run(g.id);
+      // 採購單狀態依剩下的到貨量重算（結案的也重新打開，讓驗貨人員重驗）
+      const o = poDetail(g.po_id);
+      const got = o.items.reduce((t, i) => t + i.received_qty, 0);
+      const done = o.items.every(i => i.remaining === 0);
+      db.prepare("UPDATE purchase_orders SET status=?, closed_reason='', closed_at='', closed_by=NULL WHERE id=?")
+        .run(got === 0 ? 'pending' : (done ? 'received' : 'partial'), g.po_id);
+    })();
+    logAudit(req, { action: 'update', entity: 'goods_receipts', entity_id: g.id, summary: `退回入庫單 ${g.no}（${reason}），已沖回庫存` });
+    res.json({ ok: true });
   }));
 
   // ---------- 請款單 ----------
@@ -1352,6 +1426,29 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     logAudit(req, { action: 'update', entity: 'shipments', entity_id: s.id, summary: `確認出貨 ${s.no}（已扣庫存）` });
     res.json({ ok: true });
   }));
+  // 退回修改（管理員）：已確認出貨的單退回「待出貨」，扣掉的庫存沖回出貨倉、領料單回到待領料，
+  // 由出貨人員修改後重新確認出貨
+  router.post('/procurement/shipments/:id/return', requireStaff, need('returns'), (req, res) => run(res, () => {
+    const s = shipDetail(req.params.id);
+    if (!s) throw httpErr('找不到出貨單', 404);
+    if (s.status !== 'shipped') throw httpErr('只有已出貨的出貨單可以退回修改');
+    const reason = str((req.body || {}).reason, 200) || '（未填原因）';
+    db.transaction(() => {
+      for (const it of s.items) {
+        const orig = db.prepare(`SELECT id, warehouse_id, unit_price FROM supply_txns WHERE ref_type = 'shipment' AND ref_id = ? AND supply_id = ?
+          AND txn_type = 'out' ORDER BY id LIMIT 1`).get(s.id, it.supply_id);
+        stockMove(it.supply_id, 'in', it.qty, req.session.user.id, {
+          warehouseId: (orig && orig.warehouse_id) || s.warehouse_id, refType: 'shipment_return', refId: s.id,
+          reversesId: orig ? orig.id : null, reason: `出貨退回 ${s.no}`, note: `退回原因：${reason}`
+        });
+      }
+      db.prepare(`UPDATE shipments SET status='pending', shipped_by=NULL, shipped_at='', return_reason=?, returned_by=?,
+        returned_at=datetime('now','localtime') WHERE id=?`).run(reason, req.session.user.id, s.id);
+      db.prepare("UPDATE pick_lists SET status='pending' WHERE shipment_id=?").run(s.id);
+    })();
+    logAudit(req, { action: 'update', entity: 'shipments', entity_id: s.id, summary: `退回出貨單 ${s.no}（${reason}），已沖回庫存` });
+    res.json({ ok: true });
+  }));
   router.post('/procurement/shipments/:id/cancel', requireStaff, need('ship_write'), (req, res) => {
     const s = db.prepare('SELECT * FROM shipments WHERE id = ?').get(req.params.id);
     if (!s) return bad(res, '找不到出貨單', 404);
@@ -1384,8 +1481,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         (SELECT COALESCE(SUM(qty),0) FROM supply_stocks ss WHERE ss.warehouse_id = w.id) AS total_qty
       FROM warehouses w LEFT JOIN proc_companies c ON c.id = w.company_id
       ${req.query.active === 'all' ? '' : 'WHERE w.active = 1'}
-      ORDER BY c.is_default DESC, w.company_id, w.kind DESC, w.sort_order, w.id`).all();
-    res.json({ rows, default_id: WH.defaultWarehouseId(db, null), shop_warehouse_id: WH.shopWarehouseId(db) });
+      ORDER BY c.is_default DESC, ${WH.WH_ORDER}`).all();
+    res.json({ rows, default_id: WH.defaultWarehouseId(db, null), shop_warehouse_id: WH.shopWarehouseId(db),
+      shop_warehouse_set: WH.shopWarehouseSet(db) });
   });
   function normWarehouse(b, cur) {
     const name = b.name === undefined && cur ? cur.name : str(b.name, 60);
@@ -1917,6 +2015,16 @@ function ensureSchema(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_item ON po_item_quotes(po_item_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_vendor ON po_item_quotes(vendor_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_gr_po ON goods_receipts(po_id)');
+  // 退回修改：記下原因、誰退回、何時退回；入庫單退回後保留表頭（狀態 returned）與原明細快照
+  const addCols = (t, list) => {
+    const cs = db.prepare(`PRAGMA table_info(${t})`).all().map(c => c.name);
+    for (const [c, def] of list) if (!cs.includes(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
+  };
+  const RET = [['return_reason', "TEXT DEFAULT ''"], ['returned_by', 'INTEGER REFERENCES users(id)'], ['returned_at', "TEXT DEFAULT ''"]];
+  addCols('purchase_requests', RET);
+  addCols('purchase_orders', RET);
+  addCols('shipments', RET);
+  addCols('goods_receipts', [...RET, ['status', "TEXT NOT NULL DEFAULT 'ok'"], ['returned_items', "TEXT DEFAULT ''"]]);
   // 倉庫與分倉庫存：要在批次帳之前，第一次啟用時把現有庫存分配到各倉
   WH.ensureWarehouseSchema(db);
   // 入庫進哪個倉、出貨從哪個倉出（舊單據補成預設總倉）

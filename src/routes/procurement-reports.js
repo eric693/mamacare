@@ -84,7 +84,7 @@ module.exports = function procurementReports(router, deps) {
     const rows = db.prepare(`
       SELECT sh.ship_date, sh.no AS ship_no, sh.recipient, si.item_name, sp.code, si.unit, si.qty,
         COALESCE((SELECT SUM(-m.qty * l.unit_price) FROM supply_txns t JOIN lot_moves m ON m.txn_id = t.id JOIN stock_lots l ON l.id = m.lot_id
-          WHERE t.ref_type = 'shipment' AND t.ref_id = sh.id AND t.supply_id = si.supply_id), 0) AS amount
+          WHERE t.ref_type IN ('shipment', 'shipment_return') AND t.ref_id = sh.id AND t.supply_id = si.supply_id), 0) AS amount
       FROM shipments sh JOIN shipment_items si ON si.shipment_id = sh.id LEFT JOIN supplies sp ON sp.id = si.supply_id
       WHERE ${cond.join(' AND ')} ORDER BY sh.ship_date, sh.no, si.id`).all(...args)
       .map(x => ({ ...x, item: `${x.code ? x.code + ' ' : ''}${x.item_name}`, amount: round(x.amount) }));

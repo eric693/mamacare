@@ -45,6 +45,8 @@ function ensureLotSchema(db) {
   add('vendor_id', 'INTEGER REFERENCES vendors(id)');
   add('ref_type', "TEXT DEFAULT ''");
   add('ref_id', 'INTEGER');
+  // 退回修改的沖銷異動：指向被沖銷的那一筆，過帳時照原批次反向沖回
+  add('reverses_id', 'INTEGER');
   if (fresh) backfillRefs(db);
 }
 
@@ -148,6 +150,14 @@ function syncLots(db, today) {
           : t.txn_type === 'out' ? t.balance_after + t.quantity
           : t.balance_after;
         if (before > 0) addStock(db, t.supply_id, null, refPrice(db, t.supply_id), before, null, 'open', OPENING_DATE, '期初庫存');
+      }
+      // 沖銷（退回修改）：把原異動落在哪些批次，就在同批次反向沖回，進銷存報表的進／出貨數量才會互相抵掉
+      if (t.reverses_id) {
+        const orig = db.prepare('SELECT lot_id, move_type, qty FROM lot_moves WHERE txn_id = ?').all(t.reverses_id);
+        if (orig.length) {
+          for (const m of orig) insMove(db, m.lot_id, t.supply_id, t.id, m.move_type, -m.qty, date, t.reason || '退回沖銷');
+          continue;
+        }
       }
       if (t.txn_type === 'in') {
         const vendorId = t.vendor_id || vendorIdByName(db, t.vendor);

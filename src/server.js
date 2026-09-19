@@ -4824,7 +4824,7 @@ app.get('/api/supplies/:id/stocks', requireStaff, (req, res) => {
   res.json(db.prepare(`SELECT w.id AS warehouse_id, w.name, w.kind, w.company_id,
       (SELECT name FROM proc_companies c WHERE c.id = w.company_id) AS company_name,
       COALESCE((SELECT qty FROM supply_stocks ss WHERE ss.supply_id = ? AND ss.warehouse_id = w.id), 0) AS qty
-    FROM warehouses w WHERE w.active = 1 ORDER BY w.company_id, w.kind DESC, w.sort_order, w.id`).all(req.params.id));
+    FROM warehouses w WHERE w.active = 1 ORDER BY ${WH.WH_ORDER}`).all(req.params.id));
 });
 app.get('/api/supplies', requireStaff, (req, res) => {
   res.json(db.prepare('SELECT * FROM supplies ORDER BY active DESC, (stock <= safety_stock) DESC, category, name').all());

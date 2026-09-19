@@ -193,3 +193,100 @@ test('備品進出：進貨、領用、盤點都落在指定倉，總量永遠�
   assert.strictEqual(r.stocks.find(s => s.warehouse_id === otherWh).qty, 2);
   assert.strictEqual(r.stock, 23, '15（總倉）＋6（商城小倉）＋2（關係企業總倉）');
 });
+
+test('商城庫存倉：沒指定時標示未設定；改指定後原本綁在舊倉的商品一起改綁', async () => {
+  // 前面的測試已把 shopWh 設成商城倉；先確認有標示
+  let w = await ok('GET', '/api/procurement/warehouses');
+  assert.strictEqual(w.shop_warehouse_set, true);
+  assert.strictEqual(w.shop_warehouse_id, shopWh);
+  // 倉庫排序：總倉後面緊接它的小倉
+  const idx = id => w.rows.findIndex(x => x.id === id);
+  assert.strictEqual(idx(shopWh), idx(mainWh) + 1);
+  // 改成總倉當商城倉 → 綁在小倉的商品改綁總倉，商城庫存換成總倉數量
+  await ok('PUT', '/api/procurement/settings', { shop_warehouse_id: mainWh });
+  const p = (await ok('GET', '/api/products')).find(x => x.supply_id === item);
+  assert.strictEqual(p.warehouse_id, mainWh);
+  const r = (await ok('GET', '/api/procurement/items')).rows.find(x => x.id === item);
+  assert.strictEqual(p.stock, r.stocks.find(s => s.warehouse_id === mainWh).qty);
+  await ok('PUT', '/api/procurement/settings', { shop_warehouse_id: shopWh });
+  w = await ok('GET', '/api/procurement/warehouses');
+  assert.strictEqual(w.shop_warehouse_id, shopWh);
+});
+
+test('退回修改：驗貨退回沖回庫存與請款、出貨退回沖回庫存、請購與採購退回；只有管理員可以', async () => {
+  const itemsOf = async () => (await ok('GET', '/api/procurement/items')).rows.find(x => x.id === item);
+  const before = await itemsOf();
+  // 走一張完整採購
+  const pr = await ok('POST', '/api/procurement/requests', { requester: '倉管', items: [{ supply_id: item, qty: 6 }] });
+  await ok('POST', `/api/procurement/requests/${pr.id}/approve`, {});
+  // 請購退回：已核准 → 待核准，原因留著
+  await ok('POST', `/api/procurement/requests/${pr.id}/return`, { reason: '數量要改 6 箱以上' });
+  let prd = await ok('GET', `/api/procurement/requests/${pr.id}`);
+  assert.strictEqual(prd.status, 'pending');
+  assert.strictEqual(prd.return_reason, '數量要改 6 箱以上');
+  await ok('PUT', `/api/procurement/requests/${pr.id}`, { items: [{ supply_id: item, qty: 8 }] });
+  await ok('POST', `/api/procurement/requests/${pr.id}/approve`, {});
+  prd = await ok('GET', `/api/procurement/requests/${pr.id}`);
+  const po = (await ok('POST', `/api/procurement/requests/${pr.id}/order`, { items: [{ item_id: prd.items[0].id, vendor_id: vendor, eta: D(1) }] })).orders[0];
+  // 已建採購單（未取消）的請購單不能退回
+  assert.strictEqual((await req('POST', `/api/procurement/requests/${pr.id}/return`, { reason: 'x' })).status, 400);
+  let pod = await ok('GET', `/api/procurement/orders/${po.id}`);
+  await ok('PUT', `/api/procurement/orders/${po.id}`, { budget_amount: 1000, items: [{ id: pod.items[0].id, unit_price: 100 }] });
+  await ok('POST', `/api/procurement/orders/${po.id}/approve`, {});
+  // 採購退回：待入庫 → 待審核
+  await ok('POST', `/api/procurement/orders/${po.id}/return`, { reason: '單價再議' });
+  pod = await ok('GET', `/api/procurement/orders/${po.id}`);
+  assert.strictEqual(pod.status, 'draft');
+  assert.strictEqual(pod.return_reason, '單價再議');
+  await ok('POST', `/api/procurement/orders/${po.id}/approve`, {});
+
+  // 驗貨 8 箱進總倉 → 退回：庫存沖回、請款單取消、採購單回待入庫
+  const gr = await ok('POST', '/api/procurement/receipts', { po_id: po.id, inspector: '驗貨員', warehouse_id: mainWh,
+    items: [{ po_item_id: pod.items[0].id, received_qty: 8 }] });
+  assert.strictEqual((await itemsOf()).stock, before.stock + 8);
+  await ok('POST', `/api/procurement/receipts/${gr.id}/return`, { reason: '實際只到 7 箱' });
+  assert.strictEqual((await itemsOf()).stock, before.stock);
+  pod = await ok('GET', `/api/procurement/orders/${po.id}`);
+  assert.strictEqual(pod.status, 'pending');
+  assert.strictEqual(pod.items[0].received_qty, 0);
+  const pay = await ok('GET', `/api/procurement/payments/${gr.payment_id}`);
+  assert.strictEqual(pay.status, 'cancelled');
+  const grd = await ok('GET', `/api/procurement/receipts/${gr.id}`);
+  assert.strictEqual(grd.status, 'returned');
+  assert.strictEqual(grd.items[0].received_qty, 8);     // 退回前的快照仍查得到
+  assert.strictEqual((await req('POST', `/api/procurement/receipts/${gr.id}/return`, { reason: 'x' })).status, 400);
+  // 重新驗貨：批次號不重用
+  const gr2 = await ok('POST', '/api/procurement/receipts', { po_id: po.id, inspector: '驗貨員', warehouse_id: mainWh,
+    items: [{ po_item_id: pod.items[0].id, received_qty: 7 }] });
+  assert.strictEqual(gr2.batch_no, 2);
+  assert.strictEqual((await itemsOf()).stock, before.stock + 7);
+
+  // 出貨退回：已出貨 → 待出貨，庫存沖回原出貨倉
+  const sh = await ok('POST', '/api/procurement/shipments', { recipient: '護理站', warehouse_id: mainWh, items: [{ supply_id: item, qty: 3 }] });
+  await ok('POST', `/api/procurement/shipments/${sh.id}/confirm`, {});
+  const mid = await itemsOf();
+  await ok('POST', `/api/procurement/shipments/${sh.id}/return`, { reason: '數量寫錯' });
+  const after = await itemsOf();
+  assert.strictEqual(after.stock, mid.stock + 3);
+  const shd = await ok('GET', `/api/procurement/shipments/${sh.id}`);
+  assert.strictEqual(shd.status, 'pending');
+  assert.strictEqual(shd.pick.status, 'pending');
+  assert.strictEqual(shd.return_reason, '數量寫錯');
+  await ok('PUT', `/api/procurement/shipments/${sh.id}`, { items: [{ supply_id: item, qty: 2 }] });
+  await ok('POST', `/api/procurement/shipments/${sh.id}/confirm`, {});
+  assert.strictEqual((await itemsOf()).stock, mid.stock + 1);
+
+  // 進銷存報表：退回的一進一出互相抵掉，期末仍等於系統庫存
+  const inv = await ok('GET', `/api/procurement/reports/inventory?supply_id=${item}`);
+  assert.strictEqual(inv.totals.end_qty, (await itemsOf()).stock);
+  // 本月進貨：30（第一張）＋ 4（備品進貨）＋ 8 − 8（退回沖銷）＋ 7 ＝ 41，退回的那批互相抵掉
+  assert.strictEqual(inv.totals.in_qty, 41);
+
+  // 非管理員（出貨人員）不能退回
+  await ok('POST', '/api/users', { username: 'u_ship2', password: 'pass12345', name: 'u_ship2', role: 'nurse', permissions: ['proc_ship'], modules: ['proc_ship'] });
+  cookie = '';
+  await req('POST', '/api/login', { username: 'u_ship2', password: 'pass12345' });
+  assert.strictEqual((await req('POST', `/api/procurement/shipments/${sh.id}/return`, { reason: 'x' })).status, 403);
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+});

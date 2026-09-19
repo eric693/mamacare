@@ -96,10 +96,12 @@ function seedWarehouses(db) {
     WHERE warehouse_id IS NULL`).run(mainOfDefault);
 }
 
+// 排序：同公司的總倉在前、它的小倉緊接在下面（下拉選單才看得出隸屬）
+const WH_ORDER = "w.company_id, COALESCE(w.parent_id, w.id), (w.kind = 'sub'), w.sort_order, w.id";
 const activeWarehouses = db => db.prepare(`SELECT w.*, c.name AS company_name,
     (SELECT name FROM warehouses p WHERE p.id = w.parent_id) AS parent_name
   FROM warehouses w LEFT JOIN proc_companies c ON c.id = w.company_id
-  WHERE w.active = 1 ORDER BY w.company_id, w.kind DESC, w.sort_order, w.id`).all();
+  WHERE w.active = 1 ORDER BY ${WH_ORDER}`).all();
 
 // 預設倉：指定公司的預設總倉 → 該公司任一總倉 → 系統預設總倉
 function defaultWarehouseId(db, companyId) {
@@ -146,6 +148,24 @@ function mainWarehouseOf(db, supplyId) {
     WHERE ss.supply_id = ? AND w.active = 1 ORDER BY ss.qty DESC, w.kind DESC, w.id LIMIT 1`).get(supplyId);
   return row ? row.warehouse_id : defaultWarehouseId(db, null);
 }
+// 商城庫存倉是否有明確指定（沒指定時 shopWarehouseId 會退回預設總倉，畫面要提醒去設定）
+function shopWarehouseSet(db) {
+  const v = Number((db.prepare("SELECT value FROM settings WHERE key = 'shop_warehouse_id'").get() || {}).value) || 0;
+  return !!(v && db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(v));
+}
+// 換商城庫存倉：原本綁在舊商城倉的商品一起搬到新倉，商城庫存跟著換成新倉的數量
+function setShopWarehouse(db, newId) {
+  const oldId = shopWarehouseId(db);
+  db.prepare(`INSERT INTO settings (key, value) VALUES ('shop_warehouse_id', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(newId || ''));
+  const now = shopWarehouseId(db);
+  if (oldId && now && oldId !== now) {
+    const moved = db.prepare('SELECT DISTINCT supply_id FROM products WHERE warehouse_id = ? AND supply_id IS NOT NULL').all(oldId);
+    db.prepare('UPDATE products SET warehouse_id = ? WHERE warehouse_id = ? AND supply_id IS NOT NULL').run(now, oldId);
+    for (const r of moved) syncBoundProducts(db, r.supply_id);
+  }
+  return now;
+}
 // 商城出貨倉（採購設定指定；沒設就用預設總倉）
 function shopWarehouseId(db) {
   const v = (db.prepare("SELECT value FROM settings WHERE key = 'shop_warehouse_id'").get() || {}).value;
@@ -156,5 +176,6 @@ function shopWarehouseId(db) {
 
 module.exports = {
   ensureWarehouseSchema, activeWarehouses, defaultWarehouseId, warehouseQty,
-  addWarehouseQty, setWarehouseQty, recalcSupplyStock, mainWarehouseOf, shopWarehouseId, syncBoundProducts
+  addWarehouseQty, setWarehouseQty, recalcSupplyStock, mainWarehouseOf, shopWarehouseId, syncBoundProducts,
+  shopWarehouseSet, setShopWarehouse, WH_ORDER
 };
