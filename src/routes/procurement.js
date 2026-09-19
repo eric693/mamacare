@@ -36,7 +36,9 @@ const PERMS = {
   ship_write: [r('ship', 'admin'), '出貨管理'],
   master_write: [r('buyer', 'admin'), '品項與廠商管理'],
   settings_write: [r('admin'), '採購設定'],
-  reports: [r('finance', 'admin'), '採購報表']
+  reports: [r('finance', 'admin'), '採購報表'],
+  // 看得到採購金額（單價、預算、比價）：驗貨人員只核對品項與數量，不給金額
+  amounts: [r('buyer', 'account', 'finance', 'admin'), '採購金額']
 };
 // 舊版三個權限 → 新角色（帳號資料一次轉換）
 const LEGACY = { purchasing: r('request', 'buyer', 'receive', 'ship'), purchasing_approve: r('admin'), payables: r('account') };
@@ -720,6 +722,14 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       FROM goods_receipts g LEFT JOIN payment_requests p ON p.gr_id = g.id WHERE g.po_id = ? ORDER BY g.id`).all(id);
     return o;
   }
+  // 驗貨人員看的採購單：只留品項、數量、廠商與到貨進度
+  function hidePoAmounts(o) {
+    for (const k of ['total', 'received_total', 'budget_amount', 'pr_budget', 'problems']) delete o[k];
+    for (const it of o.items) { delete it.unit_price; it.quotes = []; }
+    for (const g of o.receipts) delete g.subtotal;
+    o.amounts_hidden = true;
+    return o;
+  }
   // 需要比價的品項：全新品項（尚未建檔、也還沒到過貨）
   const needsQuotes = it => !!it.is_new && !it.supply_id;
 
@@ -776,7 +786,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (req.query.vendor_id) { cond.push('o.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(o.no LIKE ? OR r.no LIKE ? OR v.name LIKE ? OR EXISTS (SELECT 1 FROM purchase_order_items i WHERE i.po_id = o.id AND i.item_name LIKE ?))'); args.push(...Array(4).fill('%' + q + '%')); }
-    res.json(db.prepare(`SELECT o.*, v.name AS vendor_name, r.no AS pr_no,
+    const rows = db.prepare(`SELECT o.*, v.name AS vendor_name, r.no AS pr_no,
         (SELECT name FROM proc_companies c WHERE c.id = o.company_id) AS company_name,
         (SELECT COUNT(*) FROM purchase_order_items i WHERE i.po_id = o.id) AS item_count,
         (SELECT COALESCE(SUM(qty * unit_price),0) FROM purchase_order_items i WHERE i.po_id = o.id) AS total,
@@ -785,13 +795,15 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         (SELECT COUNT(*) FROM goods_receipts g WHERE g.po_id = o.id) AS receipt_count,
         (SELECT COUNT(*) FROM purchase_order_items i WHERE i.po_id = o.id AND i.is_new = 1 AND i.supply_id IS NULL) AS new_count
       FROM purchase_orders o LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN purchase_requests r ON r.id = o.pr_id
-      ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY o.id DESC LIMIT 500`).all(...args));
+      ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY o.id DESC LIMIT 500`).all(...args);
+    if (!can(req, 'amounts')) for (const o of rows) { delete o.total; delete o.budget_amount; }
+    res.json(rows);
   });
   router.get('/procurement/orders/:id', requireStaff, need('orders_read'), (req, res) => {
     const o = poDetail(req.params.id);
     if (!o) return bad(res, '找不到採購單', 404);
     o.problems = o.status === 'draft' ? poProblems(o) : [];
-    res.json(o);
+    res.json(can(req, 'amounts') ? o : hidePoAmounts(o));
   });
 
   // 待審核：採購人員鍵入廠商、預算金額、單價，新品項填比價報價（新廠商自動存入廠商管理）
@@ -914,12 +926,14 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (req.query.po_id) { cond.push('g.po_id = ?'); args.push(int(req.query.po_id)); }
     const q = str(req.query.q, 60);
     if (q) { cond.push('(g.no LIKE ? OR o.no LIKE ? OR g.invoice_no LIKE ? OR g.inspector LIKE ? OR v.name LIKE ?)'); args.push(...Array(5).fill('%' + q + '%')); }
-    res.json(db.prepare(`SELECT g.*, o.no AS po_no, o.status AS po_status, v.name AS vendor_name, p.no AS pay_no, p.id AS pay_id,
+    const rows = db.prepare(`SELECT g.*, o.no AS po_no, o.status AS po_status, v.name AS vendor_name, p.no AS pay_no, p.id AS pay_id,
         w.name AS warehouse_name,
         (SELECT COALESCE(SUM(received_qty * unit_price),0) FROM goods_receipt_items i WHERE i.gr_id = g.id) AS subtotal
       FROM goods_receipts g JOIN purchase_orders o ON o.id = g.po_id LEFT JOIN vendors v ON v.id = o.vendor_id
       LEFT JOIN payment_requests p ON p.gr_id = g.id LEFT JOIN warehouses w ON w.id = g.warehouse_id
-      ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY g.id DESC LIMIT 500`).all(...args));
+      ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''} ORDER BY g.id DESC LIMIT 500`).all(...args);
+    if (!can(req, 'amounts')) for (const g of rows) delete g.subtotal;
+    res.json(rows);
   });
   router.get('/procurement/receipts/:id', requireStaff, need('receipts_read'), (req, res) => {
     const g = db.prepare(`SELECT g.*, o.no AS po_no, v.name AS vendor_name, w.name AS warehouse_name FROM goods_receipts g
@@ -929,6 +943,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     g.items = db.prepare(`SELECT gi.*, i.qty AS order_qty,
         COALESCE((SELECT SUM(x.received_qty) FROM goods_receipt_items x WHERE x.po_item_id = gi.po_item_id AND x.gr_id <= gi.gr_id), 0) AS cumulative_qty
       FROM goods_receipt_items gi LEFT JOIN purchase_order_items i ON i.id = gi.po_item_id WHERE gi.gr_id = ? ORDER BY gi.id`).all(g.id);
+    if (!can(req, 'amounts')) for (const i of g.items) delete i.unit_price;
     res.json(g);
   });
   // 驗貨（可分批）：本批到貨數量進備品庫存、新品項第一次到貨時建檔、本批自動產生一張請款單；
@@ -1022,6 +1037,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       AND substr(req_date,1,7) = substr(?,1,7) AND company_id IS ?`).get(o.vendor_id, today(), payCompany).c;
     logAudit(req, { action: 'create', entity: 'goods_receipts', entity_id: grId,
       summary: `驗貨入庫 ${grNo}（採購單 ${o.no} 第 ${batchNo} 批${allDone ? '，已到齊' : '，尚有未到貨'}），產生請款單 ${payNo}` });
+    // 請款單照樣自動產生；同廠商同月合併由記帳／財務在請款單頁處理，不在驗貨時詢問
     res.json({ id: grId, no: grNo, batch_no: batchNo, complete: allDone, warehouse_id: whId, warehouse_name: warehouseName(whId),
     payment_id: payId, payment_no: payNo, new_items: newCount,
       vendor_name: o.vendor_name, merge_candidates: mergeWith, month_paid: monthPaid });

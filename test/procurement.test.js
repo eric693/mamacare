@@ -486,11 +486,22 @@ test('權限：七種角色各自只能瀏覽／key 自己的單據', async () =
   await as('u_adm');
   await ok('POST', `/api/procurement/orders/${poId}/approve`, {});
 
-  // 驗貨人員：只能驗貨
+  // 驗貨人員：只能驗貨，而且看不到任何採購金額（只核對品項與數量）
   await as('u_rcv');
   assert.strictEqual(await st('GET', '/api/procurement/orders?status=receivable'), 200);
+  const rcvList = (await ok('GET', '/api/procurement/orders?status=receivable')).find(o => o.id === poId);
+  assert.strictEqual(rcvList.total, undefined);
+  assert.strictEqual(rcvList.budget_amount, undefined);
+  const rcvPo = await ok('GET', `/api/procurement/orders/${poId}`);
+  assert.strictEqual(rcvPo.total, undefined);
+  assert.strictEqual(rcvPo.budget_amount, undefined);
+  assert.ok(rcvPo.items.every(i => i.unit_price === undefined && i.quotes.length === 0 && i.qty > 0));
+  assert.ok(rcvPo.vendor_name);
   const gr = await req('POST', '/api/procurement/receipts', { po_id: poId, inspector: '驗貨員' });
   assert.strictEqual(gr.status, 200, JSON.stringify(gr.data));
+  const rcvGr = await ok('GET', `/api/procurement/receipts/${gr.data.id}`);
+  assert.ok(rcvGr.items.every(i => i.unit_price === undefined));
+  assert.ok((await ok('GET', '/api/procurement/receipts')).every(g => g.subtotal === undefined));
   assert.strictEqual(await st('PUT', `/api/procurement/orders/${poId}`, { note: 'x' }), 403);
   assert.strictEqual(await st('GET', '/api/procurement/requests'), 403);
   assert.strictEqual(await st('GET', '/api/procurement/payments'), 403);

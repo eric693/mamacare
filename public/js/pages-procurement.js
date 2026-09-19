@@ -415,13 +415,15 @@
 
   /* ================= 採購單 ================= */
   // 採購單列表的操作按鈕（採購單頁與驗貨頁共用）
-  function poActions(o) {
+  // 採購單頁：不放驗貨入庫（驗貨只在驗貨入庫頁做）；驗貨頁：「查看」只給品項與數量，不給價格
+  function poActions(o, where = 'orders') {
     const b = [];
-    const editLabel = o.status === 'draft' && can('orders_write') ? '編輯／比價' : '查看';
-    b.push(`<button class="btn small secondary" data-po-view="${o.id}">${editLabel}</button>`);
-    b.push(`<button class="btn small secondary" data-po-print="${o.id}">列印</button>`);
-    if (o.status === 'draft' && can('orders_approve')) b.push(`<button class="btn small" data-po-approve="${o.id}">審核</button>`);
-    if (['pending', 'partial'].includes(o.status) && can('receipts_write')) b.push(`<button class="btn small" data-po-recv="${o.id}">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>`);
+    const receiving = where === 'receiving';
+    const editLabel = !receiving && o.status === 'draft' && can('orders_write') ? '編輯／比價' : '查看';
+    b.push(`<button class="btn small secondary" ${receiving ? 'data-po-qty' : 'data-po-view'}="${o.id}">${editLabel}</button>`);
+    if (!receiving || can('amounts')) b.push(`<button class="btn small secondary" data-po-print="${o.id}">列印</button>`);
+    if (!receiving && o.status === 'draft' && can('orders_approve')) b.push(`<button class="btn small" data-po-approve="${o.id}">審核</button>`);
+    if (receiving && ['pending', 'partial'].includes(o.status) && can('receipts_write')) b.push(`<button class="btn small" data-po-recv="${o.id}">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>`);
     if (o.status === 'pending' && !o.receipt_count && can('orders_approve')) b.push(`<button class="btn small secondary" data-po-return="${o.id}">退回修改</button>`);
     if (o.status === 'partial' && can('orders_approve')) b.push(`<button class="btn small secondary" data-po-close="${o.id}">結案</button>`);
     if (['draft', 'pending'].includes(o.status) && !o.receipt_count && can('orders_approve')) b.push(`<button class="btn small danger" data-po-cancel="${o.id}">取消</button>`);
@@ -430,6 +432,7 @@
   function wirePoActions(root, reload) {
     const act = (sel, fn) => root.querySelectorAll(sel).forEach(btn => { btn.onclick = () => fn(btn.getAttribute(sel.slice(1, -1))); });
     act('[data-po-view]', async id => openPoForm(await api('/procurement/orders/' + id), reload));
+    act('[data-po-qty]', async id => showPoForReceiving(await api('/procurement/orders/' + id)));
     act('[data-po-print]', async id => printOrder(await api('/procurement/orders/' + id)));
     act('[data-po-approve]', async id => openPoForm(await api('/procurement/orders/' + id), reload));
     act('[data-po-recv]', async id => openReceiving(await api('/procurement/orders/' + id), reload));
@@ -567,7 +570,6 @@
         ${draft && can('orders_approve') ? '<button class="btn" id="pof-approve">審核通過</button>' : ''}
         ${!draft && ['pending', 'partial'].includes(o.status) && can('orders_write') ? '<button class="btn secondary" id="pof-save-eta">儲存到貨日／備註</button>' : ''}
         <button class="btn secondary" id="pof-print">列印</button>
-        ${['pending', 'partial'].includes(o.status) && can('receipts_write') ? `<button class="btn secondary" id="pof-recv">${o.status === 'partial' ? '續收到貨' : '驗貨入庫'}</button>` : ''}
         <span class="error-msg" id="pof-err"></span></div>`, body => {
       const showProblems = list => {
         const box = body.querySelector('#pof-problems');
@@ -677,9 +679,21 @@
         catch (e) { err.textContent = e.message; }
       };
       body.querySelector('#pof-print').onclick = () => printOrder(o);
-      const recv = body.querySelector('#pof-recv');
-      if (recv) recv.onclick = async () => { closeModal(); openReceiving(await api('/procurement/orders/' + o.id), done); };
     });
+  }
+
+  // 驗貨用的採購單明細：核對品項與數量，不顯示任何價格
+  function showPoForReceiving(o) {
+    openWide(`採購單 ${o.no}（驗貨核對）`, `
+      <div style="background:var(--primary-light);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:.9rem">
+        廠商：<strong>${esc(o.vendor_name)}</strong>　預計到貨：${esc(o.eta || '—')}　狀態：${badge(PO_ST, o.status)}
+        ${o.note ? `<br>備註：${esc(o.note)}` : ''}</div>
+      <table class="data"><thead><tr><th>品項</th><th>訂購數</th><th>已到貨</th><th>未到貨</th></tr></thead>
+      <tbody>${o.items.map(i => `<tr><td>${esc(i.item_name)}</td><td>${i.qty} ${esc(i.unit)}</td>
+        <td>${i.received_qty}</td><td style="color:${i.remaining ? 'var(--danger)' : 'var(--ok)'}">${i.remaining}</td></tr>`).join('')}</tbody></table>
+      ${o.receipts.length ? `<div class="sec-hd" style="margin-top:10px">到貨紀錄（${o.receipts.length} 批）</div>
+        <table class="data"><thead><tr><th>批次</th><th>入庫單</th><th>日期</th><th>驗貨人</th></tr></thead>
+        <tbody>${o.receipts.map(g => `<tr><td>第 ${g.batch_no} 批</td><td>${esc(g.no)}</td><td>${esc(g.receive_date)}</td><td>${esc(g.inspector)}</td></tr>`).join('')}</tbody></table>` : ''}`);
   }
 
   async function printOrder(o) {
@@ -739,7 +753,7 @@
             <td data-label="預計到貨">${esc(o.eta || '—')}${o.eta && o.eta < todayStr() ? ' <span class="badge red">逾期</span>' : ''}</td>
             <td data-label="到貨進度">${o.received_total_qty} / ${o.qty_total}${o.receipt_count ? `（已收 ${o.receipt_count} 批）` : ''}</td>
             <td data-label="狀態">${badge(PO_ST, o.status)}</td>
-            <td data-label="操作" class="no-print">${poActions(o)}</td></tr>`).join('')
+            <td data-label="操作" class="no-print">${poActions(o, 'receiving')}</td></tr>`).join('')
             || '<tr><td colspan="6"><div class="empty">目前沒有待到貨的採購單（採購單須先審核通過）</div></td></tr>'}</tbody></table></div>
         <small style="color:var(--muted)">廠商分批送貨時，每次到貨各驗一次：本批數量入庫並各自產生一張請款單；全部到齊自動轉「已入庫」，剩餘不再交貨可按「結案」。驗貨只核對品項與數量，金額沿用採購單已核定的單價。</small>
       </div>
@@ -805,7 +819,7 @@
             <td data-label="本次到貨數"><input type="number" min="0" max="${it.remaining}" data-k="received_qty" value="${it.remaining}" style="max-width:90px"></td></tr>`;
         }).join('')}</tbody></table></div>
       <p id="rc-hint" style="font-size:.85rem;color:var(--muted)"></p>
-      <div class="row" style="gap:8px"><button class="btn" id="rc-go">確認本批入庫，產生請款單</button><span class="error-msg" id="rc-err"></span></div>`, body => {
+      <div class="row" style="gap:8px"><button class="btn" id="rc-go">確認本批入庫</button><span class="error-msg" id="rc-err"></span></div>`, body => {
       // 驗貨單只核對品項與數量，不顯示金額；請款金額一律沿用採購單已核定的單價
       const recalc = () => {
         let short = 0;
@@ -833,9 +847,9 @@
           const r = await api('/procurement/receipts', { method: 'POST', body: {
             po_id: o.id, receive_date: val(body, '#rc-date'), inspector: val(body, '#rc-insp'),
             warehouse_id: val(body, '#rc-wh'), invoice_no: val(body, '#rc-inv'), note: val(body, '#rc-note'), items } });
-          alert(`第 ${r.batch_no} 批入庫完成（${r.no}），${r.warehouse_name || '倉庫'}庫存已更新${r.new_items ? `，新建 ${r.new_items} 個品項` : ''}。\n請款單 ${r.payment_no} 已自動建立。\n${r.complete ? '採購單已全數到齊。' : '尚有未到貨數量，採購單標為「部分到貨」。'}`);
+          // 請款單由系統自動產生，同廠商同月是否合併由記帳／財務在請款單頁處理，不問驗貨人員
+          alert(`第 ${r.batch_no} 批入庫完成（${r.no}），${r.warehouse_name || '倉庫'}庫存已更新${r.new_items ? `，新建 ${r.new_items} 個品項` : ''}。\n${r.complete ? '採購單已全數到齊。' : '尚有未到貨數量，採購單標為「部分到貨」。'}`);
           closeModal();
-          await askMonthlyMerge(r);
           done && done();
         } catch (e) { err.textContent = e.message; }
       };
@@ -887,27 +901,7 @@
     wireFilter(main(), load);
   }
 
-  // 公司規定：同一家廠商一個月只開一張請款單。新請款單產生時，若同月已有待付款的，詢問是否合併並重出支付憑單
-  async function askMonthlyMerge(r) {
-    const cands = r.merge_candidates || [];
-    if (!cands.length) {
-      if (r.month_paid) alert(`提醒：「${r.vendor_name}」本月已有已付款的請款單，依規定同一廠商每月只開一張請款單。\n如需合併，請由管理員將已付款單改回待付款後，於請款單頁合併。`);
-      return;
-    }
-    if (!can('payments_write')) {
-      alert(`提醒：「${r.vendor_name}」本月已有待付款請款單 ${cands.map(c => c.no).join('、')}，依規定應合併請款，請通知財務於請款單頁合併。`);
-      return;
-    }
-    const target = cands[0];
-    if (!confirm(`「${r.vendor_name}」本月已有待付款請款單 ${cands.map(c => `${c.no}（${money(c.total_amount)}）`).join('、')}。\n\n公司規定同一廠商一個月只開一張請款單，是否將剛產生的 ${r.payment_no} 合併到 ${target.no}，並重新列印支付憑單？`)) return;
-    try {
-      const ids = [r.payment_id, ...cands.slice(1).map(c => c.id)];
-      const merged = await api(`/procurement/payments/${target.id}/merge`, { method: 'POST', body: { ids } });
-      alert(`已合併至 ${merged.no}，含稅總額 ${money(merged.total_amount)}。接著開啟支付憑單供重新列印。`);
-      printPayment(merged);
-    } catch (e) { alert('合併失敗：' + e.message); }
-  }
-
+  // 公司規定：同一家廠商一個月只開一張請款單；由記帳／財務在請款單列表按「合併請款」處理（驗貨時不詢問）
   async function openMerge(p, done) {
     const d = await api('/procurement/payments/' + p.id);
     const others = d.month_others.filter(x => x.status === 'unpaid');
