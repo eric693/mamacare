@@ -83,6 +83,8 @@ module.exports = function procurementReports(router, deps) {
     const sql = `
       WITH wh AS (SELECT s.id, s.code, s.name AS item_name, s.unit, s.price FROM supplies s WHERE ${cond.join(' AND ')})
       SELECT wh.*,
+        COALESCE((SELECT SUM(m.qty * l.unit_price) FROM stock_lots l JOIN lot_moves m ON m.lot_id = l.id WHERE l.supply_id = wh.id), 0) AS led_val,
+        COALESCE((SELECT SUM(m.qty) FROM stock_lots l JOIN lot_moves m ON m.lot_id = l.id WHERE l.supply_id = wh.id), 0) AS led_qty,
         COALESCE((SELECT SUM(qty) FROM supply_stocks ss WHERE ss.supply_id = wh.id AND ss.warehouse_id IN (${ph})), 0) AS now_qty,
         COALESCE((SELECT SUM(t.quantity) FROM supply_txns t WHERE t.supply_id = wh.id AND t.warehouse_id IN (${ph})
           AND t.txn_type = 'in' AND date(t.created_at) BETWEEN ? AND ?), 0) AS in_qty,
@@ -108,15 +110,18 @@ module.exports = function procurementReports(router, deps) {
     const out = rows.map(r => {
       const end = r.now_qty - r.after_txn - r.after_trf;
       const open = end - (r.in_qty - r.out_qty + r.adj_qty + r.trf_in - r.trf_out);
+      // 成本用批次加權平均（實際進貨價），沒進過貨才用品項主檔的參考單價
+      const cost = r.led_qty > 0 ? r.led_val / r.led_qty : r.price;
       return { ...r, item: `${r.code ? r.code + ' ' : ''}${r.item_name}`, open_qty: open, end_qty: end,
-        open_amt: round(open * r.price), in_amt: round(r.in_qty * r.price), out_amt: round(r.out_qty * r.price),
-        end_amt: round(end * r.price) };
+        price: Math.round(cost * 100) / 100,
+        open_amt: round(open * cost), in_amt: round(r.in_qty * cost), out_amt: round(r.out_qty * cost),
+        end_amt: round(end * cost) };
     });
     const sum = k => out.reduce((t, x) => t + x[k], 0);
     const totals = Object.fromEntries(['open_qty', 'open_amt', 'in_qty', 'in_amt', 'out_qty', 'out_amt', 'adj_qty', 'trf_in', 'trf_out', 'end_qty', 'end_amt']
       .map(k => [k, sum(k)]));
     const columns = [
-      { key: 'item', label: '品項' }, { key: 'unit', label: '單位' }, { key: 'price', label: '參考單價(未稅)' },
+      { key: 'item', label: '品項' }, { key: 'unit', label: '單位' }, { key: 'price', label: '成本單價(未稅)' },
       { key: 'open_qty', label: '期初數量' }, { key: 'open_amt', label: '期初金額' },
       { key: 'in_qty', label: '進貨數量' }, { key: 'in_amt', label: '進貨金額' },
       { key: 'out_qty', label: '出貨數量' }, { key: 'out_amt', label: '出貨金額' },

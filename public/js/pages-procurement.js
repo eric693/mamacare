@@ -1330,9 +1330,10 @@
       </div></div>
       <div class="stat-grid" id="st-stats"></div>
       <div class="card"><div class="table-wrap"><table class="data stack">
-        <thead><tr><th>品項編號</th><th>品項名稱</th><th>倉別分布</th><th>目前庫存</th><th>安全庫存</th><th>參考單價</th><th>未稅庫存值</th><th>狀態</th><th class="no-print"></th></tr></thead>
+        <thead><tr><th>品項編號</th><th>品項名稱</th><th>倉別分布</th><th>目前庫存</th><th>安全庫存</th><th>成本單價（未稅）</th><th>未稅庫存值</th><th>狀態</th><th class="no-print"></th></tr></thead>
         <tbody id="st-body"></tbody></table></div>
-        <small style="color:var(--muted)">庫存與「備品庫存管理」為同一份數字：驗貨入庫加、確認出貨扣、盤點調整、調撥換倉，都會即時反映；不選倉庫時看到的是各倉合計。</small></div>`;
+        <small style="color:var(--muted)">庫存與「備品庫存管理」為同一份數字：驗貨入庫加、確認出貨扣、盤點調整、調撥換倉，都會即時反映；不選倉庫時看到的是各倉合計。<br>
+          成本單價取自實際進貨（同品項多次進價不同時為批次加權平均），沒進過貨才用品項主檔的參考單價。</small></div>`;
     const load = async () => {
       const p = new URLSearchParams();
       const whId = $('#st-wh').value;
@@ -1340,10 +1341,12 @@
       if ($('#st-vendor').value) p.set('vendor_id', $('#st-vendor').value);
       if ($('#st-q').value.trim()) p.set('q', $('#st-q').value.trim());
       if ($('#st-low').checked) p.set('low', '1');
+      p.set('with_cost', '1');
       const { rows } = await api('/procurement/items?' + p);
       // 指定倉別時所有數字都看那個倉，沒指定就看全公司合計
       const qtyOf = r => (whId ? (r.wh_qty || 0) : r.stock);
-      const value = rows.reduce((t, r) => t + qtyOf(r) * r.price, 0);
+      const costOf = r => (r.cost === undefined || r.cost === null ? r.price : r.cost);
+      const value = rows.reduce((t, r) => t + qtyOf(r) * costOf(r), 0);
       const low = rows.filter(r => qtyOf(r) < r.safety_stock);
       $('#st-stats').innerHTML = `
         <div class="stat"><div class="num">${rows.length}</div><div class="label">品項數</div></div>
@@ -1363,8 +1366,11 @@
           <td data-label="目前庫存"><strong style="color:${isLow ? 'var(--danger)' : 'var(--ok)'}">${qty}</strong> ${esc(r.unit)}${
             whId && qty !== r.stock ? `<br><small style="color:var(--muted)">全部倉合計 ${r.stock}</small>` : ''}</td>
           <td data-label="安全庫存">${r.safety_stock}</td>
-          <td data-label="參考單價">${r.price ? money(r.price) : '<span style="color:var(--muted)">未設</span>'}</td>
-          <td data-label="未稅庫存值">${r.price ? money(qty * r.price) : '—'}</td>
+          <td data-label="成本單價">${costOf(r) ? money(costOf(r)) : '<span style="color:var(--muted)">未設</span>'}${
+            r.cost_source === 'lot' ? '<br><small style="color:var(--muted)">批次平均</small>'
+            : r.cost_source === 'last' ? '<br><small style="color:var(--muted)">最近進價</small>'
+            : '<br><small style="color:var(--muted)">參考單價</small>'}</td>
+          <td data-label="未稅庫存值">${costOf(r) ? money(qty * costOf(r)) : '—'}</td>
           <td data-label="狀態">${isLow ? '<span class="badge red">庫存不足</span>' : '<span class="badge green">正常</span>'}</td>
           <td data-label="操作" class="no-print">
             ${can('requests_write') ? `<button class="btn small" data-req="${r.id}">請購</button>` : ''}

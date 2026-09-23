@@ -447,6 +447,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const rows = db.prepare(`SELECT s.id, s.code, s.name, s.category, s.unit, s.stock, s.safety_stock, s.price, s.warehouse,
         (SELECT COUNT(DISTINCT i.po_id) FROM purchase_order_items i WHERE i.supply_id = s.id) AS po_count
       FROM supplies s WHERE ${cond.join(' AND ')} ORDER BY s.warehouse, s.code, s.name`).all(...args);
+    // 庫存值要用實際成本，不是品項主檔的參考單價（例如維修這種依現況報價的品項，參考單價可能只填 1）
+    if (req.query.with_cost === '1') attachCosts(rows);
     // 各倉庫存一次撈回來掛到品項上（庫存總覽要看得出同一品項分散在哪些倉）
     const byItem = new Map();
     for (const r of db.prepare(`SELECT ss.supply_id, ss.warehouse_id, ss.qty, w.name AS warehouse_name, w.kind
@@ -473,6 +475,24 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       return w.name;
     }
     return b.warehouse === undefined ? fallback : str(b.warehouse, 40);
+  }
+  // 成本單價：批次帳的加權平均（庫存值 ÷ 庫存量）；沒有批次就退回最近一次進貨價、再退回參考單價
+  function attachCosts(rows) {
+    if (!rows.length) return;
+    syncLots(db, today());
+    const ledger = new Map(db.prepare(`SELECT l.supply_id, SUM(m.qty * l.unit_price) AS val, SUM(m.qty) AS qty
+      FROM stock_lots l JOIN lot_moves m ON m.lot_id = l.id GROUP BY l.supply_id`).all().map(r => [r.supply_id, r]));
+    const lastIn = new Map(db.prepare(`SELECT supply_id, unit_price FROM supply_txns
+      WHERE txn_type = 'in' AND unit_price > 0 AND id IN (SELECT MAX(id) FROM supply_txns
+        WHERE txn_type = 'in' AND unit_price > 0 GROUP BY supply_id)`).all().map(r => [r.supply_id, r.unit_price]));
+    for (const r of rows) {
+      const l = ledger.get(r.id);
+      r.last_cost = lastIn.has(r.id) ? Math.round(lastIn.get(r.id) * 100) / 100 : null;
+      r.avg_cost = l && l.qty > 0 ? Math.round((l.val / l.qty) * 100) / 100 : null;
+      // 沒庫存時用最近進價當成本參考，都沒有才用參考單價
+      r.cost = r.avg_cost !== null ? r.avg_cost : (r.last_cost !== null ? r.last_cost : r.price);
+      r.cost_source = r.avg_cost !== null ? 'lot' : (r.last_cost !== null ? 'last' : 'price');
+    }
   }
   const defaultVendorOf = list => {
     const arr = Array.isArray(list) ? list : [];

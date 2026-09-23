@@ -317,3 +317,29 @@ test('進銷存報表：全部品項都列；可選單一倉庫或合併多倉�
   assert.strictEqual(rb.trf_out, 0);
   assert.strictEqual(rb.open_qty + rb.in_qty - rb.out_qty + rb.adj_qty, rb.end_qty);
 });
+
+test('庫存總覽金額用實際進貨成本，不是品項主檔的參考單價', async () => {
+  // 參考單價填 1（依現況報價的費用類品項），但實際採購價 5000
+  const fee = (await ok('POST', '/api/procurement/items', {
+    code: 'FEE01', name: '空調維修一式', unit: '式', safety_stock: 0, price: 1,
+    vendors: [{ vendor_id: vendor, is_default: true }]
+  })).id;
+  const pr = await ok('POST', '/api/procurement/requests', { requester: '王主任', items: [{ supply_id: fee, qty: 1 }] });
+  await ok('POST', `/api/procurement/requests/${pr.id}/approve`, {});
+  const prd = await ok('GET', `/api/procurement/requests/${pr.id}`);
+  const po = (await ok('POST', `/api/procurement/requests/${pr.id}/order`, {
+    items: [{ item_id: prd.items[0].id, vendor_id: vendor, eta: D(0) }] })).orders[0];
+  const pod = await ok('GET', `/api/procurement/orders/${po.id}`);
+  await ok('PUT', `/api/procurement/orders/${po.id}`, { budget_amount: 5250, items: [{ id: pod.items[0].id, unit_price: 5000 }] });
+  await ok('POST', `/api/procurement/orders/${po.id}/approve`, {});
+  await ok('POST', '/api/procurement/receipts', { po_id: po.id, inspector: '王主任', warehouse_id: mainWh,
+    items: [{ po_item_id: pod.items[0].id, received_qty: 1 }] });
+  const r = (await ok('GET', '/api/procurement/items?with_cost=1')).rows.find(x => x.id === fee);
+  assert.strictEqual(r.price, 1, '品項主檔的參考單價不動');
+  assert.strictEqual(r.cost, 5000, '庫存成本用實際進貨價');
+  assert.strictEqual(r.cost_source, 'lot');
+  assert.strictEqual(r.last_cost, 5000);
+  // 沒進過貨的品項：退回參考單價
+  const never = (await ok('GET', '/api/procurement/items?with_cost=1')).rows.find(x => x.name === '沒進出過的品項');
+  assert.strictEqual(never.cost_source, 'price');
+});
