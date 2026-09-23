@@ -25,27 +25,31 @@ module.exports = function procurementReports(router, deps) {
   }
 
   // ---------- 進銷存一覽表（yyyymm）----------
-  // 依批次（品項＋廠商＋單價）列期初／進貨／出貨／期末；盤點與系統校正另列「調整」，確保期初＋進−出±調整＝期末
+  // 不指定倉庫：依批次（品項＋廠商＋單價）列期初／進貨／出貨／期末，金額用批次成本；
+  // 指定倉庫（可複選合併）：改依品項列該些倉的數量，另有調撥入／出，金額用參考單價。
+  // 兩種都會列出所有啟用中的品項，當月沒異動、庫存 0 的也列。
   router.get('/procurement/reports/inventory', requireStaff, need('reports'), (req, res) => {
     syncLots(db, today());
     const { ym, from, to } = monthRange(req.query.month);
+    const whIds = [...new Set(String(req.query.warehouse_ids || '').split(',').map(x => int(x)).filter(Boolean))];
+    if (whIds.length) return inventoryByWarehouse(req, res, { ym, from, to, whIds });
     const cond = [], args = [from, from, to, from, to, from, to, to];
     const q = str(req.query.q, 60);
-    if (q) { cond.push('(s.name LIKE ? OR s.code LIKE ? OR l.lot_no LIKE ?)'); args.push(...Array(3).fill('%' + q + '%')); }
+    if (q) { cond.push("(s.name LIKE ? OR s.code LIKE ? OR COALESCE(l.lot_no,'') LIKE ?)"); args.push(...Array(3).fill('%' + q + '%')); }
     if (int(req.query.vendor_id)) { cond.push('l.vendor_id = ?'); args.push(int(req.query.vendor_id)); }
-    if (int(req.query.supply_id)) { cond.push('l.supply_id = ?'); args.push(int(req.query.supply_id)); }
+    if (int(req.query.supply_id)) { cond.push('s.id = ?'); args.push(int(req.query.supply_id)); }
     const rows = db.prepare(`
-      SELECT l.lot_no, l.unit_price, s.code, s.name AS item_name, s.unit, COALESCE(v.name, '') AS vendor_name,
+      SELECT COALESCE(l.lot_no, '—') AS lot_no, COALESCE(l.unit_price, s.price) AS unit_price,
+        s.code, s.name AS item_name, s.unit, COALESCE(v.name, '') AS vendor_name,
         COALESCE(SUM(CASE WHEN m.move_date < ? THEN m.qty END), 0) AS open_qty,
         COALESCE(SUM(CASE WHEN m.move_date >= ? AND m.move_date <= ? AND m.move_type = 'in' THEN m.qty END), 0) AS in_qty,
         COALESCE(SUM(CASE WHEN m.move_date >= ? AND m.move_date <= ? AND m.move_type = 'out' THEN -m.qty END), 0) AS out_qty,
         COALESCE(SUM(CASE WHEN m.move_date >= ? AND m.move_date <= ? AND m.move_type = 'adjust' THEN m.qty END), 0) AS adj_qty,
         COALESCE(SUM(CASE WHEN m.move_date <= ? THEN m.qty END), 0) AS end_qty
-      FROM stock_lots l JOIN supplies s ON s.id = l.supply_id LEFT JOIN vendors v ON v.id = l.vendor_id
+      FROM supplies s LEFT JOIN stock_lots l ON l.supply_id = s.id LEFT JOIN vendors v ON v.id = l.vendor_id
       LEFT JOIN lot_moves m ON m.lot_id = l.id
-      ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''}
-      GROUP BY l.id
-      HAVING open_qty != 0 OR in_qty != 0 OR out_qty != 0 OR adj_qty != 0 OR end_qty != 0
+      WHERE s.active = 1 ${cond.length ? 'AND ' + cond.join(' AND ') : ''}
+      GROUP BY s.id, l.id
       ORDER BY s.name, l.unit_price, l.lot_no`).all(...args)
       .map(x => ({
         ...x,
@@ -65,8 +69,74 @@ module.exports = function procurementReports(router, deps) {
       { key: 'end_qty', label: '期末數量' }, { key: 'end_amt', label: '期末金額' }
     ];
     const out = req.query.format === 'xlsx' ? [...rows, { lot_no: '合計', ...totals }] : rows;
-    send(res, req, `進銷存一覽表 ${ym}`, columns, out, { month: ym, from, to, totals });
+    send(res, req, `進銷存一覽表 ${ym}`, columns, out, { month: ym, from, to, totals, mode: 'lot' });
   });
+
+  // 指定倉庫（可合併多倉）的進銷存：數量以分倉異動計算，期初＝期末－本期異動
+  function inventoryByWarehouse(req, res, { ym, from, to, whIds }) {
+    const ph = whIds.map(() => '?').join(',');
+    const cond = ['s.active = 1'], args = [];
+    const q = str(req.query.q, 60);
+    if (q) { cond.push('(s.name LIKE ? OR s.code LIKE ?)'); args.push('%' + q + '%', '%' + q + '%'); }
+    if (int(req.query.supply_id)) { cond.push('s.id = ?'); args.push(int(req.query.supply_id)); }
+    // 每個品項在這些倉的：目前數量、本期進／出／盤點調整、本期調撥入／出，以及本期之後的異動（回推期末）
+    const sql = `
+      WITH wh AS (SELECT s.id, s.code, s.name AS item_name, s.unit, s.price FROM supplies s WHERE ${cond.join(' AND ')})
+      SELECT wh.*,
+        COALESCE((SELECT SUM(qty) FROM supply_stocks ss WHERE ss.supply_id = wh.id AND ss.warehouse_id IN (${ph})), 0) AS now_qty,
+        COALESCE((SELECT SUM(t.quantity) FROM supply_txns t WHERE t.supply_id = wh.id AND t.warehouse_id IN (${ph})
+          AND t.txn_type = 'in' AND date(t.created_at) BETWEEN ? AND ?), 0) AS in_qty,
+        COALESCE((SELECT SUM(t.quantity) FROM supply_txns t WHERE t.supply_id = wh.id AND t.warehouse_id IN (${ph})
+          AND t.txn_type = 'out' AND date(t.created_at) BETWEEN ? AND ?), 0) AS out_qty,
+        COALESCE((SELECT SUM(t.wh_delta) FROM supply_txns t WHERE t.supply_id = wh.id AND t.warehouse_id IN (${ph})
+          AND t.txn_type = 'adjust' AND date(t.created_at) BETWEEN ? AND ?), 0) AS adj_qty,
+        COALESCE((SELECT SUM(i.qty) FROM stock_transfer_items i JOIN stock_transfers tr ON tr.id = i.transfer_id
+          WHERE i.supply_id = wh.id AND tr.status = 'done' AND tr.to_warehouse_id IN (${ph})
+          AND tr.from_warehouse_id NOT IN (${ph}) AND tr.transfer_date BETWEEN ? AND ?), 0) AS trf_in,
+        COALESCE((SELECT SUM(i.qty) FROM stock_transfer_items i JOIN stock_transfers tr ON tr.id = i.transfer_id
+          WHERE i.supply_id = wh.id AND tr.status = 'done' AND tr.from_warehouse_id IN (${ph})
+          AND tr.to_warehouse_id NOT IN (${ph}) AND tr.transfer_date BETWEEN ? AND ?), 0) AS trf_out,
+        COALESCE((SELECT SUM(t.wh_delta) FROM supply_txns t WHERE t.supply_id = wh.id AND t.warehouse_id IN (${ph})
+          AND date(t.created_at) > ?), 0) AS after_txn,
+        COALESCE((SELECT SUM(CASE WHEN tr.to_warehouse_id IN (${ph}) THEN i.qty ELSE -i.qty END)
+          FROM stock_transfer_items i JOIN stock_transfers tr ON tr.id = i.transfer_id
+          WHERE i.supply_id = wh.id AND tr.status = 'done' AND tr.transfer_date > ?
+          AND (tr.to_warehouse_id IN (${ph})) != (tr.from_warehouse_id IN (${ph}))), 0) AS after_trf
+      FROM wh ORDER BY wh.item_name`;
+    const rows = db.prepare(sql).all(...buildArgs(args, whIds, from, to));
+    const named = db.prepare(`SELECT name FROM warehouses WHERE id IN (${ph})`).all(...whIds).map(x => x.name).join('、');
+    const out = rows.map(r => {
+      const end = r.now_qty - r.after_txn - r.after_trf;
+      const open = end - (r.in_qty - r.out_qty + r.adj_qty + r.trf_in - r.trf_out);
+      return { ...r, item: `${r.code ? r.code + ' ' : ''}${r.item_name}`, open_qty: open, end_qty: end,
+        open_amt: round(open * r.price), in_amt: round(r.in_qty * r.price), out_amt: round(r.out_qty * r.price),
+        end_amt: round(end * r.price) };
+    });
+    const sum = k => out.reduce((t, x) => t + x[k], 0);
+    const totals = Object.fromEntries(['open_qty', 'open_amt', 'in_qty', 'in_amt', 'out_qty', 'out_amt', 'adj_qty', 'trf_in', 'trf_out', 'end_qty', 'end_amt']
+      .map(k => [k, sum(k)]));
+    const columns = [
+      { key: 'item', label: '品項' }, { key: 'unit', label: '單位' }, { key: 'price', label: '參考單價(未稅)' },
+      { key: 'open_qty', label: '期初數量' }, { key: 'open_amt', label: '期初金額' },
+      { key: 'in_qty', label: '進貨數量' }, { key: 'in_amt', label: '進貨金額' },
+      { key: 'out_qty', label: '出貨數量' }, { key: 'out_amt', label: '出貨金額' },
+      { key: 'adj_qty', label: '盤點調整數量' }, { key: 'trf_in', label: '調撥入' }, { key: 'trf_out', label: '調撥出' },
+      { key: 'end_qty', label: '期末數量' }, { key: 'end_amt', label: '期末金額' }
+    ];
+    const list = req.query.format === 'xlsx' ? [...out, { item: '合計', ...totals }] : out;
+    send(res, req, `進銷存一覽表 ${ym}（${named}）`, columns, list, { month: ym, from, to, totals, mode: 'warehouse', warehouse_names: named });
+  }
+  // 依 SQL 中佔位符出現的順序組參數：品項條件 → 六段（倉別＋期間）→ 期末回推兩段
+  function buildArgs(itemArgs, whIds, from, to) {
+    const a = [...itemArgs];
+    a.push(...whIds);                                    // now_qty
+    for (let i = 0; i < 3; i++) a.push(...whIds, from, to);   // 進／出／盤點調整
+    a.push(...whIds, ...whIds, from, to);                // 調撥入
+    a.push(...whIds, ...whIds, from, to);                // 調撥出
+    a.push(...whIds, to);                                // after_txn
+    a.push(...whIds, to, ...whIds, ...whIds);            // after_trf
+    return a;
+  }
 
   // ---------- 出貨明細 ----------
   // 金額為出貨時實際扣到的批次成本（便宜的先出）

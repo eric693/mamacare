@@ -290,3 +290,30 @@ test('退回修改：驗貨退回沖回庫存與請款、出貨退回沖回庫�
   cookie = '';
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
 });
+
+test('進銷存報表：全部品項都列；可選單一倉庫或合併多倉，數量依倉別計算', async () => {
+  const month = D(0).slice(0, 7).replace('-', '');
+  // 不指定倉庫：依批次，且沒有任何異動的品項也要出現
+  const zero = (await ok('POST', '/api/procurement/items', { code: 'WH000', name: '沒進出過的品項', unit: '個', safety_stock: 1 })).id;
+  const all = await ok('GET', `/api/procurement/reports/inventory?month=${month}`);
+  assert.strictEqual(all.mode, 'lot');
+  assert.ok(all.rows.some(r => r.item_name === '沒進出過的品項' && r.end_qty === 0), '庫存 0 的品項也要列出');
+  // 指定倉庫：期初＋進−出±調整±調撥＝期末，且期末等於該倉現有庫存
+  const one = await ok('GET', `/api/procurement/reports/inventory?month=${month}&warehouse_ids=${shopWh}`);
+  assert.strictEqual(one.mode, 'warehouse');
+  const r = one.rows.find(x => x.id === item);
+  const cur = (await ok('GET', '/api/procurement/items')).rows.find(x => x.id === item);
+  const shopQty = (cur.stocks.find(s => s.warehouse_id === shopWh) || {}).qty || 0;
+  assert.strictEqual(r.end_qty, shopQty);
+  assert.strictEqual(r.open_qty + r.in_qty - r.out_qty + r.adj_qty + r.trf_in - r.trf_out, r.end_qty);
+  assert.ok(r.trf_in > 0, '本月有從總倉調撥進商城小倉');
+  assert.ok(one.rows.some(x => x.id === zero), '指定倉庫時也要列出全部品項');
+  // 合併兩倉：期末等於兩倉合計
+  const both = await ok('GET', `/api/procurement/reports/inventory?month=${month}&warehouse_ids=${mainWh},${shopWh}`);
+  const rb = both.rows.find(x => x.id === item);
+  const mainQty = (cur.stocks.find(s => s.warehouse_id === mainWh) || {}).qty || 0;
+  assert.strictEqual(rb.end_qty, mainQty + shopQty);
+  assert.strictEqual(rb.trf_in, 0, '兩倉互相調撥在合併後互相抵消');
+  assert.strictEqual(rb.trf_out, 0);
+  assert.strictEqual(rb.open_qty + rb.in_qty - rb.out_qty + rb.adj_qty, rb.end_qty);
+});

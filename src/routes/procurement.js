@@ -104,11 +104,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     }
     const balance = WH.addWarehouseQty(db, supplyId, whId, type === 'in' ? qty : -qty);
     db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, dept, purpose,
-        unit_price, vendor_id, ref_type, ref_id, warehouse_id, reverses_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
+        unit_price, vendor_id, ref_type, ref_id, warehouse_id, reverses_id, wh_delta)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, type, qty, balance, extra.reason || '', extra.note || '', userId,
       str(extra.vendor, 60), str(extra.dept, 60), str(extra.purpose, 60),
       extra.unitPrice === undefined ? null : extra.unitPrice, extra.vendorId || null, extra.refType || '', extra.refId || null, whId,
-      extra.reversesId || null);
+      extra.reversesId || null, type === 'in' ? qty : -qty);
     return balance;
   }
   const warehouseName = id => (db.prepare('SELECT name FROM warehouses WHERE id = ?').get(id) || {}).name || '倉庫';
@@ -433,9 +433,15 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const q = str(req.query.q, 60);
     if (q) { cond.push('(s.name LIKE ? OR s.code LIKE ?)'); args.push('%' + q + '%', '%' + q + '%'); }
     if (req.query.warehouse) { cond.push('s.warehouse = ?'); args.push(str(req.query.warehouse, 40)); }
-    // 指定倉別時只列那個倉有庫存紀錄的品項
-    const whId = int(req.query.warehouse_id);
-    if (whId) { cond.push('EXISTS (SELECT 1 FROM supply_stocks ss WHERE ss.supply_id = s.id AND ss.warehouse_id = ?)'); args.push(whId); }
+    // 指定倉別（可多個：總倉＋其小倉合併）時，只列在這些倉有庫存或設為存放倉的品項
+    const whIds = [...new Set(String(req.query.warehouse_ids || req.query.warehouse_id || '')
+      .split(',').map(x => int(x)).filter(Boolean))];
+    if (whIds.length) {
+      const ph = whIds.map(() => '?').join(',');
+      cond.push(`(EXISTS (SELECT 1 FROM supply_stocks ss WHERE ss.supply_id = s.id AND ss.warehouse_id IN (${ph}) AND ss.qty != 0)
+        OR s.warehouse IN (SELECT name FROM warehouses WHERE id IN (${ph})))`);
+      args.push(...whIds, ...whIds);
+    }
     if (req.query.low === '1') cond.push('s.stock < s.safety_stock');
     if (req.query.vendor_id) { cond.push('EXISTS (SELECT 1 FROM supply_vendors sv WHERE sv.supply_id = s.id AND sv.vendor_id = ?)'); args.push(int(req.query.vendor_id)); }
     const rows = db.prepare(`SELECT s.id, s.code, s.name, s.category, s.unit, s.stock, s.safety_stock, s.price, s.warehouse,
@@ -452,11 +458,22 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     for (const r of rows) {
       r.vendors = itemVendors(r.id);
       r.stocks = byItem.get(r.id) || [];
-      if (whId) r.wh_qty = (r.stocks.find(x => x.warehouse_id === whId) || {}).qty || 0;
+      if (whIds.length) r.wh_qty = r.stocks.filter(x => whIds.includes(x.warehouse_id)).reduce((t, x) => t + x.qty, 0);
     }
     const warehouses = db.prepare("SELECT DISTINCT warehouse FROM supplies WHERE active = 1 AND warehouse != '' ORDER BY warehouse").all().map(r => r.warehouse);
     res.json({ rows, warehouses, warehouse_list: WH.activeWarehouses(db) });
   });
+  // 品項的「倉庫別」＝倉庫主檔的倉名（存名稱，與倉庫管理連動）；送 warehouse_id 時以該倉名稱為準
+  function warehouseNameOf(b, fallback = '') {
+    if (b.warehouse_id !== undefined) {
+      const id = int(b.warehouse_id);
+      if (!id) return '';
+      const w = db.prepare('SELECT name FROM warehouses WHERE id = ? AND active = 1').get(id);
+      if (!w) throw httpErr('倉庫不存在或已停用');
+      return w.name;
+    }
+    return b.warehouse === undefined ? fallback : str(b.warehouse, 40);
+  }
   const defaultVendorOf = list => {
     const arr = Array.isArray(list) ? list : [];
     const d = arr.find(v => v.is_default) || arr[0];
@@ -483,7 +500,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     db.transaction(() => {
       id = db.prepare(`INSERT INTO supplies (name, category, unit, safety_stock, code, price, warehouse)
         VALUES (?,?,?,?,?,?,?)`).run(name, str(b.category, 40), unit, Math.max(0, int(b.safety_stock)),
-        code, Math.max(0, int(b.price)), str(b.warehouse, 40)).lastInsertRowid;
+        code, Math.max(0, int(b.price)), warehouseNameOf(b)).lastInsertRowid;
       saveItemVendors(id, b.vendors);
       const init = Math.max(0, int(b.initial_stock));
       if (init > 0) stockMove(id, 'in', init, req.session.user.id, { reason: '期初庫存', note: '品項管理建立時輸入',
@@ -505,7 +522,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         name, unit,
         b.safety_stock === undefined ? cur.safety_stock : Math.max(0, int(b.safety_stock)),
         b.price === undefined ? cur.price : Math.max(0, int(b.price)),
-        b.warehouse === undefined ? cur.warehouse : str(b.warehouse, 40),
+        warehouseNameOf(b, cur.warehouse),
         b.category === undefined ? cur.category : str(b.category, 40), cur.id);
       if (b.vendors !== undefined) saveItemVendors(cur.id, b.vendors);
     })();

@@ -54,9 +54,13 @@ function ensureWarehouseSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_transfer_items ON stock_transfer_items(transfer_id);
     CREATE INDEX IF NOT EXISTS idx_warehouses_co ON warehouses(company_id, active);
   `);
-  // 異動紀錄記下發生在哪個倉
+  // 異動紀錄記下發生在哪個倉，以及這筆讓「該倉」增減多少（盤點是設定值，差額才是增減）
   const cols = db.prepare('PRAGMA table_info(supply_txns)').all().map(c => c.name);
   if (!cols.includes('warehouse_id')) db.exec('ALTER TABLE supply_txns ADD COLUMN warehouse_id INTEGER REFERENCES warehouses(id)');
+  if (!cols.includes('wh_delta')) {
+    db.exec('ALTER TABLE supply_txns ADD COLUMN wh_delta INTEGER');
+    backfillWhDelta(db);
+  }
   // 商城商品綁到某個倉的某個品項（綁定後商城庫存就是那個倉的庫存，不再另記一份）
   const pCols = db.prepare('PRAGMA table_info(products)').all().map(c => c.name);
   if (!pCols.includes('supply_id')) {
@@ -94,6 +98,18 @@ function seedWarehouses(db) {
   db.prepare(`UPDATE supply_txns SET warehouse_id = (SELECT COALESCE(
       (SELECT ss.warehouse_id FROM supply_stocks ss WHERE ss.supply_id = supply_txns.supply_id LIMIT 1), ?))
     WHERE warehouse_id IS NULL`).run(mainOfDefault);
+}
+
+// 舊資料回填每筆異動對倉別的增減：進貨＋數量、領用－數量、盤點取結餘差額
+// （分倉是後來才有的，舊資料等同只有一個倉，balance_after 就是該倉數量）
+function backfillWhDelta(db) {
+  const upd = db.prepare('UPDATE supply_txns SET wh_delta = ? WHERE id = ?');
+  const prev = new Map();
+  for (const t of db.prepare('SELECT id, supply_id, txn_type, quantity, balance_after FROM supply_txns ORDER BY supply_id, id').all()) {
+    const before = prev.get(t.supply_id) || 0;
+    upd.run(t.txn_type === 'in' ? t.quantity : t.txn_type === 'out' ? -t.quantity : t.balance_after - before, t.id);
+    prev.set(t.supply_id, t.balance_after);
+  }
 }
 
 // 排序：同公司的總倉在前、它的小倉緊接在下面（下拉選單才看得出隸屬）

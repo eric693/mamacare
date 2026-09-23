@@ -6965,19 +6965,39 @@ async function supplyFlowPage(cfg) {
   $(`#${pfx}-go`).onclick = go;
   go();
   if (!canWrite) return;
-  const itemOpts = `<option value="">請選擇</option>${active.map(s =>
-    `<option value="${s.id}">${esc((s.code ? s.code + '｜' : '') + s.name)}（庫存 ${s.stock}${esc(s.unit || '')}）</option>`).join('')}`;
+  // 品項上百筆時下拉很難找：改成輸入框，打編號或名稱的任一段就會跳建議，選到才填 id
+  const supLabel = x => `${x.code ? x.code + '｜' : ''}${x.name}（庫存 ${x.stock}${x.unit || ''}）`;
+  const supByLabel = new Map();
+  for (const x of active) supByLabel.set(supByLabel.has(supLabel(x)) ? `${supLabel(x)} #${x.id}` : supLabel(x), x.id);
+  const supListId = `${pfx}-datalist`;
+  const supDatalist = `<datalist id="${supListId}">${[...supByLabel.keys()].map(l => `<option value="${esc(l)}"></option>`).join('')}</datalist>`;
+  const supPicker = attr => `<input list="${supListId}" data-pick ${attr} autocomplete="off" placeholder="輸入編號或名稱搜尋">`;
+  // 綁定：打字即比對，對不到就標紅；回傳目前選到的品項 id
+  const wireSupPicker = (scope, onPick) => {
+    const input = scope.querySelector('[data-pick]');
+    if (!input) return;
+    const sync = () => {
+      const id = supByLabel.get(input.value.trim()) || 0;
+      input.dataset.supplyId = id || '';
+      input.style.borderColor = (input.value.trim() && !id) ? 'var(--danger)' : '';
+      onPick && onPick(id);
+    };
+    input.oninput = sync; input.onchange = sync;
+  };
+  const pickedId = scope => Number((scope.querySelector('[data-pick]') || {}).dataset?.supplyId) || 0;
   // 入庫：單品項（無進貨廠商欄）；出庫：領取單位＋多品項＋領取用途
   const openIn = () => openModal(`${title} 資料新增`, `
-    <div class="field"><label>備品品項 <b class="req">*</b></label><select id="${pfx}-item">${itemOpts}</select></div>
+    ${supDatalist}
+    <div class="field"><label>備品品項 <b class="req">*</b></label>${supPicker(`id="${pfx}-item"`)}</div>
     ${whField(`${pfx}-wh`, '入庫倉庫')}
     <div class="field"><label>${qtyLabel} <b class="req">*</b></label><input type="number" min="1" id="${pfx}-qty"></div>
     <div class="field"><label>有效日期</label><input type="date" id="${pfx}-exp"></div>
     <div class="field"><label>備註</label><input id="${pfx}-note"></div>
     <div class="row mt"><button class="btn" id="${pfx}-save">存檔</button><span class="error-msg" id="${pfx}-err"></span></div>`, body => {
+    wireSupPicker(body);
     body.querySelector(`#${pfx}-save`).onclick = async () => {
-      const id = body.querySelector(`#${pfx}-item`).value, qty = body.querySelector(`#${pfx}-qty`).value;
-      if (!id) { body.querySelector(`#${pfx}-err`).textContent = '請選擇備品品項'; return; }
+      const id = pickedId(body), qty = body.querySelector(`#${pfx}-qty`).value;
+      if (!id) { body.querySelector(`#${pfx}-err`).textContent = '請從建議清單選一個備品品項'; return; }
       if (!(Number(qty) > 0)) { body.querySelector(`#${pfx}-err`).textContent = '請輸入正確數量'; return; }
       try {
         await api(`/supplies/${id}/txns`, { method: 'POST', body: { txn_type: 'in', quantity: qty,
@@ -6988,6 +7008,7 @@ async function supplyFlowPage(cfg) {
     };
   });
   const openOut = () => openModal(`${title} 資料新增`, `
+    ${supDatalist}
     <div class="field"><label>領取單位 <b class="req">*</b></label>
       <select id="${pfx}-dept"><option value="">請選擇</option>${SUPPLY_DEPTS.map(d => `<option>${d}</option>`).join('')}</select></div>
     ${whField(`${pfx}-wh`, '出庫倉庫')}
@@ -7005,13 +7026,14 @@ async function supplyFlowPage(cfg) {
       div.className = 'row';
       div.style.cssText = 'gap:8px;align-items:flex-end;margin-bottom:6px';
       div.innerHTML = `
-        <div class="field" style="flex:1;margin:0"><label>備品品項 <b class="req">*</b></label><select data-out-item>${itemOpts}</select></div>
+        <div class="field" style="flex:1;margin:0"><label>備品品項 <b class="req">*</b></label>${supPicker('data-out-item')}</div>
         <div class="field" style="max-width:110px;margin:0"><label>${qtyLabel} <b class="req">*</b></label><input type="number" min="1" data-out-qty></div>
         <button class="btn small danger" data-out-del title="移除">✕</button>`;
       div.querySelector('[data-out-del]').onclick = () => {
         if (rowsBox.children.length > 1) div.remove();
       };
       rowsBox.appendChild(div);
+      wireSupPicker(div);
     };
     addRow();
     body.querySelector(`#${pfx}-addrow`).onclick = addRow;
@@ -7025,10 +7047,10 @@ async function supplyFlowPage(cfg) {
       const dept = body.querySelector(`#${pfx}-dept`).value;
       if (!dept) { err.textContent = '請選擇領取單位'; return; }
       const items = [...rowsBox.children].map(div => ({
-        supply_id: Number(div.querySelector('[data-out-item]').value) || 0,
+        supply_id: pickedId(div),
         quantity: Number(div.querySelector('[data-out-qty]').value) || 0
       }));
-      if (items.some(it => !it.supply_id)) { err.textContent = '請選擇每一列的備品品項'; return; }
+      if (items.some(it => !it.supply_id)) { err.textContent = '每一列都要從建議清單選到備品品項'; return; }
       if (items.some(it => !(it.quantity > 0))) { err.textContent = '請輸入每一列的正確數量'; return; }
       if (!purposeSel.value) { err.textContent = '請選擇領取用途'; return; }
       try {

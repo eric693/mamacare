@@ -64,6 +64,35 @@
   }
   const returnedNote = (reason, by, at) => reason
     ? `<br><small style="color:var(--danger)">已退回修改${by ? '（' + esc(by) + '）' : ''}${at ? ' ' + esc(String(at).slice(0, 16)) : ''}：${esc(reason)}</small>` : '';
+  /* 兩層倉庫篩選：先選總倉（＝該總倉與底下小倉合併），再選要不要只看某一個小倉。
+     回傳目前選到的倉別 id 清單（空陣列＝全部倉庫合計）。 */
+  function whFilterHtml(st, idPrefix) {
+    const mains = (st.warehouses || []).filter(w => w.kind === 'main');
+    return `<div class="field"><label>倉庫別</label>
+        <select id="${idPrefix}-main"><option value="">全部倉庫（合計）</option>${mains.map(w =>
+          `<option value="${w.id}">${esc(w.name)}${multiCo(st) && w.company_name ? `（${esc(w.company_name)}）` : ''}</option>`).join('')}</select></div>
+      <div class="field" id="${idPrefix}-subbox" style="display:none"><label>小倉</label>
+        <select id="${idPrefix}-sub"></select></div>`;
+  }
+  function wireWhFilter(root, st, idPrefix, onChange) {
+    const mainSel = root.querySelector(`#${idPrefix}-main`);
+    const subBox = root.querySelector(`#${idPrefix}-subbox`);
+    const subSel = root.querySelector(`#${idPrefix}-sub`);
+    const subsOf = id => (st.warehouses || []).filter(w => w.kind === 'sub' && String(w.parent_id) === String(id));
+    mainSel.onchange = () => {
+      const subs = mainSel.value ? subsOf(mainSel.value) : [];
+      subBox.style.display = subs.length ? '' : 'none';
+      subSel.innerHTML = `<option value="">全部（總倉＋小倉合併）</option>
+        <option value="${mainSel.value}">只看總倉</option>${subs.map(w => `<option value="${w.id}">只看 ${esc(w.name)}</option>`).join('')}`;
+      onChange();
+    };
+    subSel.onchange = onChange;
+    return () => {
+      if (!mainSel.value) return [];
+      if (subSel.value) return [Number(subSel.value)];
+      return [Number(mainSel.value), ...subsOf(mainSel.value).map(w => w.id)];
+    };
+  }
   const whName = (st, id) => { const w = (st.warehouses || []).find(x => String(x.id) === String(id)); return w ? w.name : ''; };
 
   // 明細編輯需要較寬的對話框；關閉時還原，不影響其他頁面的對話框
@@ -183,9 +212,57 @@
   }
   const ymd = d => { const [y, m, dd] = String(d || '').split('-'); return y ? `${y} 年 ${m} 月 ${dd} 日` : '____ 年 __ 月 __ 日'; };
 
-  // 品項選單（含目前庫存）
-  const itemOptions = (items, sel) => items.map(i =>
-    `<option value="${i.id}" ${String(sel) === String(i.id) ? 'selected' : ''}>${esc(i.code ? i.code + ' ' : '')}${esc(i.name)}（庫存 ${i.stock} ${esc(i.unit)}）</option>`).join('');
+  /* ---------- 品項搜尋框 ----------
+     品項上百筆時下拉選單很難找，改成輸入框：打編號或名稱的任一段就會跳建議，
+     選到才會填進隱藏的 supply_id（欄位名沿用，其他程式不用改）。 */
+  const NEW_ITEM = '＋ 新品項（尚未建檔）';
+  const itemLabel = i => `${i.code ? i.code + '｜' : ''}${i.name}（庫存 ${i.stock} ${i.unit || ''}）`;
+  // 同名同編號時標上流水號，才對得回唯一的品項
+  function itemIndex(items) {
+    if (items._index) return items._index;
+    const byLabel = new Map(), labels = new Map();
+    for (const i of items) {
+      let l = itemLabel(i);
+      if (byLabel.has(l)) l = `${l} #${i.id}`;
+      byLabel.set(l, i.id);
+      labels.set(i.id, l);
+    }
+    Object.defineProperty(items, '_index', { value: { byLabel, labels }, enumerable: false });
+    return items._index;
+  }
+  let pickSeq = 0;
+  function itemPicker(items, sel, opt = {}) {
+    const { labels } = itemIndex(items);
+    const lid = 'ipk' + (++pickSeq);
+    const value = opt.isNew ? NEW_ITEM : (labels.get(Number(sel)) || '');
+    return `<input list="${lid}" data-pick value="${esc(value)}" autocomplete="off" style="min-width:${opt.width || 240}px"
+        placeholder="${esc(opt.placeholder || '輸入編號或名稱搜尋')}">
+      <datalist id="${lid}">${[...labels.values()].map(l => `<option value="${esc(l)}"></option>`).join('')}${
+        opt.newItem ? `<option value="${esc(NEW_ITEM)}"></option>` : ''}</datalist>
+      <input type="hidden" data-k="supply_id" value="${opt.isNew ? 'new' : (sel || '')}">`;
+  }
+  // 綁定：打字即比對，對不到就把欄位標紅（存檔時另外擋）
+  function wireItemPicker(scope, items, onPick) {
+    const input = scope.querySelector('[data-pick]');
+    const hidden = scope.querySelector('[data-k="supply_id"]');
+    if (!input || !hidden) return;
+    const { byLabel } = itemIndex(items);
+    const sync = () => {
+      const v = input.value.trim();
+      hidden.value = v === NEW_ITEM ? 'new' : (byLabel.get(v) || '');
+      input.style.borderColor = (v && !hidden.value) ? 'var(--danger)' : '';
+      onPick && onPick(hidden.value);
+    };
+    input.oninput = sync;
+    input.onchange = sync;
+    // 點進去清空，直接重打關鍵字就好；沒改就還原
+    input.onfocus = () => { input.dataset.prev = input.value; input.value = ''; };
+    input.onblur = () => { if (!input.value && input.dataset.prev) { input.value = input.dataset.prev; sync(); } };
+  }
+  // 存檔前檢查：打了字卻沒對到品項的列
+  const unpickedItems = root => [...root.querySelectorAll('[data-pick]')]
+    .filter(el => el.value.trim() && !(el.parentElement.querySelector('[data-k="supply_id"]') || {}).value)
+    .map(el => el.value.trim());
   const vendorOptions = (vendors, sel, blank = '-- 由採購決定 --') => `<option value="">${esc(blank)}</option>` + vendors.map(v =>
     `<option value="${v.id}" ${String(sel) === String(v.id) ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
   const defaultVendor = item => ((item && item.vendors) || []).find(v => v.is_default) || ((item && item.vendors) || [])[0];
@@ -295,7 +372,7 @@
       return `
       <tr data-line>
         <td data-label="品項">
-          <select data-k="supply_id" style="min-width:220px"><option value="">-- 選擇品項 --</option>${itemOptions(items, it.supply_id)}<option value="new" ${isNew ? 'selected' : ''}>＋ 新品項（尚未建檔）</option></select>
+          ${itemPicker(items, it.supply_id, { newItem: true, isNew, width: 220 })}
           <div data-newbox style="display:${isNew ? 'flex' : 'none'};gap:6px;margin-top:4px">
             <input data-k="item_name" placeholder="新品名" value="${esc(isNew ? it.item_name : '')}" style="flex:2">
             <input data-k="unit" placeholder="單位" value="${esc(isNew ? it.unit : '')}" style="flex:1;max-width:80px"></div>
@@ -324,13 +401,11 @@
         <span class="error-msg" id="prf-err"></span></div>
       <small style="color:var(--muted)">選擇品項會自動帶入該品項的預設廠商；尚未建檔的品項選「新品項」輸入品名與單位，驗貨入庫時自動建檔。</small>`, body => {
       const wireLine = tr => {
-        const sel = tr.querySelector('[data-k="supply_id"]');
-        sel.onchange = () => {
-          tr.querySelector('[data-newbox]').style.display = sel.value === 'new' ? 'flex' : 'none';
-          const item = items.find(i => String(i.id) === sel.value);
-          const dv = defaultVendor(item);
+        wireItemPicker(tr, items, id => {
+          tr.querySelector('[data-newbox]').style.display = id === 'new' ? 'flex' : 'none';
+          const dv = defaultVendor(items.find(i => String(i.id) === String(id)));
           if (dv) tr.querySelector('[data-k="suggested_vendor_id"]').value = dv.id;
-        };
+        });
         tr.querySelector('[data-del]').onclick = () => tr.remove();
       };
       body.querySelectorAll('[data-line]').forEach(tr => {
@@ -347,6 +422,8 @@
       body.querySelector('#prf-save').onclick = async () => {
         const err = body.querySelector('#prf-err');
         err.textContent = '';
+        const bad = unpickedItems(body);
+        if (bad.length) { err.textContent = `「${bad[0]}」不是清單中的品項，請從建議清單點選（或改用「＋ 新品項」）`; return; }
         const lineData = [...body.querySelectorAll('[data-line]')].map(tr => {
           const g = k => val(tr, `[data-k="${k}"]`);
           const sid = g('supply_id');
@@ -1142,7 +1219,7 @@
     const [{ rows: items }, st] = await Promise.all([api('/procurement/items'), procSettings()]);
     const unitOf = id => (items.find(i => String(i.id) === String(id)) || {}).unit || '';
     const lineHtml = (it = {}) => `<tr data-line>
-      <td data-label="品項"><select data-k="supply_id" style="min-width:240px"><option value="">-- 選擇品項 --</option>${itemOptions(items, it.supply_id)}</select></td>
+      <td data-label="品項">${itemPicker(items, it.supply_id)}</td>
       <td data-label="單位" data-unit>${esc(it.unit || unitOf(it.supply_id))}</td>
       <td data-label="數量"><input type="number" min="1" data-k="qty" value="${it.qty || 1}" style="max-width:90px"></td>
       <td><button class="btn small danger" data-del>刪</button></td></tr>`;
@@ -1163,12 +1240,13 @@
         <span class="error-msg" id="shf-err"></span></div>`, body => {
       const wire = tr => {
         tr.querySelector('[data-del]').onclick = () => tr.remove();
-        const sel = tr.querySelector('[data-k="supply_id"]');
-        sel.onchange = () => { tr.querySelector('[data-unit]').textContent = unitOf(sel.value); };
+        wireItemPicker(tr, items, id => { tr.querySelector('[data-unit]').textContent = unitOf(id); });
       };
       body.querySelectorAll('[data-line]').forEach(wire);
       body.querySelector('#shf-add').onclick = () => { body.querySelector('#shf-lines').insertAdjacentHTML('beforeend', lineHtml()); wire(body.querySelector('#shf-lines').lastElementChild); };
       body.querySelector('#shf-save').onclick = async () => {
+        const bad = unpickedItems(body);
+        if (bad.length) { body.querySelector('#shf-err').textContent = `「${bad[0]}」不是清單中的品項，請從建議清單點選`; return; }
         const lines = [...body.querySelectorAll('[data-line]')].map(tr => ({ supply_id: Number(val(tr, '[data-k="supply_id"]')), qty: Number(val(tr, '[data-k="qty"]')) })).filter(l => l.supply_id);
         const payload = { company_id: Number(val(body, '#shf-co')) || null, warehouse_id: Number(val(body, '#shf-wh')) || null,
           recipient: val(body, '#shf-to'), ship_date: val(body, '#shf-date'), note: val(body, '#shf-note'), items: lines };
@@ -1479,7 +1557,7 @@
       return hit ? hit.qty : 0;
     };
     const lineHtml = (it = {}) => `<tr data-line>
-      <td data-label="品項"><select data-k="supply_id" style="min-width:240px"><option value="">-- 選擇品項 --</option>${itemOptions(items, it.supply_id)}</select></td>
+      <td data-label="品項">${itemPicker(items, it.supply_id)}</td>
       <td data-label="調出倉現有" data-have>—</td>
       <td data-label="調撥數量"><input type="number" min="1" data-k="qty" value="${it.qty || 1}" style="max-width:90px"></td>
       <td><button class="btn small danger" data-del>刪</button></td></tr>`;
@@ -1508,7 +1586,7 @@
       };
       const wire = tr => {
         tr.querySelector('[data-del]').onclick = () => tr.remove();
-        tr.querySelector('[data-k="supply_id"]').onchange = refresh;
+        wireItemPicker(tr, items, refresh);
       };
       body.querySelectorAll('[data-line]').forEach(wire);
       body.querySelector('#tff-from').onchange = refresh;
@@ -1519,6 +1597,8 @@
       };
       refresh();
       const save = async confirmNow => {
+        const bad = unpickedItems(body);
+        if (bad.length) { body.querySelector('#tff-err').textContent = `「${bad[0]}」不是清單中的品項，請從建議清單點選`; return; }
         const lines = [...body.querySelectorAll('[data-line]')]
           .map(tr => ({ supply_id: Number(val(tr, '[data-k="supply_id"]')), qty: Number(val(tr, '[data-k="qty"]')) }))
           .filter(l => l.supply_id);
@@ -1551,11 +1631,12 @@
   /* ================= 品項管理 ================= */
   async function viewProcItems() {
     const editable = can('master_write');
-    const vendors = await api('/procurement/vendors');
+    const [vendors, st] = await Promise.all([api('/procurement/vendors'), procSettings(true)]);
     main().innerHTML = `
       <div class="page-title">品項管理</div>
       <div class="card no-print"><div class="form-grid">
         <div class="field"><label>關鍵字</label><input id="it-q" placeholder="品項編號／名稱"></div>
+        ${whFilterHtml(st, 'it-wh')}
         <div class="field"><label>供應廠商</label><select id="it-vendor"><option value="">全部廠商</option>${vendors.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</select></div>
         <div class="field"><label>&nbsp;</label><div class="row" style="gap:8px">${editable ? '<button class="btn" id="it-new">新增品項</button>' : ''}
           <a class="btn small secondary" href="#/supply-items">備品名稱設定</a></div></div>
@@ -1565,31 +1646,39 @@
         <tbody id="it-body"></tbody></table></div>
         <small style="color:var(--muted)">品項即系統的「備品」，在這裡另外維護倉庫別與供應廠商（預設廠商會在請購時自動帶入）。</small></div>`;
     let rows = [];
+    let whIds = () => [];
     const load = async () => {
       const p = new URLSearchParams();
       if ($('#it-q').value.trim()) p.set('q', $('#it-q').value.trim());
       if ($('#it-vendor').value) p.set('vendor_id', $('#it-vendor').value);
+      const ids = whIds();
+      if (ids.length) p.set('warehouse_ids', ids.join(','));
       rows = (await api('/procurement/items?' + p)).rows;
       $('#it-body').innerHTML = rows.map(r => `<tr>
         <td data-label="品項編號">${esc(r.code || '—')}</td><td data-label="品項名稱">${esc(r.name)}</td>
-        <td data-label="倉庫別">${esc(r.warehouse || '—')}</td><td data-label="單位">${esc(r.unit)}</td>
+        <td data-label="倉庫別">${esc(r.warehouse || '—')}${ids.length ? `<br><small style="color:var(--muted)">所選倉庫存 ${r.wh_qty}</small>` : ''}</td><td data-label="單位">${esc(r.unit)}</td>
         <td data-label="安全庫存">${r.safety_stock}</td><td data-label="參考單價">${r.price ? money(r.price) : '—'}</td>
         <td data-label="供應廠商">${r.vendors.map(v => `<span class="badge ${v.is_default ? 'teal' : 'gray'}">${esc(v.name)}${v.is_default ? '（預設）' : ''}</span>`).join(' ') || '<span style="color:var(--muted)">未設定</span>'}
           ${r.po_count ? `<br><small style="color:var(--muted)">採購 ${r.po_count} 次</small>` : ''}</td>
         <td data-label="操作" class="no-print">${editable ? `<button class="btn small secondary" data-edit="${r.id}">編輯</button>` : ''}
           <button class="btn small secondary" data-hist="${r.id}">歷史</button></td></tr>`).join('') || '<tr><td colspan="8"><div class="empty">查無品項</div></td></tr>';
-      main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openItemForm(rows.find(r => String(r.id) === b.dataset.edit), vendors, load));
+      main().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openItemForm(rows.find(r => String(r.id) === b.dataset.edit), vendors, load, st));
       main().querySelectorAll('[data-hist]').forEach(b => b.onclick = () => showItemHistory(b.dataset.hist));
     };
     const nb = main().querySelector('#it-new');
-    if (nb) nb.onclick = () => openItemForm(null, vendors, load);
+    if (nb) nb.onclick = () => openItemForm(null, vendors, load, st);
+    whIds = wireWhFilter(main(), st, 'it-wh', () => load());
     $('#it-vendor').onchange = load;
     $('#it-q').oninput = () => { clearTimeout(load._t); load._t = setTimeout(load, 300); };
     load();
   }
 
-  function openItemForm(it, vendors, done) {
+  function openItemForm(it, vendors, done, st) {
     const linked = new Map(((it && it.vendors) || []).map(v => [v.id, v.is_default]));
+    const whs = (st && st.warehouses) || [];
+    const curWh = whs.find(w => w.name === (it && it.warehouse));
+    // 舊資料的倉庫別若不在倉庫主檔裡，保留成一個選項，避免一存檔就被清掉
+    const legacy = it && it.warehouse && !curWh ? it.warehouse : '';
     openWide(it ? `編輯品項 — ${it.name}` : '新增品項', `
       <div class="form-grid">
         <div class="field"><label>品項編號</label><input id="itf-code" value="${esc(it ? it.code || '' : '')}" ${it ? 'disabled' : ''} placeholder="例：P001"></div>
@@ -1597,7 +1686,11 @@
         <div class="field"><label>單位 <b class="req">*</b></label><input id="itf-unit" value="${esc(it ? it.unit : '')}" placeholder="包、箱、個"></div>
         <div class="field"><label>安全庫存</label><input type="number" min="0" id="itf-safe" value="${it ? it.safety_stock : 5}"></div>
         <div class="field"><label>參考單價（未稅）</label><input type="number" min="0" id="itf-price" value="${it ? it.price : 0}"></div>
-        <div class="field"><label>倉庫別</label><input id="itf-wh" value="${esc(it ? it.warehouse || '' : '')}" placeholder="例：A倉、護理站、冷藏庫"></div>
+        <div class="field"><label>倉庫別<small>（＝倉庫管理的倉庫；新增品項時初始庫存就放這個倉）</small></label>
+          <select id="itf-wh"><option value="">未指定</option>${whs.map(w =>
+            `<option value="${w.id}" ${curWh && curWh.id === w.id ? 'selected' : ''}>${esc(w.kind === 'sub' ? '　└ ' + w.name : w.name)}${
+              w.company_name ? `（${esc(w.company_name)}）` : ''}</option>`).join('')}${
+            legacy ? `<option value="legacy" selected>${esc(legacy)}（舊資料，請改選上面的倉庫）</option>` : ''}</select></div>
         ${it ? '' : '<div class="field"><label>初始庫存數量</label><input type="number" min="0" id="itf-init" value="0"></div>'}
       </div>
       <div class="sec-hd" style="margin-top:10px">供應廠商 <small style="font-weight:400;color:var(--muted)">可勾選多家，指定一家為預設（請購時自動帶入）</small></div>
@@ -1610,9 +1703,12 @@
       body.querySelector('#itf-save').onclick = async () => {
         const def = (body.querySelector('input[name="itf-def"]:checked') || {}).value;
         const vlist = [...body.querySelectorAll('[data-v]:checked')].map(c => ({ vendor_id: Number(c.dataset.v), is_default: c.dataset.v === def }));
+        const wh = val(body, '#itf-wh');
         const payload = { code: val(body, '#itf-code'), name: val(body, '#itf-name'), unit: val(body, '#itf-unit'),
-          safety_stock: val(body, '#itf-safe'), price: val(body, '#itf-price'), warehouse: val(body, '#itf-wh'),
+          safety_stock: val(body, '#itf-safe'), price: val(body, '#itf-price'),
           initial_stock: val(body, '#itf-init'), vendors: vlist };
+        // 選了倉庫就以那個倉的名稱為準（新增時初始庫存也進這個倉）；選「舊資料」就不動原本的倉庫別
+        if (wh !== 'legacy') payload.warehouse_id = wh ? Number(wh) : 0;
         try {
           if (it) await api('/procurement/items/' + it.id, { method: 'PUT', body: payload });
           else await api('/procurement/items', { method: 'POST', body: payload });
@@ -1875,9 +1971,9 @@
     receipts: { label: '進貨明細', api: 'receipts' },
     payables: { label: '廠商請款明細', api: 'payables' }
   };
-  const NUM_KEYS = new Set(['unit_price', 'open_qty', 'open_amt', 'in_qty', 'in_amt', 'out_qty', 'out_amt', 'adj_qty', 'adj_amt',
-    'end_qty', 'end_amt', 'qty', 'amount', 'tax', 'total']);
-  const MONEY_KEYS = new Set(['unit_price', 'open_amt', 'in_amt', 'out_amt', 'adj_amt', 'end_amt', 'amount', 'tax', 'total']);
+  const NUM_KEYS = new Set(['unit_price', 'price', 'open_qty', 'open_amt', 'in_qty', 'in_amt', 'out_qty', 'out_amt', 'adj_qty', 'adj_amt',
+    'trf_in', 'trf_out', 'end_qty', 'end_amt', 'qty', 'amount', 'tax', 'total']);
+  const MONEY_KEYS = new Set(['unit_price', 'price', 'open_amt', 'in_amt', 'out_amt', 'adj_amt', 'end_amt', 'amount', 'tax', 'total']);
   const cell = (k, v) => MONEY_KEYS.has(k) ? money(v) : NUM_KEYS.has(k) ? Number(v || 0).toLocaleString('en-US') : esc(v === null || v === undefined ? '' : v);
 
   async function viewProcReports() {
@@ -1893,7 +1989,11 @@
     const filters = {
       inventory: `<div class="field"><label>年月（yyyymm）</label><input type="month" id="rp-month" value="${ym}"></div>
         <div class="field"><label>品項</label>${itemSel}</div><div class="field"><label>廠商</label>${vendorSel}</div>
-        <div class="field"><label>關鍵字</label><input id="rp-q" placeholder="品名／編號／批次"></div>`,
+        <div class="field"><label>關鍵字</label><input id="rp-q" placeholder="品名／編號／批次"></div>
+        <div class="field full"><label>倉庫<small>（不勾＝全部倉庫合計、依批次列示；勾兩個以上就是合併這幾個倉）</small></label>
+          <div class="row" style="gap:12px;flex-wrap:wrap;padding-top:4px">${(st.warehouses || []).map(w =>
+            `<label class="bna-chk"><input type="checkbox" data-rp-wh="${w.id}"> ${esc(w.kind === 'sub' ? '└ ' + w.name : w.name)}${
+              multiCo(st) && w.company_name ? `（${esc(w.company_name)}）` : ''}</label>`).join('')}</div></div>`,
       shipments: `${dates}<div class="field"><label>客戶／部門</label><input id="rp-recipient" list="rp-recipients" placeholder="全部"><datalist id="rp-recipients"></datalist></div>
         <div class="field"><label>品項</label>${itemSel}</div>${coSel}`,
       receipts: `${dates}<div class="field"><label>品項</label>${itemSel}</div><div class="field"><label>廠商</label>${vendorSel}</div>${coSel}`,
@@ -1912,7 +2012,9 @@
             <button class="btn small secondary" id="rp-xlsx">匯出 Excel</button>
             <button class="btn small secondary" id="rp-print">列印</button></div></div>
         </div>
-        ${kind === 'inventory' ? '<small style="color:var(--muted)">依批次列示：同一品項、同一廠商、同一單價為一批（價格沒變不另開批次，批號 yyyymm01 起）；出貨從單價最低的批次先扣。盤點盤盈盤虧另列「盤點調整」，期初＋進貨−出貨±調整＝期末。</small>' : ''}
+        ${kind === 'inventory' ? `<small style="color:var(--muted)">全部品項都會列出，當月沒有進出、庫存 0 的也列。<br>
+          不勾倉庫：依批次列示（同品項＋同廠商＋同單價為一批，批號 yyyymm01 起；出貨從單價最低的批次先扣），金額為批次成本。<br>
+          勾倉庫：改依品項列這些倉的數量（多勾就是合併），另有「調撥入／出」欄，金額以參考單價估算。期初＋進貨−出貨±調整±調撥＝期末。</small>` : ''}
         ${kind === 'shipments' ? '<small style="color:var(--muted)">出貨金額為實際扣到的批次成本（未稅）。</small>' : ''}
         ${kind === 'payables' ? '<small style="color:var(--muted)">不含已合併／已取消的請款單；稅額依品項金額分攤，合計等於請款單。</small>' : ''}
       </div>
@@ -1920,7 +2022,12 @@
     const qs = () => {
       const p = new URLSearchParams();
       const g = id => { const el = main().querySelector(id); return el ? el.value.trim() : ''; };
-      if (kind === 'inventory') { if (g('#rp-month')) p.set('month', g('#rp-month').replace('-', '')); if (g('#rp-q')) p.set('q', g('#rp-q')); }
+      if (kind === 'inventory') {
+        if (g('#rp-month')) p.set('month', g('#rp-month').replace('-', ''));
+        if (g('#rp-q')) p.set('q', g('#rp-q'));
+        const whs = [...main().querySelectorAll('[data-rp-wh]:checked')].map(c => c.dataset.rpWh);
+        if (whs.length) p.set('warehouse_ids', whs.join(','));
+      }
       else { p.set('from', g('#rp-from')); p.set('to', g('#rp-to')); }
       if (g('#rp-item')) p.set('supply_id', g('#rp-item'));
       if (g('#rp-vendor')) p.set('vendor_id', g('#rp-vendor'));

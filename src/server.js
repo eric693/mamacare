@@ -4688,9 +4688,9 @@ app.post('/api/orders/:id/confirm', requireStaff, (req, res) => {
               const have = WH.warehouseQty(db, prod.supply_id, prod.warehouse_id);
               if (have < it.quantity) throw new Error(`「${prod.name}」庫存不足（倉內剩 ${have}）`);
               const balance = WH.addWarehouseQty(db, prod.supply_id, prod.warehouse_id, -it.quantity);
-              db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, dept, purpose, warehouse_id, ref_type, ref_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(prod.supply_id, 'out', it.quantity, balance,
-                `商城訂單 #${o.id}`, '', req.session.user.id, '客服', '販售', prod.warehouse_id, 'order', o.id);
+              db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, dept, purpose, warehouse_id, ref_type, ref_id, wh_delta)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(prod.supply_id, 'out', it.quantity, balance,
+                `商城訂單 #${o.id}`, '', req.session.user.id, '客服', '販售', prod.warehouse_id, 'order', o.id, -it.quantity);
             } else {
               db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?').run(it.quantity, prod.id);
             }
@@ -4983,10 +4983,12 @@ app.post('/api/supplies/:id/txns', requireStaff, (req, res) => {
   const tx = db.transaction(() => {
     balance = t.txn_type === 'adjust' ? WH.setWarehouseQty(db, cur.id, whId, qty)
       : WH.addWarehouseQty(db, cur.id, whId, t.txn_type === 'in' ? qty : -qty);
-    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, area, expiry_date, warehouse_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, t.txn_type, delta, balance, t.reason || '', t.note || '', req.session.user.id,
+    // 這筆讓該倉增減多少：盤點是「設成實際數量」，差額才是增減
+    const whDelta = t.txn_type === 'in' ? qty : t.txn_type === 'out' ? -qty : qty - whHave;
+    db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, reason, note, created_by, vendor, area, expiry_date, warehouse_id, wh_delta)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(cur.id, t.txn_type, delta, balance, t.reason || '', t.note || '', req.session.user.id,
       String(t.vendor || '').slice(0, 60), String(t.area || '').slice(0, 60),
-      /^\d{4}-\d{2}-\d{2}$/.test(t.expiry_date || '') ? t.expiry_date : '', whId);
+      /^\d{4}-\d{2}-\d{2}$/.test(t.expiry_date || '') ? t.expiry_date : '', whId, whDelta);
   });
   tx();
   res.json({ ok: true, stock: balance });
@@ -5051,8 +5053,8 @@ app.post('/api/supply-txns/out-batch', requireStaff, (req, res) => {
         continue;
       }
       const balance = WH.addWarehouseQty(db, cur.id, whId, -qty);
-      db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, note, created_by, dept, purpose, warehouse_id)
-        VALUES (?,?,?,?,?,?,?,?,?)`).run(cur.id, 'out', qty, balance, note, req.session.user.id, b.dept, b.purpose, whId);
+      db.prepare(`INSERT INTO supply_txns (supply_id, txn_type, quantity, balance_after, note, created_by, dept, purpose, warehouse_id, wh_delta)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(cur.id, 'out', qty, balance, note, req.session.user.id, b.dept, b.purpose, whId, -qty);
       if (p) db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?').run(qty, p.id); // 未綁倉的商城商品：沿用舊的匯入方式
     }
   });
