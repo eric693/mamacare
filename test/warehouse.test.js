@@ -437,3 +437,15 @@ test('驗貨入庫的倉庫預設跟著品項的倉庫別，不是系統預設�
     items: [{ po_item_id: pod3.items[0].id, received_qty: 2 }] });
   assert.strictEqual(gr3.warehouse_id, mainWh);
 });
+
+test('倉庫改名時，品項的倉庫別一起更新，不會變成對不到的舊名稱', async () => {
+  const w = (await ok('POST', '/api/procurement/warehouses', { code: 'RN01', name: '改名前倉', kind: 'sub', parent_id: mainWh })).id;
+  const it = (await ok('POST', '/api/procurement/items', { code: 'RN001', name: '改名測試品', unit: '個', warehouse_id: w })).id;
+  const before = (await ok('GET', '/api/procurement/items?q=改名測試品')).rows.find(x => x.id === it);
+  assert.strictEqual(before.warehouse, '改名前倉');
+  await ok('PUT', `/api/procurement/warehouses/${w}`, { name: '改名後倉', kind: 'sub', parent_id: mainWh });
+  const after = (await ok('GET', '/api/procurement/items?q=改名測試品')).rows.find(x => x.id === it);
+  assert.strictEqual(after.warehouse, '改名後倉', '品項的倉庫別跟著改名');
+  // 還能依這個倉篩選得到
+  assert.ok((await ok('GET', `/api/procurement/items?warehouse_ids=${w}`)).rows.some(x => x.id === it));
+});

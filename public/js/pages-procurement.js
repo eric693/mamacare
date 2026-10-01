@@ -1669,7 +1669,9 @@
       rows = (await api('/procurement/items?' + p)).rows;
       $('#it-body').innerHTML = rows.map(r => `<tr>
         <td data-label="品項編號">${esc(r.code || '—')}</td><td data-label="品項名稱">${esc(r.name)}</td>
-        <td data-label="倉庫別">${esc(r.warehouse || '—')}${ids.length ? `<br><small style="color:var(--muted)">所選倉庫存 ${r.wh_qty}</small>` : ''}</td><td data-label="單位">${esc(r.unit)}</td>
+        <td data-label="倉庫別">${esc(r.warehouse || '—')}${r.warehouse && !(st.warehouses || []).some(w => w.name === r.warehouse)
+            ? '<br><small style="color:var(--danger)">這個倉庫別不在倉庫管理裡，請編輯重選</small>' : ''}${
+          ids.length ? `<br><small style="color:var(--muted)">所選倉庫存 ${r.wh_qty}</small>` : ''}</td><td data-label="單位">${esc(r.unit)}</td>
         <td data-label="安全庫存">${r.safety_stock}</td><td data-label="參考單價">${r.price ? money(r.price) : '—'}</td>
         <td data-label="供應廠商">${r.vendors.map(v => `<span class="badge ${v.is_default ? 'teal' : 'gray'}">${esc(v.name)}${v.is_default ? '（預設）' : ''}</span>`).join(' ') || '<span style="color:var(--muted)">未設定</span>'}
           ${r.po_count ? `<br><small style="color:var(--muted)">採購 ${r.po_count} 次</small>` : ''}</td>

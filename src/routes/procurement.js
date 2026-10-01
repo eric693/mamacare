@@ -1607,6 +1607,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (cur.kind === 'main' && n.kind === 'sub' && db.prepare('SELECT 1 FROM warehouses WHERE parent_id = ? LIMIT 1').get(cur.id)) {
       throw httpErr('這個總倉底下還有小倉，不能改成小倉');
     }
+    // 倉庫改名：品項的倉庫別存的是倉名，一起改過去才不會對不到
+    if (n.name !== cur.name) db.prepare('UPDATE supplies SET warehouse = ? WHERE warehouse = ?').run(n.name, cur.name);
     db.prepare(`UPDATE warehouses SET company_id=?, code=?, name=?, kind=?, parent_id=?, is_default=?, active=?, sort_order=?, note=? WHERE id=?`)
       .run(n.company_id, b.code === undefined ? cur.code : str(b.code, 20), n.name, n.kind, n.parent,
         b.is_default ? 1 : 0, active, b.sort_order === undefined ? cur.sort_order : int(b.sort_order),
