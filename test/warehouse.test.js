@@ -343,3 +343,50 @@ test('庫存總覽金額用實際進貨成本，不是品項主檔的參考單�
   const never = (await ok('GET', '/api/procurement/items?with_cost=1')).rows.find(x => x.name === '沒進出過的品項');
   assert.strictEqual(never.cost_source, 'price');
 });
+
+test('單據日期只有管理員能改；其他人一律當天', async () => {
+  const back = D(-10);
+  // 管理員：可以補登日期
+  const prA = await ok('POST', '/api/procurement/requests', { requester: '王主任', req_date: back, items: [{ supply_id: item, qty: 1 }] });
+  assert.strictEqual((await ok('GET', `/api/procurement/requests/${prA.id}`)).req_date, back);
+  // 一般請購人員：日期被強制成今天（送什麼都一樣）
+  await ok('POST', '/api/users', { username: 'u_req2', password: 'pass12345', name: 'u_req2', role: 'nurse',
+    permissions: ['proc_request'], modules: ['proc_request'] });
+  cookie = '';
+  await req('POST', '/api/login', { username: 'u_req2', password: 'pass12345' });
+  const prB = await ok('POST', '/api/procurement/requests', { requester: '請購員', req_date: back, items: [{ supply_id: item, qty: 1 }] });
+  assert.strictEqual((await ok('GET', `/api/procurement/requests/${prB.id}`)).req_date, D(0));
+  await ok('PUT', `/api/procurement/requests/${prB.id}`, { req_date: back, purpose: '改一下' });
+  assert.strictEqual((await ok('GET', `/api/procurement/requests/${prB.id}`)).req_date, D(0));
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 管理員改日期可以
+  await ok('PUT', `/api/procurement/requests/${prB.id}`, { req_date: back });
+  assert.strictEqual((await ok('GET', `/api/procurement/requests/${prB.id}`)).req_date, back);
+});
+
+test('廠商價格表的未建檔品項可一鍵建檔，並自動設為該品項的供應廠商', async () => {
+  const v = (await ok('POST', '/api/procurement/vendors', { name: '一太衛浴',
+    items: [{ item_name: '水龍頭五金', unit: '組', unit_price: 3100 }, { item_name: '衛浴維修一式', unit: '式', unit_price: 1 }] })).id;
+  const before = await ok('GET', `/api/procurement/vendors/${v}`);
+  assert.strictEqual(before.price_list.length, 2);
+  assert.ok(before.price_list.every(i => !i.supply_id), '剛鍵入時都還沒建檔');
+  const vi = before.price_list.find(i => i.item_name === '水龍頭五金');
+  const made = await ok('POST', `/api/procurement/vendor-items/${vi.id}/create-supply`, {
+    code: 'FAU01', unit: '組', safety_stock: 2, price: 3100, warehouse_id: mainWh });
+  assert.strictEqual(made.reused, false);
+  const after = await ok('GET', `/api/procurement/vendors/${v}`);
+  assert.strictEqual(after.price_list.find(i => i.item_name === '水龍頭五金').supply_id, made.id);
+  assert.ok(after.items.some(i => i.id === made.id && i.is_default), '這家廠商成為該品項的預設供應廠商');
+  const it2 = (await ok('GET', '/api/procurement/items?q=水龍頭')).rows.find(x => x.id === made.id);
+  assert.strictEqual(it2.code, 'FAU01');
+  assert.strictEqual(it2.unit, '組');
+  assert.strictEqual(it2.warehouse, (await ok('GET', '/api/procurement/warehouses')).rows.find(w => w.id === mainWh).name);
+  // 已建檔的不能再建一次；同名品項會接上既有的而不是重複開
+  assert.strictEqual((await req('POST', `/api/procurement/vendor-items/${vi.id}/create-supply`, { unit: '組' })).status, 400);
+  const v2 = (await ok('POST', '/api/procurement/vendors', { name: '另一家水電行', items: [{ item_name: '水龍頭五金', unit: '組', unit_price: 2900 }] })).id;
+  const vi2 = (await ok('GET', `/api/procurement/vendors/${v2}`)).price_list[0];
+  const again = await ok('POST', `/api/procurement/vendor-items/${vi2.id}/create-supply`, { unit: '組' });
+  assert.strictEqual(again.reused, true);
+  assert.strictEqual(again.id, made.id);
+});

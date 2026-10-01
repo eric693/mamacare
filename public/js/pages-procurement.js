@@ -34,7 +34,7 @@
     ship_write: R('ship', 'admin'), master_write: R('buyer', 'admin'), settings_write: R('admin'), reports: R('finance', 'admin'),
     // 金額：驗貨人員只核對品項與數量，入庫紀錄的金額欄不對他們顯示
     amounts: R('buyer', 'account', 'finance', 'admin'),
-    returns: R('admin')
+    returns: R('admin'), backdate: R('admin')
   };
   const can = perm => currentUser && (currentUser.role === 'admin' || (PERMS[perm] || []).some(k => (currentUser.modules || []).includes(k)));
   const val = (root, sel) => { const el = root.querySelector(sel); return el ? el.value.trim() : ''; };
@@ -55,6 +55,10 @@
     return `<select id="${id}" ${opt.attrs || ''}>${blank}${list.map(w =>
       `<option value="${w.id}" ${String(pick) === String(w.id) ? 'selected' : ''}>${esc(whLabel(w, st))}</option>`).join('')}</select>`;
   }
+  // 單據日期：只有管理員能改（補單用），其他人固定當天
+  const docDateField = (label, id, value) => `<div class="field"><label>${label}</label>
+    <input type="date" id="${id}" value="${esc(value || todayStr())}" ${can('backdate') ? '' : 'disabled title="單據日期固定為當天，需要補登請找管理員"'}>
+    ${can('backdate') ? '' : '<small style="color:var(--muted)">固定為當天</small>'}</div>`;
   // 退回修改（管理員）：問原因後呼叫各單據的 /return
   async function askReturn(url, what, done) {
     const reason = prompt(`退回修改「${what}」的原因（會顯示給經辦人員）：`, '');
@@ -387,7 +391,7 @@
       <div class="form-grid">
         <div class="field"><label>採購公司 <b class="req">*</b></label>${companySelect(st, pr && pr.company_id, 'prf-co')}</div>
         <div class="field"><label>申請人 <b class="req">*</b></label><input id="prf-req" value="${esc(pr ? pr.requester : currentUser.name)}"></div>
-        <div class="field"><label>請購日期</label><input type="date" id="prf-date" value="${esc(pr ? pr.req_date : todayStr())}"></div>
+        ${docDateField('請購日期', 'prf-date', pr ? pr.req_date : '')}
         <div class="field"><label>件別</label><select id="prf-urgent"><option value="0">一般件</option><option value="1" ${pr && pr.urgent ? 'selected' : ''}>急件</option></select></div>
         <div class="field"><label>預算金額</label><input type="number" min="0" id="prf-budget" value="${pr && pr.budget ? pr.budget : ''}"></div>
         <div class="field full"><label>用途說明</label><input id="prf-purpose" maxlength="500" value="${esc(pr ? pr.purpose : '')}"></div>
@@ -892,7 +896,7 @@
       <div style="background:var(--primary-light);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:.9rem">
         廠商：<strong>${esc(o.vendor_name)}</strong>　預計到貨：${esc(o.eta || '—')}${o.receipts.length ? `　已收 ${o.receipts.length} 批` : ''}</div>
       <div class="form-grid">
-        <div class="field"><label>驗貨日期</label><input type="date" id="rc-date" value="${todayStr()}"></div>
+        ${docDateField('驗貨日期', 'rc-date', '')}
         <div class="field"><label>驗貨人員 <b class="req">*</b></label><input id="rc-insp" value="${esc(currentUser.name)}"></div>
         <div class="field"><label>入庫倉庫 <b class="req">*</b></label>${warehouseSelect(st, o.warehouse_id, 'rc-wh')}</div>
         <div class="field"><label>發票號碼<small>（本批）</small></label><input id="rc-inv" maxlength="30" placeholder="廠商發票號碼"></div>
@@ -1227,7 +1231,7 @@
       <div class="form-grid">
         ${multiCo(st) ? `<div class="field"><label>公司</label>${companySelect(st, s && s.company_id, 'shf-co')}</div>` : ''}
         <div class="field"><label>客戶／部門 <b class="req">*</b></label><input id="shf-to" value="${esc(s ? s.recipient : '')}" placeholder="客戶或內部部門"></div>
-        <div class="field"><label>出貨日期</label><input type="date" id="shf-date" value="${esc(s ? s.ship_date : todayStr())}"></div>
+        ${docDateField('出貨日期', 'shf-date', s ? s.ship_date : '')}
         <div class="field"><label>出貨倉庫 <b class="req">*</b></label>${warehouseSelect(st, s && s.warehouse_id, 'shf-wh')}</div>
         <div class="field full"><label>備註</label><input id="shf-note" value="${esc(s ? s.note : '')}"></div>
       </div>
@@ -1569,7 +1573,7 @@
       <td><button class="btn small danger" data-del>刪</button></td></tr>`;
     openWide(t ? `修改調撥單 ${t.no}` : '新增調撥單', `
       <div class="form-grid">
-        <div class="field"><label>調撥日期</label><input type="date" id="tff-date" value="${esc(t ? t.transfer_date : todayStr())}"></div>
+        ${docDateField('調撥日期', 'tff-date', t ? t.transfer_date : '')}
         <div class="field"><label>調出倉 <b class="req">*</b></label>${warehouseSelect(st, t && t.from_warehouse_id, 'tff-from')}</div>
         <div class="field"><label>調入倉 <b class="req">*</b></label>${warehouseSelect(st, t && t.to_warehouse_id, 'tff-to', { noDefault: true, blank: '-- 請選擇 --' })}</div>
         <div class="field"><label>事由</label><input id="tff-reason" maxlength="100" value="${esc(t ? t.reason : '')}" placeholder="例如 補商城小倉庫存"></div>
@@ -1867,11 +1871,14 @@
           <br><strong>應付帳款</strong><br>待付款 ${d.payables.unpaid_count || 0} 張：<strong style="color:var(--danger)">${money(d.payables.unpaid)}</strong>　已付款累計：${money(d.payables.paid)}</div>
       </div>
       <div class="sec-hd">供貨品項及未稅價格（${(d.price_list || []).length} 項）</div>
-      <table class="data"><thead><tr><th>品項</th><th>單位</th><th>未稅單價</th><th>來源</th><th>日期</th><th>備註</th></tr></thead>
+      <table class="data"><thead><tr><th>品項</th><th>單位</th><th>未稅單價</th><th>來源</th><th>日期</th><th>備註</th><th class="no-print"></th></tr></thead>
         <tbody>${(d.price_list || []).map(i => `<tr><td>${esc(i.supply_code ? i.supply_code + ' ' : '')}${esc(i.item_name)}${i.supply_id ? '' : ' <span class="badge gray">未建檔</span>'}</td>
           <td>${esc(i.unit || '')}</td><td>${money(i.unit_price)}</td><td>${esc(SRC[i.source] || i.source)}</td>
-          <td>${esc(i.price_date || '')}</td><td>${esc(i.note || '')}</td></tr>`).join('')
-          || '<tr><td colspan="6"><div class="empty">尚未登錄供貨品項，可在「編輯」中新增</div></td></tr>'}</tbody></table>
+          <td>${esc(i.price_date || '')}</td><td>${esc(i.note || '')}</td>
+          <td class="no-print">${!i.supply_id && can('master_write')
+            ? `<button class="btn small" data-mk="${i.id}" data-name="${esc(i.item_name)}" data-unit="${esc(i.unit || '')}" data-price="${i.unit_price}">建檔為品項</button>` : ''}</td></tr>`).join('')
+          || '<tr><td colspan="7"><div class="empty">尚未登錄供貨品項，可在「編輯」中新增</div></td></tr>'}</tbody></table>
+      ${(d.price_list || []).some(i => !i.supply_id) ? `<small style="color:var(--muted)">標「未建檔」的品項還不在品項管理裡，不能請購；按「建檔為品項」就會建進品項管理，並自動把這家廠商設為它的供應廠商。</small>` : ''}
       <div class="sec-hd" style="margin-top:8px">設為供應廠商的品項（品項管理）</div>
       <div style="margin-bottom:8px">${d.items.map(i => `<span class="badge ${i.is_default ? 'teal' : 'gray'}">${esc(i.name)}${i.is_default ? '（預設）' : ''}</span>`).join(' ') || '<span style="color:var(--muted)">尚未有品項設定此廠商</span>'}</div>
       <div class="sec-hd">歷史進貨統計</div>
@@ -1887,7 +1894,36 @@
           || '<tr><td colspan="6"><div class="empty">尚無報價紀錄</div></td></tr>'}</tbody></table>
       <div class="sec-hd" style="margin-top:8px">請款紀錄（最新 10 筆）</div>
       <table class="data"><thead><tr><th>請款單號</th><th>發票</th><th>含稅金額</th><th>到期日</th><th>狀態</th></tr></thead>
-        <tbody>${d.payments.map(p => `<tr><td>${esc(p.no)}</td><td>${esc(p.invoice_no || '—')}</td><td>${money(p.total_amount)}</td><td>${esc(p.pay_due_date || '—')}</td><td>${badge(PAY_ST, p.status)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">尚無請款單</div></td></tr>'}</tbody></table>`);
+        <tbody>${d.payments.map(p => `<tr><td>${esc(p.no)}</td><td>${esc(p.invoice_no || '—')}</td><td>${money(p.total_amount)}</td><td>${esc(p.pay_due_date || '—')}</td><td>${badge(PAY_ST, p.status)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">尚無請款單</div></td></tr>'}</tbody></table>`,
+      body => body.querySelectorAll('[data-mk]').forEach(b => b.onclick = () => openMakeSupply(b.dataset, () => showVendor(id))));
+  }
+
+  // 廠商價格表的「未建檔」品項 → 建進品項管理（同名品項已存在就直接接上）
+  async function openMakeSupply(ds, done) {
+    const st = await procSettings();
+    openModal(`建檔為品項 — ${ds.name}`, `
+      <div class="form-grid">
+        <div class="field"><label>品項名稱</label><input value="${esc(ds.name)}" disabled></div>
+        <div class="field"><label>品項編號<small>（留空不給編號）</small></label><input id="mk-code" maxlength="40" placeholder="例：P001"></div>
+        <div class="field"><label>單位 <b class="req">*</b></label><input id="mk-unit" value="${esc(ds.unit || '')}" placeholder="包、箱、式"></div>
+        <div class="field"><label>安全庫存</label><input type="number" min="0" id="mk-safe" value="0"></div>
+        <div class="field"><label>參考單價（未稅）</label><input type="number" min="0" id="mk-price" value="${esc(ds.price || 0)}"></div>
+        <div class="field"><label>倉庫別</label><select id="mk-wh"><option value="">未指定</option>${(st.warehouses || []).map(w =>
+          `<option value="${w.id}">${esc(w.kind === 'sub' ? '　└ ' + w.name : w.name)}${w.company_name ? `（${esc(w.company_name)}）` : ''}</option>`).join('')}</select></div>
+      </div>
+      <p style="font-size:.85rem;color:var(--muted)">建檔後這家廠商會自動成為該品項的供應廠商（該品項還沒有廠商時設為預設），價格表這一筆也會接上品項。</p>
+      <div class="row" style="gap:8px"><button class="btn" id="mk-save">建檔</button><span class="error-msg" id="mk-err"></span></div>`, body => {
+      body.querySelector('#mk-save').onclick = async () => {
+        if (!val(body, '#mk-unit')) { body.querySelector('#mk-err').textContent = '請填寫單位'; return; }
+        try {
+          const r = await api(`/procurement/vendor-items/${ds.mk}/create-supply`, { method: 'POST', body: {
+            code: val(body, '#mk-code'), unit: val(body, '#mk-unit'), safety_stock: val(body, '#mk-safe'),
+            price: val(body, '#mk-price'), warehouse_id: Number(val(body, '#mk-wh')) || 0 } });
+          alert(r.reused ? '品項管理裡已有同名品項，已直接接上並把這家廠商設為供應廠商。' : '已建檔到品項管理。');
+          closeModal(); done && done();
+        } catch (e) { body.querySelector('#mk-err').textContent = e.message; }
+      };
+    });
   }
 
   /* ================= 採購設定 ================= */

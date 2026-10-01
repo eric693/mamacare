@@ -39,6 +39,8 @@ const PERMS = {
   reports: [r('finance', 'admin'), '採購報表'],
   // 退回修改：請購／採購／驗貨／出貨單據退回給原經辦重新處理，只有管理員可以
   returns: [r('admin'), '退回修改'],
+  // 單據日期（請購／驗貨／出貨／調撥）只有管理員能改，其他人一律當天
+  backdate: [r('admin'), '調整單據日期'],
   // 看得到採購金額（單價、預算、比價）：驗貨人員只核對品項與數量，不給金額
   amounts: [r('buyer', 'account', 'finance', 'admin'), '採購金額']
 };
@@ -123,6 +125,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!db.prepare('SELECT 1 FROM warehouses WHERE id = ? AND active = 1').get(id)) throw httpErr('倉庫不存在或已停用');
     return id;
   }
+  // 單據日期：只有管理員可以指定（補單、追溯），其他人一律當天
+  const docDate = (req, v, fallback) => (can(req, 'backdate') && isDate(v)) ? v : (fallback || today());
   function httpErr(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
   function run(res, fn) {
     try { fn(); } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : '伺服器錯誤' }); if (!e.status) console.error(e); }
@@ -207,6 +211,40 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
   const vendorItems = vendorId => db.prepare(`SELECT vi.*, s.code AS supply_code, u.name AS updated_name FROM vendor_items vi
     LEFT JOIN supplies s ON s.id = vi.supply_id LEFT JOIN users u ON u.id = vi.updated_by
     WHERE vi.vendor_id = ? ORDER BY vi.item_name`).all(vendorId);
+
+  // 廠商價格表裡「未建檔」的品項 → 建成品項主檔（同名已存在就直接接上，不重複開）
+  router.post('/procurement/vendor-items/:id/create-supply', requireStaff, need('master_write'), (req, res) => run(res, () => {
+    const vi = db.prepare('SELECT * FROM vendor_items WHERE id = ?').get(req.params.id);
+    if (!vi) throw httpErr('找不到價格表資料', 404);
+    if (vi.supply_id) throw httpErr('這個品項已經建檔了');
+    const b = req.body || {};
+    const unit = str(b.unit, 20) || vi.unit;
+    if (!unit) throw httpErr('請填寫單位');
+    const code = str(b.code, 40);
+    if (code && db.prepare('SELECT 1 FROM supplies WHERE code = ? AND active = 1').get(code)) throw httpErr('品項編號已存在', 409);
+    let supplyId, reused = false;
+    db.transaction(() => {
+      const exist = db.prepare('SELECT id FROM supplies WHERE name = ? AND active = 1').get(vi.item_name);
+      if (exist) { supplyId = exist.id; reused = true; }
+      else {
+        supplyId = db.prepare(`INSERT INTO supplies (name, category, unit, safety_stock, code, price, warehouse)
+          VALUES (?,?,?,?,?,?,?)`).run(vi.item_name, str(b.category, 40), unit,
+          Math.max(0, int(b.safety_stock)), code, Math.max(0, Math.round(num(b.price === undefined ? vi.unit_price : b.price))),
+          warehouseNameOf(b)).lastInsertRowid;
+      }
+      // 價格表接上品項；同一家廠商若另有同品項的價格，保留單價較新的那筆
+      const dup = db.prepare('SELECT id FROM vendor_items WHERE vendor_id = ? AND supply_id = ? AND id != ?').get(vi.vendor_id, supplyId, vi.id);
+      if (dup) db.prepare('DELETE FROM vendor_items WHERE id = ?').run(dup.id);
+      db.prepare('UPDATE vendor_items SET supply_id = ?, unit = ? WHERE id = ?').run(supplyId, unit, vi.id);
+      // 這家廠商掛為供應廠商（該品項還沒有廠商時順便設為預設）
+      const hasVendor = db.prepare('SELECT 1 FROM supply_vendors WHERE supply_id = ? LIMIT 1').get(supplyId);
+      db.prepare('INSERT OR IGNORE INTO supply_vendors (supply_id, vendor_id, is_default) VALUES (?,?,?)')
+        .run(supplyId, vi.vendor_id, hasVendor ? 0 : 1);
+    })();
+    logAudit(req, { action: 'create', entity: 'supplies', entity_id: supplyId,
+      summary: `廠商價格表建檔品項 ${vi.item_name}${reused ? '（接上既有品項）' : ''}` });
+    res.json({ id: supplyId, reused });
+  }));
 
   // 查某品項（或品名）各廠商的價格：採購單比價時帶入參考價
   router.get('/procurement/vendor-prices', requireStaff, need('read'), (req, res) => {
@@ -623,7 +661,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const b = req.body || {};
     const requester = str(b.requester, 50);
     if (!requester) throw httpErr('請填寫申請人');
-    const reqDate = isDate(b.req_date) ? b.req_date : today();
+    const reqDate = docDate(req, b.req_date);
     const items = normPrItems(b.items);
     let id, no;
     db.transaction(() => {
@@ -648,7 +686,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     db.transaction(() => {
       db.prepare('UPDATE purchase_requests SET company_id=? WHERE id=?').run(companyId(b.company_id, cur.company_id), cur.id);
       db.prepare('UPDATE purchase_requests SET req_date=?, requester=?, urgent=?, purpose=?, budget=? WHERE id=?').run(
-        isDate(b.req_date) ? b.req_date : cur.req_date,
+        docDate(req, b.req_date, cur.req_date),
         b.requester === undefined ? cur.requester : (str(b.requester, 50) || cur.requester),
         b.urgent === undefined ? cur.urgent : (b.urgent ? 1 : 0),
         b.purpose === undefined ? cur.purpose : str(b.purpose, 500),
@@ -1016,7 +1054,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!RECEIVABLE.includes(o.status)) throw httpErr('此採購單已全數入庫、結案或取消');
     const inspector = str(b.inspector, 50);
     if (!inspector) throw httpErr('請填寫驗貨人員');
-    const receiveDate = isDate(b.receive_date) ? b.receive_date : today();
+    const receiveDate = docDate(req, b.receive_date);
     // 入庫倉：預設進採購公司的總倉，驗貨人員可改（例如小倉直送）
     const whId = warehouseId(b.warehouse_id, () => WH.defaultWarehouseId(db, o.company_id));
     const input = new Map((Array.isArray(b.items) ? b.items : []).map(i => [int(i.po_item_id), i]));
@@ -1404,7 +1442,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const b = req.body || {};
     const recipient = str(b.recipient, 60);
     if (!recipient) throw httpErr('請填寫客戶／部門');
-    const shipDate = isDate(b.ship_date) ? b.ship_date : today();
+    const shipDate = docDate(req, b.ship_date);
     const coId = companyId(b.company_id);
     const whId = warehouseId(b.warehouse_id, () => WH.defaultWarehouseId(db, coId));
     const items = normShipItems(b.items, whId);
@@ -1433,9 +1471,10 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     if (!recipient) throw httpErr('請填寫客戶／部門');
     db.transaction(() => {
       db.prepare('UPDATE shipments SET company_id=?, warehouse_id=? WHERE id=?').run(companyId(b.company_id, cur.company_id), whId, cur.id);
+      const shipDate2 = docDate(req, b.ship_date, cur.ship_date);
       db.prepare('UPDATE shipments SET ship_date=?, recipient=?, note=? WHERE id=?').run(
-        isDate(b.ship_date) ? b.ship_date : cur.ship_date, recipient, b.note === undefined ? cur.note : str(b.note, 500), cur.id);
-      db.prepare('UPDATE pick_lists SET recipient=?, pick_date=? WHERE shipment_id=?').run(recipient, isDate(b.ship_date) ? b.ship_date : cur.ship_date, cur.id);
+        shipDate2, recipient, b.note === undefined ? cur.note : str(b.note, 500), cur.id);
+      db.prepare('UPDATE pick_lists SET recipient=?, pick_date=? WHERE shipment_id=?').run(recipient, shipDate2, cur.id);
       if (items) {
         db.prepare('DELETE FROM shipment_items WHERE shipment_id = ?').run(cur.id);
         const ins = db.prepare('INSERT INTO shipment_items (shipment_id, supply_id, item_name, unit, qty) VALUES (?,?,?,?,?)');
@@ -1635,7 +1674,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const fromWh = warehouseId(b.from_warehouse_id, null);
     const toWh = warehouseId(b.to_warehouse_id, null);
     if (fromWh === toWh) throw httpErr('調出與調入不能是同一個倉');
-    const date = isDate(b.transfer_date) ? b.transfer_date : today();
+    const date = docDate(req, b.transfer_date);
     const items = normTransferItems(b.items, fromWh);
     let id, no;
     db.transaction(() => {
@@ -1660,7 +1699,7 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const items = b.items === undefined ? null : normTransferItems(b.items, fromWh);
     db.transaction(() => {
       db.prepare('UPDATE stock_transfers SET transfer_date=?, from_warehouse_id=?, to_warehouse_id=?, reason=?, note=? WHERE id=?').run(
-        isDate(b.transfer_date) ? b.transfer_date : cur.transfer_date, fromWh, toWh,
+        docDate(req, b.transfer_date, cur.transfer_date), fromWh, toWh,
         b.reason === undefined ? cur.reason : str(b.reason, 100),
         b.note === undefined ? cur.note : str(b.note, 500), cur.id);
       if (items) {
