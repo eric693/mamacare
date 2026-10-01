@@ -898,7 +898,10 @@
       <div class="form-grid">
         ${docDateField('驗貨日期', 'rc-date', '')}
         <div class="field"><label>驗貨人員 <b class="req">*</b></label><input id="rc-insp" value="${esc(currentUser.name)}"></div>
-        <div class="field"><label>入庫倉庫 <b class="req">*</b></label>${warehouseSelect(st, o.warehouse_id, 'rc-wh')}</div>
+        <div class="field"><label>入庫倉庫 <b class="req">*</b></label>${warehouseSelect(st, o.suggested_warehouse_id, 'rc-wh')}
+          <small style="color:${o.item_warehouses_mixed ? 'var(--danger)' : 'var(--muted)'}">${o.item_warehouses_mixed
+            ? '本單品項綁了不同倉庫，請確認要進哪個倉（或分次驗貨、之後用調撥單調整）'
+            : (o.suggested_warehouse_id ? '已依品項設定的倉庫別帶入' : '品項沒有設定倉庫別，預設進公司總倉')}</small></div>
         <div class="field"><label>發票號碼<small>（本批）</small></label><input id="rc-inv" maxlength="30" placeholder="廠商發票號碼"></div>
         <div class="field"><label>備註</label><input id="rc-note" maxlength="500"></div>
       </div>
@@ -907,7 +910,7 @@
         <tbody>${open.map(it => {
           const isNew = !it.supply_id;
           return `<tr data-item="${it.id}" data-remain="${it.remaining}">
-            <td data-label="品項">${esc(it.item_name)}${isNew ? ` <span class="badge teal">新品項</span>
+            <td data-label="品項">${esc(it.item_name)}${it.item_warehouse ? ` <small style="color:var(--muted)">（倉庫別：${esc(it.item_warehouse)}）</small>` : ''}${isNew ? ` <span class="badge teal">新品項</span>
               <div class="row" style="gap:6px;margin-top:4px;flex-wrap:wrap">
                 <input data-k="new_code" placeholder="品項編號" value="${esc(it.new_code || '')}" style="max-width:100px">
                 <input data-k="new_unit" placeholder="單位" value="${esc(it.unit || '')}" style="max-width:70px">

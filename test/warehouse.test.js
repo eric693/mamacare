@@ -390,3 +390,50 @@ test('廠商價格表的未建檔品項可一鍵建檔，並自動設為該品�
   assert.strictEqual(again.reused, true);
   assert.strictEqual(again.id, made.id);
 });
+
+test('驗貨入庫的倉庫預設跟著品項的倉庫別，不是系統預設總倉', async () => {
+  // 品項綁商城小倉
+  const it = (await ok('POST', '/api/procurement/items', {
+    code: 'WHB01', name: '綁倉測試品', unit: '個', safety_stock: 1, price: 10,
+    warehouse_id: shopWh, vendors: [{ vendor_id: vendor, is_default: true }] })).id;
+  const mkPo = async qty => {
+    const pr = await ok('POST', '/api/procurement/requests', { requester: '倉管', items: [{ supply_id: it, qty }] });
+    await ok('POST', `/api/procurement/requests/${pr.id}/approve`, {});
+    const prd = await ok('GET', `/api/procurement/requests/${pr.id}`);
+    const po = (await ok('POST', `/api/procurement/requests/${pr.id}/order`, {
+      items: [{ item_id: prd.items[0].id, vendor_id: vendor, eta: D(0) }] })).orders[0];
+    const pod = await ok('GET', `/api/procurement/orders/${po.id}`);
+    await ok('PUT', `/api/procurement/orders/${po.id}`, { budget_amount: 999, items: [{ id: pod.items[0].id, unit_price: 10 }] });
+    await ok('POST', `/api/procurement/orders/${po.id}/approve`, {});
+    return await ok('GET', `/api/procurement/orders/${po.id}`);
+  };
+  const pod = await mkPo(5);
+  assert.strictEqual(pod.suggested_warehouse_id, shopWh, '採購單會建議品項綁的倉');
+  assert.strictEqual(pod.items[0].item_warehouse_id, shopWh);
+  // 驗貨不指定倉 → 進品項綁的商城小倉（不是預設總倉）
+  const gr = await ok('POST', '/api/procurement/receipts', { po_id: pod.id, inspector: '驗貨員',
+    items: [{ po_item_id: pod.items[0].id, received_qty: 5 }] });
+  assert.strictEqual(gr.warehouse_id, shopWh);
+  const r = (await ok('GET', '/api/procurement/items')).rows.find(x => x.id === it);
+  assert.strictEqual(r.stocks.find(x => x.warehouse_id === shopWh).qty, 5);
+  // 驗貨人員仍可改倉：指定總倉就進總倉
+  const pod2 = await mkPo(3);
+  const gr2 = await ok('POST', '/api/procurement/receipts', { po_id: pod2.id, inspector: '驗貨員', warehouse_id: mainWh,
+    items: [{ po_item_id: pod2.items[0].id, received_qty: 3 }] });
+  assert.strictEqual(gr2.warehouse_id, mainWh);
+  // 品項沒綁倉 → 回到公司預設總倉
+  const plain = (await ok('POST', '/api/procurement/items', { code: 'WHB02', name: '沒綁倉品項', unit: '個',
+    safety_stock: 0, price: 10, vendors: [{ vendor_id: vendor, is_default: true }] })).id;
+  const pr3 = await ok('POST', '/api/procurement/requests', { requester: '倉管', items: [{ supply_id: plain, qty: 2 }] });
+  await ok('POST', `/api/procurement/requests/${pr3.id}/approve`, {});
+  const prd3 = await ok('GET', `/api/procurement/requests/${pr3.id}`);
+  const po3 = (await ok('POST', `/api/procurement/requests/${pr3.id}/order`, {
+    items: [{ item_id: prd3.items[0].id, vendor_id: vendor, eta: D(0) }] })).orders[0];
+  const pod3 = await ok('GET', `/api/procurement/orders/${po3.id}`);
+  assert.strictEqual(pod3.suggested_warehouse_id, null);
+  await ok('PUT', `/api/procurement/orders/${po3.id}`, { budget_amount: 99, items: [{ id: pod3.items[0].id, unit_price: 10 }] });
+  await ok('POST', `/api/procurement/orders/${po3.id}/approve`, {});
+  const gr3 = await ok('POST', '/api/procurement/receipts', { po_id: po3.id, inspector: '驗貨員',
+    items: [{ po_item_id: pod3.items[0].id, received_qty: 2 }] });
+  assert.strictEqual(gr3.warehouse_id, mainWh);
+});

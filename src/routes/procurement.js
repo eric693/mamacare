@@ -797,7 +797,9 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
       FROM purchase_orders o LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN purchase_requests r ON r.id = o.pr_id
       LEFT JOIN users ua ON ua.id = o.approved_by LEFT JOIN proc_companies c ON c.id = o.company_id WHERE o.id = ?`).get(id);
     if (!o) return null;
-    o.items = db.prepare(`SELECT i.*, s.stock, s.code AS supply_code,
+    // 品項綁的倉庫別（supplies.warehouse 對到倉庫主檔）→ 驗貨時預設進這個倉
+    o.items = db.prepare(`SELECT i.*, s.stock, s.code AS supply_code, s.warehouse AS item_warehouse,
+        (SELECT w.id FROM warehouses w WHERE w.active = 1 AND w.name = s.warehouse) AS item_warehouse_id,
         COALESCE((SELECT SUM(gi.received_qty) FROM goods_receipt_items gi WHERE gi.po_item_id = i.id), 0) AS received_qty
       FROM purchase_order_items i LEFT JOIN supplies s ON s.id = i.supply_id WHERE i.po_id = ? ORDER BY i.id`).all(id);
     const qs = db.prepare(`SELECT q.*, v.name AS vendor_name, v.phone AS vendor_phone, v.contact AS vendor_contact
@@ -809,6 +811,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     }
     o.total = o.items.reduce((t, i) => t + i.qty * i.unit_price, 0);
     o.received_total = o.items.reduce((t, i) => t + i.received_qty * i.unit_price, 0);
+    // 還沒到齊的品項都綁同一個倉時，驗貨就預設進那個倉；綁不同倉或都沒綁，才用公司的預設總倉
+    const open = o.items.filter(i => i.remaining > 0);
+    const whs = [...new Set(open.map(i => i.item_warehouse_id).filter(Boolean))];
+    o.suggested_warehouse_id = whs.length === 1 && open.every(i => i.item_warehouse_id) ? whs[0] : null;
+    o.item_warehouses_mixed = whs.length > 1;
     o.receipts = db.prepare(`SELECT g.id, g.no, g.batch_no, g.receive_date, g.inspector, g.invoice_no, p.no AS pay_no,
         (SELECT COALESCE(SUM(received_qty * unit_price),0) FROM goods_receipt_items gi WHERE gi.gr_id = g.id) AS subtotal
       FROM goods_receipts g LEFT JOIN payment_requests p ON p.gr_id = g.id WHERE g.po_id = ? AND g.status != 'returned' ORDER BY g.id`).all(id);
@@ -1055,8 +1062,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const inspector = str(b.inspector, 50);
     if (!inspector) throw httpErr('請填寫驗貨人員');
     const receiveDate = docDate(req, b.receive_date);
-    // 入庫倉：預設進採購公司的總倉，驗貨人員可改（例如小倉直送）
-    const whId = warehouseId(b.warehouse_id, () => WH.defaultWarehouseId(db, o.company_id));
+    // 入庫倉：品項有綁倉庫別就進那個倉，否則進採購公司的總倉；驗貨人員都可以改
+    const whId = warehouseId(b.warehouse_id, () => o.suggested_warehouse_id || WH.defaultWarehouseId(db, o.company_id));
     const input = new Map((Array.isArray(b.items) ? b.items : []).map(i => [int(i.po_item_id), i]));
     const s = procSettings();
     let grId, grNo, payId, payNo, newCount = 0, allDone = true;
@@ -1090,7 +1097,8 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
           else {
             supplyId = db.prepare(`INSERT INTO supplies (name, unit, safety_stock, code, price, warehouse) VALUES (?,?,?,?,?,?)`).run(
               it.item_name, unit, Math.max(0, int(inp.new_safety === undefined ? (it.new_safety || 5) : inp.new_safety)),
-              code, Math.round(price), str(inp.new_warehouse === undefined ? it.new_warehouse : inp.new_warehouse, 40)).lastInsertRowid;
+              code, Math.round(price),
+              str(inp.new_warehouse === undefined ? it.new_warehouse : inp.new_warehouse, 40) || warehouseName(whId)).lastInsertRowid;
             newCount++;
           }
           db.prepare('UPDATE purchase_order_items SET supply_id = ?, unit = ? WHERE id = ?').run(supplyId, unit, it.id);
