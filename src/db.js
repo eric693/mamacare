@@ -2291,7 +2291,7 @@ function ensureContractTemplate() {
 
 // 營運參數一律存 settings，程式內不得寫死業務數值
 const DEFAULT_SETTINGS = {
-  center_name: 'MamaCare 產後護理之家',
+  center_name: '嘉禾產後護理之家',
   // 機構聯絡資訊（服務契約書乙方欄位；於系統設定維護）
   center_rep: '',
   center_address: '',
@@ -2328,7 +2328,7 @@ const DEFAULT_SETTINGS = {
   // 感染管制目標：手部衛生遵從率門檻（%），低於此值於月報標示
   hand_hygiene_target: '85',
   // 電子發票／收據（MIG 3.2）— 實際上傳大平台需加值中心 API
-  einvoice_seller_name: 'MamaCare 產後護理之家',
+  einvoice_seller_name: '嘉禾產後護理之家',
   einvoice_seller_tax_id: '',
   einvoice_tax_type: '3',            // 預設免稅（醫療/護理服務）
   einvoice_tax_rate: '5',

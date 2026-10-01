@@ -114,7 +114,7 @@ const COPY = {
 
 const SITE = {
   key: 'mamacare',
-  name: 'MamaCare 產後護理之家管理系統',
+  name: '嘉禾產後護理之家管理系統',
   audience: '產後護理之家的護理長、護理師、房務、業務與行政人員',
   business: [
     '這是產後護理之家（月子中心）用的管理系統，涵蓋寶寶照護與新生兒醫療、醫師巡診、',

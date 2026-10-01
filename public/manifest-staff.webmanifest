@@ -1,6 +1,6 @@
 {
-  "name": "MamaCare 產後護理之家管理系統",
-  "short_name": "MamaCare",
+  "name": "嘉禾產後護理之家管理系統",
+  "short_name": "嘉禾",
   "description": "產後護理之家管理系統（員工端）",
   "start_url": "/index.html",
   "scope": "/",

@@ -1,4 +1,4 @@
-/* MamaCare 家屬入口 */
+/* 家屬入口 */
 
 const $ = sel => document.querySelector(sel);
 

@@ -12768,6 +12768,6 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`MamaCare 已啟動: http://localhost:${PORT}`);
+  console.log(`嘉禾產後護理之家管理系統 已啟動: http://localhost:${PORT}`);
   console.log(`家屬入口: http://localhost:${PORT}/family.html`);
 });

@@ -1,4 +1,4 @@
-/* MamaCare 員工端單頁應用 */
+/* 員工端單頁應用 */
 
 let currentUser = null;
 let SETTINGS = {}; // 營運參數（餵食方式、生產方式、門檻值等）一律來自後端設定
@@ -675,7 +675,7 @@ function babyReportSummaryGrid(s, photoCount) {
 }
 // 另開視窗列印／另存 PDF：寶寶日報（摘要＋異常＋當日紀錄＋照片）
 function printBabyReport(rpt) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const s = rpt.summary;
   const row = (k, v) => v == null || v === '' ? '' : `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`;
   const summaryRows = [
@@ -1350,7 +1350,7 @@ function openMotherAssessment(motherId, onSaved) {
 
 // 另開視窗列印／另存 PDF：某日的 SBAR 交班單
 function printHandovers(date, rows) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const blocks = (rows && rows.length) ? rows.map(h => `
     <div class="ho">
       <div class="hh">${esc(SHIFT_LABEL[h.shift_type] || h.shift_type)}　交班護理師：${esc(h.nurse_name || '')}　${esc((h.created_at || '').slice(0, 16))}</div>
@@ -2183,7 +2183,7 @@ async function openEquipItems(backToBooking) {
 
 // 另開視窗列印／另存 PDF：設備清點單（比照紙本表格）
 function printEquipCheck(bk, items, bell, sig) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const tick = v => (v ? '√' : '');
   const rows = items.map(it => `<tr>
     <td>${esc(it.name)}</td><td class="c">${esc(it.qty)}</td>
@@ -2980,7 +2980,7 @@ async function viewBilling() {
 
 // 另開視窗列印：寶寶報喜入住通知單
 function printBabyAnnounce(m, bk, birth, cd, p, stayDays) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const babyCells = p.babies.map((x, i) => `
     <tr><td>體重${p.babies.length > 1 ? i + 1 : ''}</td><td>${x.weight_g} g</td>
     <td>性別${p.babies.length > 1 ? i + 1 : ''}</td><td>${x.gender === 'male' ? '男' : '女'}</td></tr>`).join('');
@@ -3022,7 +3022,7 @@ function printBabyAnnounce(m, bk, birth, cd, p, stayDays) {
 
 // 另開視窗列印／另存 PDF：加購消費明細
 function printCharges(b) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const rows = (b.charges || []).map(c => `
     <tr>
       <td>${esc(c.charged_on)}</td>
@@ -3678,7 +3678,7 @@ async function viewMeals() {
   const KITCHEN_COLS = ['No', '房號', '姓名', '早', '午', '晚', '禁忌', '生產', '供餐期間', '備註'];
   $('#ml-print').onclick = () => {
     if (!lastKitchen || !lastKitchen.vendors.length) return alert('當日尚無訂餐');
-    const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+    const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
     const sec = v => `
       <h3>${esc(v.choice)} 核餐單（${esc(lastKitchen.date)}）　<small>共 ${v.total} 份</small></h3>
       <table>
@@ -4947,7 +4947,7 @@ function printPacket(pk) {
   if (!docs.length) return;
   const main0 = docs.find(d => d.doc_kind === 'contract') || docs[0];
   const st = CONTRACT_STATUS[main0.status] || CONTRACT_STATUS.pending;
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   // 紙本版面：A4、每份文件獨立分頁、頁首機構抬頭＋文件名、頁尾當事人與份次
   const proof = main0.status === 'signed' ? `
     <div class="sign-block">
@@ -5374,7 +5374,7 @@ function printTable(label, columns, rows) {
   const body = rows.length
     ? rows.map(r => `<tr>${columns.map(c => `<td>${esc(r[c.key] ?? '')}</td>`).join('')}</tr>`).join('')
     : `<tr><td colspan="${columns.length}" style="text-align:center;color:#888">無資料</td></tr>`;
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
     <title>${esc(label)}</title>
@@ -5399,7 +5399,7 @@ function printTable(label, columns, rows) {
 function printPaperContract(d) {
   const m = d.mother, ct = d.contract, cd = (ct && ct.data) || {};
   if (!ct) return alert('請先存檔產生合約編號');
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const items = (ct.items || []).map((it, i) => `
     <tr><td style="text-align:center">${i + 1}</td><td>${esc(it.name)}</td>
       <td style="text-align:right">${Number(it.qty) || 0} 天</td>
@@ -5933,7 +5933,7 @@ function clusterForm(c) {
 
 // 另開視窗列印／另存 PDF：新生兒醫療紀錄單（給藥 MAR ＋ 疫苗 ＋ 篩檢 ＋ 光療）
 function printMedicalSheet(d) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const sec = (title, head, rows) => `
     <h3>${title}</h3>
     <table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead>
@@ -6275,7 +6275,7 @@ function invoiceForm(bookings, prefill = {}) {
 }
 
 function printInvoice(i) {
-  const center = (SETTINGS && SETTINGS.einvoice_seller_name) || SETTINGS.center_name || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.einvoice_seller_name) || SETTINGS.center_name || '嘉禾產後護理之家';
   const itemRows = (i.items || []).map(it => `<tr><td>${esc(it.name)}</td><td style="text-align:right">${it.qty}</td><td style="text-align:right">${fmtMoney(it.price)}</td><td style="text-align:right">${fmtMoney(it.amount)}</td></tr>`).join('');
   const win = window.open('', '_blank');
   win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>${DOC_TYPE_LABEL[i.doc_type]}</title>
@@ -11956,7 +11956,7 @@ async function viewBabyDoctor() {
 
 // 另開視窗列印／另存 PDF：小兒科診察紀錄表（比照紙本；右側留白供醫師手繪位置）
 function printBabyDoctorSheet(baby, rows) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const gw = (rows.find(r => (r.data || {}).gest_weeks) || { data: {} }).data.gest_weeks || '';
   const bw = (rows.find(r => (r.data || {}).birth_weight_g) || { data: {} }).data.birth_weight_g || baby.birth_weight_g || '';
   const body = rows.slice().reverse().map(r => {
@@ -12242,7 +12242,7 @@ async function viewMotherDoctor() {
 
 // 另開視窗列印／另存 PDF：婦產科診察紀錄表（比照紙本，每 4 次診察一頁、逐次一欄）
 function printMotherDoctorSheet(mother, basic, rows) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const asc = rows.slice().reverse();
   const pages = [];
   for (let i = 0; i < Math.max(1, asc.length); i += 4) pages.push(asc.slice(i, i + 4));
@@ -12800,7 +12800,7 @@ async function openGuidanceItems(cfg) {
 
 // 另開視窗列印／另存 PDF：護理衛教指導單（比照紙本表格）
 function printGuidanceSheet(sheet, cfg) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const entries = sheet.entries || {};
   let lastCat = '';
   const rows = sheet.items.map(it => {
@@ -17839,7 +17839,7 @@ function openCustomFormEditor(form) {
 
 // 另開視窗列印／另存 PDF：自訂表格月統計
 function printCustomFormStats(form, month, stats) {
-  const center = (SETTINGS && SETTINGS.center_name) || 'MamaCare';
+  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   const blocks = stats.stats.map(s => {
     if (s.type === 'number') {
       return `<tr><td>${esc(s.label)}${s.unit ? `（${esc(s.unit)}）` : ''}</td>
@@ -18385,7 +18385,7 @@ function showLogin() {
 }
 
 function applyBrand() {
-  const name = SETTINGS.center_name || 'MamaCare';
+  const name = SETTINGS.center_name || '嘉禾產後護理之家';
   if (window.APP_TITLE) {                      // 請採驗獨立入口：固定用自己的抬頭
     $('#brand').textContent = window.APP_TITLE;
     $('#login-brand').textContent = window.APP_TITLE;
@@ -18472,8 +18472,8 @@ $('#logout-btn').onclick = async () => {
   try {
     const meta = await api('/meta');
     if (!window.APP_TITLE) {
-      $('#login-brand').textContent = meta.center_name || 'MamaCare';
-      document.title = `${meta.center_name || 'MamaCare'} 管理系統`;
+      $('#login-brand').textContent = meta.center_name || '嘉禾產後護理之家';
+      document.title = `${meta.center_name || '嘉禾產後護理之家'} 管理系統`;
     }
   } catch (e) { /* 沿用預設名稱 */ }
   try {
