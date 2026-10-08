@@ -1688,6 +1688,10 @@ function init() {
   if (!stxCols.includes('dept')) db.exec("ALTER TABLE supply_txns ADD COLUMN dept TEXT DEFAULT ''");
   if (!stxCols.includes('purpose')) db.exec("ALTER TABLE supply_txns ADD COLUMN purpose TEXT DEFAULT ''");
 
+  // 問卷：外部問卷連結（Google 表單／SurveyCake 等；有填就導向外部，統計在外部平台看）
+  const svCols = db.prepare('PRAGMA table_info(surveys)').all().map(c => c.name);
+  if (!svCols.includes('external_url')) db.exec("ALTER TABLE surveys ADD COLUMN external_url TEXT DEFAULT ''");
+
   // 課程／服務照片（檔案存 uploads/programs/年月日課程名稱/）
   db.exec(`
     CREATE TABLE IF NOT EXISTS program_photos (

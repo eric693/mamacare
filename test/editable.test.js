@@ -55,7 +55,7 @@ before(async () => {
   assert.strictEqual(seed.status, 0, '種子建立失敗：' + seed.stderr);
   server = spawn('node', ['src/server.js'], { cwd: ROOT,
     env: { ...env, PORT: String(PORT), SESSION_SECRET: 'test', NODE_ENV: 'test', DB_BACKEND: 'sqlite' }, stdio: 'ignore' });
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 200; i++) {
     try { const r = await fetch(BASE + '/'); if (r.ok) { await req('POST', '/api/login', { username: 'admin', password: 'admin123' }); return; } }
     catch (e) { /* 尚未啟動 */ }
     await new Promise(r => setTimeout(r, 100));

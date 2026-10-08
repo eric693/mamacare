@@ -12442,9 +12442,13 @@ app.get('/api/custom-forms/:id/stats', requireStaff, (req, res) => {
 });
 
 // ---------- 電子問卷／滿意度調查 ----------
-function surveyStats(survey) {
+function surveyStats(survey, range = {}) {
   const qs = JSON.parse(survey.questions || '[]');
-  const resps = db.prepare('SELECT answers FROM survey_responses WHERE survey_id = ?').all(survey.id)
+  // 期間以填寫日期（created_at）篩選；沒給就是全部
+  const cond = ['survey_id = ?'], args = [survey.id];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(range.from || '')) { cond.push('date(submitted_at) >= ?'); args.push(range.from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(range.to || '')) { cond.push('date(submitted_at) <= ?'); args.push(range.to); }
+  const resps = db.prepare(`SELECT answers FROM survey_responses WHERE ${cond.join(' AND ')}`).all(...args)
     .map(r => { try { return JSON.parse(r.answers || '{}'); } catch (e) { return {}; } });
   const stats = qs.map((q, i) => {
     if (q.type === 'rating') {
@@ -12469,28 +12473,63 @@ app.get('/api/surveys', requireStaff, (req, res) => {
 app.get('/api/surveys/:id', requireStaff, (req, res) => {
   const s = db.prepare('SELECT * FROM surveys WHERE id = ?').get(req.params.id);
   if (!s) return res.status(404).json({ error: '找不到問卷' });
-  res.json({ ...s, questions: JSON.parse(s.questions || '[]'), ...surveyStats(s) });
+  res.json({ ...s, questions: JSON.parse(s.questions || '[]'),
+    total_responses: db.prepare('SELECT COUNT(*) c FROM survey_responses WHERE survey_id = ?').get(s.id).c,
+    from: req.query.from || '', to: req.query.to || '',
+    ...surveyStats(s, req.query) });
+});
+// 答覆明細：一列一份回覆，逐題一欄（format=xlsx 下載 Excel）
+app.get('/api/surveys/:id/responses', requireStaff, (req, res) => {
+  const s = db.prepare('SELECT * FROM surveys WHERE id = ?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: '找不到問卷' });
+  const qs = JSON.parse(s.questions || '[]');
+  const cond = ['r.survey_id = ?'], args = [s.id];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '')) { cond.push('date(r.submitted_at) >= ?'); args.push(req.query.from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '')) { cond.push('date(r.submitted_at) <= ?'); args.push(req.query.to); }
+  const rows = db.prepare(`SELECT r.id, r.submitted_at, r.answers, m.name AS mother_name, f.name AS family_name
+    FROM survey_responses r LEFT JOIN mothers m ON m.id = r.mother_id LEFT JOIN family_members f ON f.id = r.family_id
+    WHERE ${cond.join(' AND ')} ORDER BY r.id`).all(...args).map((r, i) => {
+    let a = {}; try { a = JSON.parse(r.answers || '{}'); } catch (e) { /* 壞資料當空白 */ }
+    const out = { seq: i + 1, submitted_at: (r.submitted_at || '').slice(0, 16), mother_name: r.mother_name || '', family_name: r.family_name || '' };
+    qs.forEach((q, qi) => { out['q' + qi] = a[qi] === undefined || a[qi] === null ? '' : String(a[qi]); });
+    return out;
+  });
+  const columns = [{ key: 'seq', label: '筆數' }, { key: 'submitted_at', label: '填寫時間' },
+    { key: 'mother_name', label: '媽媽' }, { key: 'family_name', label: '填寫家屬' },
+    ...qs.map((q, i) => ({ key: 'q' + i, label: q.label }))];
+  if (req.query.format === 'xlsx') {
+    const buf = buildWorkbook(`${s.title} 答覆明細`, columns, rows);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="survey.xlsx"; filename*=UTF-8''${encodeURIComponent(`${s.title}答覆明細.xlsx`)}`);
+    return res.send(buf);
+  }
+  res.json({ title: s.title, columns, rows });
 });
 function validQuestions(qs) {
   return Array.isArray(qs) && qs.length > 0 && qs.every(q => q && q.label && ['rating', 'choice', 'text'].includes(q.type));
 }
+// 外部問卷連結只收 http(s)，避免塞入 javascript: 之類的網址
+const extUrl = v => { const u = String(v || '').trim(); return /^https?:\/\//i.test(u) ? u.slice(0, 500) : ''; };
 app.post('/api/surveys', requireStaff, (req, res) => {
   const s = req.body || {};
   if (!s.title) return res.status(400).json({ error: '標題必填' });
-  if (!validQuestions(s.questions)) return res.status(400).json({ error: '請至少設定一題' });
-  const info = db.prepare('INSERT INTO surveys (title, description, questions, active, created_by) VALUES (?,?,?,?,?)').run(
-    s.title, s.description || '', JSON.stringify(s.questions), s.active === undefined ? 1 : (s.active ? 1 : 0), req.session.user.id);
+  const ext = extUrl(s.external_url);
+  if (!ext && !validQuestions(s.questions)) return res.status(400).json({ error: '請至少設定一題，或填寫外部問卷連結' });
+  const info = db.prepare('INSERT INTO surveys (title, description, questions, active, created_by, external_url) VALUES (?,?,?,?,?,?)').run(
+    s.title, s.description || '', JSON.stringify(Array.isArray(s.questions) ? s.questions : []),
+    s.active === undefined ? 1 : (s.active ? 1 : 0), req.session.user.id, ext);
   res.json({ id: info.lastInsertRowid });
 });
 app.put('/api/surveys/:id', requireStaff, (req, res) => {
   const cur = db.prepare('SELECT * FROM surveys WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到問卷' });
   const s = req.body || {};
-  if (s.questions !== undefined && !validQuestions(s.questions)) return res.status(400).json({ error: '請至少設定一題' });
-  db.prepare('UPDATE surveys SET title=?, description=?, questions=?, active=? WHERE id=?').run(
+  const ext = s.external_url === undefined ? cur.external_url : extUrl(s.external_url);
+  if (!ext && s.questions !== undefined && !validQuestions(s.questions)) return res.status(400).json({ error: '請至少設定一題，或填寫外部問卷連結' });
+  db.prepare('UPDATE surveys SET title=?, description=?, questions=?, active=?, external_url=? WHERE id=?').run(
     s.title ?? cur.title, s.description ?? cur.description,
-    s.questions !== undefined ? JSON.stringify(s.questions) : cur.questions,
-    (s.active === undefined ? cur.active : (s.active ? 1 : 0)), cur.id);
+    s.questions !== undefined ? JSON.stringify(Array.isArray(s.questions) ? s.questions : []) : cur.questions,
+    (s.active === undefined ? cur.active : (s.active ? 1 : 0)), ext, cur.id);
   res.json({ ok: true });
 });
 app.delete('/api/surveys/:id', requireAdmin, (req, res) => {
@@ -12502,9 +12541,10 @@ app.delete('/api/surveys/:id', requireAdmin, (req, res) => {
 // 家屬端：問卷填寫
 app.get('/api/family/surveys', requireFamily, (req, res) => {
   const fam = req.session.family;
-  const rows = db.prepare('SELECT id, title, description, questions FROM surveys WHERE active = 1 ORDER BY id DESC').all();
+  const rows = db.prepare('SELECT id, title, description, questions, external_url FROM surveys WHERE active = 1 ORDER BY id DESC').all();
   const done = new Set(db.prepare('SELECT survey_id FROM survey_responses WHERE family_id = ?').all(fam.id).map(r => r.survey_id));
-  res.json(rows.map(s => ({ id: s.id, title: s.title, description: s.description, questions: JSON.parse(s.questions || '[]'), submitted: done.has(s.id) })));
+  res.json(rows.map(s => ({ id: s.id, title: s.title, description: s.description, external_url: s.external_url || '',
+    questions: JSON.parse(s.questions || '[]'), submitted: done.has(s.id) })));
 });
 app.post('/api/family/surveys/:id', requireFamily, (req, res) => {
   const fam = req.session.family;

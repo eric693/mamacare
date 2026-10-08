@@ -5314,6 +5314,8 @@ async function openTemplateManager() {
 }
 
 // 訂房確認單勾選項（其餘自填內容存在同一欄位，以「、」分隔）
+// 電子合約簽署：因電子簽章法尚未採用，入口一律隱藏（功能保留，改 true 即可恢復）
+const SHOW_ESIGN = false;
 const DISEASE_OPTS = ['心臟疾病', '高血壓', '糖尿病', '甲狀腺亢進/低下', '貧血', '氣喘', 'B型肝炎', 'C型肝炎', '自體免疫疾病'];
 const DIET_BAN_OPTS = ['牛肉', '羊肉', '內臟', '帶殼海鮮', '堅果類'];
 function listOther(v, opts) {
@@ -13791,7 +13793,7 @@ async function viewCustomers() {
         msgs.push(`已連動排房：更新 ${r.sync.updated} 段${r.sync.cancelled ? `、取消 ${r.sync.cancelled} 段` : ''}（床表／應收／訂餐已同步）`);
       }
       if (r && r.deposit_over > 0) msgs.push(`提醒：已收訂金超過新合約總額 10%，溢收 ${fmtMoney(r.deposit_over)}（退款請人工處理）`);
-      msgs.push('若已有簽署合約，已標示「需重簽」，請至合約簽署重新產生。');
+      if (SHOW_ESIGN) msgs.push('若已有簽署合約，已標示「需重簽」，請至合約簽署重新產生。');
       alert(msgs.join('\n'));
     };
     const addItem = async price => {
@@ -14798,7 +14800,7 @@ async function viewCustomers() {
           <div class="full row no-print" style="gap:8px;flex-wrap:wrap;align-items:center">
             <b>其它資料：</b>
             <a class="btn small" href="#/booking-blank">列印訂房確認單</a>
-            ${canAccess('#/contracts') ? '<a class="btn small" href="#/contracts">電子合約簽署</a>' : ''}
+            ${SHOW_ESIGN && canAccess('#/contracts') ? '<a class="btn small" href="#/contracts">電子合約簽署</a>' : ''}
             ${canAccess('#/billing') ? '<a class="btn small" href="#/billing">繳費／帳務</a>' : ''}
           </div>
         </div>
@@ -14860,7 +14862,7 @@ async function viewCustomers() {
         <div class="field full" style="margin-top:8px"><label>諮詢備註</label><textarea id="ct-consult-note" maxlength="600" rows="3" placeholder="請填入諮詢備註">${esc(cd.consult_note || '')}</textarea></div>
         ${ctSavedRow('產前諮詢', cd.consult_date || '（未填日期）', cd.consult_by, cd.consult_at)}
       </div>
-      <div class="card">
+      ${!SHOW_ESIGN ? '' : `<div class="card">
         <div class="row between no-print" style="flex-wrap:wrap;gap:8px">
           <div class="sec-hd" style="flex:1;min-width:200px">電子簽署合約（${d.contracts.length} 筆）</div>
           <a class="btn small" href="#/contracts">轉入簽約資料</a>
@@ -14878,7 +14880,7 @@ async function viewCustomers() {
               <td data-label="住房期間"><small>${esc(c.check_in)} ~ ${esc(c.check_out)}</small></td>
               <td data-label="房型及金額">${esc(c.room_name || '—')}　合計：$${(c.total_amount || 0).toLocaleString()}</td></tr>`;
           }).join('')}</tbody></table></div>` : '<div class="empty">尚無電子簽署紀錄</div>'}
-      </div>
+      </div>`}
       <div class="card">
         <div class="sec-hd">合約資料修改紀錄（每次存檔自動記錄）</div>
         ${(d.contract_logs || []).length ? `<ul class="timeline" style="max-height:340px;overflow-y:auto">${d.contract_logs.map(l => {
@@ -17978,6 +17980,8 @@ function openSurveyForm(s) {
     <div class="form-grid">
       <div class="field full"><label>標題 *</label><input id="sv-title" value="${esc(ed.title || '')}"></div>
       <div class="field full"><label>說明</label><input id="sv-desc" value="${esc(ed.description || '')}"></div>
+      <div class="field full"><label>外部問卷連結<small>（Google 表單／SurveyCake 等；填了就改用外部問卷，家屬端只會看到連結，下面的題目不生效）</small></label>
+        <input id="sv-ext" placeholder="https://..." value="${esc(ed.external_url || '')}"></div>
       ${ed.id ? `<div class="field"><label><input type="checkbox" id="sv-active" ${ed.active ? 'checked' : ''}> 開放填寫</label></div>` : ''}
     </div>
     <div class="row" style="justify-content:space-between;align-items:center;margin:8px 0">
@@ -17988,6 +17992,7 @@ function openSurveyForm(s) {
     body.querySelector('#sv-add').onclick = () => { questions.push({ type: 'rating', label: '' }); render(body); };
     body.querySelector('#sv-save').onclick = async () => {
       const payload = { title: body.querySelector('#sv-title').value.trim(), description: body.querySelector('#sv-desc').value.trim(),
+        external_url: body.querySelector('#sv-ext').value.trim(),
         questions: questions.filter(q => q.label && q.label.trim()) };
       if (ed.id) payload.active = body.querySelector('#sv-active').checked ? 1 : 0;
       try { if (ed.id) await api(`/surveys/${ed.id}`, { method: 'PUT', body: payload });
@@ -17997,14 +18002,55 @@ function openSurveyForm(s) {
     };
   });
 }
-async function openSurveyStats(id) {
-  const s = await api(`/surveys/${id}`);
+// 問卷統計：可選期間，評分與選擇題以長條圖呈現，並可下載答覆明細
+async function openSurveyStats(id, range = {}) {
+  const qs = new URLSearchParams();
+  if (range.from) qs.set('from', range.from);
+  if (range.to) qs.set('to', range.to);
+  const s = await api(`/surveys/${id}?${qs}`);
+  const bar = (label, value, max, text) => {
+    const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+    return `<div class="row" style="gap:8px;align-items:center;margin:3px 0">
+      <span style="min-width:120px;font-size:.88rem">${esc(label)}</span>
+      <span style="flex:1;background:#eef2f1;border-radius:4px;height:16px;overflow:hidden">
+        <span style="display:block;height:100%;width:${pct}%;background:var(--primary)"></span></span>
+      <span style="min-width:72px;text-align:right;font-size:.85rem">${esc(text)}</span></div>`;
+  };
   const body = s.stats.map(st => {
-    if (st.type === 'rating') return `<div class="card" style="margin:0 0 8px"><strong>${esc(st.label)}</strong><div>平均 <span style="font-size:1.3rem;color:var(--primary)">${st.avg ?? '-'}</span> / 5　（${st.count} 份）</div></div>`;
-    if (st.type === 'choice') return `<div class="card" style="margin:0 0 8px"><strong>${esc(st.label)}</strong>${Object.entries(st.dist).map(([k, v]) => `<div>${esc(k)}：${v}</div>`).join('') || '<div class="empty">尚無回應</div>'}</div>`;
+    if (st.type === 'rating') return `<div class="card" style="margin:0 0 8px"><strong>${esc(st.label)}</strong>
+      <div>平均 <span style="font-size:1.3rem;color:var(--primary)">${st.avg ?? '-'}</span> / 5　（${st.count} 份）</div>
+      ${st.avg ? bar('滿意度', st.avg, 5, `${st.avg} / 5`) : ''}</div>`;
+    if (st.type === 'choice') {
+      const entries = Object.entries(st.dist);
+      const max = entries.reduce((m, [, v]) => Math.max(m, v), 0);
+      const total = entries.reduce((t, [, v]) => t + v, 0);
+      return `<div class="card" style="margin:0 0 8px"><strong>${esc(st.label)}</strong>
+        ${entries.length ? entries.map(([k, v]) => bar(k, v, max, `${v} 份（${total ? Math.round(v / total * 100) : 0}%）`)).join('') : '<div class="empty">尚無回應</div>'}</div>`;
+    }
     return `<div class="card" style="margin:0 0 8px"><strong>${esc(st.label)}</strong><ul class="timeline" style="margin-top:4px">${st.answers.map(a => `<li>${esc(a)}</li>`).join('') || '<div class="empty">尚無文字回應</div>'}</ul></div>`;
   }).join('');
-  openModal(`${s.title}（回應 ${s.responses} 份）`, body || '<div class="empty">尚無資料</div>');
+  openModal(`${s.title}（期間回應 ${s.responses} 份／全部 ${s.total_responses} 份）`, `
+    <div class="card no-print" style="margin:0 0 8px">
+      <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="margin:0;max-width:150px"><label>期間（起）</label><input type="date" id="sv-from" value="${esc(range.from || '')}"></div>
+        <div class="field" style="margin:0;max-width:150px"><label>期間（迄）</label><input type="date" id="sv-to" value="${esc(range.to || '')}"></div>
+        <button class="btn small" id="sv-go">查詢</button>
+        <button class="btn small secondary" id="sv-all">全部期間</button>
+        <button class="btn small secondary" id="sv-xlsx">下載答覆明細</button>
+      </div>
+      ${s.external_url ? `<small style="color:var(--muted)">此問卷使用外部連結（${esc(s.external_url)}），回覆統計請至該平台查看。</small>` : ''}
+    </div>
+    ${body || '<div class="empty">這個期間沒有回覆</div>'}`, el => {
+    const get = i => el.querySelector(i).value;
+    el.querySelector('#sv-go').onclick = () => openSurveyStats(id, { from: get('#sv-from'), to: get('#sv-to') });
+    el.querySelector('#sv-all').onclick = () => openSurveyStats(id, {});
+    el.querySelector('#sv-xlsx').onclick = () => {
+      const p = new URLSearchParams({ format: 'xlsx' });
+      if (get('#sv-from')) p.set('from', get('#sv-from'));
+      if (get('#sv-to')) p.set('to', get('#sv-to'));
+      window.open(`/api/surveys/${id}/responses?${p}`, '_blank');
+    };
+  });
 }
 
 /* ---------- 名人推薦管理 ---------- */
@@ -18427,7 +18473,50 @@ async function route() {
   mountHelp(hash);   // 頁面即使載入失敗也要看得到操作說明
 }
 
+/* ---------- 商城新訂單提醒 ----------
+   家屬端下單後，有商城權限的員工端每 45 秒檢查一次，有新的家屬訂單就跳視窗提醒。
+   第一次登入只記錄目前最新單號、不打擾；已開著其他視窗時延到下一輪再提醒。 */
+let shopOrderTimer = null;
+const SHOP_SEEN_KEY = 'shop_order_seen_id';
+function stopShopOrderWatch() { if (shopOrderTimer) { clearInterval(shopOrderTimer); shopOrderTimer = null; } }
+function startShopOrderWatch() {
+  stopShopOrderWatch();
+  if (!currentUser || !canAccess('#/shop')) return;
+  const seen = () => { try { return Number(localStorage.getItem(SHOP_SEEN_KEY)) || 0; } catch (e) { return 0; } };
+  const setSeen = v => { try { localStorage.setItem(SHOP_SEEN_KEY, String(v)); } catch (e) { /* 無痕模式忽略 */ } };
+  const tick = async () => {
+    if (!currentUser) { stopShopOrderWatch(); return; }
+    let rows;
+    try { rows = await api('/orders?status=pending'); } catch (e) { return; }   // 網路不穩就下一輪再試
+    const maxId = rows.reduce((m, o) => Math.max(m, o.id), 0);
+    const last = seen();
+    if (!last) { setSeen(maxId); return; }
+    const fresh = rows.filter(o => o.id > last && o.placed_by === 'family');
+    if (!fresh.length) { if (maxId > last) setSeen(maxId); return; }
+    if ($('#modal').open) return;
+    setSeen(maxId);
+    openModal(`家屬新訂單（${fresh.length} 筆待處理）`, `
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th>時間</th><th>媽媽</th><th>下單家屬</th><th>品項</th><th>金額</th></tr></thead>
+        <tbody>${fresh.map(o => `<tr>
+          <td data-label="時間">${esc((o.created_at || '').slice(5, 16))}</td>
+          <td data-label="媽媽">${esc(o.mother_name || '-')}${o.booking_id ? '' : '<br><small style="color:var(--danger)">無進行中訂房</small>'}</td>
+          <td data-label="下單家屬">${esc(o.family_name || '')}</td>
+          <td data-label="品項">${o.items.map(i => `${esc(i.item_name)}×${i.quantity}`).join('、')}${o.note ? `<br><small>備註：${esc(o.note)}</small>` : ''}</td>
+          <td data-label="金額">${fmtMoney(o.total_amount)}</td></tr>`).join('')}</tbody></table></div>
+      <p style="color:var(--muted);font-size:.88rem">請到商城商品頁按「確認入帳」後，金額才會列入該媽媽的帳單。</p>
+      <div class="row mt" style="gap:8px"><button class="btn" id="so-go">前往商城處理</button>
+        <button class="btn secondary" id="so-later">知道了</button></div>`, body => {
+      body.querySelector('#so-go').onclick = () => { closeModal(); location.hash = '#/shop'; };
+      body.querySelector('#so-later').onclick = closeModal;
+    });
+  };
+  tick();
+  shopOrderTimer = setInterval(tick, 45000);
+}
+
 function showLogin() {
+  stopShopOrderWatch();
   currentUser = null;
   $('#login-view').hidden = false;
   $('#app-view').hidden = true;
@@ -18475,6 +18564,7 @@ async function showApp() {
     sec.style.display = vis ? '' : 'none';
   });
   route();
+  startShopOrderWatch();     // 家屬下單時跳視窗提醒
 }
 
 /* ---------- 初始化 ---------- */

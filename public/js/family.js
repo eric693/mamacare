@@ -341,6 +341,10 @@ async function loadSurveys() {
     $('#panel').innerHTML = `<div class="card"><div class="error-msg">${esc(e.message)}</div></div>`; return; }
   if (!surveys.length) { $('#panel').innerHTML = '<div class="card"><h3>滿意度問卷</h3><div class="empty">目前沒有開放的問卷</div></div>'; return; }
   $('#panel').innerHTML = surveys.map(s => {
+    // 外部問卷（Google 表單／SurveyCake 等）：只給連結，填寫與統計都在外部平台
+    if (s.external_url) return `<div class="card"><h3>${esc(s.title)}</h3>
+      ${s.description ? `<p style="font-size:.85rem;color:var(--muted)">${esc(s.description)}</p>` : ''}
+      <a class="btn" href="${esc(s.external_url)}" target="_blank" rel="noopener noreferrer">前往填寫問卷</a></div>`;
     if (s.submitted) return `<div class="card"><h3>${esc(s.title)}</h3><div class="badge green">已完成，感謝您的回饋！</div></div>`;
     const qs = s.questions.map((q, i) => {
       const name = `q_${s.id}_${i}`;

@@ -44,7 +44,7 @@ before(async () => {
   assert.strictEqual(seed.status, 0, seed.stderr);
   server = spawn('node', ['src/server.js'], { cwd: ROOT,
     env: { ...env, PORT: String(PORT), SESSION_SECRET: 'test', NODE_ENV: 'test', DB_BACKEND: 'sqlite' }, stdio: 'ignore' });
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 200; i++) {
     try { if ((await fetch(BASE + '/')).ok) break; } catch (e) { /* */ }
     await new Promise(r => setTimeout(r, 100));
   }

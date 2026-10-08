@@ -7,8 +7,15 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const DB = path.join('/tmp', `mamacare-test-${process.pid}.db`);
-const PORT = 3200 + (process.pid % 600);
-const BASE = `http://127.0.0.1:${PORT}`;
+// 這台主機還有別的服務在跑，固定埠號可能撞到（例如 3700）；改由系統挑一個空閒埠
+let PORT, BASE;
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = require('node:net').createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+  });
+}
 let server;
 let cookie = '';
 
@@ -44,13 +51,15 @@ async function anyCheckedInMother() {
 }
 
 before(async () => {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   cleanDb();
   const env = { ...process.env, MAMACARE_DB: DB };
   const seed = spawnSync('node', ['src/db.js', '--seed'], { cwd: ROOT, env, encoding: 'utf8' });
   assert.strictEqual(seed.status, 0, '種子建立失敗：' + seed.stderr);
   // 強制此整合測試走 sqlite（不受外部 DB_BACKEND=pg 影響）
   server = spawn('node', ['src/server.js'], { cwd: ROOT, env: { ...env, PORT: String(PORT), SESSION_SECRET: 'test', NODE_ENV: 'test', DB_BACKEND: 'sqlite' }, stdio: 'ignore' });
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 200; i++) {
     try { const r = await fetch(BASE + '/'); if (r.ok) return; } catch (e) { /* */ }
     await new Promise(r => setTimeout(r, 100));
   }
@@ -2926,4 +2935,48 @@ test('表單派送：到期提醒未送出／未填寫，送出與填寫後提�
   await req('PUT', '/api/settings', { fd_apgar_day: '2' });
   // 錯誤類別擋下
   assert.strictEqual((await req('POST', `/api/mothers/${mom.id}/form-dispatch/xxx/send`, {})).status, 400);
+});
+
+test('問卷：統計可選期間、答覆明細可下載、支援外部問卷連結', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const sv = await req('POST', '/api/surveys', { title: '滿意度測試', questions: [
+    { type: 'rating', label: '整體滿意度' }, { type: 'choice', label: '最滿意的服務', options: ['護理', '月子餐'] },
+    { type: 'text', label: '建議' }] });
+  assert.strictEqual(sv.status, 200);
+  const id = sv.data.id;
+  // 家屬填一份
+  const fams = (await req('GET', '/api/family-members')).data;
+  const fam = (Array.isArray(fams) ? fams : (fams.rows || [])).find(f => f.passcode);
+  if (fam) {
+    await req('POST', '/api/family/logout', {});
+    const lg = await req('POST', '/api/family/login', { passcode: fam.passcode });
+    if (lg.status === 200) {
+      await req('POST', `/api/family/surveys/${id}`, { answers: { 0: '5', 1: '護理', 2: '很好' } });
+    }
+    await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  }
+  const TODAY = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const all = (await req('GET', `/api/surveys/${id}`)).data;
+  assert.strictEqual(all.stats.length, 3);
+  assert.ok(all.total_responses >= all.responses);
+  // 期間篩選：挑一個不可能有資料的區間 → 0 份
+  const noneR = await req('GET', `/api/surveys/${id}?from=2000-01-01&to=2000-01-02`);
+  assert.strictEqual(noneR.status, 200, JSON.stringify(noneR.data));
+  assert.strictEqual(noneR.data.responses, 0, JSON.stringify(noneR.data).slice(0, 300));
+  // 今天的區間要能取到剛剛那份（若有建立家屬回覆）
+  const today = (await req('GET', `/api/surveys/${id}?from=${TODAY}&to=${TODAY}`)).data;
+  assert.strictEqual(today.responses, all.responses);
+  // 答覆明細：逐題一欄
+  const det = (await req('GET', `/api/surveys/${id}/responses`)).data;
+  assert.deepStrictEqual(det.columns.map(c => c.label).slice(0, 4), ['筆數', '填寫時間', '媽媽', '填寫家屬']);
+  assert.ok(det.columns.some(c => c.label === '整體滿意度'));
+  assert.strictEqual(det.rows.length, all.responses);
+  // 外部問卷連結：只收 http(s)，且可以沒有題目
+  const ext = await req('POST', '/api/surveys', { title: '外部問卷', external_url: 'https://forms.gle/abc', questions: [] });
+  assert.strictEqual(ext.status, 200);
+  assert.strictEqual((await req('GET', `/api/surveys/${ext.data.id}`)).data.external_url, 'https://forms.gle/abc');
+  const bad = await req('PUT', `/api/surveys/${ext.data.id}`, { external_url: 'javascript:alert(1)', questions: [] });
+  assert.strictEqual(bad.status, 400, '沒有題目又不是合法網址時要擋下');
+  // 沒有連結也沒有題目 → 擋
+  assert.strictEqual((await req('POST', '/api/surveys', { title: '空問卷', questions: [] })).status, 400);
 });
