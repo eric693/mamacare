@@ -4791,6 +4791,11 @@ async function viewSettings() {
         <div class="field"><label>每滿多少元回饋 1 點</label><input type="number" id="st-pt-per" min="1" value="${esc(s.points_earn_per)}"></div>
         <div class="field"><label>1 點折抵金額（元）</label><input type="number" id="st-pt-val" min="0" value="${esc(s.points_value)}"></div>
         <div class="field"><label>啟用點數</label><select id="st-pt-on"><option value="1" ${s.points_enabled === '1' ? 'selected' : ''}>啟用</option><option value="0" ${s.points_enabled === '0' ? 'selected' : ''}>停用</option></select></div>
+        <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>護理與營運的連動</strong></div>
+        <div class="field full"><label>已退房但未辦產婦結案者，是否留在住客管理／房況看板</label>
+          <select id="st-closure-link"><option value="0" ${s.closure_link_rooms === '1' ? '' : 'selected'}>不留（退房完成就從住客管理消失）</option>
+            <option value="1" ${s.closure_link_rooms === '1' ? 'selected' : ''}>留在原房號，標示「待產婦結案」</option></select>
+          <small style="color:var(--muted)">護理部還沒上線時請選「不留」；等護理端開始辦產婦結案再改回來。護理端的結案作業不受這個設定影響。</small></div>
         <div class="full" style="border-top:1px solid var(--border,#dde5e3);padding-top:8px;margin-top:4px"><strong>月子餐</strong></div>
         <div class="field full"><label>餐別（逗號分隔）</label><input id="st-meal-slots" value="${esc(s.meal_slots)}"></div>
         <div class="field full"><label>飲食類型（逗號分隔）</label><input id="st-meal-diets" value="${esc(s.meal_diets)}"></div>
@@ -4889,6 +4894,7 @@ async function viewSettings() {
           points_earn_per: $('#st-pt-per').value,
           points_value: $('#st-pt-val').value,
           points_enabled: $('#st-pt-on').value,
+          closure_link_rooms: $('#st-closure-link').value,
           meal_slots: $('#st-meal-slots').value.trim(),
           meal_diets: $('#st-meal-diets').value.trim(),
           meal_stages: $('#st-meal-stages').value.trim(),
@@ -13655,7 +13661,7 @@ async function viewCustomers() {
         gift_days: gv('#ct-giftdays'), diet_type: gv('#ct-diettype'), meal_plan: gv('#ct-mealplan'),
         deposit_method: gv('#ct-depmethod'), referrer: gv('#ct-referrer'),
         receptionist: gv('#ct-recept'), reviewer: gv('#ct-reviewer'),
-        disease_history: checkValue('.ct-disease', '#ct-disease-other'),
+        disease_history: ($q('#ct-disease-none') || {}).checked ? '無' : checkValue('.ct-disease', '#ct-disease-other'),
         pdpa_agree: gv('#ct-pdpa'), portrait_agree: gv('#ct-portrait'), staff_explained: gv('#ct-explained'),
         // 服務契約書當事人
         agent_is_mother: (($('#cust-extra').querySelector('input[name="ctr-agent"]:checked') || {}).value || ''),
@@ -13944,6 +13950,36 @@ async function viewCustomers() {
     $q('#ct-cashdisc-save').onclick = () => cput({
       ...ctPayload(), cash_discount: gv('#ct-cashdisc'), cash_discount_by: currentUser.name
     }).catch(e => alert(e.message));
+    // 疾病史「無」：勾了就把其他項目取消並停用；反過來勾其他項目時「無」自動取消
+    const noneBox = $q('#ct-disease-none');
+    if (noneBox) {
+      const otherEl = $q('#ct-disease-other');
+      const syncDisease = () => {
+        const on = noneBox.checked;
+        $('#cust-extra').querySelectorAll('.ct-disease').forEach(c => { if (on) c.checked = false; c.disabled = on; });
+        if (otherEl) { if (on) otherEl.value = ''; otherEl.disabled = on; }
+      };
+      noneBox.onchange = syncDisease;
+      $('#cust-extra').querySelectorAll('.ct-disease').forEach(c => c.addEventListener('change', () => {
+        if (c.checked && noneBox.checked) { noneBox.checked = false; syncDisease(); }
+      }));
+      if (otherEl) otherEl.addEventListener('input', () => { if (otherEl.value && noneBox.checked) { noneBox.checked = false; syncDisease(); } });
+      syncDisease();
+    }
+    // 贈品：從選單挑一項加數量，同一項再加會累加數量；內容欄仍可自己打字修改
+    const parseGifts = txt => String(txt || '').split(/[、,，]|\.\s+/).map(x => x.trim()).filter(Boolean)
+      .map(t => { const m = /^(.*?)\s*[*xX×]\s*(\d+)$/.exec(t); return m ? { name: m[1].trim(), qty: Number(m[2]) } : { name: t, qty: 0 }; });
+    const fmtGifts = list => list.map(g => (g.qty ? `${g.name}*${g.qty}` : g.name)).join('、');
+    $q('#ct-gift-add').onclick = () => {
+      const name = $q('#ct-gift-pick').value;
+      const qty = Math.max(1, Number($q('#ct-gift-qty').value) || 1);
+      if (!name) { alert('請先選擇贈品'); return; }
+      const list = parseGifts($q('#ct-gift').value);
+      const hit = list.find(g => g.name === name);
+      if (hit) hit.qty = (hit.qty || 0) + qty; else list.push({ name, qty });
+      $q('#ct-gift').value = fmtGifts(list).slice(0, 300);
+    };
+    $q('#ct-gift-clear').onclick = () => { $q('#ct-gift').value = ''; };
     $q('#ct-gift-save').onclick = () => cput({
       ...ctPayload(), gift_content: gv('#ct-gift'), gift_by: currentUser.name
     }).catch(e => alert(e.message));
@@ -14708,10 +14744,12 @@ async function viewCustomers() {
           <div class="field"><label>接待人員</label><input id="ct-recept" maxlength="50" value="${esc(cd.receptionist || '')}"></div>
           <div class="field"><label>覆核</label><input id="ct-reviewer" maxlength="50" value="${esc(cd.reviewer || '')}"></div>
           <div class="field full"><label>疾病史</label>
-            <div class="row" style="gap:14px;flex-wrap:wrap;padding-top:6px">${DISEASE_OPTS.map(o =>
+            <div class="row" style="gap:14px;flex-wrap:wrap;padding-top:6px">
+              <label class="bna-chk"><input type="checkbox" id="ct-disease-none" ${cd.disease_history === '無' ? 'checked' : ''}> <strong>無</strong></label>
+              ${DISEASE_OPTS.map(o =>
               `<label class="bna-chk"><input type="checkbox" class="ct-disease" value="${o}" ${(cd.disease_history || '').split('、').includes(o) ? 'checked' : ''}> ${o}</label>`).join('')}
-              <label class="bna-chk">其他：<input id="ct-disease-other" maxlength="60" style="max-width:180px" value="${esc(listOther(cd.disease_history, DISEASE_OPTS))}"></label></div>
-            <small style="color:var(--muted)">未勾選任何項目時，訂房確認單印為「無」。</small></div>
+              <label class="bna-chk">其他：<input id="ct-disease-other" maxlength="60" style="max-width:180px" value="${esc(listOther(cd.disease_history === '無' ? '' : cd.disease_history, DISEASE_OPTS))}"></label></div>
+            <small style="color:var(--muted)">勾「無」代表已確認沒有疾病史（其他選項會一併取消）；都沒勾時訂房確認單一樣印「無」。</small></div>
           <div class="field"><label>個資提供合作廠商</label><select id="ct-pdpa"><option value="">--未確認--</option>${['同意', '不同意'].map(o => `<option ${cd.pdpa_agree === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>
           <div class="field"><label>肖像權使用（住房須知）</label><select id="ct-portrait"><option value="">--未確認--</option>${['同意', '不同意'].map(o => `<option ${cd.portrait_agree === o ? 'selected' : ''}>${o}</option>`).join('')}</select>
             <small style="color:var(--muted)">選定後住房須知的「□同意／□不同意」會自動打勾；未確認則印空框供紙本手勾。</small></div>
@@ -14788,8 +14826,18 @@ async function viewCustomers() {
       <div class="card">
         <div class="sec-hd">贈品內容</div>
         <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0;min-width:200px"><label>贈品</label>
+            <select id="ct-gift-pick"><option value="">-- 選擇贈品 --</option>${
+              (SETTINGS.gift_options || '').split(',').map(x => x.trim()).filter(Boolean)
+                .map(o => `<option>${esc(o)}</option>`).join('')}</select></div>
+          <div class="field" style="margin:0"><label>數量</label><input type="number" id="ct-gift-qty" min="1" value="1" style="max-width:80px"></div>
+          <button class="btn secondary" id="ct-gift-add">加入</button>
+          <small style="color:var(--muted);align-self:center">贈品項目可在「產後系統其他設定 → 合約贈品項目」維護；也可直接在內容欄自行輸入。</small>
+        </div>
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:6px">
           <div class="field" style="margin:0;flex:1;min-width:220px"><label>內容</label><input id="ct-gift" maxlength="300" value="${esc(cd.gift_content || '')}" placeholder="請填入贈品內容"></div>
           <div class="field" style="margin:0"><label>存檔人</label><input value="${esc(cd.gift_by || '')}" readonly style="max-width:120px"></div>
+          <button class="btn secondary" id="ct-gift-clear">清空</button>
           <button class="btn danger" id="ct-gift-save">贈品存檔</button>
         </div>
         ${ctSavedRow('贈品內容', cd.gift_content || '（無）', cd.gift_by, cd.gift_at)}
@@ -16192,7 +16240,8 @@ const SYS_OPT_PAGES = {
     extra: { key: 'tour_visit_limit', label: '設定預約參觀人數限制' } },
   formula_brand: { key: 'formula_brand_options', title: '寶寶奶粉廠牌設定', label: '奶粉廠牌' },
   referral_hospital: { key: 'referral_hospital_options', title: '護理後送醫院', label: '後送醫院' },
-  contact_class: { key: 'contact_class_options', title: '產後客戶聯絡人分類', label: '產後客戶聯絡人關係' }
+  contact_class: { key: 'contact_class_options', title: '產後客戶聯絡人分類', label: '產後客戶聯絡人關係' },
+  gift: { key: 'gift_options', title: '合約贈品項目', label: '贈品名稱' }
 };
 async function viewSysOption() {
   const which = (location.hash.split('?k=')[1] || '').split('&')[0];

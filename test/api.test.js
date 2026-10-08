@@ -2155,8 +2155,10 @@ test('三者互不連動：退房完成／產婦結案／產後嬰兒結案各�
     '嬰兒結案後不應再列為待結案');
 });
 
-test('已退房未辦產婦結案者：媽媽房況留在原房號（pending_closures）供結案', async () => {
+test('已退房未辦產婦結案者：依「護理結案連動」設定決定要不要留在原房號', async () => {
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  // 預設關閉（護理部還沒上線）：退房完成就不留在住客管理
+  assert.strictEqual((await req('GET', '/api/settings')).data.closure_link_rooms, '0');
   const TODAY = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const c = await req('POST', '/api/customers', { name: '待結案媽', due_date: TODAY });
   const momId = c.data.id;
@@ -2169,7 +2171,14 @@ test('已退房未辦產婦結案者：媽媽房況留在原房號（pending_clo
   assert.ok(bk, '需可建訂房');
   assert.strictEqual((await req('PUT', `/api/bookings/${bk.id}/status`, { status: 'checked_in' })).status, 200);
   assert.strictEqual((await req('POST', `/api/bookings/${bk.id}/checkout-complete`, {})).status, 200);
-  // 退房完成後：房態轉空房（不佔房），但該房掛著「已退房待結案」
+  // 連動關閉時：房態轉空房，且不會留下「待產婦結案」
+  const off = (await req('GET', '/api/room-status/mothers')).data;
+  const offRoom = off.rooms.find(x => x.id === room.id);
+  assert.ok(!offRoom.occupant, '退房完成後不應再佔房');
+  assert.strictEqual((offRoom.pending_closures || []).length, 0, '連動關閉時不留待結案');
+  assert.strictEqual(off.stats.pending_closure, 0);
+  // 開啟連動（護理部上線後）：該房掛著「已退房待結案」供護理端結案
+  assert.strictEqual((await req('PUT', '/api/settings', { closure_link_rooms: '1' })).status, 200);
   const rs = (await req('GET', '/api/room-status/mothers')).data;
   const rr = rs.rooms.find(x => x.id === room.id);
   assert.ok(!rr.occupant, '退房完成後不應再佔房');
@@ -2181,6 +2190,7 @@ test('已退房未辦產婦結案者：媽媽房況留在原房號（pending_clo
   const rs2 = (await req('GET', '/api/room-status/mothers')).data;
   const rr2 = rs2.rooms.find(x => x.id === room.id);
   assert.ok(!(rr2.pending_closures || []).some(p => p.mother_id === momId), '結案後應移出待結案名單');
+  await req('PUT', '/api/settings', { closure_link_rooms: '0' });   // 還原成上線前的設定
 });
 
 test('訂房改期：報喜帶入的入住日訂餐與請備房任務跟著搬', async () => {

@@ -9514,7 +9514,8 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
   }
   // 已辦「退房完成」但尚未辦「產婦結案」者：仍留在原房號供護理端結案（三者互不連動）
   // 只取近 60 天內退房的，避免歷史資料長期佔用看板
-  const pendingClosures = db.prepare(`
+  // 護理部還沒上線時（系統設定關閉「護理結案連動」），退房完成就從住客管理／房況看板消失
+  const pendingClosures = getSettings().closure_link_rooms === '1' ? db.prepare(`
     SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out, bk.actual_check_out,
            m.id AS mother_id, m.name AS mother_name, m.phone
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
@@ -9523,7 +9524,7 @@ app.get('/api/room-status/mothers', requireStaff, (req, res) => {
     .filter(p => !db.prepare(`SELECT COUNT(*) c FROM mother_closures
       WHERE mother_id = ? AND booking_id IN (?, 0)`).get(p.mother_id, chainRootIdOf(p.booking_id)).c)
     // 同一位媽媽只留最近一次退房
-    .filter((p, i, arr) => arr.findIndex(x => x.mother_id === p.mother_id) === i);
+    .filter((p, i, arr) => arr.findIndex(x => x.mother_id === p.mother_id) === i) : [];
   // 每房「今日應到」的預約（只有當日入住才影響房態／今日入住統計）
   const upcoming = db.prepare(`
     SELECT bk.room_id, bk.id AS booking_id, bk.check_in, bk.check_out,

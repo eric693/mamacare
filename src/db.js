@@ -2362,6 +2362,11 @@ const DEFAULT_SETTINGS = {
   cert_issuer_options: '衛生福利部,中華民國護理師護士公會,美國心臟協會(AHA),勞動部勞動力發展署',
   // 醫師巡診快選（逗號分隔）：巡診醫師姓名
   visit_physician_options: '',
+  // 合約贈品項目（逗號分隔）：客戶管理的合約資料分頁可直接選贈品與數量
+  gift_options: '身體spa,洗頭,臉部保養,通乳,寶寶寫真,彌月蛋糕,媽媽包',
+  // 護理結案連動住客管理／房況看板：開啟時「已退房但還沒辦產婦結案」的媽媽會留在原房號，
+  // 護理部還沒上線前請維持關閉（0），退房完成就從住客管理消失
+  closure_link_rooms: '0',
   // 會員點數（商城）：每滿 points_earn_per 元回饋 1 點，1 點折抵 points_value 元
   points_enabled: '1',
   points_earn_per: '100',
