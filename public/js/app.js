@@ -2494,9 +2494,11 @@ async function viewBedPlanning() {
 
   // mode='planned'：預定（reserved+checked_in 皆著色）；mode='actual'：僅 checked_in 著色，reserved 顯示待入住；
   // 實際入住中與已預約同房同日重疊 → 紅色斜線警示
+  // 預定床表看「預定房號」、實際入住床表看「實際房號」；兩份各自獨立，改一邊不會動到另一邊
+  const roomOf = (b, mode) => (mode === 'planned' ? (b.planned_room_id || b.room_id) : b.room_id);
   const matrix = mode => cal.rooms.map(r => {
     const cells = days.map(d => {
-      const covers = cal.bookings.filter(b => b.room_id === r.id && b.check_in <= d && b.check_out > d);
+      const covers = cal.bookings.filter(b => roomOf(b, mode) === r.id && b.check_in <= d && b.check_out > d);
       const bkIn = covers.find(b => b.status === 'checked_in');
       const bkRes = covers.find(b => b.status === 'reserved');
       const bk = bkIn || covers[0];
@@ -2506,7 +2508,7 @@ async function viewBedPlanning() {
           return `<td title="重疊！入住中 ${esc(bkIn.mother_name)}（~${esc(bkIn.check_out)}）與已預約 ${esc(bkRes.mother_name)}（${esc(bkRes.check_in)}~）同日同房" style="background:repeating-linear-gradient(45deg,#f6c6c6,#f6c6c6 4px,#cdeae4 4px,#cdeae4 8px);padding:2px;font-size:10px;color:#b23b3b;font-weight:700;white-space:nowrap;overflow:hidden;max-width:0">${isStart || bkRes.check_in === d ? '疊' : ''}</td>`;
         }
         if (mode === 'actual' && !bkIn && bk.status === 'reserved') {
-          // 預定但尚未實際入住：以斜線淡色標示「待入住」
+          // 預定但尚未實際入住：以斜線淡色標示，點格子可直接改這張床表的房號
           return `<td data-bk-move="${bk.id}" title="${esc(bk.mother_name)} 預定未入住　點擊可房號異動" style="cursor:pointer;background:repeating-linear-gradient(45deg,#fff,#fff 4px,#fdeec2 4px,#fdeec2 8px);padding:2px;font-size:10px;color:#b9911f;white-space:nowrap;overflow:hidden;max-width:0">${isStart ? '待' : ''}</td>`;
         }
         const color = bk.status === 'checked_in' ? '#cdeae4' : bk.status === 'checked_out' ? '#e3e6e5' : '#fdeec2';
@@ -2521,8 +2523,8 @@ async function viewBedPlanning() {
   }).join('');
 
   const legend = bedTab === 'planned'
-    ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span> <span class="badge gray">已退住</span>　點空白格可快速建立訂房'
-    : '<span class="badge green">實際入住中</span> <span class="badge gray">已退住</span>　斜線格＝已預約尚未辦理入住　<span style="color:#b23b3b;font-weight:700">紅斜線〔疊〕＝入住中與已預約重疊</span>';
+    ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span> <span class="badge gray">已退住</span>　點空白格可快速建立訂房　<small style="color:var(--muted)">（此表為當初預定的房號，改這裡不會動到實際入住床表）</small>'
+    : '<span class="badge green">實際入住中</span> <span class="badge gray">已退住</span>　斜線格＝已預約尚未辦理入住　<span style="color:#b23b3b;font-weight:700">紅斜線〔疊〕＝入住中與已預約重疊</span>　<small style="color:var(--muted)">（此表為實際住的房號，房況／膳食／帳務都看這裡；改這裡不會動到預定床表）</small>';
 
   // 年份／月份快速選單：直接跳到當月 1 日的床表
   const startY = Number(cal.start.slice(0, 4)) || new Date().getFullYear();
@@ -2577,18 +2579,24 @@ async function viewBedPlanning() {
   main().querySelectorAll('[data-bk-move]').forEach(cell => cell.onclick = () => {
     const bk = cal.bookings.find(b => String(b.id) === cell.dataset.bkMove);
     if (!bk) return;
-    const curRoom = cal.rooms.find(r => r.id === bk.room_id) || {};
+    const planned = bedTab === 'planned';
+    const curId = planned ? (bk.planned_room_id || bk.room_id) : bk.room_id;
+    const curRoom = cal.rooms.find(r => r.id === curId) || {};
+    const otherRoom = cal.rooms.find(r => r.id === (planned ? bk.room_id : (bk.planned_room_id || bk.room_id))) || {};
     const active = rooms.filter(r => r.active);
-    openModal(`房號異動 — ${esc(bk.mother_name)}`, `
+    openModal(`房號異動（${planned ? '預定床表' : '實際入住床表'}） — ${esc(bk.mother_name)}`, `
       <div style="font-size:.9rem;line-height:1.9;margin-bottom:6px">
-        <div>目前房號：<b>${esc(curRoom.name || '—')}</b>${curRoom.room_type ? `（${esc(curRoom.room_type)}）` : ''}</div>
+        <div>目前${planned ? '預定' : '實際'}房號：<b>${esc(curRoom.name || '—')}</b>${curRoom.room_type ? `（${esc(curRoom.room_type)}）` : ''}</div>
+        ${otherRoom.id && otherRoom.id !== curId ? `<div style="color:var(--muted)">${planned ? '實際入住' : '當初預定'}房號：${esc(otherRoom.name)}</div>` : ''}
         <div>住期：${esc(bk.check_in)} ~ ${esc(bk.check_out)}　狀態：${STATUS_LABEL[bk.status] || esc(bk.status)}</div>
       </div>
       <div class="field"><label>異動為房號</label>
-        <select id="bm-room">${active.map(r => `<option value="${r.id}" ${r.id === bk.room_id ? 'selected' : ''}>${esc(r.name)}（${esc(r.room_type)}）</option>`).join('')}</select></div>
-      <small style="color:var(--muted)">整段異動＝該筆訂房整段換房號，客戶管理／排房資料同步更新；期間衝突會被擋下。</small>
+        <select id="bm-room">${active.map(r => `<option value="${r.id}" ${r.id === curId ? 'selected' : ''}>${esc(r.name)}（${esc(r.room_type)}）</option>`).join('')}</select></div>
+      <small style="color:var(--muted)">${planned
+        ? '只會改「預定床表」的房號；實際入住床表、房況、膳食與帳務都不受影響（尚未辦入住者因為實際還沒發生，會一併更新）。'
+        : '整段異動＝該筆訂房整段換實際房號，房況／膳食／帳務與客戶管理同步更新；預定床表維持原本排的房號。期間衝突會被擋下。'}</small>
       <div class="row mt"><button class="btn danger" id="bm-save">確認整段異動</button><span class="error-msg" id="bm-err"></span></div>
-      <div style="border-top:1px dashed var(--border);margin-top:10px;padding-top:8px">
+      <div style="border-top:1px dashed var(--border);margin-top:10px;padding-top:8px;${planned ? 'display:none' : ''}">
         <div style="font-weight:600;color:var(--primary-dark);margin-bottom:4px">期間轉房（自轉房日起換住上方選擇的房號）</div>
         <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
           <div class="field" style="max-width:160px;margin:0"><label>轉房日</label><input type="date" id="bm-date" min="${esc(bk.check_in)}" max="${esc(bk.check_out)}"></div>
@@ -2599,9 +2607,10 @@ async function viewBedPlanning() {
       </div>`, body => {
       body.querySelector('#bm-save').onclick = async () => {
         const roomId = Number(body.querySelector('#bm-room').value) || 0;
-        if (!roomId || roomId === bk.room_id) { closeModal(); return; }
+        if (!roomId || roomId === curId) { closeModal(); return; }
         try {
-          await api(`/bookings/${bk.id}`, { method: 'PUT', body: { room_id: roomId } });
+          if (planned) await api(`/bookings/${bk.id}/planned-room`, { method: 'PUT', body: { room_id: roomId } });
+          else await api(`/bookings/${bk.id}`, { method: 'PUT', body: { room_id: roomId } });
           closeModal(); viewBedPlanning();
         } catch (e) { body.querySelector('#bm-err').textContent = e.message; }
       };

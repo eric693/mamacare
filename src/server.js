@@ -3761,6 +3761,27 @@ function applyBookingChange(req, bk, roomId, checkIn, checkOut, total) {
 }
 
 // 入住前準備：調整房間／床位與起迄日（限尚未退房／取消者），含換房衝突檢查
+// 預定床表的房號異動：只動「預定房號」，不影響實際入住床表與房況／膳食／帳務。
+// 還沒辦入住（reserved）的訂房，實際房號本來就等於預定，所以一起更新。
+app.put('/api/bookings/:id/planned-room', requireStaff, (req, res) => {
+  const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
+  if (!bk) return res.status(404).json({ error: '找不到訂房' });
+  if (bk.status === 'cancelled') return res.status(400).json({ error: '已取消的訂房不能異動' });
+  const roomId = Number((req.body || {}).room_id) || 0;
+  const room = db.prepare('SELECT id, name FROM rooms WHERE id = ? AND active = 1').get(roomId);
+  if (!room) return res.status(400).json({ error: '房間不存在或已停用' });
+  // 預定床表的衝突只看預定房號（實際床表自己排，不互相擋）
+  const clash = db.prepare(`SELECT m.name FROM bookings b JOIN mothers m ON m.id = b.mother_id
+    WHERE b.id != ? AND b.status != 'cancelled' AND COALESCE(b.planned_room_id, b.room_id) = ?
+      AND b.check_in < ? AND b.check_out > ? LIMIT 1`).get(bk.id, roomId, bk.check_out, bk.check_in);
+  if (clash) return res.status(409).json({ error: `該期間此房已被「${clash.name}」預定` });
+  const alsoActual = bk.status === 'reserved';
+  db.prepare(`UPDATE bookings SET planned_room_id = ?${alsoActual ? ', room_id = ?' : ''} WHERE id = ?`)
+    .run(...(alsoActual ? [roomId, roomId, bk.id] : [roomId, bk.id]));
+  logAudit(req, { action: 'update', entity: 'booking', entity_id: bk.id,
+    summary: `預定床表房號異動 → ${room.name}${alsoActual ? '（尚未入住，實際房號一併更新）' : '（實際入住房號不變）'}` });
+  res.json({ ok: true, also_actual: alsoActual });
+});
 app.put('/api/bookings/:id', requireStaff, (req, res) => {
   const bk = db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id);
   if (!bk) return res.status(404).json({ error: '找不到訂房' });
@@ -4759,9 +4780,10 @@ function familyMotherId(fam) {
 app.get('/api/family/member', requireFamily, (req, res) => {
   const mid = familyMotherId(req.session.family);
   const mom = mid ? db.prepare('SELECT member_no, points FROM mothers WHERE id = ?').get(mid) : null;
+  const canOrder = !!(mid && activeBookingForMother(mid));   // 已出住就不開放線上下單
   const ps = pointSettings();
   res.json({
-    member_no: mom ? mom.member_no : '', points: mom ? mom.points : 0,
+    member_no: mom ? mom.member_no : '', points: mom ? mom.points : 0, can_order: canOrder,
     points_enabled: ps.enabled, points_value: ps.value, points_earn_per: ps.earnPer
   });
 });
@@ -4779,6 +4801,8 @@ app.post('/api/family/orders', requireFamily, (req, res) => {
   const mid = familyMotherId(fam);
   if (!mid) return res.status(400).json({ error: '找不到寶寶資料' });
   const bk = activeBookingForMother(mid);
+  // 已出住就不給線上下單：沒有在住訂房，金額掛不到帳單上（會變成扣了庫存卻沒人付款）
+  if (!bk) return res.status(400).json({ error: '媽媽已出住，無法線上下單。如需購買請洽護理站' });
   const b = req.body || {};
   try {
     const oid = createOrder({
@@ -9469,7 +9493,8 @@ app.get('/api/room-calendar', requireStaff, (req, res) => {
   const dcCond = req.query.include_daycare ? '' : " AND room_type != '托嬰'";
   const rooms = db.prepare(`SELECT id, name, room_type, price_per_day FROM rooms WHERE active=1${dcCond} ORDER BY name`).all();
   const bookings = db.prepare(`
-    SELECT bk.id, bk.room_id, bk.mother_id, bk.check_in, bk.check_out, bk.actual_check_out, bk.status, bk.notes,
+    SELECT bk.id, bk.room_id, COALESCE(bk.planned_room_id, bk.room_id) AS planned_room_id,
+           bk.mother_id, bk.check_in, bk.check_out, bk.actual_check_out, bk.status, bk.notes,
            m.name AS mother_name
     FROM bookings bk JOIN mothers m ON m.id=bk.mother_id
     WHERE bk.status != 'cancelled' AND bk.check_in < ? AND bk.check_out > ?

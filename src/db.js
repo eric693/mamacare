@@ -1688,6 +1688,18 @@ function init() {
   if (!stxCols.includes('dept')) db.exec("ALTER TABLE supply_txns ADD COLUMN dept TEXT DEFAULT ''");
   if (!stxCols.includes('purpose')) db.exec("ALTER TABLE supply_txns ADD COLUMN purpose TEXT DEFAULT ''");
 
+  // 排床：預定床表與實際入住床表各記一份房號。
+  // room_id ＝實際住的房（房況、膳食、帳務一律看這個）；planned_room_id ＝當初預定的房，
+  // 只給預定床表看，實際床表改房號不會動到它。新訂房用觸發器自動補上預定房號。
+  const bkPlanCols = db.prepare('PRAGMA table_info(bookings)').all().map(c => c.name);
+  if (!bkPlanCols.includes("planned_room_id")) {
+    db.exec('ALTER TABLE bookings ADD COLUMN planned_room_id INTEGER REFERENCES rooms(id)');
+    db.exec('UPDATE bookings SET planned_room_id = room_id WHERE planned_room_id IS NULL');
+  }
+  db.exec(`CREATE TRIGGER IF NOT EXISTS bookings_planned_room_default AFTER INSERT ON bookings
+    WHEN NEW.planned_room_id IS NULL
+    BEGIN UPDATE bookings SET planned_room_id = NEW.room_id WHERE id = NEW.id; END`);
+
   // 問卷：外部問卷連結（Google 表單／SurveyCake 等；有填就導向外部，統計在外部平台看）
   const svCols = db.prepare('PRAGMA table_info(surveys)').all().map(c => c.name);
   if (!svCols.includes('external_url')) db.exec("ALTER TABLE surveys ADD COLUMN external_url TEXT DEFAULT ''");

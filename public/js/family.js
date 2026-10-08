@@ -489,6 +489,7 @@ async function loadShop() {
     <div class="card">
       <h3>商城</h3>
       <p style="font-size:.85rem;color:var(--muted)">選購商品後送出訂單，護理站確認後會列入您的帳單，於現場結算。${member.points_enabled ? `<br>會員 ${esc(member.member_no || '')}　目前 <strong>${member.points}</strong> 點（每滿 ${member.points_earn_per} 元回饋 1 點，1 點折抵 ${member.points_value} 元）。` : ''}</p>
+      ${member.can_order === false ? '<div class="card" style="background:#fff4e0;margin:0 0 10px">已出住，線上訂購已關閉。如需購買請直接洽護理站。</div>' : ''}
       <div class="prod-grid" style="margin-top:10px">${cards}</div>
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
         <div class="row" style="gap:10px;flex-wrap:wrap">
@@ -496,7 +497,7 @@ async function loadShop() {
           ${member.points_enabled ? `<div class="field" style="flex:1;min-width:140px"><label>使用點數（最多 ${member.points}）</label><input type="number" id="shop-points" min="0" max="${member.points}" value="0"></div>` : ''}
         </div>
         <div id="shop-quote" style="margin:10px 0;padding:10px;background:var(--primary-light);border-radius:8px;font-size:.9rem"></div>
-        <div class="row" style="justify-content:flex-end"><button class="btn" id="shop-submit">送出訂單</button></div>
+        <div class="row" style="justify-content:flex-end"><button class="btn" id="shop-submit" ${member.can_order === false ? 'disabled title="已出住，請洽護理站"' : ''}>送出訂單</button></div>
         <div class="error-msg" id="shop-err"></div>
         <div id="shop-ok" style="color:var(--ok)"></div>
       </div>

@@ -2980,3 +2980,44 @@ test('問卷：統計可選期間、答覆明細可下載、支援外部問卷�
   // 沒有連結也沒有題目 → 擋
   assert.strictEqual((await req('POST', '/api/surveys', { title: '空問卷', questions: [] })).status, 400);
 });
+
+test('排床：預定床表與實際入住床表各記一份房號，互不連動', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const base = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const D = n => new Date(base + n * 86400000).toISOString().slice(0, 10);
+  const c = await req('POST', '/api/customers', { name: `床表分離${Date.now() % 100000}`, due_date: D(30) });
+  const rooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && r.room_type !== '托嬰');
+  let bk = null, planRoom = null;
+  for (const r of rooms) {
+    const t = await req('POST', '/api/bookings', { mother_id: c.data.id, room_id: r.id, check_in: D(40), check_out: D(50) });
+    if (t.status === 200) { bk = t.data; planRoom = r; break; }
+  }
+  assert.ok(bk, '需可建訂房');
+  const calOf = async () => (await req('GET', `/api/room-calendar?start=${D(40)}&days=14`)).data.bookings.find(b => b.id === bk.id);
+  let row = await calOf();
+  assert.strictEqual(row.planned_room_id, planRoom.id, '新訂房的預定房號＝實際房號');
+  // 先辦入住，之後改實際房號才不會連動到預定
+  assert.strictEqual((await req('PUT', `/api/bookings/${bk.id}/status`, { status: 'checked_in' })).status, 200);
+  // 在「實際入住床表」換房：只改實際房號，預定房號不動
+  const other = rooms.find(async r => r.id !== planRoom.id) && rooms.filter(r => r.id !== planRoom.id);
+  let moved = null;
+  for (const r of other) {
+    const t = await req('PUT', `/api/bookings/${bk.id}`, { room_id: r.id });
+    if (t.status === 200) { moved = r; break; }
+  }
+  assert.ok(moved, '需有可換的空房');
+  row = await calOf();
+  assert.strictEqual(row.room_id, moved.id, '實際房號已換');
+  assert.strictEqual(row.planned_room_id, planRoom.id, '預定房號不受影響');
+  // 在「預定床表」換房：只改預定房號，實際房號不動
+  let planMoved = null;
+  for (const r of rooms) {
+    if (r.id === planRoom.id || r.id === moved.id) continue;
+    const t = await req('PUT', `/api/bookings/${bk.id}/planned-room`, { room_id: r.id });
+    if (t.status === 200) { planMoved = r; assert.strictEqual(t.data.also_actual, false, '已入住者不連動實際房號'); break; }
+  }
+  assert.ok(planMoved, '需有可換的空房');
+  row = await calOf();
+  assert.strictEqual(row.planned_room_id, planMoved.id, '預定房號已換');
+  assert.strictEqual(row.room_id, moved.id, '實際房號不受影響');
+});
