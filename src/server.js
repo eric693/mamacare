@@ -142,6 +142,60 @@ const MODULES = [
   { key: 'users', label: '帳號管理' }
 ];
 const MODULE_KEYS = MODULES.map(m => m.key);
+// 權限對照表用的分組（只影響顯示順序與標題）
+const MODULE_GROUPS = {
+  baby_care: '照護與醫療', newborn_medical: '照護與醫療', physician: '照護與醫療', mother_care: '照護與醫療',
+  handover: '照護與醫療', incidents: '品質與安全', infection: '品質與安全',
+  residents: '營運管理', rooms: '營運管理', housekeeping: '營運管理', billing: '營運管理', shop: '營運管理',
+  meals: '營運管理', programs: '營運管理', visitors: '營運管理', family: '營運管理',
+  members: '營運管理', invoices: '營運管理', coupons: '營運管理',
+  tours: '業務與客戶', contracts: '業務與客戶', crm: '業務與客戶', testimonials: '業務與客戶',
+  proc_request: '採購（請採驗）', proc_buyer: '採購（請採驗）', proc_receive: '採購（請採驗）',
+  proc_ship: '採購（請採驗）', proc_account: '採購（請採驗）', proc_finance: '採購（請採驗）', proc_admin: '採購（請採驗）',
+  supplies: '庫存與耗材',
+  reports: '報表與法規', gov: '報表與法規', certifications: '報表與法規', surveys: '報表與法規', custom_forms: '報表與法規',
+  shifts: '人事', users: '系統管理', settings: '系統管理', audit: '系統管理', export: '系統管理', ai: '系統管理'
+};
+const GROUP_ORDER = ['照護與醫療', '品質與安全', '營運管理', '業務與客戶', '採購（請採驗）', '庫存與耗材',
+  '報表與法規', '人事', '系統管理', '其他'];
+// 選單已隱藏、但功能仍在的模組：對照表補一句說明，免得看起來像沒作用
+const MODULE_HIDDEN_NOTE = {
+  newborn_medical: '新生兒醫療（給藥／篩檢／疫苗／光療）—— 選單已隱藏，由寶寶照護頁進入',
+  members: '會員與點數 —— 選單已隱藏，功能仍在（商城結帳會用到點數）',
+  invoices: '電子發票 —— 選單已隱藏，功能仍在',
+  coupons: '優惠券 —— 選單已隱藏，功能仍在（商城結帳可輸入券碼）',
+  contracts: '電子合約簽署 —— 依電子簽章法暫不使用，入口已全部隱藏',
+  crm: 'LINE／FB 客訊 —— 選單已隱藏，功能仍在',
+  testimonials: '名人推薦管理 —— 選單已隱藏，對外展示頁 /testimonials.html 仍可用',
+  audit: '稽核軌跡（誰在何時改了什麼）—— 選單已隱藏，功能仍在'
+};
+// 權限對照表：直接從員工端側欄（index.html）解析出每個模組看得到哪些頁面，
+// 這樣選單增減或隱藏（註解掉）時，對照表會自動跟著變，不會各寫一份而走樣。
+let permMatrixCache = null;
+function permissionMatrix() {
+  if (permMatrixCache) return permMatrixCache;
+  let html = '';
+  try { html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'); } catch (e) { html = ''; }
+  html = html.replace(/<!--[\s\S]*?-->/g, '');                      // 被註解掉（隱藏）的選單不列入
+  const byKey = {};
+  const add = (key, label) => { (byKey[key] = byKey[key] || []).push(label); };
+  for (const m of html.matchAll(/<a href="#\/[^"]+"[^>]*data-perm="([^"]+)"[^>]*>([^<]+)<\/a>/g)) {
+    for (const k of m[1].split(',')) add(k.trim(), m[2].trim());
+  }
+  for (const m of html.matchAll(/<button[^>]*class="nav-group-hd"[^>]*data-perm="([^"]+)"[^>]*>([^<]+)</g)) {
+    for (const k of m[1].split(',')) add(k.trim(), m[2].trim() + '（群組）');
+  }
+  const rows = MODULES.map(mod => ({
+    group: MODULE_GROUPS[mod.key] || '其他',
+    key: mod.key,
+    label: mod.label,
+    pages: [...new Set(byKey[mod.key] || [])].join('、')
+      || MODULE_HIDDEN_NOTE[mod.key] || '（無獨立選單，由其他頁面內的功能使用）'
+  })).sort((a, b) => (GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group))
+    || MODULE_KEYS.indexOf(a.key) - MODULE_KEYS.indexOf(b.key));
+  permMatrixCache = rows;
+  return rows;
+}
 // 寶寶位置狀態（房況卡片顏色）：嬰兒室／親子同室／隔離室／不在館內
 const BABY_LOCATIONS = ['nursery', 'rooming', 'isolation', 'out', 'hospital', 'daycare'];
 const BABY_LOCATION_TW = { nursery: '嬰兒室', rooming: '親子同室', isolation: '隔離室', out: '不在館內', hospital: '住院中', daycare: '托嬰' };
@@ -11210,6 +11264,19 @@ app.get('/api/handover-todos', requireStaff, (req, res) => {
 // ---------- 員工 ----------
 // 可授權的模組清單（供帳號管理頁顯示）
 app.get('/api/modules', requireStaff, (req, res) => res.json(MODULES));
+// 權限對照表（可 ?format=xlsx 下載）
+app.get('/api/permission-matrix', requireStaff, (req, res) => {
+  const rows = permissionMatrix();
+  const columns = [{ key: 'group', label: '分類' }, { key: 'label', label: '權限模組' },
+    { key: 'key', label: '代碼' }, { key: 'pages', label: '勾選後看得到的功能' }];
+  if (req.query.format === 'xlsx') {
+    const buf = buildWorkbook('權限對照表', columns, rows);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="permissions.xlsx"; filename*=UTF-8''${encodeURIComponent('權限對照表.xlsx')}`);
+    return res.send(buf);
+  }
+  res.json({ columns, rows, groups: [...new Set(rows.map(r => r.group))] });
+});
 
 app.get('/api/users', requireStaff, (req, res) => {
   const rows = db.prepare('SELECT id, username, name, role, phone, id_no, active, permissions, service_scope FROM users ORDER BY id').all();

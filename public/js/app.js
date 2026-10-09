@@ -18091,6 +18091,55 @@ async function openSurveyStats(id, range = {}) {
   });
 }
 
+/* ---------- 權限對照表 ----------
+   每個權限模組勾選後看得到哪些功能，直接從員工端側欄解析，選單改了會自動跟著變。 */
+async function viewPermMatrix() {
+  const d = await api('/permission-matrix');
+  const combos = [
+    ['櫃檯／客服', '住客管理、房務與訂房、收費帳務、商城商品、參觀預約、家屬帳號、膳食／月子餐'],
+    ['護理師', '寶寶照護、媽媽照護、護理交班、新生兒醫療、異常事件、感染管制'],
+    ['房務人員', '房務清潔、耗材庫存'],
+    ['採購人員', '採購－採購人員（需要核准／審核才加採購作業管理員）'],
+    ['驗貨人員', '採購－驗貨人員（看得到品項與數量，看不到採購金額）'],
+    ['主管', '登入權限設 5（全部開放），或一般員工再加評鑑月報、稽核軌跡']
+  ];
+  main().innerHTML = `
+    <div class="page-title">權限對照表</div>
+    <div class="card no-print">
+      <div class="row between" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <div style="font-size:.9rem;line-height:1.8">
+          權限分兩層，兩層都要給才看得到：<br>
+          <strong>一、登入權限（0–5）</strong>：0＝停用帳號；1–4＝一般員工；<strong>5＝管理員（全部開放，不受下面的勾選限制）</strong>。<br>
+          <strong>二、模組勾選</strong>：一般員工只看得到勾起來的模組。另外員工基本資料的「醫師」旗標會自動加上醫師巡診、「護理」旗標會自動加上媽媽照護與寶寶照護。
+        </div>
+        <div class="row" style="gap:8px">
+          <button class="btn small secondary" id="pm-xlsx">匯出 Excel</button>
+          <button class="btn small secondary" onclick="window.print()">列印</button>
+        </div>
+      </div>
+    </div>
+    ${d.groups.map(g => `
+      <div class="card">
+        <div class="sec-hd">${esc(g)}</div>
+        <div class="table-wrap"><table class="data stack">
+          <thead><tr><th style="width:200px">權限模組</th><th style="width:150px">代碼</th><th>勾選後看得到的功能</th></tr></thead>
+          <tbody>${d.rows.filter(r => r.group === g).map(r => `<tr>
+            <td data-label="權限模組"><strong>${esc(r.label)}</strong></td>
+            <td data-label="代碼"><small style="color:var(--muted)">${esc(r.key)}</small></td>
+            <td data-label="功能">${esc(r.pages)}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>`).join('')}
+    <div class="card">
+      <div class="sec-hd">常用組合建議</div>
+      <div class="table-wrap"><table class="data stack">
+        <thead><tr><th style="width:160px">職務</th><th>建議勾選</th></tr></thead>
+        <tbody>${combos.map(([r, p]) => `<tr><td data-label="職務"><strong>${esc(r)}</strong></td><td data-label="建議勾選">${esc(p)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <small style="color:var(--muted)">實際權限請到「帳號管理」或「員工基本資料」逐一勾選；這頁只是對照說明，不會改到任何帳號。</small>
+    </div>`;
+  $('#pm-xlsx').onclick = () => window.open('/api/permission-matrix?format=xlsx', '_blank');
+}
+
 /* ---------- 名人推薦管理 ---------- */
 async function viewTestimonials() {
   const rows = await api('/testimonials');
@@ -18280,6 +18329,7 @@ const routes = {
   '#/residents': viewResidents,
   '#/rooms': viewRooms,
   '#/sys-option': viewSysOption,
+  '#/perm-matrix': viewPermMatrix,
   '#/cleaning-schedule': viewCleaningSchedule,
   '#/door-light': viewDoorLight,
   '#/discharge-meds': viewDischargeMeds,
@@ -18387,7 +18437,7 @@ const routes = {
 const ROUTE_PERM = {
   '#/baby-care': 'baby_care', '#/newborn-medical': 'newborn_medical', '#/physician-visits': 'physician', '#/mother-care': 'mother_care',
   '#/handover': 'handover', '#/incidents': 'incidents', '#/infection': 'infection',
-  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-daily-sheet': 'baby_care', '#/baby-record-sheet': 'baby_care', '#/rooming-bf-register': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-daily-sheet': 'mother_care', '#/mother-customer-form': 'mother_care', '#/mother-handover-sheet': 'mother_care', '#/mother-record-sheet': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
+  '#/residents': 'residents', '#/rooms': 'rooms', '#/room-types': 'rooms', '#/sys-option': 'settings', '#/perm-matrix': 'users', '#/cleaning-schedule': 'settings', '#/door-light': 'settings', '#/discharge-meds': 'settings', '#/edu-schedule': 'settings', '#/epds-template': 'mother_care', '#/room-list': 'rooms', '#/room-discounts': 'rooms', '#/baby-beds': 'rooms', '#/mother-rooms': 'rooms', '#/baby-rooms': 'baby_care', '#/baby-nursing': 'baby_care', '#/baby-daily-sheet': 'baby_care', '#/baby-record-sheet': 'baby_care', '#/rooming-bf-register': 'baby_care', '#/baby-guidance': 'baby_care', '#/baby-eval': 'baby_care', '#/baby-doctor': 'physician', '#/baby-handover': 'baby_care', '#/baby-close': 'baby_care', '#/mother-nursing': 'mother_care', '#/mother-daily-sheet': 'mother_care', '#/mother-customer-form': 'mother_care', '#/mother-handover-sheet': 'mother_care', '#/mother-record-sheet': 'mother_care', '#/mother-doctor': 'physician', '#/mother-handover': 'mother_care', '#/mother-guidance': 'mother_care', '#/mother-close': 'mother_care', '#/mother-intake': 'mother_care',
   '#/rounds-list': 'physician', '#/baby-announcements': 'baby_care', '#/mother-intake-blank': 'mother_care', '#/medical-records': 'mother_care', '#/mother-rooms-print': 'rooms', '#/mother-arrivals': 'rooms', '#/mother-departures': 'rooms', '#/discharge-followup': 'mother_care',
   '#/mother-care-query': 'mother_care', '#/baby-care-query': 'baby_care', '#/nursing-needs': 'family', '#/mother-needs': 'family', '#/baby-needs': 'family',
   '#/customers': 'tours', '#/tour-calendar': 'tours', '#/tour-visit-blank': 'tours', '#/booking-blank': 'tours', '#/retail': 'shop',

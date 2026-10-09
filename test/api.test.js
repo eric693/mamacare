@@ -3021,3 +3021,22 @@ test('排床：預定床表與實際入住床表各記一份房號，互不連�
   assert.strictEqual(row.planned_room_id, planMoved.id, '預定房號已換');
   assert.strictEqual(row.room_id, moved.id, '實際房號不受影響');
 });
+
+test('權限對照表：列出所有模組與對應功能，可匯出 Excel', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const d = (await req('GET', '/api/permission-matrix')).data;
+  const mods = (await req('GET', '/api/modules')).data;
+  assert.strictEqual(d.rows.length, mods.length, '每個權限模組都要有一列');
+  assert.ok(d.groups.length >= 5);
+  const shop = d.rows.find(r => r.key === 'shop');
+  assert.ok(shop.pages.includes('商城商品'));
+  const proc = d.rows.find(r => r.key === 'proc_receive');
+  assert.ok(proc.pages.includes('驗貨入庫'));
+  // 已隱藏（註解掉）的選單不列成可用功能，改顯示隱藏說明
+  const ct = d.rows.find(r => r.key === 'contracts');
+  assert.match(ct.pages, /暫不使用|已隱藏/);
+  assert.ok(!d.rows.some(r => r.key !== 'contracts' && r.pages.split('、').includes('合約簽署')), '其他模組不應列出已隱藏的選單');
+  const xlsx = await fetch(BASE + '/api/permission-matrix?format=xlsx', { headers: { Cookie: cookie } });
+  assert.strictEqual(xlsx.status, 200);
+  assert.match(xlsx.headers.get('content-type'), /spreadsheetml/);
+});
