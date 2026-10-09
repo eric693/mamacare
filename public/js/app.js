@@ -6583,7 +6583,8 @@ async function openStaffOrderForm(products) {
       <input list="so-mom-list" id="so-mother-pick" autocomplete="off" placeholder="輸入姓名或會員編號搜尋">
       <datalist id="so-mom-list">${[...momByLabel.keys()].map(l => `<option value="${esc(l)}"></option>`).join('')}</datalist>
       <input type="hidden" id="so-mother">
-      <small style="color:var(--muted)">共 ${members.length} 位會員；打幾個字就會出現建議清單，點選後才算選定。</small></div>
+      <small style="color:var(--muted)">共 ${members.length} 位會員；打幾個字就會出現建議清單，點選後才算選定。</small>
+      <div id="so-nobk" style="color:var(--danger);font-size:.85rem;margin-top:4px"></div></div>
     <div id="so-list" style="margin:8px 0"></div>
     <div class="form-grid">
       <div class="field"><label>優惠券碼</label><input id="so-coupon" placeholder="選填"></div>
@@ -6605,6 +6606,11 @@ async function openStaffOrderForm(products) {
       const v = momInput.value.trim();
       momHidden.value = momByLabel.get(v) || '';
       momInput.style.borderColor = (v && !momHidden.value) ? 'var(--danger)' : '';
+      // 已出住的媽媽仍可代客下單（現場銷售），但確認入帳時掛不上帳單，先提醒櫃檯現場收款
+      const picked = members.find(m => String(m.id) === momHidden.value);
+      body.querySelector('#so-nobk').innerHTML = picked && picked.status !== 'checked_in'
+        ? `這位媽媽目前是「${STATUS_LABEL[picked.status] || picked.status}」，沒有進行中的訂房：確認入帳後金額<strong>不會列入帳單</strong>，請現場收款。`
+        : '';
       quote(body);
     };
     momInput.oninput = syncMom;
