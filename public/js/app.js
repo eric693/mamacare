@@ -6571,10 +6571,19 @@ async function openStaffOrderForm(products) {
         <strong>應收 ${fmtMoney(q.total)}</strong>　<small>確認後回饋 ${q.points_earned} 點</small>`;
     } catch (e) { box.innerHTML = `<span class="error-msg">${esc(e.message)}</span>`; }
   };
-  const memberOpts = members.map(m => `<option value="${m.id}">${esc(m.name)}（${esc(m.member_no)}・${m.points}點）</option>`).join('');
+  // 會員一多下拉就難找：改成輸入框，打姓名、會員編號或電話的任一段就跳建議
+  const momLabel = m => `${m.name}（${m.member_no || '無編號'}・${STATUS_LABEL[m.status] || m.status || ''}・${m.points}點）`;
+  const momByLabel = new Map();
+  for (const m of members) {
+    const base = momLabel(m);
+    momByLabel.set(momByLabel.has(base) ? `${base} #${m.id}` : base, m.id);
+  }
   openModal('代客下單', `
     <div class="field"><label>選擇媽媽（會員）*</label>
-      <select id="so-mother"><option value="">請選擇</option>${memberOpts}</select></div>
+      <input list="so-mom-list" id="so-mother-pick" autocomplete="off" placeholder="輸入姓名或會員編號搜尋">
+      <datalist id="so-mom-list">${[...momByLabel.keys()].map(l => `<option value="${esc(l)}"></option>`).join('')}</datalist>
+      <input type="hidden" id="so-mother">
+      <small style="color:var(--muted)">共 ${members.length} 位會員；打幾個字就會出現建議清單，點選後才算選定。</small></div>
     <div id="so-list" style="margin:8px 0"></div>
     <div class="form-grid">
       <div class="field"><label>優惠券碼</label><input id="so-coupon" placeholder="選填"></div>
@@ -6590,12 +6599,26 @@ async function openStaffOrderForm(products) {
         <input type="number" min="0" value="0" data-cart="${p.id}" style="width:64px">
       </div>`).join('') || '<div class="empty">無上架商品</div>';
     body.querySelectorAll('[data-cart]').forEach(inp => inp.onchange = () => { cart[inp.dataset.cart] = Number(inp.value) || 0; quote(body); });
-    ['#so-mother', '#so-coupon', '#so-points'].forEach(s => body.querySelector(s).onchange = () => quote(body));
+    const momInput = body.querySelector('#so-mother-pick');
+    const momHidden = body.querySelector('#so-mother');
+    const syncMom = () => {
+      const v = momInput.value.trim();
+      momHidden.value = momByLabel.get(v) || '';
+      momInput.style.borderColor = (v && !momHidden.value) ? 'var(--danger)' : '';
+      quote(body);
+    };
+    momInput.oninput = syncMom;
+    momInput.onchange = syncMom;
+    ['#so-coupon', '#so-points'].forEach(sel => body.querySelector(sel).onchange = () => quote(body));
     quote(body);
     body.querySelector('#so-save').onclick = async () => {
       const items = itemsArr();
       const mother_id = Number(body.querySelector('#so-mother').value);
-      if (!mother_id) { body.querySelector('#so-err').textContent = '請選擇媽媽'; return; }
+      if (!mother_id) {
+        body.querySelector('#so-err').textContent = momInput.value.trim()
+          ? `「${momInput.value.trim()}」不是清單中的會員，請從建議清單點選` : '請選擇媽媽';
+        return;
+      }
       if (!items.length) { body.querySelector('#so-err').textContent = '請至少選一項商品'; return; }
       try { await api('/orders', { method: 'POST', body: {
         mother_id, items, note: body.querySelector('#so-note').value,
