@@ -652,3 +652,33 @@ test('報表：進貨明細、廠商請款明細（稅額分攤合計一致）�
     assert.match(res.headers.get('content-type'), /spreadsheetml/);
   }
 });
+
+test('請款改價連動：已過帳、已出庫後才依發票改單價 → 入庫單、批次、進銷存、進貨明細、庫存成本都改成成交價', async () => {
+  const item = (await ok('POST', '/api/procurement/items', { code: 'PRC1', name: '改價測試紗布', unit: '包', price: 50 })).id;
+  const gr = await buy(item, vendorA, 10, 50);
+  await ok('GET', '/api/procurement/items?with_cost=1');     // 庫存頁（含成本）會先過帳進批次
+  const s = await ok('POST', '/api/procurement/shipments', { recipient: '護理站', items: [{ supply_id: item, qty: 4 }] });
+  await ok('POST', `/api/procurement/shipments/${s.id}/confirm`, {});
+  const pay = await ok('GET', `/api/procurement/payments/${gr.payment_id}`);
+  const upd = await ok('PUT', `/api/procurement/payments/${pay.id}`, { items: [{ id: pay.items[0].id, unit_price: 45 }] });
+  assert.strictEqual(upd.subtotal, 450);
+  // 入庫單金額＝發票未稅金額
+  assert.strictEqual((await ok('GET', `/api/procurement/receipts/${gr.id}`)).items[0].unit_price, 45);
+  // 進銷存：$50 舊批次併掉，只剩 $45 一批（含已出庫的 4）
+  const rep = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}&supply_id=${item}`);
+  assert.deepStrictEqual(rep.rows.map(r => [r.unit_price, r.in_qty, r.out_qty, r.end_qty, r.end_amt]), [[45, 10, 4, 6, 270]]);
+  const rc = await ok('GET', `/api/procurement/reports/receipts?from=${D(0)}&to=${D(0)}&supply_id=${item}`);
+  assert.strictEqual(rc.total.amount, 450);
+  const sd = await ok('GET', `/api/procurement/reports/shipments?from=${D(0)}&to=${D(0)}&supply_id=${item}`);
+  assert.strictEqual(sd.total.amount, 180);
+  assert.strictEqual((await ok('GET', '/api/procurement/items?with_cost=1')).rows.find(r => r.id === item).cost, 45);
+  // 付款 → 改回待付款 → 再改價，一樣同步；批次結餘仍等於系統庫存
+  await ok('POST', `/api/procurement/payments/${pay.id}/pay`, { pay_method: '銀行轉帳', paid_on: D(0) });
+  await ok('POST', `/api/procurement/payments/${pay.id}/unpay`, {});
+  await ok('PUT', `/api/procurement/payments/${pay.id}`, { items: [{ id: pay.items[0].id, unit_price: 48 }] });
+  const rep2 = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}&supply_id=${item}`);
+  assert.deepStrictEqual(rep2.rows.map(r => [r.unit_price, r.end_qty, r.end_amt]), [[48, 6, 288]]);
+  const all = await ok('GET', `/api/procurement/reports/inventory?month=${ymNow}`);
+  const stock = (await ok('GET', '/api/supplies/stock-summary')).reduce((t, x) => t + x.stock, 0);
+  assert.strictEqual(all.totals.end_qty, stock);
+});

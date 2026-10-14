@@ -241,6 +241,7 @@
     .pv .tk-t{border-top-width:1.5pt}.pv .tk-b{border-bottom-width:1.5pt}.pv .tk-l{border-left-width:1.5pt}.pv .tk-r{border-right-width:1.5pt}
     .pv .red{color:#f00}
     .pv .sm{font-size:8.5pt;margin-top:0.8mm}
+    .pv .rs{max-height:23.5mm;overflow:hidden}
     .pv .s8{font-size:8pt}.pv .s9{font-size:9pt}.pv .s10{font-size:10pt}.pv .s11{font-size:11pt}.pv .s12{font-size:12pt}.pv .s13{font-size:13pt}.pv .s14{font-size:14pt}
     .pv .c{text-align:center}
     @media print{.pv .red{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
@@ -1174,9 +1175,11 @@
     const dept = headOf(p, s).pay_dept;
     const extra = [['廠商', p.vendor_name], ['統編', p.vendor_tax_id], ['發票', p.invoice_no], ['付款到期日', p.pay_due_date]]
       .filter(x => x[1]).map(x => `${x[0]}：${esc(x[1])}`).join('　');
-    const shown = p.items.slice(0, 4);
-    const reason = `${esc(dept)}購<br>${itemsText(shown)}${p.items.length > shown.length ? `等 ${p.items.length} 項（明細見附件）` : ''}，合計$${Number(p.total_amount).toLocaleString('en-US')}元${p.tax_amount ? `（未稅 ${money(p.subtotal)}＋稅 ${money(p.tax_amount)}）` : ''}
-      ${p.remark ? `<br>${esc(p.remark)}` : ''}${extra ? `<div class="sm">${extra}</div>` : ''}`;
+    // 事由格高度固定（品項多或備註長也不能把簽核欄擠出第一頁），超出的看附件
+    const shown = p.items.length > 3 ? p.items.slice(0, 2) : p.items;
+    const remark = String(p.remark || '');
+    const reason = `<div class="rs">${esc(dept)}購<br>${itemsText(shown)}${p.items.length > shown.length ? `等 ${p.items.length} 項（明細見附件）` : ''}，合計$${Number(p.total_amount).toLocaleString('en-US')}元${p.tax_amount ? `（未稅 ${money(p.subtotal)}＋稅 ${money(p.tax_amount)}）` : ''}
+      ${remark ? `<br>${esc(remark.length > 30 ? remark.slice(0, 30) + '…（詳附件）' : remark)}` : ''}${extra ? `<div class="sm">${extra}</div>` : ''}</div>`;
     const bank = p.pay_method === '銀行轉帳'
       ? `匯款　${esc(p.bank_name || '')}${p.bank_branch ? ' ' + esc(p.bank_branch) : ''}${p.bank_code ? `（${esc(p.bank_code)}）` : ''}　帳號：${esc(p.bank_account || '')}` : '';
     const mm = [23, 19.9, 2.6, 5, 12.5, 22.5, 20.1, 7.4, 12.5, 20, 20, 20];
@@ -1213,6 +1216,7 @@
           <tr><td colspan="4" class="r">稅額（${p.tax_rate}%）</td><td class="r">${money(p.tax_amount)}</td></tr>
           <tr><td colspan="4" class="r"><strong>含稅總額</strong></td><td class="r"><strong>${money(p.total_amount)}</strong></td></tr>
         </table>
+        ${remark ? `<div class="foot">備註：${esc(remark)}</div>` : ''}
         <div class="foot">${extra ? extra.replace(/<[^>]*>/g, '') + '　' : ''}${p.status === 'paid' ? `已付款：${esc(p.paid_on || '')}（${esc(p.paid_name || '')}，${esc(p.pay_method || '')}）` : '狀態：待付款'}</div>
       </div>
       ${trail.replace('<div class="trail">', '<div>')}`, { landscape: true, css: VOUCHER_CSS });
