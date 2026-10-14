@@ -186,4 +186,38 @@ function syncLots(db, today) {
   run();
 }
 
-module.exports = { ensureLotSchema, syncLots, OPENING_DATE };
+// 請款時改了進貨單價（發票成交價）：已過帳的那筆進貨（含它的退回沖銷）搬到新單價的批次。
+// 舊批次若因此結餘變負（這批貨已被出庫扣過），把最近的出庫量改記到新批次，數量總和不變。
+// 尚未過帳的不用處理，過帳時會直接讀 supply_txns 上的新單價。
+function repriceReceiptTxn(db, txnId, price) {
+  const t = db.prepare('SELECT * FROM supply_txns WHERE id = ?').get(txnId);
+  if (!t) return;
+  const moves = db.prepare(`SELECT * FROM lot_moves WHERE txn_id = ? OR txn_id IN (SELECT id FROM supply_txns WHERE reverses_id = ?)`).all(txnId, txnId);
+  const inMove = moves.find(m => m.txn_id === txnId);
+  if (!inMove) return;
+  const newLot = findOrCreateLot(db, t.supply_id, t.vendor_id || vendorIdByName(db, t.vendor), price, inMove.move_date);
+  const oldLots = [...new Set(moves.map(m => m.lot_id))].filter(id => id !== newLot);
+  if (!oldLots.length) return;
+  const setLot = db.prepare('UPDATE lot_moves SET lot_id = ? WHERE id = ?');
+  for (const m of moves) setLot.run(newLot, m.id);
+  const remain = id => db.prepare('SELECT COALESCE(SUM(qty),0) q FROM lot_moves WHERE lot_id = ?').get(id).q;
+  for (const lotId of oldLots) {
+    let deficit = -remain(lotId);
+    if (deficit > 0) {
+      const outs = db.prepare('SELECT * FROM lot_moves WHERE lot_id = ? AND qty < 0 ORDER BY move_date DESC, id DESC').all(lotId);
+      for (const m of outs) {
+        if (deficit <= 0) break;
+        const take = Math.min(-m.qty, deficit);
+        if (take === -m.qty) setLot.run(newLot, m.id);
+        else {
+          db.prepare('UPDATE lot_moves SET qty = qty + ? WHERE id = ?').run(take, m.id);
+          insMove(db, newLot, m.supply_id, m.txn_id, m.move_type, -take, m.move_date, m.note);
+        }
+        deficit -= take;
+      }
+    }
+    if (!db.prepare('SELECT 1 FROM lot_moves WHERE lot_id = ? LIMIT 1').get(lotId)) db.prepare('DELETE FROM stock_lots WHERE id = ?').run(lotId);
+  }
+}
+
+module.exports = { ensureLotSchema, syncLots, repriceReceiptTxn, OPENING_DATE };

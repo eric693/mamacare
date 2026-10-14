@@ -6,7 +6,7 @@
 // 權限為七種角色（帳號管理勾選，可複選；server.js 的 MODULE_RULES 先擋「完全沒有採購角色」的人），
 // 每個動作可用的角色見下方 PERMS，前端 pages-procurement.js 有同一份對照。
 const express = require('express');
-const { ensureLotSchema, syncLots } = require('../proc-lots');
+const { ensureLotSchema, syncLots, repriceReceiptTxn } = require('../proc-lots');
 const WH = require('../warehouse');
 
 const ROLE = {
@@ -1289,6 +1289,20 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     return p ? res.json(p) : bad(res, '找不到請款單', 404);
   });
   // 填金額：單價、稅率、手動含稅總額（有填就覆蓋計算值）、發票日、到期日、付款方式、備註
+  function syncReceiptPrice(grId, itemName, price) {
+    const gis = db.prepare('SELECT id, supply_id, unit_price FROM goods_receipt_items WHERE gr_id = ? AND item_name = ?').all(grId, itemName);
+    for (const gi of gis) {
+      if (Math.abs(gi.unit_price - price) < 0.005) continue;
+      db.prepare('UPDATE goods_receipt_items SET unit_price = ? WHERE id = ?').run(price, gi.id);
+      if (!gi.supply_id) continue;
+      const txns = db.prepare(`SELECT id FROM supply_txns WHERE ref_type = 'receipt' AND ref_id = ? AND supply_id = ? AND txn_type = 'in'
+        AND reverses_id IS NULL`).all(grId, gi.supply_id);
+      for (const t of txns) {
+        db.prepare('UPDATE supply_txns SET unit_price = ? WHERE id = ? OR reverses_id = ?').run(price, t.id, t.id);
+        repriceReceiptTxn(db, t.id, price);
+      }
+    }
+  }
   function applyPayment(p, b) {
     const prices = new Map((Array.isArray(b.items) ? b.items : []).map(i => [int(i.id), i]));
     let subtotal = 0;
@@ -1306,6 +1320,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
     const method = PAY_METHODS.includes(b.pay_method) ? b.pay_method : p.pay_method;
     const upd = db.prepare('UPDATE payment_request_items SET unit_price = ?, amount = ? WHERE id = ?');
     for (const l of lines) upd.run(l.price, l.amount, l.id);
+    // 發票上的未稅單價就是成交價：同步回入庫單明細、進貨異動與庫存批次，入庫金額／庫存金額才會跟發票相符
+    for (const it of p.items) {
+      const l = lines.find(x => x.id === it.id);
+      if (it.gr_id) syncReceiptPrice(it.gr_id, it.item_name, l.price);
+    }
     db.prepare(`UPDATE payment_requests SET invoice_no=?, invoice_date=?, subtotal=?, tax_rate=?, tax_amount=?, total_amount=?,
         pay_due_date=?, pay_method=?, remark=?, budget_no=?, cost_center=? WHERE id=?`).run(
       b.invoice_no === undefined ? p.invoice_no : str(b.invoice_no, 200), invoiceDate, subtotal, taxRate, taxAmount,
@@ -1335,16 +1354,11 @@ module.exports = function procurementRouter({ db, requireStaff, logAudit, getSet
         .run(req.session.user.id, new Date().toLocaleString('sv-SE').slice(0, 19), paidOn, p.id);
     })();
     const after = payDetail(p.id);
-    // 實際付款單價即最終成交價，寫回廠商價格表；尚未過帳進批次的進貨異動也改用成交價
+    // 實際付款單價即最終成交價，寫回廠商價格表（入庫單與庫存批次已在 applyPayment 同步）
     db.transaction(() => {
-      const lastLot = parseInt((db.prepare("SELECT value FROM proc_meta WHERE key = 'lots_last_txn'").get() || {}).value || '0', 10);
       for (const it of after.items) {
         if (!(it.unit_price > 0)) continue;
         const gi = it.gr_id ? db.prepare('SELECT supply_id FROM goods_receipt_items WHERE gr_id = ? AND item_name = ? LIMIT 1').get(it.gr_id, it.item_name) : null;
-        if (gi && gi.supply_id) {
-          db.prepare("UPDATE supply_txns SET unit_price = ? WHERE ref_type = 'receipt' AND ref_id = ? AND supply_id = ? AND id > ?")
-            .run(it.unit_price, it.gr_id, gi.supply_id, lastLot);
-        }
         upsertVendorItem({ vendorId: after.vendor_id, supplyId: gi ? gi.supply_id : null, name: it.item_name, unit: it.unit,
           price: it.unit_price, source: 'purchase', note: `請款 ${after.no}`, userId: req.session.user.id, date: paidOn });
       }
