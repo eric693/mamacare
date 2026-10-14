@@ -152,11 +152,12 @@
 
   // 另開視窗列印（A5 直式）：每張表都用固定欄寬（colgroup＋table-layout:fixed），
   // 表頭、明細、簽核各自一張表，不再用跨欄湊版面，印在 A5 上欄位不會忽寬忽窄
-  function printDoc(title, inner) {
+  // opts.landscape：A5 橫式（請款支付憑單比照公司 Word 範本）；opts.css：附加樣式
+  function printDoc(title, inner, opts = {}) {
     const w = window.open('', '_blank');
     w.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>${esc(title)}</title>
       <style>
-        @page{size:A5 portrait;margin:8mm}
+        @page{size:A5 ${opts.landscape ? 'landscape;margin:6mm' : 'portrait;margin:8mm'}}
         *{box-sizing:border-box}
         body{font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;color:#000;font-size:8.5pt;line-height:1.35;
           margin:0 auto;width:132mm;padding:4mm 0}
@@ -176,6 +177,7 @@
         .trail h3{font-size:9pt;margin:2.5mm 0 1mm;border-bottom:0.8pt solid #000;padding-bottom:0.5mm}
         .trail table{font-size:7.5pt;page-break-inside:avoid}
         @media print{.noprint{display:none}body{padding:0}}
+        ${opts.landscape ? 'body{width:194mm;padding:0}' : ''}${opts.css || ''}
       </style></head><body>${inner}
       <div class="noprint" style="margin-top:16px;text-align:center"><button onclick="window.print()" style="padding:8px 22px;font-size:14px">列印 / 另存 PDF（紙張 A5）</button></div>
       </body></html>`);
@@ -214,6 +216,34 @@
     }
     return out + '元整';
   }
+  // 請款支付憑單的金額欄：照 Word 範本固定八位「○仟○佰○拾○萬○仟○佰○拾○元整」，有值的位數紅字；超過一億改用一般大寫
+  function wordAmount(n) {
+    n = Math.round(Number(n) || 0);
+    if (n >= 1e8) return chineseAmount(n);
+    const digits = '零壹貳參肆伍陸柒捌玖', units = ['仟', '佰', '拾', '萬', '仟', '佰', '拾', '元整'];
+    const str = String(Math.max(n, 0)).padStart(8, '0'), first = str.search(/[1-9]/);
+    return [...str].map((c, i) => `${first >= 0 && i >= first ? `<span class="red">${digits[c]}</span>` : digits[c]} ${units[i]}`).join(' ');
+  }
+  const VOUCHER_CSS = `
+    .pv{font-family:"標楷體","DFKai-SB","BiauKai","Kaiti TC","TW-Kai","AR PL UKai TW",KaiTi,serif;width:185.5mm;margin:0 auto;line-height:1.2}
+    .pv .t1{text-align:center;font-size:22pt;line-height:1.05}
+    .pv .t2{text-align:center;font-size:18pt;line-height:1.1;text-decoration:underline}
+    .pv .dt{position:relative;text-align:center;font-size:14pt;margin:0.5mm 0 0.8mm}
+    .pv .dt .no{position:absolute;right:0;bottom:0.6mm;font-size:8pt;font-family:"Microsoft JhengHei","Noto Sans TC",sans-serif}
+    .pv table{margin:0;width:185.5mm}
+    .pv td{border:0.5pt solid #000;padding:0.3mm 1mm;font-weight:400;background:none}
+    .pv .d{text-align:justify;text-align-last:justify}
+    .pv .v{text-align:center;padding:0.3mm 0;line-height:1.05}
+    .pv .top{vertical-align:top}
+    .pv .nb{border:none;vertical-align:top}
+    .pv .ok{padding-left:28mm;font-size:14pt;line-height:1.45}
+    .pv .tk{border-top-width:1.5pt;border-left-width:1.5pt;border-right-width:1.5pt}
+    .pv .tk-t{border-top-width:1.5pt}.pv .tk-b{border-bottom-width:1.5pt}.pv .tk-l{border-left-width:1.5pt}.pv .tk-r{border-right-width:1.5pt}
+    .pv .red{color:#f00}
+    .pv .sm{font-size:8.5pt;margin-top:0.8mm}
+    .pv .s8{font-size:8pt}.pv .s9{font-size:9pt}.pv .s10{font-size:10pt}.pv .s11{font-size:11pt}.pv .s12{font-size:12pt}.pv .s13{font-size:13pt}.pv .s14{font-size:14pt}
+    .pv .c{text-align:center}
+    @media print{.pv .red{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
   const ymd = d => { const [y, m, dd] = String(d || '').split('-'); return y ? `${y} 年 ${m} 月 ${dd} 日` : '____ 年 __ 月 __ 日'; };
 
   /* ---------- 品項搜尋框 ----------
@@ -1139,35 +1169,53 @@
             <td>${esc(g.inspector)}<br>${esc(g.invoice_no || '')}</td></tr>`).join('') || '<tr><td colspan="5" class="c">—</td></tr>'}
         </table>
       </div>`;
+    // 憑單本體比照公司 Word 範本「請款支付憑單-空白.doc」（A5 橫式、標楷體、欄寬與框線粗細照抄）；
+    // Word 沒有的品項明細、廠商／發票資料與請採驗流程放到第二頁附件
+    const dept = headOf(p, s).pay_dept;
+    const extra = [['廠商', p.vendor_name], ['統編', p.vendor_tax_id], ['發票', p.invoice_no], ['付款到期日', p.pay_due_date]]
+      .filter(x => x[1]).map(x => `${x[0]}：${esc(x[1])}`).join('　');
+    const shown = p.items.slice(0, 4);
+    const reason = `${esc(dept)}購<br>${itemsText(shown)}${p.items.length > shown.length ? `等 ${p.items.length} 項（明細見附件）` : ''}，合計$${Number(p.total_amount).toLocaleString('en-US')}元${p.tax_amount ? `（未稅 ${money(p.subtotal)}＋稅 ${money(p.tax_amount)}）` : ''}
+      ${p.remark ? `<br>${esc(p.remark)}` : ''}${extra ? `<div class="sm">${extra}</div>` : ''}`;
+    const bank = p.pay_method === '銀行轉帳'
+      ? `匯款　${esc(p.bank_name || '')}${p.bank_branch ? ' ' + esc(p.bank_branch) : ''}${p.bank_code ? `（${esc(p.bank_code)}）` : ''}　帳號：${esc(p.bank_account || '')}` : '';
+    const mm = [23, 19.9, 2.6, 5, 12.5, 22.5, 20.1, 7.4, 12.5, 20, 20, 20];
     printDoc(`請款支付憑單 ${p.no}`, `
-      <h1>${esc(headOf(p, s).name)}</h1><h2 style="text-decoration:underline">請款支付憑單</h2>
-      <div class="sub"><span>${ymd(p.invoice_date || p.req_date)}</span><span>單號：${esc(p.no)}${p.merged_from && p.merged_from.length ? `（合併 ${esc(p.merged_from.map(x => x.no).join('、'))}）` : ''}</span></div>
-      ${infoTable([
-        ['預算編號', esc(p.budget_no || ''), '廠商名稱', esc(p.vendor_name || '')],
-        ['阿米巴項目', '', '統一編號', esc(p.vendor_tax_id || '')],
-        ['部門別', esc(headOf(p, s).pay_dept), '發票號碼', esc(p.invoice_no || '')],
-        ['費用歸屬', esc(p.cost_center || ''), '付款到期日', esc(p.pay_due_date || '')],
-        ['金　額', `新台幣 ${chineseAmount(p.total_amount)}　<strong>NT$ ${Number(p.total_amount).toLocaleString('en-US')}</strong>`],
-        ['事　由', `${itemsText(p.items)}　未稅 ${money(p.subtotal)}${p.tax_amount ? `＋稅 ${money(p.tax_amount)}` : ''}${p.remark ? `<br>${esc(p.remark)}` : ''}`],
-        ['領款人', esc(p.bank_holder || p.vendor_name || ''), '領款方式', `□自取 □送達 □郵寄 ${box(p.pay_method === '銀行轉帳')}匯款`],
-        ['付款方式', `${box(p.pay_method === '現金')}現金　${box(p.pay_method === '支票')}票據，票期：___年___月___日　票號：__________<br>
-          ${box(p.pay_method === '銀行轉帳' || p.pay_method === '其他')}${p.pay_method === '其他' ? '其他' : '匯款'}　銀行：${esc(p.bank_name || '')}${p.bank_branch ? ' ' + esc(p.bank_branch) : ''}${p.bank_code ? `（${esc(p.bank_code)}）` : ''}　帳號：${esc(p.bank_account || '')}`],
-        ['領款人簽收', '<div style="height:9mm"></div>']
-      ])}
-      <table>${cols(Array(9).fill(100 / 9))}
-        <tr><th>核准</th><th>覆核</th><th>審核</th><th>單位<br>主管</th><th>申請人</th><th>財務<br>經理</th><th>會計<br>主管</th><th>會計</th><th>出納</th></tr>
-        <tr class="sign"><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="c">${p.status === 'paid' ? esc(p.paid_name || '') : ''}</td></tr>
-      </table>
-      <table>${cols([34, 22, 14, 15, 15])}
-        <tr><th>品項名稱</th><th>入庫單／採購單</th><th>數量</th><th>未稅單價</th><th>未稅小計</th></tr>
-        ${p.items.map(i => `<tr><td>${esc(i.item_name)}</td><td><small>${esc(i.gr_no || p.gr_no || '')}<br>${esc(i.po_no || p.po_no || '')}</small></td>
-          <td class="c">${i.qty} ${esc(i.unit)}</td><td class="r">${money(i.unit_price)}</td><td class="r">${money(i.amount)}</td></tr>`).join('')}
-        <tr><td colspan="4" class="r">未稅合計</td><td class="r">${money(p.subtotal)}</td></tr>
-        <tr><td colspan="4" class="r">稅額（${p.tax_rate}%）</td><td class="r">${money(p.tax_amount)}</td></tr>
-        <tr><td colspan="4" class="r"><strong>含稅總額</strong></td><td class="r"><strong>${money(p.total_amount)}</strong></td></tr>
-      </table>
-      <div class="foot">${p.status === 'paid' ? `已付款：${esc(p.paid_on || '')}（${esc(p.paid_name || '')}，${esc(p.pay_method || '')}）` : '狀態：待付款'}</div>
-      ${trail}`);
+      <div class="pv">
+        <div class="t1">${esc(headOf(p, s).name)}</div><div class="t2">請款支付憑單</div>
+        <div class="dt">${ymd(p.invoice_date || p.req_date)}<span class="no">單號：${esc(p.no)}${p.merged_from && p.merged_from.length ? `（合併 ${esc(p.merged_from.map(x => x.no).join('、'))}）` : ''}</span></div>
+        <table><colgroup>${mm.map(w => `<col style="width:${w}mm">`).join('')}</colgroup>
+          <tr style="height:4.6mm"><td class="d s11">預算編號</td><td colspan="2" class="c s11">${esc(p.budget_no || '')}</td>
+            <td rowspan="3" class="v s9 tk">費用歸屬</td><td rowspan="3" class="c s9 tk">${esc(p.cost_center || '')}</td>
+            <td rowspan="3" colspan="7" class="nb"><div class="ok">□ 急件權限核准：<br>□　無據權限核准：</div></td></tr>
+          <tr style="height:3.8mm"><td class="d s11">阿米巴項目</td><td colspan="2" class="c s11"></td></tr>
+          <tr style="height:3.1mm"><td class="d s11">部門別</td><td colspan="2" class="d s8">${esc(dept)}</td></tr>
+          <tr style="height:7.8mm"><td class="d s13">金　額</td><td colspan="11" class="s14">新台幣：${wordAmount(p.total_amount)}　NT＄${Number(p.total_amount).toLocaleString('en-US')}</td></tr>
+          <tr style="height:24.6mm"><td class="d s13">事　由</td><td colspan="6" class="s11">${reason}</td>
+            <td class="v s12">領款方式</td><td colspan="4" class="top s12">□自取　□送達<br>□郵寄<br>地址：</td></tr>
+          <tr style="height:11.9mm"><td class="c s13">領款人</td><td colspan="6" class="s13">${esc(p.bank_holder || p.vendor_name || '')}</td>
+            <td rowspan="2" class="v s12">領款人簽收</td><td rowspan="2" colspan="4"></td></tr>
+          <tr style="height:17.7mm"><td class="d s13">付款方式</td><td colspan="6" class="s12">${box(p.pay_method === '現金')}現金 ${box(p.pay_method === '支票')}票據，票期：　　年　月　日<br>
+            帳號：　　　　　　票號：<br>${box(p.pay_method === '銀行轉帳' || p.pay_method === '其他')}其他：<span class="s10">${bank}</span></td></tr>
+          <tr style="height:6.1mm" class="s12"><td class="d">核准</td><td class="d">覆　核</td><td colspan="3" class="d">審　核</td><td class="d">單位主管</td>
+            <td class="d tk-r">申請人</td><td colspan="2" class="d tk-t tk-l">財務經理</td><td class="d tk-t">會計主管</td><td class="d tk-t">會　計</td><td class="d tk-t tk-r">出　納</td></tr>
+          <tr style="height:17.6mm"><td></td><td></td><td colspan="3"></td><td></td><td class="tk-r"></td>
+            <td colspan="2" class="tk-l tk-b"></td><td class="tk-b"></td><td class="tk-b"></td><td class="c tk-b tk-r s12">${p.status === 'paid' ? esc(p.paid_name || '') : ''}</td></tr>
+        </table>
+      </div>
+      <div class="trail">
+        <h3>附件：請款明細　${esc(p.no)}（${esc(p.vendor_name || '')}）</h3>
+        <table>${cols([34, 22, 14, 15, 15])}
+          <tr><th>品項名稱</th><th>入庫單／採購單</th><th>數量</th><th>未稅單價</th><th>未稅小計</th></tr>
+          ${p.items.map(i => `<tr><td>${esc(i.item_name)}</td><td><small>${esc(i.gr_no || p.gr_no || '')}<br>${esc(i.po_no || p.po_no || '')}</small></td>
+            <td class="c">${i.qty} ${esc(i.unit)}</td><td class="r">${money(i.unit_price)}</td><td class="r">${money(i.amount)}</td></tr>`).join('')}
+          <tr><td colspan="4" class="r">未稅合計</td><td class="r">${money(p.subtotal)}</td></tr>
+          <tr><td colspan="4" class="r">稅額（${p.tax_rate}%）</td><td class="r">${money(p.tax_amount)}</td></tr>
+          <tr><td colspan="4" class="r"><strong>含稅總額</strong></td><td class="r"><strong>${money(p.total_amount)}</strong></td></tr>
+        </table>
+        <div class="foot">${extra ? extra.replace(/<[^>]*>/g, '') + '　' : ''}${p.status === 'paid' ? `已付款：${esc(p.paid_on || '')}（${esc(p.paid_name || '')}，${esc(p.pay_method || '')}）` : '狀態：待付款'}</div>
+      </div>
+      ${trail.replace('<div class="trail">', '<div>')}`, { landscape: true, css: VOUCHER_CSS });
   }
 
   /* ================= 出貨管理 ================= */
