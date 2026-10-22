@@ -541,8 +541,18 @@ async function loadShop() {
         items, coupon_code: $('#shop-coupon').value.trim(),
         points_used: ($('#shop-points') ? Number($('#shop-points').value) : 0) || 0 } });
       Object.keys(shopCart).forEach(k => delete shopCart[k]);
-      $('#shop-ok').textContent = r.message || '訂單已送出';
       loadShop();
+      // 下單成功直接跳視窗提醒（原本寫在頁面上的文字會被重新載入洗掉，家屬看不到）
+      const o = r.order || {};
+      famModal('訂單已送出', `
+        <p style="margin:0 0 10px">${esc(r.message || '訂單已送出，將由護理站確認')}</p>
+        ${o.items && o.items.length ? `<div class="table-wrap"><table class="data">
+          <thead><tr><th>品項</th><th>數量</th><th>小計</th></tr></thead>
+          <tbody>${o.items.map(i => `<tr><td>${esc(i.item_name)}</td><td>${i.quantity}</td><td>${fmtMoney(i.amount != null ? i.amount : i.unit_price * i.quantity)}</td></tr>`).join('')}</tbody></table></div>
+          <p style="margin:10px 0 0"><strong>應付 ${fmtMoney(o.total_amount)}</strong></p>` : ''}
+        <p style="font-size:.85rem;color:var(--muted);margin:10px 0 0">護理站確認後，金額會列入媽媽的住房帳單，出住時一併結清。訂單狀態可在下方「我的訂單」查看。</p>
+        <div style="text-align:center;margin-top:14px"><button class="btn" id="fam-order-ok">知道了</button></div>`,
+        ov => { ov.querySelector('#fam-order-ok').onclick = () => ov.remove(); });
     } catch (e) { $('#shop-err').textContent = e.message; }
   };
 }

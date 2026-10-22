@@ -3040,3 +3040,88 @@ test('權限對照表：列出所有模組與對應功能，可匯出 Excel', as
   assert.strictEqual(xlsx.status, 200);
   assert.match(xlsx.headers.get('content-type'), /spreadsheetml/);
 });
+
+test('排房重疊：預設擋下並說明與誰重疊；確認（allow_overlap）後可重疊排入，床表兩人都在同一格', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const base = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const D = n => new Date(base + n * 86400000).toISOString().slice(0, 10);
+  const a = (await req('POST', '/api/customers', { name: '重疊甲', due_date: D(300) })).data.id;
+  const b = (await req('POST', '/api/customers', { name: '重疊乙', due_date: D(300) })).data.id;
+  const rooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && r.room_type !== '托嬰');
+  let first = null, room = null;
+  for (const r of rooms) {
+    const t = await req('POST', '/api/bookings', { mother_id: a, room_id: r.id, check_in: D(400), check_out: D(410) });
+    if (t.status === 200) { first = t.data.id; room = r; break; }
+  }
+  assert.ok(first, '需有空房');
+  const clash = await req('POST', '/api/bookings', { mother_id: b, room_id: room.id, check_in: D(405), check_out: D(415) });
+  assert.strictEqual(clash.status, 409);
+  assert.strictEqual(clash.data.overlap, true);
+  assert.match(clash.data.error, /重疊甲/);
+  const ok = await req('POST', '/api/bookings', { mother_id: b, room_id: room.id, check_in: D(405), check_out: D(415), allow_overlap: true });
+  assert.strictEqual(ok.status, 200);
+  const cal = (await req('GET', `/api/room-calendar?start=${D(406)}&days=2`)).data;
+  const covers = cal.bookings.filter(x => x.room_id === room.id && x.check_in <= D(406) && x.check_out > D(406));
+  assert.deepStrictEqual(covers.map(x => x.mother_name).sort(), ['重疊乙', '重疊甲']);
+  // 整批排房也一樣：先擋、確認後通過
+  const plan = { start: D(407), rows: [{ room_id: room.id, days: 3, price: 0 }] };
+  const c = (await req('POST', '/api/customers', { name: '重疊丙', due_date: D(300) })).data.id;
+  const p1 = await req('POST', `/api/customers/${c}/bookings/plan`, plan);
+  assert.strictEqual(p1.status, 409);
+  assert.strictEqual(p1.data.overlap, true);
+  assert.strictEqual((await req('POST', `/api/customers/${c}/bookings/plan`, { ...plan, allow_overlap: true })).status, 200);
+  for (const id of [first, ok.data.id]) await req('PUT', `/api/bookings/${id}/status`, { status: 'cancelled' });
+  for (const x of (await req('GET', `/api/customers/${c}`)).data.bookings) await req('PUT', `/api/bookings/${x.id}/status`, { status: 'cancelled' });
+});
+
+test('家屬通行碼以媽媽為主：寶寶未建檔也能發碼登入，寶寶建檔後自動看到日報', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mom = (await req('POST', '/api/customers', { name: '晚入住寶寶媽', due_date: '2026-12-01' })).data.id;
+  const r = await req('POST', '/api/family-members', { mother_id: mom, name: '王先生', relation: '先生' });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+  const row = (await req('GET', '/api/family-members')).data.find(f => f.access_code === r.data.access_code);
+  assert.strictEqual(row.mother_name, '晚入住寶寶媽');
+  assert.ok(!row.baby_name);
+  assert.strictEqual((await req('POST', '/api/family-members', { name: '無媽媽' })).status, 400);
+  // 家屬登入：寶寶還沒建檔 → 日報給清楚說明、留言先擋，媽媽相關功能照常
+  cookie = '';
+  const login = await req('POST', '/api/family/login', { code: r.data.access_code });
+  assert.strictEqual(login.status, 200);
+  assert.strictEqual(login.data.mother_name, '晚入住寶寶媽');
+  const rep = await req('GET', '/api/family/report');
+  assert.strictEqual(rep.status, 404);
+  assert.match(rep.data.error, /寶寶尚未入住建檔/);
+  assert.deepStrictEqual((await req('GET', '/api/family/messages')).data, []);
+  assert.strictEqual((await req('POST', '/api/family/messages', { body: '你好' })).status, 400);
+  assert.strictEqual((await req('GET', '/api/family/member')).status, 200);
+  const famCookie = cookie;
+  // 寶寶建檔後，同一個登入狀態直接看得到
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  await req('POST', '/api/babies', { mother_id: mom, name: '晚晚', gender: 'female' });
+  cookie = famCookie;
+  const rep2 = await req('GET', '/api/family/report');
+  assert.strictEqual(rep2.status, 200);
+  assert.strictEqual(rep2.data.baby.name, '晚晚');
+  assert.strictEqual((await req('POST', '/api/family/messages', { body: '謝謝照顧' })).status, 200);
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+});
+
+test('列印紙本合約：套用合約包範本並以合約資料帶入，不殘留未替換的欄位代碼', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mom = (await req('POST', '/api/customers', { name: '紙本合約媽', due_date: '2026-12-01' })).data.id;
+  assert.strictEqual((await req('GET', `/api/customers/${mom}/contract/paper`)).status, 400, '未存檔合約不能列印');
+  await req('PUT', `/api/customers/${mom}/contract`, { handler: '王小姐', book_date: '2026-06-01', emergency_name: '紙本先生',
+    emergency_relation: '先生', emergency_phone: '0911222333', review_start_basis: '雙方約定', review_start_date: '2026-06-01' });
+  const pk = (await req('GET', `/api/customers/${mom}/contract/paper`)).data;
+  const tpls = (await req('GET', '/api/contract-templates')).data.filter(t => t.active && t.in_packet);
+  assert.strictEqual(pk.docs.length, tpls.length);
+  assert.ok(pk.contract_no);
+  const all = pk.docs.map(d => d.body).join('\n');
+  assert.ok(!/\{\{\w+\}\}/.test(all), '不應殘留 {{欄位代碼}}');
+  assert.ok(!all.includes('［簽署日'), '紙本不印電子簽署用的自動帶入標記');
+  assert.match(all, /紙本合約媽/);
+  assert.match(all, /紙本先生/);
+  assert.match(all, /2026-06-01/);
+});

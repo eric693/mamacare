@@ -2345,7 +2345,7 @@ async function openCheckinPrep(bk, mom, rooms) {
 
     const persist = async () => {
       // 床位／日期／金額
-      await api(`/bookings/${bk.id}`, { method: 'PUT', body: {
+      await apiBooking(`/bookings/${bk.id}`, { method: 'PUT', body: {
         room_id: roomEl.value, check_in: inEl.value, check_out: outEl.value,
         total_amount: Number(body.querySelector('#cp-total').value) || 0
       } });
@@ -2412,7 +2412,7 @@ function openBookingForm(rooms, mothers, prefill = {}) {
     body.querySelector('#bk-room').onchange = calcTotal;
     body.querySelector('#bk-save').onclick = async () => {
       try {
-        await api('/bookings', {
+        await apiBooking('/bookings', {
           method: 'POST',
           body: {
             mother_id: body.querySelector('#bk-mother').value,
@@ -2444,7 +2444,9 @@ async function wireRoomCalendar(rooms, mothers, start) {
   }).join('');
   const bodyRows = cal.rooms.map(r => {
     const cells = days.map(d => {
-      const bk = cal.bookings.find(b => b.room_id === r.id && b.check_in <= d && b.check_out > d);
+      const covers = cal.bookings.filter(b => b.room_id === r.id && b.check_in <= d && b.check_out > d);
+      if (covers.length > 1) return bedOverlapCell(covers);
+      const bk = covers[0];
       if (bk) {
         const isStart = bk.check_in === d || d === cal.start;
         const color = bk.status === 'checked_in' ? '#cdeae4' : '#fdeec2';
@@ -2458,7 +2460,7 @@ async function wireRoomCalendar(rooms, mothers, start) {
   card.className = 'card';
   card.innerHTML = `
     <div class="row between"><h3>房況月曆</h3>
-      <span style="font-size:.8rem;color:var(--muted)"><span class="badge green">入住中</span> <span class="badge yellow">已預約</span>　點空白格可快速建立訂房</span></div>
+      <span style="font-size:.8rem;color:var(--muted)"><span class="badge green">入住中</span> <span class="badge yellow">已預約</span>　<span style="color:#b23b3b;font-weight:700">紅斜線＝期間重疊</span>　點空白格可快速建立訂房</span></div>
     <div class="table-wrap" style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px">
       <thead><tr><th style="position:sticky;left:0;background:#eef5f4;padding:2px 6px">房號</th>${headCells}</tr></thead>
       <tbody>${bodyRows}</tbody>
@@ -2471,6 +2473,21 @@ async function wireRoomCalendar(rooms, mothers, start) {
 }
 
 /* ---------- 排床（預定床表 / 實際入住床表） ---------- */
+// 排房重疊：後端回 409（overlap）時先顯示衝突內容，使用者確認後帶 allow_overlap 重送；
+// 不確認就把錯誤訊息丟回呼叫端顯示。床表重疊格以紅斜線標示並同時顯示兩人姓名。
+async function apiBooking(path, opts) {
+  try { return await api(path, opts); }
+  catch (e) {
+    if (e.status !== 409 || !e.data || !e.data.overlap) throw e;
+    if (!confirm(`排房期間重疊：\n${e.message}\n\n仍要重疊排入嗎？\n（床表會以紅斜線標示，重疊的格子同時顯示兩人姓名）`)) throw e;
+    return api(path, { ...opts, body: { ...(opts.body || {}), allow_overlap: true } });
+  }
+}
+// 床表重疊格（三份床表共用）：同房同日兩人以上 → 紅斜線，格內同時列出每個人的姓名，滑過看完整住期
+function bedOverlapCell(covers, attrs = '') {
+  const tip = '期間重疊！' + covers.map(b => `${b.mother_name}（${b.check_in}~${b.check_out}・${STATUS_LABEL[b.status] || b.status}）`).join('、');
+  return `<td ${attrs} title="${esc(tip)}" style="background:repeating-linear-gradient(45deg,#f6c6c6,#f6c6c6 4px,#fff 4px,#fff 8px);padding:1px 2px;font-size:9px;line-height:1.15;color:#b23b3b;font-weight:700;white-space:nowrap;overflow:hidden;max-width:0;vertical-align:middle;${attrs ? 'cursor:pointer;' : ''}">${covers.map(b => esc(String(b.mother_name || '').slice(0, 3))).join('<br>')}</td>`;
+}
 let bedTab = 'planned'; // planned=預定床表, actual=實際入住床表
 async function viewBedPlanning() {
   const start = (location.hash.split('?s=')[1] || todayStr());
@@ -2500,13 +2517,14 @@ async function viewBedPlanning() {
     const cells = days.map(d => {
       const covers = cal.bookings.filter(b => roomOf(b, mode) === r.id && b.check_in <= d && b.check_out > d);
       const bkIn = covers.find(b => b.status === 'checked_in');
-      const bkRes = covers.find(b => b.status === 'reserved');
       const bk = bkIn || covers[0];
+      if (covers.length > 1) {
+        // 點重疊格可直接改「最後排進來、尚未退住」那一筆的房號來解開重疊
+        const mv = covers.filter(b => b.status !== 'checked_out').sort((a, b) => b.id - a.id)[0];
+        return bedOverlapCell(covers, mv ? `data-bk-move="${mv.id}"` : '');
+      }
       if (bk) {
         const isStart = bk.check_in === d || d === cal.start;
-        if (mode === 'actual' && bkIn && bkRes) {
-          return `<td title="重疊！入住中 ${esc(bkIn.mother_name)}（~${esc(bkIn.check_out)}）與已預約 ${esc(bkRes.mother_name)}（${esc(bkRes.check_in)}~）同日同房" style="background:repeating-linear-gradient(45deg,#f6c6c6,#f6c6c6 4px,#cdeae4 4px,#cdeae4 8px);padding:2px;font-size:10px;color:#b23b3b;font-weight:700;white-space:nowrap;overflow:hidden;max-width:0">${isStart || bkRes.check_in === d ? '疊' : ''}</td>`;
-        }
         if (mode === 'actual' && !bkIn && bk.status === 'reserved') {
           // 預定但尚未實際入住：以斜線淡色標示，點格子可直接改這張床表的房號
           return `<td data-bk-move="${bk.id}" title="${esc(bk.mother_name)} 預定未入住　點擊可房號異動" style="cursor:pointer;background:repeating-linear-gradient(45deg,#fff,#fff 4px,#fdeec2 4px,#fdeec2 8px);padding:2px;font-size:10px;color:#b9911f;white-space:nowrap;overflow:hidden;max-width:0">${isStart ? '待' : ''}</td>`;
@@ -2523,8 +2541,8 @@ async function viewBedPlanning() {
   }).join('');
 
   const legend = bedTab === 'planned'
-    ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span> <span class="badge gray">已退住</span>　點空白格可快速建立訂房　<small style="color:var(--muted)">（此表為當初預定的房號，改這裡不會動到實際入住床表）</small>'
-    : '<span class="badge green">實際入住中</span> <span class="badge gray">已退住</span>　斜線格＝已預約尚未辦理入住　<span style="color:#b23b3b;font-weight:700">紅斜線〔疊〕＝入住中與已預約重疊</span>　<small style="color:var(--muted)">（此表為實際住的房號，房況／膳食／帳務都看這裡；改這裡不會動到預定床表）</small>';
+    ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span> <span class="badge gray">已退住</span>　<span style="color:#b23b3b;font-weight:700">紅斜線＝期間重疊（格內列出重疊的人）</span>　點空白格可快速建立訂房　<small style="color:var(--muted)">（此表為當初預定的房號，改這裡不會動到實際入住床表）</small>'
+    : '<span class="badge green">實際入住中</span> <span class="badge gray">已退住</span>　斜線格＝已預約尚未辦理入住　<span style="color:#b23b3b;font-weight:700">紅斜線＝期間重疊（格內列出重疊的人）</span>　<small style="color:var(--muted)">（此表為實際住的房號，房況／膳食／帳務都看這裡；改這裡不會動到預定床表）</small>';
 
   // 年份／月份快速選單：直接跳到當月 1 日的床表
   const startY = Number(cal.start.slice(0, 4)) || new Date().getFullYear();
@@ -2609,8 +2627,8 @@ async function viewBedPlanning() {
         const roomId = Number(body.querySelector('#bm-room').value) || 0;
         if (!roomId || roomId === curId) { closeModal(); return; }
         try {
-          if (planned) await api(`/bookings/${bk.id}/planned-room`, { method: 'PUT', body: { room_id: roomId } });
-          else await api(`/bookings/${bk.id}`, { method: 'PUT', body: { room_id: roomId } });
+          if (planned) await apiBooking(`/bookings/${bk.id}/planned-room`, { method: 'PUT', body: { room_id: roomId } });
+          else await apiBooking(`/bookings/${bk.id}`, { method: 'PUT', body: { room_id: roomId } });
           closeModal(); viewBedPlanning();
         } catch (e) { body.querySelector('#bm-err').textContent = e.message; }
       };
@@ -2623,7 +2641,7 @@ async function viewBedPlanning() {
         const newRoom = active.find(r => r.id === roomId) || {};
         if (!confirm(`確認「${bk.mother_name}」自 ${tDate} 起由 ${curRoom.name || '—'} 房轉住 ${newRoom.name} 房？\n\n前後段沿用原合約單價，應收總額不變。`)) return;
         try {
-          await api(`/bookings/${bk.id}/transfer`, { method: 'POST',
+          await apiBooking(`/bookings/${bk.id}/transfer`, { method: 'POST',
             body: { transfer_date: tDate, room_id: roomId, reason: body.querySelector('#bm-reason').value.trim() } });
           closeModal(); viewBedPlanning();
         } catch (e) { err.textContent = e.message; }
@@ -3018,7 +3036,7 @@ function printBabyAnnounce(m, bk, birth, cd, p, stayDays) {
       ${babyCells}
       <tr><td>餐別</td><td>${esc(p.meal_choice || '—')}</td><td>禁忌</td><td colspan="5">${esc(p.diet_type || '')}　${esc(p.taboos || '無')}</td></tr>
       <tr class="wide"><td>贈</td><td colspan="7">${esc(p.gift || cd.gift_content || '—')}</td></tr>
-      <tr class="wide"><td>電話</td><td colspan="7">媽咪：${esc(p.phone_mom || '—')}　　把拔：${esc(p.phone_dad || '—')}</td></tr>
+      <tr class="wide"><td>電話</td><td colspan="7">媽咪：${esc(p.phone_mom || '—')}　　緊急聯絡人：${esc(p.emergency_name || '')}${p.emergency_relation ? `（${esc(p.emergency_relation)}）` : ''}${p.emergency_name || p.emergency_relation ? '　' : ''}${esc(p.phone_dad || '—')}</td></tr>
       <tr><td>車號</td><td>${esc(p.car_no || '—')}</td><td>製單</td><td>${esc(currentUser.name)}</td>
         <td>日期</td><td colspan="3">${esc(todayStr())}</td></tr>
     </table>
@@ -3406,7 +3424,7 @@ async function openBillingDetail(bookingId, focusPay) {
         let q;
         try { q = await api(`/bookings/${b.id}/change-stay-quote?effective_date=${eff}&room_id=${rid}&new_check_out=${out}`); }
         catch (e) { resBox.innerHTML = `<span class="error-msg">${esc(e.message)}</span>`; return; }
-        resBox.innerHTML = `
+        resBox.innerHTML = `${q.overlap ? `<div class="error-msg" style="margin-bottom:6px">期間重疊：${esc(q.overlap)}（確認後仍可重疊排入，床表會同時顯示兩人姓名）</div>` : ''}
           <table class="data" style="font-size:13px"><tbody>
             <tr><td>變更內容</td><td style="text-align:right">${esc(q.old_room)}（${esc(q.old_type)}）→ ${esc(q.new_room)}（${esc(q.new_type)}）　<b>${esc(q.grade)}</b></td></tr>
             <tr><td>前段 ${esc(q.check_in)}~${esc(q.effective_date)}（${q.days1} 天 × ${fmtMoney(q.rate1)}）</td><td style="text-align:right">${fmtMoney(q.seg1_total)}</td></tr>
@@ -3422,11 +3440,11 @@ async function openBillingDetail(bookingId, focusPay) {
           </div>
           <p style="font-size:.78rem;color:var(--muted);margin-top:4px">確認後：原段結至生效日、新段自生效日入住新房，合約明細改為兩筆並標示需重簽；床表、房況、訂餐與原房清潔任務同步連動。</p>`;
         resBox.querySelector('#cs-run').onclick = async () => {
-          if (!confirm(`確認「${b.mother_name}」自 ${q.effective_date} 起由 ${q.old_room} 房改住 ${q.new_room} 房（${q.grade}）、出住日 ${q.new_check_out}？\n\n合約應收將由 ${fmtMoney(q.old_total)} 改為 ${fmtMoney(q.new_total)}，床表／房況／訂餐同步更新。`)) return;
+          if (!confirm(`確認「${b.mother_name}」自 ${q.effective_date} 起由 ${q.old_room} 房改住 ${q.new_room} 房（${q.grade}）、出住日 ${q.new_check_out}？\n\n合約應收將由 ${fmtMoney(q.old_total)} 改為 ${fmtMoney(q.new_total)}，床表／房況／訂餐同步更新。${q.overlap ? `\n\n注意：${q.overlap}，確認後將重疊排入。` : ''}`)) return;
           try {
             const r2 = await api(`/bookings/${b.id}/change-stay`, { method: 'POST',
               body: { effective_date: q.effective_date, room_id: Number(rid), new_check_out: q.new_check_out,
-                reason: resBox.querySelector('#cs-reason').value.trim() } });
+                reason: resBox.querySelector('#cs-reason').value.trim(), allow_overlap: !!q.overlap } });
             closeModal();   // 關閉後收費帳務清單自動重載（modal onclose）
             if (r2 && r2.immediate === false) {
               alert(`生效日 ${q.effective_date} 在未來：新段已建立為「已預約」，生效日當天系統自動轉換（原段轉已退住、新段轉入住中）。`);
@@ -4138,7 +4156,7 @@ async function viewTours() {
       roomEl.onchange = calcTotal;
       body.querySelector('#sg-save').onclick = async () => {
         try {
-          await api(`/tours/${tour.id}/sign`, {
+          await apiBooking(`/tours/${tour.id}/sign`, {
             method: 'POST',
             body: {
               name: body.querySelector('#sg-name').value.trim(),
@@ -4345,7 +4363,9 @@ function openFamilyThread(babyId, thread) {
 }
 
 async function viewFamily() {
-  const [fams, babies, messages] = await Promise.all([api('/family-members'), api('/babies'), api('/family-messages')]);
+  const [fams, mothers, messages] = await Promise.all([api('/family-members'), api('/mothers'), api('/family-messages')]);
+  // 通行碼以媽媽為主：寶寶可能晚幾天才入住，所以新增時選「入住中的媽媽」
+  const inHouse = mothers.filter(m => m.status === 'checked_in').sort((a, b) => String(a.room_name || '').localeCompare(String(b.room_name || ''), 'zh-Hant'));
   // 依寶寶分組留言
   const msgByBaby = {};
   for (const m of messages) (msgByBaby[m.baby_id] = msgByBaby[m.baby_id] || { baby_name: m.baby_name, mother_name: m.mother_name, list: [] }).list.push(m);
@@ -4369,15 +4389,15 @@ async function viewFamily() {
       <button class="btn small" id="fa-add">新增家屬通行碼</button>
     </div>
     <div class="card">
-      ${filterBar({ placeholder: '搜尋家屬 / 寶寶 / 通行碼…', statuses: [{ val: '', label: '全部' }, { val: 'bound', label: '已綁 LINE' }, { val: 'unbound', label: '未綁' }] })}
+      ${filterBar({ placeholder: '搜尋家屬 / 媽媽 / 寶寶 / 通行碼…', statuses: [{ val: '', label: '全部' }, { val: 'bound', label: '已綁 LINE' }, { val: 'unbound', label: '未綁' }] })}
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th>家屬</th><th>關係</th><th>寶寶</th><th>通行碼</th><th>LINE</th><th></th></tr></thead>
+          <thead><tr><th>家屬</th><th>關係</th><th>媽媽（寶寶）</th><th>通行碼</th><th>LINE</th><th></th></tr></thead>
           <tbody>${fams.map(f => `
-            <tr data-filter="${esc(f.name + ' ' + (f.relation || '') + ' ' + f.baby_name + ' ' + f.mother_name + ' ' + f.access_code)}" data-status="${f.line_user_id ? 'bound' : 'unbound'}">
+            <tr data-filter="${esc(f.name + ' ' + (f.relation || '') + ' ' + (f.baby_name || '') + ' ' + f.mother_name + ' ' + f.access_code)}" data-status="${f.line_user_id ? 'bound' : 'unbound'}">
               <td data-label="家屬">${esc(f.name)}</td>
               <td data-label="關係">${esc(f.relation || '-')}</td>
-              <td data-label="寶寶">${esc(f.baby_name)}（${esc(f.mother_name)}）</td>
+              <td data-label="媽媽（寶寶）">${esc(f.mother_name)}${f.baby_name ? `（${esc(f.baby_name)}）` : '<small style="color:var(--muted)">（寶寶尚未建檔）</small>'}</td>
               <td data-label="通行碼"><code style="font-size:1rem;letter-spacing:2px">${esc(f.access_code)}</code></td>
               <td data-label="LINE">${f.line_user_id
                 ? '<span class="badge green">已綁定</span>'
@@ -4444,9 +4464,10 @@ async function viewFamily() {
     openModal('新增家屬通行碼', `
       <div class="form-grid">
         <div class="field full">
-          <label>寶寶</label>
-          <select id="fa-baby">${babies.map(b =>
-            `<option value="${b.id}">${esc(b.name)}（媽媽：${esc(b.mother_name)}）</option>`).join('')}</select>
+          <label>入住中的媽媽</label>
+          <select id="fa-mother">${inHouse.length ? '<option value="">--請選擇--</option>' + inHouse.map(m =>
+            `<option value="${m.id}">${m.room_name ? `${esc(m.room_name)} 房　` : ''}${esc(m.name)}</option>`).join('') : '<option value="">目前沒有入住中的媽媽</option>'}</select>
+          <small style="color:var(--muted)">通行碼綁在媽媽身上；寶寶晚幾天入住也沒關係，寶寶建檔後家屬入口會自動看到寶寶日報。</small>
         </div>
         <div class="field"><label>家屬姓名</label><input id="fa-name"></div>
         <div class="field"><label>關係</label><input id="fa-relation" placeholder="爸爸 / 阿公 / 阿嬤"></div>
@@ -4461,7 +4482,7 @@ async function viewFamily() {
           const r = await api('/family-members', {
             method: 'POST',
             body: {
-              baby_id: body.querySelector('#fa-baby').value,
+              mother_id: body.querySelector('#fa-mother').value,
               name: body.querySelector('#fa-name').value.trim(),
               relation: body.querySelector('#fa-relation').value.trim()
             }
@@ -4946,8 +4967,10 @@ function handlerSelectOptions(users, selected) {
 // 另開視窗列印／另存 PDF：凍結全文 + 簽名圖 + 簽署存證
 // 合約包檢視／列印：整包文件依附件順序連續印出，每份各自分頁，共用同一份簽名存證
 // 須簽署的文件（訂房確認單／服務契約書／住房須知）各自於文末顯示簽名
-function docSign(d, main0) {
+function docSign(d, main0, paper) {
   if (!d.sign_required) return '';
+  // 紙本合約：留空白簽名欄給客人手簽
+  if (paper) return '<div class="doc-sign"><div class="unsigned">立約人簽名：＿＿＿＿＿＿＿＿＿＿　　日期：＿＿＿＿年＿＿月＿＿日</div></div>';
   if (d.status !== 'signed' || !main0.signature_data) {
     return '<div class="doc-sign"><div class="unsigned">簽名：＿＿＿＿＿＿＿＿＿＿（尚未簽署）</div></div>';
   }
@@ -4957,14 +4980,17 @@ function docSign(d, main0) {
   </div>`;
 }
 
-function printPacket(pk) {
+// opts.paper：客戶管理「列印紙本合約」（未經電子簽署，簽名欄留空、不印簽署存證）
+function printPacket(pk, opts = {}) {
   const docs = pk.docs || [];
   if (!docs.length) return;
+  const paper = !!opts.paper;
   const main0 = docs.find(d => d.doc_kind === 'contract') || docs[0];
-  const st = CONTRACT_STATUS[main0.status] || CONTRACT_STATUS.pending;
+  const st = paper ? { label: `紙本合約　${pk.contract_no || ''}${pk.cancelled ? '（已退訂）' : ''}`, badge: 'green' }
+    : (CONTRACT_STATUS[main0.status] || CONTRACT_STATUS.pending);
   const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
   // 紙本版面：A4、每份文件獨立分頁、頁首機構抬頭＋文件名、頁尾當事人與份次
-  const proof = main0.status === 'signed' ? `
+  const proof = paper ? '' : main0.status === 'signed' ? `
     <div class="sign-block">
       <div class="sig">
         <img src="${main0.signature_data}" alt="簽名">
@@ -5029,8 +5055,8 @@ function printPacket(pk) {
           </div>
           <div class="doc-meta"><span>${meta}</span><span>第 ${i + 1} / ${docs.length} 份${d.sign_required ? '' : '（閱讀確認，無須簽名）'}</span></div>
           <div class="body">${esc(d.body)}</div>
-          ${docSign(d, main0)}
-          <div class="doc-foot">${esc(center)}　${esc(d.title)}　第 ${i + 1} / ${docs.length} 份　列印日期：${esc(todayStr())}</div>
+          ${docSign(d, main0, paper)}
+          ${paper ? '' : `<div class="doc-foot">${esc(center)}　${esc(d.title)}　第 ${i + 1} / ${docs.length} 份　列印日期：${esc(todayStr())}</div>`}
         </div>`).join('')}
       ${proof}
     </div>
@@ -5413,88 +5439,14 @@ function printTable(label, columns, rows) {
 }
 
 // 紙本合約列印：由客戶管理合約資料組版，另開視窗列印／另存 PDF
-function printPaperContract(d) {
-  const m = d.mother, ct = d.contract, cd = (ct && ct.data) || {};
+// 列印紙本合約：套用合約包範本（與機構紙本合約相同的 5 份文件），以合約資料帶入後依 A4 紙本版面印出
+async function printPaperContract(d) {
+  const ct = d.contract;
   if (!ct) return alert('請先存檔產生合約編號');
-  const center = (SETTINGS && SETTINGS.center_name) || '嘉禾產後護理之家';
-  const items = (ct.items || []).map((it, i) => `
-    <tr><td style="text-align:center">${i + 1}</td><td>${esc(it.name)}</td>
-      <td style="text-align:right">${Number(it.qty) || 0} 天</td>
-      <td style="text-align:right">$${(Number(it.price) || 0).toLocaleString()}</td>
-      <td style="text-align:right">$${((Number(it.qty) || 0) * (Number(it.price) || 0)).toLocaleString()}</td></tr>`).join('');
-  const kv = (label, val) => `<div class="kv"><span>${esc(label)}</span><b>${esc(val || '—')}</b></div>`;
-  const win = window.open('', '_blank');
-  win.document.write(`<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8">
-    <title>入住服務合約書 ${esc(ct.contract_no)}</title>
-    <style>
-      body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b29;margin:32px;font-size:13.5px;line-height:1.7}
-      h1{font-size:20px;text-align:center;margin:0 0 2px} .sub{text-align:center;color:#555;margin-bottom:16px;font-size:12px}
-      h3{font-size:14.5px;border-left:4px solid #2c6e63;padding-left:8px;margin:18px 0 8px}
-      .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 30px}
-      .kv{display:flex;gap:8px;padding:2px 0} .kv span{color:#555;min-width:110px}
-      table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
-      th,td{border:1px solid #9db5b0;padding:6px 8px} th{background:#eef5f4}
-      .total{text-align:right;font-size:15px;font-weight:700;margin:6px 0 0}
-      .terms{color:#444;font-size:12px}
-      .signs{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:44px}
-      .signs .box{border-top:1px solid #333;padding-top:6px}
-      @media print{.noprint{display:none}}
-    </style></head><body>
-    <h1>${esc(center)}　入住服務合約書</h1>
-    <div class="sub">合約編號：${esc(ct.contract_no)}${ct.status === 'cancelled' ? '（已退訂）' : ''}　列印時間：${esc(new Date().toLocaleString('zh-Hant-TW'))}</div>
-    <h3>基本資料</h3>
-    <div class="grid">
-      ${kv('媽媽姓名', m.name)}${kv('聯絡電話', m.phone)}
-      ${kv('簽約日期', cd.sign_date)}${kv('經手人', cd.handler)}
-      ${kv('預產期', cd.due_date || m.due_date)}${kv('生產胎次', cd.parity_no)}
-      ${kv('寶寶人數', cd.baby_count)}${kv('預計生產方式', cd.delivery_mode || m.delivery_type)}
-      ${kv('預計入住日', cd.expected_check_in)}${kv('預計出住日', cd.expected_check_out)}
-      ${kv('產檢醫院', cd.checkup_hospital)}${kv('小管家', cd.butler)}
-      ${kv('身分證字號', m.id_no)}${kv('出生年月日', m.birth_date)}
-      ${kv('住家電話', cd.phone_home)}${kv('公司電話', cd.phone_company)}
-      ${kv('電子郵件', cd.mother_email)}${kv('通訊地址', cd.mother_address)}
-      ${kv('訂房日期', cd.book_date)}${kv('契約審閱截止日', cd.review_deadline)}
-      ${kv('生產醫院/診所', cd.birth_hospital)}${kv('預計剖腹日', cd.csection_date)}
-      ${kv('飲食餐別', cd.diet_type)}${kv('月子餐別', cd.meal_plan)}
-      ${kv('疾病史', cd.disease_history || '無')}${kv('贈送天數', cd.gift_days ? `${cd.gift_days} 天` : '')}
-      ${kv('訂金支付方式', cd.deposit_method)}${kv('介紹人', cd.referrer)}
-      ${kv('接待人員', cd.receptionist)}${kv('覆核', cd.reviewer)}
-      ${kv('個資提供合作廠商', cd.pdpa_agree)}${kv('肖像權使用', cd.portrait_agree)}
-      ${kv('客服已說明解釋', cd.staff_explained)}
-      ${kv('緊急聯絡人', cd.emergency_name ? `${cd.emergency_name}（${cd.emergency_relation || '—'}）${cd.emergency_phone || ''}` : '')}
-      ${kv('緊急聯絡人地址', cd.emergency_address)}
-      ${kv('緊急聯絡人住家電話', cd.emergency_phone_home)}${kv('緊急聯絡人公司電話', cd.emergency_phone_company)}
-      ${kv('緊急聯絡人電子郵件', cd.emergency_email)}
-      ${kv('契約委託人', cd.agent_name ? `${cd.agent_name}（${cd.agent_relation || '—'}）` : '即產婦本人')}
-      ${kv('委託人身分證字號', cd.agent_id_no)}${kv('委託人出生年月日', cd.agent_birth)}
-      ${kv('委託人電話', cd.agent_phone)}${kv('委託人地址', cd.agent_address)}
-      ${kv('嬰兒姓名', cd.baby_name)}${kv('嬰兒與甲方關係', cd.baby_relation)}
-      ${kv('嬰兒進住方式', cd.baby_stay_type)}
-    </div>
-    <h3>合約明細（銷售房型）</h3>
-    <table><thead><tr><th style="width:44px">項次</th><th>銷售品名</th><th style="width:80px">天數</th><th style="width:110px">單價（/日）</th><th style="width:110px">小計</th></tr></thead>
-      <tbody>${items || '<tr><td colspan="5" style="text-align:center;color:#888">無明細</td></tr>'}</tbody></table>
-    <div class="total">合約總額：$${(ct.total || 0).toLocaleString()}</div>
-    <h3>優惠與贈品</h3>
-    <div class="grid">
-      ${kv('現金折扣', cd.cash_discount ? `$${Number(cd.cash_discount).toLocaleString()}` : '')}
-      ${kv('商品禮券', cd.voucher_amount ? `$${Number(cd.voucher_amount).toLocaleString()}（限折抵商城商品，出住日後歸零）` : '')}
-      ${kv('贈品內容', cd.gift_content)}
-    </div>
-    <h3>其他約定</h3>
-    <div class="terms">
-      <div>一、訂金為合約總額 10%（不扣現金折扣），簽約時繳付；餘款依館方規定期程繳納。</div>
-      <div>二、媽媽飲食禁忌：${esc(cd.diet_ban || m.diet_notes || '無')}</div>
-      <div>三、合約備註：${esc(cd.note || '無')}</div>
-    </div>
-    <div class="signs">
-      <div class="box">立約人（甲方）簽章：<br><br>日期：　　　年　　月　　日</div>
-      <div class="box">${esc(center)}（乙方）簽章：<br><br>日期：　　　年　　月　　日</div>
-    </div>
-    <div class="noprint" style="margin-top:26px;text-align:center">
-      <button onclick="window.print()" style="padding:10px 24px;font-size:15px">列印 / 另存 PDF</button>
-    </div></body></html>`);
-  win.document.close();
+  let pk;
+  try { pk = await api(`/customers/${d.mother.id}/contract/paper`); }
+  catch (e) { return alert(`無法產生紙本合約：${e.message}`); }
+  printPacket(pk, { paper: true });
 }
 
 async function viewExport() {
@@ -14092,9 +14044,14 @@ async function viewCustomers() {
             `<label class="bna-chk"><input type="checkbox" data-ba-taboo value="${t}" ${banMatched.has(t) ? 'checked' : ''}> ${t}</label>`).join('')}
             <input id="ba-taboo-other" placeholder="其他" value="${esc(banOthers.join('、'))}" style="max-width:140px"></div></div>
         <div class="field full"><label>贈<small>（合約贈品內容帶入）</small></label><textarea id="ba-gift" rows="2" maxlength="300">${esc(cd.gift_content || '')}</textarea></div>
-        <div class="field"><label>電話（媽咪）</label><input id="ba-phone-mom" value="${esc(m.phone || '')}"></div>
-        <div class="field"><label>電話（把拔）</label><input id="ba-phone-dad" value="${esc(prof.contact_mobile || '')}"></div>
+        <div class="field"><label>電話（媽咪）<small>（媽媽手機帶入）</small></label><input id="ba-phone-mom" maxlength="20" value="${esc(m.phone || cd.mother_phone || '')}"></div>
         <div class="field"><label>車號</label><input id="ba-car" maxlength="15"></div>
+        <div class="field full"><label>電話（緊急聯絡人）<small>（合約緊急聯絡人姓名／關係／電話帶入，可手改）</small></label>
+          <div class="row" style="gap:6px;flex-wrap:nowrap">
+            <input id="ba-em-name" maxlength="50" placeholder="姓名" value="${esc(cd.emergency_name || '')}" style="flex:1;min-width:0">
+            <input id="ba-em-rel" maxlength="20" placeholder="關係" value="${esc(cd.emergency_relation || '')}" style="flex:0.7;min-width:0">
+            <input id="ba-phone-dad" maxlength="20" placeholder="電話" value="${esc(cd.emergency_phone || prof.contact_mobile || '')}" style="flex:1.2;min-width:0">
+          </div></div>
         <div class="field"><label>製單</label><input value="${esc(currentUser.name)}" readonly></div>
         <div class="field"><label>日期（儲存日期）</label><input value="${todayStr()}" readonly></div>
         <div class="full row"><button class="btn danger" id="ba-save">儲存</button><span class="error-msg" id="ba-err"></span></div>
@@ -14129,7 +14086,7 @@ async function viewCustomers() {
               return;
             }
           } else if (inVal && outVal && (inVal !== bk.check_in || outVal !== bk.check_out)) {
-            try { await api(`/bookings/${bk.id}`, { method: 'PUT', body: { check_in: inVal, check_out: outVal } }); }
+            try { await apiBooking(`/bookings/${bk.id}`, { method: 'PUT', body: { check_in: inVal, check_out: outVal } }); }
             catch (e) { err.textContent = `入住日更新未完成：${e.message}`; return; }
           }
         } else {
@@ -14139,7 +14096,7 @@ async function viewCustomers() {
           bkOut = outVal;
           if (roomId && bkIn && bkOut) {
             try {
-              await api('/bookings', { method: 'POST', body: {
+              await apiBooking('/bookings', { method: 'POST', body: {
                 mother_id: editId, room_id: roomId, check_in: bkIn, check_out: bkOut,
                 deposit: 0, total_amount: (d.contract && d.contract.total) || 0, notes: '寶寶報喜排房帶入'
               } });
@@ -14157,6 +14114,8 @@ async function viewCustomers() {
           taboos: taboos.join('、'), gift: body.querySelector('#ba-gift').value.trim(),
           phone_mom: body.querySelector('#ba-phone-mom').value.trim(),
           phone_dad: body.querySelector('#ba-phone-dad').value.trim(),
+          emergency_name: body.querySelector('#ba-em-name').value.trim(),
+          emergency_relation: body.querySelector('#ba-em-rel').value.trim(),
           car_no: body.querySelector('#ba-car').value.trim(),
           id4: body.querySelector('#ba-id4').value.trim(),
           room_name: bkRoom
@@ -14374,7 +14333,7 @@ async function viewCustomers() {
             price: it ? (it.price || 0) : ((room && room.price_per_day) || 0) };
         });
         try {
-          await api(`/customers/${editId}/bookings/plan`, { method: 'POST', body: {
+          await apiBooking(`/customers/${editId}/bookings/plan`, { method: 'POST', body: {
             start, deposit: Number($q('#bk-dep').value) || 0, note: $q('#bk-note').value.trim(), rows: rows2
           } });
           selectCustomer(editId);
@@ -14421,15 +14380,13 @@ async function viewCustomers() {
         }).join('');
         const rowsHtml = cal.rooms.map(r => {
           const cells = days.map(dd => {
-            const covers = cal.bookings.filter(b => b.room_id === r.id && b.check_in <= dd && b.check_out > dd);
+            const covers = cal.bookings.filter(b => (bcTab === 'planned' ? (b.planned_room_id || b.room_id) : b.room_id) === r.id
+              && b.check_in <= dd && b.check_out > dd);
             const bkIn2 = covers.find(b => b.status === 'checked_in');
-            const bkRes2 = covers.find(b => b.status === 'reserved');
             const bk = bkIn2 || covers[0];
+            if (covers.length > 1) return bedOverlapCell(covers);
             if (bk) {
               const isStart = bk.check_in === dd || dd === cal.start;
-              if (bcTab === 'actual' && bkIn2 && bkRes2) {
-                return `<td title="重疊！入住中 ${esc(bkIn2.mother_name)}（~${esc(bkIn2.check_out)}）與已預約 ${esc(bkRes2.mother_name)}（${esc(bkRes2.check_in)}~）同日同房" style="background:repeating-linear-gradient(45deg,#f6c6c6,#f6c6c6 4px,#cdeae4 4px,#cdeae4 8px);padding:2px;font-size:10px;color:#b23b3b;font-weight:700;white-space:nowrap;overflow:hidden;max-width:0">${isStart || bkRes2.check_in === dd ? '疊' : ''}</td>`;
-              }
               if (bcTab === 'actual' && !bkIn2 && bk.status === 'reserved') {
                 return `<td title="${esc(bk.mother_name)} 已預約未入住" style="background:repeating-linear-gradient(45deg,#fff,#fff 4px,#fdeec2 4px,#fdeec2 8px);padding:2px;font-size:10px;color:#b9911f;white-space:nowrap;overflow:hidden;max-width:0">${isStart ? '約' : ''}</td>`;
               }
@@ -14443,8 +14400,8 @@ async function viewCustomers() {
           return `<tr><th style="text-align:left;white-space:nowrap;padding:2px 6px;position:sticky;left:0;background:#fff">${esc(r.name)}<br><small style="color:var(--muted)">${esc(r.room_type)}</small></th>${cells}</tr>`;
         }).join('');
         $q('#bc2-legend').innerHTML = bcTab === 'planned'
-          ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span> <span class="badge gray">已退住</span>　〔升〕升等　〔降〕降等　〔特〕特殊需求　粗框＝本客戶'
-          : '<span class="badge green">入住中</span> <span class="badge gray">已退住</span>　斜線格＝已預約尚未入住　<span style="color:#b23b3b;font-weight:700">紅斜線〔疊〕＝入住中與已預約重疊</span>';
+          ? '<span class="badge green">入住中</span> <span class="badge yellow">已預約</span> <span class="badge gray">已退住</span>　〔升〕升等　〔降〕降等　〔特〕特殊需求　粗框＝本客戶　<span style="color:#b23b3b;font-weight:700">紅斜線＝期間重疊（格內列出重疊的人）</span>'
+          : '<span class="badge green">入住中</span> <span class="badge gray">已退住</span>　斜線格＝已預約尚未入住　<span style="color:#b23b3b;font-weight:700">紅斜線＝期間重疊（格內列出重疊的人）</span>';
         $q('#bc2-chart').innerHTML = `
           <div class="row between"><h3 style="margin:0;font-size:.95rem">${bcTab === 'planned' ? '預定床表' : '實際入住床表'}（${esc(cal.start)} 起 60 天）</h3></div>
           <div class="table-wrap" style="overflow-x:scroll;margin-top:6px;padding-bottom:4px"><table style="border-collapse:collapse;font-size:12px;min-width:${140 + cal.days * 34}px">
@@ -14503,7 +14460,7 @@ async function viewCustomers() {
             const tDate = body.querySelector('#tr-date').value;
             if (!tDate) { err.textContent = '請填寫轉房日'; return; }
             try {
-              await api(`/bookings/${bk.id}/transfer`, { method: 'POST',
+              await apiBooking(`/bookings/${bk.id}/transfer`, { method: 'POST',
                 body: { transfer_date: tDate, room_id: Number(body.querySelector('#tr-room').value),
                   reason: body.querySelector('#tr-reason').value.trim() } });
               closeModal();
@@ -18562,23 +18519,32 @@ async function route() {
 }
 
 /* ---------- 商城新訂單提醒 ----------
-   家屬端下單後，有商城權限的員工端每 45 秒檢查一次，有新的家屬訂單就跳視窗提醒。
-   第一次登入只記錄目前最新單號、不打擾；已開著其他視窗時延到下一輪再提醒。 */
+   家屬端下單後，有商城權限的員工端每 15 秒檢查一次（切回此分頁時也立即檢查），有新的家屬訂單就跳視窗提醒。
+   第一次登入只記錄目前最新單號、不打擾；已開著其他視窗時延到下一輪再提醒。
+   「已記錄」與「最新單號為 0」要分開：當下沒有待處理訂單時記下 0，下一張家屬訂單才會跳出來（舊版會把它當成初始化吞掉）。 */
 let shopOrderTimer = null;
+let shopOrderVis = null;
+let shopSeenMem = null;   // 無法使用 localStorage（無痕模式）時的備援
 const SHOP_SEEN_KEY = 'shop_order_seen_id';
-function stopShopOrderWatch() { if (shopOrderTimer) { clearInterval(shopOrderTimer); shopOrderTimer = null; } }
+function stopShopOrderWatch() {
+  if (shopOrderTimer) { clearInterval(shopOrderTimer); shopOrderTimer = null; }
+  if (shopOrderVis) { document.removeEventListener('visibilitychange', shopOrderVis); shopOrderVis = null; }
+}
 function startShopOrderWatch() {
   stopShopOrderWatch();
   if (!currentUser || !canAccess('#/shop')) return;
-  const seen = () => { try { return Number(localStorage.getItem(SHOP_SEEN_KEY)) || 0; } catch (e) { return 0; } };
-  const setSeen = v => { try { localStorage.setItem(SHOP_SEEN_KEY, String(v)); } catch (e) { /* 無痕模式忽略 */ } };
+  const seen = () => {
+    try { const v = localStorage.getItem(SHOP_SEEN_KEY); if (v !== null) return Number(v) || 0; } catch (e) { /* 改用記憶體 */ }
+    return shopSeenMem;
+  };
+  const setSeen = v => { shopSeenMem = v; try { localStorage.setItem(SHOP_SEEN_KEY, String(v)); } catch (e) { /* 無痕模式忽略 */ } };
   const tick = async () => {
     if (!currentUser) { stopShopOrderWatch(); return; }
     let rows;
     try { rows = await api('/orders?status=pending'); } catch (e) { return; }   // 網路不穩就下一輪再試
     const maxId = rows.reduce((m, o) => Math.max(m, o.id), 0);
     const last = seen();
-    if (!last) { setSeen(maxId); return; }
+    if (last === null) { setSeen(maxId); return; }
     const fresh = rows.filter(o => o.id > last && o.placed_by === 'family');
     if (!fresh.length) { if (maxId > last) setSeen(maxId); return; }
     if ($('#modal').open) return;
@@ -18600,7 +18566,9 @@ function startShopOrderWatch() {
     });
   };
   tick();
-  shopOrderTimer = setInterval(tick, 45000);
+  shopOrderTimer = setInterval(tick, 15000);
+  shopOrderVis = () => { if (document.visibilityState === 'visible') tick(); };
+  document.addEventListener('visibilitychange', shopOrderVis);
 }
 
 function showLogin() {

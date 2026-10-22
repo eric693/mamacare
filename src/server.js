@@ -3307,8 +3307,8 @@ app.post('/api/babies/:id/report/send', requireStaff, ah(async (req, res) => {
   const date = (req.body && req.body.date) || today();
   const report = buildDailyReport(req.params.id, date);
   if (!report) return res.status(404).json({ error: '找不到資料' });
-  const fams = db.prepare(
-    'SELECT * FROM family_members WHERE baby_id = ? AND active = 1').all(req.params.id);
+  const fams = db.prepare(`SELECT f.* FROM family_members f
+    WHERE f.active = 1 AND f.mother_id = (SELECT mother_id FROM babies WHERE id = ?)`).all(req.params.id);
   const results = await notify.sendReport(report, fams, getSettings());
   const insLog = db.prepare(
     'INSERT INTO push_logs (baby_id, report_date, channel, sent_by) VALUES (?,?,?,?)');
@@ -3375,11 +3375,11 @@ async function runDailyFamilyPush() {
   const base = (s.public_base_url || '').replace(/\/$/, '');
   const yesterday = new Date(Date.now() - 86400000).toLocaleString('sv-SE').slice(0, 10);
   const fams = db.prepare(`
-    SELECT f.id, f.baby_id, f.line_user_id, f.access_code
+    SELECT f.id, COALESCE(f.baby_id, (SELECT id FROM babies WHERE mother_id = f.mother_id ORDER BY id LIMIT 1)) AS baby_id,
+      f.line_user_id, f.access_code
     FROM family_members f
-    JOIN babies b ON b.id = f.baby_id
-    JOIN mothers m ON m.id = b.mother_id
-    WHERE f.active = 1 AND f.line_user_id != '' AND m.status = 'checked_in'`).all();
+    JOIN mothers m ON m.id = f.mother_id
+    WHERE f.active = 1 AND f.line_user_id != '' AND m.status = 'checked_in'`).all().filter(f => f.baby_id);
   const byBaby = new Map();
   for (const f of fams) {
     if (!byBaby.has(f.baby_id)) byBaby.set(f.baby_id, []);
@@ -3745,11 +3745,8 @@ app.post('/api/bookings', requireStaff, (req, res) => {
     return res.status(400).json({ error: '媽媽、房間、入住與退房日期必填' });
   }
   if (b.check_out <= b.check_in) return res.status(400).json({ error: '退房日需晚於入住日' });
-  const conflict = db.prepare(`
-    SELECT COUNT(*) c FROM bookings
-    WHERE room_id = ? AND status IN ('reserved','checked_in')
-      AND check_in < ? AND check_out > ?`).get(b.room_id, b.check_out, b.check_in).c;
-  if (conflict) return res.status(409).json({ error: '該房間此期間已有訂房' });
+  const clash = bookingConflictRow(b.room_id, b.check_in, b.check_out);
+  if (clash && overlapBlocked(req, res, conflictMessage(clash))) return;
   const info = db.prepare(`INSERT INTO bookings
     (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
     VALUES (?,?,?,?,?,?,?,?)`).run(
@@ -3771,6 +3768,16 @@ app.put('/api/bookings/:id/baby-check-in', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
+// 排房重疊：預設擋下並回報與誰重疊；前端讓使用者確認後帶 allow_overlap 重送，就允許重疊排入
+// （例如提早生、延後出住的過渡期）。床表會以紅斜線標示並同時顯示重疊的兩人姓名。
+function overlapBlocked(req, res, msg) {
+  if ((req.body || {}).allow_overlap) {
+    logAudit(req, { action: 'update', entity: 'bookings', entity_id: '', summary: `確認重疊排房：${msg}` });
+    return false;
+  }
+  res.status(409).json({ error: msg, overlap: true });
+  return true;
+}
 // 房間期間衝突：回傳擋住的那一筆（含住客與房號），排除 excludeIds（同一次調整中的其他段）
 function bookingConflictRow(roomId, checkIn, checkOut, excludeIds = []) {
   const ids = excludeIds.filter(Boolean);
@@ -3783,7 +3790,7 @@ function bookingConflictRow(roomId, checkIn, checkOut, excludeIds = []) {
   return db.prepare(sql).get(roomId, checkOut, checkIn, ...ids) || null;
 }
 function conflictMessage(hit) {
-  return `${hit.room_name} 房 ${hit.check_in}~${hit.check_out} 已有${hit.status === 'checked_in' ? '在住' : '預約'}住客「${hit.mother_name}」，請改期或改排其他房號`;
+  return `${hit.room_name} 房 ${hit.check_in}~${hit.check_out} 已有${hit.status === 'checked_in' ? '在住' : '預約'}住客「${hit.mother_name}」，期間重疊`;
 }
 
 // 訂房異動的連動處理（訂餐重鋪／請備房任務更名），供單筆調整與整批排房共用
@@ -3828,7 +3835,7 @@ app.put('/api/bookings/:id/planned-room', requireStaff, (req, res) => {
   const clash = db.prepare(`SELECT m.name FROM bookings b JOIN mothers m ON m.id = b.mother_id
     WHERE b.id != ? AND b.status != 'cancelled' AND COALESCE(b.planned_room_id, b.room_id) = ?
       AND b.check_in < ? AND b.check_out > ? LIMIT 1`).get(bk.id, roomId, bk.check_out, bk.check_in);
-  if (clash) return res.status(409).json({ error: `該期間此房已被「${clash.name}」預定` });
+  if (clash && overlapBlocked(req, res, `${room.name} 房在 ${bk.check_in}~${bk.check_out} 已被「${clash.name}」預定`)) return;
   const alsoActual = bk.status === 'reserved';
   db.prepare(`UPDATE bookings SET planned_room_id = ?${alsoActual ? ', room_id = ?' : ''} WHERE id = ?`)
     .run(...(alsoActual ? [roomId, roomId, bk.id] : [roomId, bk.id]));
@@ -3848,7 +3855,7 @@ app.put('/api/bookings/:id', requireStaff, (req, res) => {
   const checkOut = b.check_out || bk.check_out;
   if (checkOut <= checkIn) return res.status(400).json({ error: '退房日需晚於入住日' });
   const hit = bookingConflictRow(roomId, checkIn, checkOut, [bk.id]);
-  if (hit) return res.status(409).json({ error: conflictMessage(hit) });
+  if (hit && overlapBlocked(req, res, conflictMessage(hit))) return;
   const total = b.total_amount !== undefined ? Number(b.total_amount) || 0 : bk.total_amount;
   applyBookingChange(req, bk, roomId, checkIn, checkOut, total);
   res.json({ ok: true });
@@ -3889,10 +3896,8 @@ app.post('/api/customers/:motherId/bookings/plan', requireStaff, (req, res) => {
     return seg;
   });
   // 本計畫外的訂房才算衝突（同客戶未列入本次計畫的在住段也會被檢查，避免真的重疊）
-  for (const p of plan) {
-    const hit = bookingConflictRow(p.room_id, p.check_in, p.check_out, planIds);
-    if (hit) return res.status(409).json({ error: conflictMessage(hit) });
-  }
+  const hits = plan.map(p => bookingConflictRow(p.room_id, p.check_in, p.check_out, planIds)).filter(Boolean);
+  if (hits.length && overlapBlocked(req, res, hits.map(conflictMessage).join('\n'))) return;
   const deposit = Math.round(Number(b.deposit) || 0);
   const note = String(b.note || '').slice(0, 200);
   const created = [];
@@ -4014,14 +4019,13 @@ app.put('/api/bookings/:id/status', requireStaff, (req, res) => {
 function pushWelcome(motherId) {
   const s = getSettings();
   const mom = db.prepare('SELECT name FROM mothers WHERE id = ?').get(motherId);
-  const fams = db.prepare(`SELECT f.* FROM family_members f JOIN babies b ON b.id = f.baby_id
-    WHERE b.mother_id = ? AND f.active = 1`).all(motherId);
+  const fams = familiesOfMother(motherId);
   if (!fams.length) return 0;
   const token = (s.line_channel_access_token || '').trim();
   const text = `歡迎入住${s.center_name || '本中心'}！\n${mom ? mom.name + ' 媽媽' : '您'}與寶寶的每日照護紀錄、照片與月子餐都能在家屬入口查看，有任何需求都可在「聯絡護理站」留言，祝您與寶寶月子順心愉快 🍼`;
   const insMsg = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body) VALUES (?,?,?,?,?)`);
   for (const f of fams) {
-    insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
+    if (f.baby_id) insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
     if (token && f.line_user_id) notify.pushText(token, f.line_user_id, text).catch(() => {});
   }
   return fams.length;
@@ -4045,14 +4049,13 @@ function pushCheckoutSurvey(motherId) {
     if (s.survey_on_checkout !== '1') return;
     const survey = db.prepare('SELECT * FROM surveys WHERE active = 1 ORDER BY id DESC LIMIT 1').get();
     if (!survey) return;
-    const fams = db.prepare(`SELECT f.* FROM family_members f JOIN babies b ON b.id = f.baby_id
-      WHERE b.mother_id = ? AND f.active = 1`).all(motherId);
+    const fams = familiesOfMother(motherId);
     const token = (s.line_channel_access_token || '').trim();
     const text = `感謝您入住${s.center_name || '本中心'}！\n誠摯邀請您撥空填寫「${survey.title}」滿意度問卷，您的回饋是我們進步的動力。\n請至家屬入口的「滿意度問卷」分頁填寫。`;
     const insMsg = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body)
       VALUES (?,?,?,?,?)`);
     for (const f of fams) {
-      insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
+      if (f.baby_id) insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
       if (token && f.line_user_id) notify.pushText(token, f.line_user_id, text).catch(() => {});
     }
   } catch (e) { /* 不影響退房流程 */ }
@@ -4245,8 +4248,8 @@ app.post('/api/bookings/:id/dun', requireStaff, (req, res) => {
   const text = `${s.center_name || '本中心'} 溫馨提醒：${bk.mother_name} 的住房費用尚有未結餘額 NT$${Number(bk.balance).toLocaleString()}，再麻煩您撥空至櫃檯結清，謝謝！`;
   const token = (s.line_channel_access_token || '').trim();
   let notified = 0;
-  for (const f of db.prepare(`SELECT f.* FROM family_members f JOIN babies b ON b.id=f.baby_id WHERE b.mother_id=? AND f.active=1`).all(bk.mother_id)) {
-    db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body) VALUES (?,?,?,?,?)`).run(f.baby_id, f.id, 'staff', '系統', text);
+  for (const f of familiesOfMother(bk.mother_id)) {
+    if (f.baby_id) db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body) VALUES (?,?,?,?,?)`).run(f.baby_id, f.id, 'staff', '系統', text);
     if (token && f.line_user_id) { notify.pushText(token, f.line_user_id, text).catch(() => {}); notified++; }
   }
   logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id, summary: '催收' });
@@ -4825,9 +4828,26 @@ app.get('/api/family/products', requireFamily, (req, res) => {
     FROM products WHERE active = 1 ORDER BY sort, id DESC`).all());
 });
 
+// 家屬通行碼以媽媽為主（寶寶可能晚幾天才入住）；舊登入階段沒有 mother_id 時由寶寶回推
 function familyMotherId(fam) {
-  const baby = db.prepare('SELECT mother_id FROM babies WHERE id = ?').get(fam.baby_id);
+  if (fam.mother_id) return fam.mother_id;
+  const baby = fam.baby_id ? db.prepare('SELECT mother_id FROM babies WHERE id = ?').get(fam.baby_id) : null;
   return baby ? baby.mother_id : null;
+}
+// 家屬目前檢視的寶寶：登入時還沒有寶寶的，寶寶建檔後自動接上（取該媽媽第一個寶寶）
+function familyBabyId(req) {
+  const fam = req.session.family;
+  if (fam.baby_id && db.prepare('SELECT 1 FROM babies WHERE id = ?').get(fam.baby_id)) return fam.baby_id;
+  const mid = familyMotherId(fam);
+  const b = mid ? db.prepare('SELECT id FROM babies WHERE mother_id = ? ORDER BY id LIMIT 1').get(mid) : null;
+  fam.baby_id = b ? b.id : null;
+  return fam.baby_id;
+}
+const NO_BABY_MSG = '寶寶尚未入住建檔，建檔後即可查看寶寶日報、照片與留言；商城、月子餐、課程等功能已可使用';
+// 某位媽媽的家屬帳號，baby_id 帶出實際要寫留言的寶寶（家屬沒指定寶寶時取該媽媽第一個寶寶；都沒有則為 null）
+function familiesOfMother(motherId) {
+  return db.prepare(`SELECT f.*, COALESCE(f.baby_id, (SELECT id FROM babies WHERE mother_id = f.mother_id ORDER BY id LIMIT 1)) AS baby_id
+    FROM family_members f WHERE f.mother_id = ? AND f.active = 1`).all(motherId);
 }
 
 // 家屬會員資訊（會員編號、點數、回饋規則）
@@ -4853,7 +4873,7 @@ app.post('/api/family/orders/quote', requireFamily, (req, res) => {
 app.post('/api/family/orders', requireFamily, (req, res) => {
   const fam = req.session.family;
   const mid = familyMotherId(fam);
-  if (!mid) return res.status(400).json({ error: '找不到寶寶資料' });
+  if (!mid) return res.status(400).json({ error: '找不到媽媽資料' });
   const bk = activeBookingForMother(mid);
   // 已出住就不給線上下單：沒有在住訂房，金額掛不到帳單上（會變成扣了庫存卻沒人付款）
   if (!bk) return res.status(400).json({ error: '媽媽已出住，無法線上下單。如需購買請洽護理站' });
@@ -4865,7 +4885,8 @@ app.post('/api/family/orders', requireFamily, (req, res) => {
       coupon_code: b.coupon_code, points_used: b.points_used
     });
     logAudit(req, { action: 'create', entity: 'order', entity_id: oid, summary: `家屬下單:${fam.name}` });
-    res.json({ id: oid, message: '訂單已送出，將由護理站確認' });
+    // 回傳訂單內容，家屬端直接跳視窗讓家屬確認買了什麼、多少錢
+    res.json({ id: oid, message: '訂單已送出，將由護理站確認', order: loadOrder(db.prepare('SELECT * FROM orders WHERE id = ?').get(oid)) });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -6082,11 +6103,8 @@ app.post('/api/tours/:id/sign', requireStaff, (req, res) => {
     return res.status(400).json({ error: '房間、入住與退房日期必填' });
   }
   if (b.check_out <= b.check_in) return res.status(400).json({ error: '退房日需晚於入住日' });
-  const conflict = db.prepare(`
-    SELECT COUNT(*) c FROM bookings
-    WHERE room_id = ? AND status IN ('reserved','checked_in')
-      AND check_in < ? AND check_out > ?`).get(b.room_id, b.check_out, b.check_in).c;
-  if (conflict) return res.status(409).json({ error: '該房間此期間已有訂房' });
+  const clash = bookingConflictRow(b.room_id, b.check_in, b.check_out);
+  if (clash && overlapBlocked(req, res, conflictMessage(clash))) return;
 
   const tx = db.transaction(() => {
     const motherId = db.prepare(`INSERT INTO mothers
@@ -6457,6 +6475,36 @@ app.post('/api/customers/:motherId/contract/renew', requireStaff, (req, res) => 
   res.json({ ok: true, archived_no: cur.contract_no, contract_no: nc.contract_no });
 });
 
+// 列印紙本合約：套用合約包範本（服務說明書／訂房確認單／服務契約書／服務內容／住房須知），
+// 以合約資料帶入；媽媽填寫區先帶入系統已有的資料，缺的印底線供手寫；簽署日未定的日期也留空白
+app.get('/api/customers/:motherId/contract/paper', requireStaff, (req, res) => {
+  const m = db.prepare('SELECT id, name FROM mothers WHERE id = ?').get(req.params.motherId);
+  if (!m) return res.status(404).json({ error: '找不到客戶' });
+  const cc = db.prepare("SELECT contract_no, status FROM customer_contracts WHERE mother_id = ? AND status != 'archived'").get(m.id);
+  if (!cc) return res.status(400).json({ error: '請先存檔產生合約編號' });
+  const bk = db.prepare(`SELECT id FROM bookings WHERE mother_id = ? AND status IN ('reserved','checked_in')
+    ORDER BY check_in, id LIMIT 1`).get(m.id)
+    || db.prepare("SELECT id FROM bookings WHERE mother_id = ? AND status != 'cancelled' ORDER BY check_in DESC LIMIT 1").get(m.id);
+  const ctx = contractContext(bk ? bk.id : null, m.id);
+  let tpls = db.prepare('SELECT * FROM contract_templates WHERE active = 1 AND in_packet = 1 ORDER BY sort_order, id').all();
+  if (!tpls.length) tpls = db.prepare('SELECT * FROM contract_templates WHERE active = 1 ORDER BY sort_order, id').all();
+  if (!tpls.length) return res.status(400).json({ error: '尚未設定合約範本，請管理員於「合約範本」建立' });
+  const party = partyPrefill(null, ctx);
+  const paperBlank = '＿＿＿＿年＿＿月＿＿日';
+  const docs = tpls.map(t => ({
+    title: t.name, doc_kind: t.doc_kind, sign_required: t.sign_required === 0 ? 0 : 1,
+    body: renderContractBody(t, ctx)
+      .split('{{party_block}}').join(partyBlock(party))
+      .split('{{mom_block}}').join(momBlock(party))
+      .split('{{booker_block}}').join(bookerBlock(party))
+      .split(AUTO_SIGN_DEADLINE).join(paperBlank)
+      .split(AUTO_SIGN_DATE).join(paperBlank)
+  }));
+  logAudit(req, { action: 'print', entity: 'customer_contracts', entity_id: m.id, summary: `列印紙本合約 ${cc.contract_no}` });
+  res.json({ mother_name: m.name, room_name: ctx.map.room_name, contract_no: cc.contract_no,
+    cancelled: cc.status === 'cancelled', docs });
+});
+
 // 歷史（封存）合約查閱
 app.get('/api/customers/:motherId/contract/history', requireStaff, (req, res) => {
   const rows = db.prepare(`SELECT id, contract_no, data, items, updated_at FROM customer_contracts
@@ -6506,7 +6554,9 @@ app.post('/api/customers/:motherId/baby-announce', requireStaff, (req, res) => {
     announce_id4: String(b.id4 || '').slice(0, 4),
     announce_room: String(b.room_name || '').slice(0, 20),
     announce_phone_mom: String(b.phone_mom || '').slice(0, 20),
-    announce_phone_dad: String(b.phone_dad || '').slice(0, 20),
+    announce_phone_dad: String(b.phone_dad || '').slice(0, 20),   // 緊急聯絡人電話（欄位名沿用）
+    announce_em_name: String(b.emergency_name || '').slice(0, 50),
+    announce_em_relation: String(b.emergency_relation || '').slice(0, 20),
     announce_gift: String(b.gift || '').slice(0, 300),
     announce_babies: JSON.stringify(babiesIn.map(x => ({ gender: x.gender === 'male' ? 'male' : x.gender === 'female' ? 'female' : '', weight_g: Math.round(Number(x.weight_g) || 0) }))),
     announce_by: req.session.user.name,
@@ -8206,16 +8256,24 @@ function money(n) {
   return Number(n || 0).toLocaleString('en-US');
 }
 // 以訂房資料計算合約占位符對應值
-function contractContext(bookingId) {
-  const bk = db.prepare(`
+// motherId：還沒排房時（紙本合約先簽）改用媽媽主檔＋合約資料產生，房號相關欄位留空
+function contractContext(bookingId, motherId) {
+  let bk = bookingId ? db.prepare(`
     SELECT bk.*, m.name AS mother_name, m.phone AS mother_phone, m.id_no AS mother_id_no,
            m.birth_date AS mother_birth, m.due_date AS mother_due, m.delivery_type AS delivery_type,
            r.name AS room_name, r.room_type, r.floor AS room_floor, r.size_ping AS room_size
     FROM bookings bk JOIN mothers m ON m.id = bk.mother_id JOIN rooms r ON r.id = bk.room_id
-    WHERE bk.id = ?`).get(bookingId);
+    WHERE bk.id = ?`).get(bookingId) : null;
+  if (!bk && motherId) {
+    bk = db.prepare(`SELECT NULL AS id, m.id AS mother_id, '' AS check_in, '' AS check_out, 0 AS total_amount, 0 AS deposit,
+           m.name AS mother_name, m.phone AS mother_phone, m.id_no AS mother_id_no,
+           m.birth_date AS mother_birth, m.due_date AS mother_due, m.delivery_type AS delivery_type,
+           '' AS room_name, '' AS room_type, '' AS room_floor, '' AS room_size
+      FROM mothers m WHERE m.id = ?`).get(motherId);
+  }
   if (!bk) return null;
-  const days = Math.max(0, Math.round(
-    (new Date(bk.check_out) - new Date(bk.check_in)) / 86400000));
+  const days = bk.check_in && bk.check_out ? Math.max(0, Math.round(
+    (new Date(bk.check_out) - new Date(bk.check_in)) / 86400000)) : 0;
   const balance = Math.max(0, (bk.total_amount || 0) - (bk.deposit || 0));
   // 合約資料（客戶管理→合約資料）已存檔的優惠明細：帶入訂房確認單
   let cd = {};
@@ -8286,7 +8344,8 @@ function contractContext(bookingId) {
       meal_plan: cd.meal_plan || blank(10),
       diet_ban: cd.diet_ban || '無',
       disease_history: cd.disease_history || '無',
-      book_date: reviewStart,
+      // 訂房日期：合約資料有填就照填的印（可回溯補登），沒填才以審閱起始日帶入
+      book_date: /^\d{4}-\d{2}-\d{2}$/.test(cd.book_date || '') ? cd.book_date : reviewStart,
       review_deadline: reviewEnd,
       review_start: reviewStart,
       gift_days: cd.gift_days || '0',
@@ -8759,8 +8818,8 @@ function syncPartyToCustomer(bookingId, party) {
 }
 
 // 當事人表單預帶值：以客服已建的合約資料與住客主檔為底，產婦可自行修改
-function partyPrefill(bookingId) {
-  const ctx = contractContext(bookingId);
+function partyPrefill(bookingId, ctx0) {
+  const ctx = ctx0 || contractContext(bookingId);
   if (!ctx) return null;
   const cd = ctx.cd || {}, bk = ctx.bk;
   return {
@@ -10137,17 +10196,20 @@ function changeStayValidate(req) {
   const hit = db.prepare(`SELECT m.name FROM bookings bk JOIN mothers m ON m.id = bk.mother_id
     WHERE bk.room_id = ? AND bk.id != ? AND bk.status IN ('reserved','checked_in')
       AND bk.check_in < ? AND bk.check_out > ? LIMIT 1`).get(roomId, bk.id, newCheckOut, effectiveDate);
-  if (hit) return { error: `${newRoom.name} 房 ${effectiveDate}~${newCheckOut} 已有 ${hit.name} 的訂房，請改選其他房間或日期`, code: 409 };
-  return { bk, effectiveDate, newCheckOut, newRoom };
+  // 期間重疊：試算時帶回提醒，確認時需帶 allow_overlap 才會重疊排入（床表顯示兩人姓名）
+  const overlap = hit ? `${newRoom.name} 房 ${effectiveDate}~${newCheckOut} 已有「${hit.name}」的訂房，期間重疊` : '';
+  if (overlap && req.method !== 'GET' && !p.allow_overlap) return { error: overlap, code: 409, overlap: true };
+  if (overlap && req.method !== 'GET') logAudit(req, { action: 'update', entity: 'bookings', entity_id: bk.id, summary: `確認重疊排房：${overlap}` });
+  return { bk, effectiveDate, newCheckOut, newRoom, overlap };
 }
 app.get('/api/bookings/:id/change-stay-quote', requireStaff, (req, res) => {
   const v = changeStayValidate(req);
   if (v.error) return res.status(v.code).json({ error: v.error });
-  res.json(changeStayQuoteOf(v.bk, v.effectiveDate, v.newRoom, v.newCheckOut));
+  res.json({ ...changeStayQuoteOf(v.bk, v.effectiveDate, v.newRoom, v.newCheckOut), overlap: v.overlap });
 });
 app.post('/api/bookings/:id/change-stay', requireStaff, (req, res) => {
   const v = changeStayValidate(req);
-  if (v.error) return res.status(v.code).json({ error: v.error });
+  if (v.error) return res.status(v.code).json({ error: v.error, overlap: !!v.overlap });
   const { bk, effectiveDate, newCheckOut, newRoom } = v;
   const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
   const q = changeStayQuoteOf(bk, effectiveDate, newRoom, newCheckOut);
@@ -10277,7 +10339,7 @@ app.post('/api/bookings/:id/transfer', requireStaff, (req, res) => {
   const hit = db.prepare(`SELECT m.name FROM bookings bk2 JOIN mothers m ON m.id = bk2.mother_id
     WHERE bk2.room_id = ? AND bk2.id != ? AND bk2.status IN ('reserved','checked_in')
       AND bk2.check_in < ? AND bk2.check_out > ? LIMIT 1`).get(roomId, bk.id, bk.check_out, transferDate);
-  if (hit) return res.status(409).json({ error: `${newRoom.name} 房 ${transferDate}~${bk.check_out} 已有 ${hit.name} 的訂房，請改選其他房間` });
+  if (hit && overlapBlocked(req, res, `${newRoom.name} 房 ${transferDate}~${bk.check_out} 已有「${hit.name}」的訂房，期間重疊`)) return;
   const dayDiff = (a, c) => Math.round((new Date(c) - new Date(a)) / 86400000);
   const totalDays = Math.max(1, dayDiff(bk.check_in, bk.check_out));
   const days1 = dayDiff(bk.check_in, transferDate), days2 = totalDays - days1;
@@ -10607,8 +10669,9 @@ const EXPORTS = {
   },
   family_members: {
     label: '家屬帳號',
-    columns: [{ key: 'baby_name', label: '寶寶' }, { key: 'name', label: '家屬' }, { key: 'relation', label: '關係' }, { key: 'access_code', label: '通行碼' }, { key: 'line_bound', label: 'LINE綁定' }, { key: 'active', label: '啟用' }],
-    rows: () => db.prepare(`SELECT f.*, b.name AS baby_name FROM family_members f JOIN babies b ON b.id = f.baby_id ORDER BY f.id`).all()
+    columns: [{ key: 'mother_name', label: '媽媽' }, { key: 'baby_name', label: '寶寶' }, { key: 'name', label: '家屬' }, { key: 'relation', label: '關係' }, { key: 'access_code', label: '通行碼' }, { key: 'line_bound', label: 'LINE綁定' }, { key: 'active', label: '啟用' }],
+    rows: () => db.prepare(`SELECT f.*, m.name AS mother_name, b.name AS baby_name FROM family_members f
+      LEFT JOIN mothers m ON m.id = f.mother_id LEFT JOIN babies b ON b.id = f.baby_id ORDER BY f.id`).all()
       .map(f => ({ ...f, line_bound: f.line_user_id ? '是' : '否', active: f.active ? '是' : '否' }))
   },
   incidents: {
@@ -11395,8 +11458,8 @@ app.put('/api/employees/:id', requireAdmin, (req, res) => {
 // 自動把外部聯絡人對應到住戶（LINE 依已綁定的 line_user_id）
 function crmAutoLink(channel, userId) {
   if (channel !== 'line') return {};
-  const fam = db.prepare(`SELECT f.id AS family_id, b.mother_id FROM family_members f
-    JOIN babies b ON b.id = f.baby_id WHERE f.line_user_id = ? AND f.active = 1`).get(userId);
+  const fam = db.prepare(`SELECT f.id AS family_id, f.mother_id FROM family_members f
+    WHERE f.line_user_id = ? AND f.active = 1`).get(userId);
   return fam ? { family_id: fam.family_id, mother_id: fam.mother_id } : {};
 }
 function crmUpsertContact(channel, userId, profile = {}) {
@@ -11455,8 +11518,9 @@ app.post('/api/webhooks/line', (req, res) => {
         const wantPortal = (ev.type === 'postback' && /(^|&)action=family_portal(&|$)/.test((ev.postback || {}).data || ''))
           || (text != null && text.trim() === '產後服務');
         if (wantPortal) {
-          const fams = db.prepare(`SELECT f.access_code, b.name AS baby_name FROM family_members f
-            JOIN babies b ON b.id = f.baby_id WHERE f.line_user_id = ? AND f.active = 1`).all(userId);
+          const fams = db.prepare(`SELECT f.access_code, COALESCE(b.name, m.name || ' 媽媽') AS baby_name FROM family_members f
+            JOIN mothers m ON m.id = f.mother_id LEFT JOIN babies b ON b.id = f.baby_id
+            WHERE f.line_user_id = ? AND f.active = 1`).all(userId);
           if (!token) continue;
           if (fams.length) {
             const links = fams.map(f => `${f.baby_name}：${base}/family.html?code=${f.access_code}`);
@@ -11470,8 +11534,9 @@ app.post('/api/webhooks/line', (req, res) => {
         }
         // 家屬通行碼綁定：輸入 8 碼通行碼即綁定 LINE，之後每日自動收寶寶日報
         if (text != null && /^[A-Z0-9]{8}$/i.test(text.trim())) {
-          const fam = db.prepare(`SELECT f.*, b.name AS baby_name FROM family_members f
-            JOIN babies b ON b.id = f.baby_id WHERE f.access_code = ? AND f.active = 1`).get(text.trim().toUpperCase());
+          const fam = db.prepare(`SELECT f.*, COALESCE(b.name, m.name || ' 媽媽') AS baby_name FROM family_members f
+            JOIN mothers m ON m.id = f.mother_id LEFT JOIN babies b ON b.id = f.baby_id
+            WHERE f.access_code = ? AND f.active = 1`).get(text.trim().toUpperCase());
           if (fam) {
             db.prepare('UPDATE family_members SET line_user_id = ? WHERE id = ?').run(userId, fam.id);
             if (token) {
@@ -12090,14 +12155,13 @@ app.post('/api/mothers/:id/form-dispatch/:kind/send', requireStaff, (req, res) =
     ORDER BY status = 'checked_in' DESC, check_in DESC LIMIT 1`).get(mother.id);
   if (!bk) return res.status(400).json({ error: '此媽媽目前沒有入住中的訂房' });
   const s = getSettings();
-  const fams = db.prepare(`SELECT f.* FROM family_members f JOIN babies b ON b.id = f.baby_id
-    WHERE b.mother_id = ? AND f.active = 1`).all(mother.id);
+  const fams = familiesOfMother(mother.id);
   const token = (s.line_channel_access_token || '').trim();
   const text = `${s.center_name || '本中心'}邀請您填寫「${FD_LABEL[kind]}」。\n請至家屬入口的「待填表單」分頁填寫，感謝您的協助。`;
   const insMsg = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body) VALUES (?,?,?,?,?)`);
   let sent = 0;
   for (const f of fams) {
-    insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
+    if (f.baby_id) insMsg.run(f.baby_id, f.id, 'staff', '系統', text);
     if (token && f.line_user_id) notify.pushText(token, f.line_user_id, text).catch(() => {});
     sent++;
   }
@@ -12728,25 +12792,29 @@ app.post('/api/family/scales/:kind', requireFamily, (req, res) => {
 // ---------- 家屬帳號管理（員工端） ----------
 app.get('/api/family-members', requireStaff, (req, res) => {
   const rows = db.prepare(`
-    SELECT f.*, b.name AS baby_name, m.name AS mother_name
-    FROM family_members f JOIN babies b ON b.id = f.baby_id
-    JOIN mothers m ON m.id = b.mother_id
+    SELECT f.*, m.name AS mother_name, m.status AS mother_status,
+      (SELECT GROUP_CONCAT(name, '、') FROM babies WHERE mother_id = f.mother_id) AS baby_name
+    FROM family_members f JOIN mothers m ON m.id = f.mother_id
     WHERE f.active = 1 ORDER BY f.id DESC`).all();
   res.json(rows);
 });
 
 app.post('/api/family-members', requireStaff, (req, res) => {
   const f = req.body || {};
-  if (!f.baby_id || !f.name) return res.status(400).json({ error: '寶寶與姓名必填' });
+  // 以媽媽為主（寶寶可能晚幾天才入住）；舊版只傳 baby_id 的也接受
+  const baby = f.baby_id ? db.prepare('SELECT id, mother_id FROM babies WHERE id = ?').get(f.baby_id) : null;
+  const motherId = Number(f.mother_id) || (baby ? baby.mother_id : 0);
+  if (!motherId || !String(f.name || '').trim()) return res.status(400).json({ error: '媽媽與家屬姓名必填' });
+  if (!db.prepare('SELECT 1 FROM mothers WHERE id = ?').get(motherId)) return res.status(400).json({ error: '找不到這位媽媽' });
   const code = genAccessCode();
   const info = db.prepare(`INSERT INTO family_members
-    (baby_id, name, relation, access_code, line_user_id) VALUES (?,?,?,?,?)`).run(
-    f.baby_id, f.name, f.relation || '', code, (f.line_user_id || '').trim());
-  // 若此寶寶的媽媽已入住但尚未發送過歡迎，於建立家屬帳號時補送
+    (mother_id, baby_id, name, relation, access_code, line_user_id) VALUES (?,?,?,?,?,?)`).run(
+    motherId, baby && baby.mother_id === motherId ? baby.id : null, String(f.name).trim(), f.relation || '', code, (f.line_user_id || '').trim());
+  // 若媽媽已入住但尚未發送過歡迎，於建立家屬帳號時補送
   try {
-    const bk = db.prepare(`SELECT bk.id FROM bookings bk JOIN babies b ON b.mother_id = bk.mother_id
-      WHERE b.id = ? AND bk.status = 'checked_in' AND (bk.welcomed_at IS NULL OR bk.welcomed_at = '')
-      ORDER BY bk.check_in DESC LIMIT 1`).get(f.baby_id);
+    const bk = db.prepare(`SELECT bk.id FROM bookings bk
+      WHERE bk.mother_id = ? AND bk.status = 'checked_in' AND (bk.welcomed_at IS NULL OR bk.welcomed_at = '')
+      ORDER BY bk.check_in DESC LIMIT 1`).get(motherId);
     if (bk) maybeWelcome(bk.id);
   } catch (e) { /* 不影響建立帳號 */ }
   res.json({ id: info.lastInsertRowid, access_code: code });
@@ -12770,13 +12838,15 @@ app.delete('/api/family-members/:id', requireStaff, (req, res) => {
 app.post('/api/family/login', (req, res) => {
   const code = ((req.body || {}).code || '').trim().toUpperCase();
   const fam = db.prepare(`
-    SELECT f.*, b.name AS baby_name FROM family_members f
-    JOIN babies b ON b.id = f.baby_id
+    SELECT f.*, m.name AS mother_name FROM family_members f
+    JOIN mothers m ON m.id = f.mother_id
     WHERE f.access_code = ? AND f.active = 1`).get(code);
   if (!fam) return res.status(401).json({ error: '通行碼不正確' });
-  req.session.family = { id: fam.id, baby_id: fam.baby_id, name: fam.name, relation: fam.relation };
+  req.session.family = { id: fam.id, mother_id: fam.mother_id, baby_id: fam.baby_id, name: fam.name, relation: fam.relation };
+  const babyId = familyBabyId(req);
   logAudit(req, { action: 'login', entity: 'family', entity_id: fam.id, summary: `家屬入口:${fam.name}` });
-  res.json({ family: req.session.family, baby_name: fam.baby_name });
+  res.json({ family: req.session.family, mother_name: fam.mother_name,
+    baby_name: babyId ? (db.prepare('SELECT name FROM babies WHERE id = ?').get(babyId) || {}).name : '' });
 });
 
 app.post('/api/family/logout', (req, res) => {
@@ -12788,7 +12858,9 @@ app.get('/api/family/me', (req, res) => {
 });
 
 app.get('/api/family/report', requireFamily, (req, res) => {
-  const report = buildDailyReport(req.session.family.baby_id, req.query.date || today());
+  const babyId = familyBabyId(req);
+  if (!babyId) return res.status(404).json({ error: NO_BABY_MSG, no_baby: true });
+  const report = buildDailyReport(babyId, req.query.date || today());
   if (!report) return res.status(404).json({ error: '找不到資料' });
   // 家屬端不揭露護理師個資以外的內部備註欄位，僅保留必要資訊
   report.records = report.records.map(r => ({
@@ -12803,9 +12875,9 @@ app.get('/api/family/report', requireFamily, (req, res) => {
 // 親子同室紀錄：寶寶在「親子同室」時，家屬可自行登記餵奶／尿布／睡眠／小提醒
 const FAMILY_REC_TYPES = new Set(['feeding', 'diaper', 'sleep', 'note']);
 app.post('/api/family/records', requireFamily, (req, res) => {
-  const babyId = req.session.family.baby_id;
-  const baby = db.prepare('SELECT id, location FROM babies WHERE id=?').get(babyId);
-  if (!baby) return res.status(404).json({ error: '找不到寶寶' });
+  const babyId = familyBabyId(req);
+  const baby = babyId ? db.prepare('SELECT id, location FROM babies WHERE id=?').get(babyId) : null;
+  if (!baby) return res.status(404).json({ error: NO_BABY_MSG });
   if (baby.location !== 'rooming') return res.status(403).json({ error: '寶寶目前不在親子同室，暫時無法自行登記' });
   const b = req.body || {};
   const type = String(b.record_type || '');
@@ -12830,30 +12902,31 @@ app.post('/api/family/records', requireFamily, (req, res) => {
 });
 
 app.get('/api/family/trends', requireFamily, (req, res) => {
-  res.json(buildTrends(req.session.family.baby_id));
+  const babyId = familyBabyId(req);
+  if (!babyId) return res.status(404).json({ error: NO_BABY_MSG, no_baby: true });
+  res.json(buildTrends(babyId));
 });
 
 app.get('/api/family/photos', requireFamily, (req, res) => {
   const rows = db.prepare(`
     SELECT photo_file, note, recorded_at FROM baby_records
     WHERE baby_id = ? AND record_type = 'photo'
-    ORDER BY recorded_at DESC LIMIT 60`).all(req.session.family.baby_id);
+    ORDER BY recorded_at DESC LIMIT 60`).all(familyBabyId(req) || -1);
   res.json(rows);
 });
 
 // 同一位媽媽的寶寶（雙胞胎／多胞胎）清單，供家屬端切換檢視
 app.get('/api/family/siblings', requireFamily, (req, res) => {
-  const cur = db.prepare('SELECT mother_id FROM babies WHERE id=?').get(req.session.family.baby_id);
-  if (!cur) return res.json([]);
-  const rows = db.prepare('SELECT id, name FROM babies WHERE mother_id=? ORDER BY id').all(cur.mother_id);
-  res.json({ current: req.session.family.baby_id, babies: rows });
+  const mid = familyMotherId(req.session.family);
+  if (!mid) return res.json({ current: null, babies: [] });
+  const rows = db.prepare('SELECT id, name FROM babies WHERE mother_id=? ORDER BY id').all(mid);
+  res.json({ current: familyBabyId(req), babies: rows });
 });
 
 app.post('/api/family/switch-baby', requireFamily, (req, res) => {
   const target = (req.body || {}).baby_id;
-  const cur = db.prepare('SELECT mother_id FROM babies WHERE id=?').get(req.session.family.baby_id);
-  if (!cur) return res.status(404).json({ error: '找不到寶寶' });
-  const ok = db.prepare('SELECT id, name FROM babies WHERE id=? AND mother_id=?').get(target, cur.mother_id);
+  const mid = familyMotherId(req.session.family);
+  const ok = mid ? db.prepare('SELECT id, name FROM babies WHERE id=? AND mother_id=?').get(target, mid) : null;
   if (!ok) return res.status(403).json({ error: '只能切換同一位媽媽的寶寶' });
   req.session.family.baby_id = ok.id;
   res.json({ ok: true, baby_id: ok.id, baby_name: ok.name });
@@ -12861,7 +12934,8 @@ app.post('/api/family/switch-baby', requireFamily, (req, res) => {
 
 // 家屬留言（家屬端）
 app.get('/api/family/messages', requireFamily, (req, res) => {
-  const babyId = req.session.family.baby_id;
+  const babyId = familyBabyId(req);
+  if (!babyId) return res.json([]);
   const rows = db.prepare(`SELECT id, sender, sender_name, body, subject_type, read_by_staff, created_at FROM family_messages
     WHERE baby_id=? ORDER BY created_at DESC`).all(babyId);
   db.prepare(`UPDATE family_messages SET read_by_family=1 WHERE baby_id=? AND sender='staff'`).run(babyId);
@@ -12875,6 +12949,7 @@ app.post('/api/family/messages', requireFamily, (req, res) => {
   if (body.length > 1000) return res.status(400).json({ error: '留言過長' });
   const subject_type = b.subject_type === 'mother' ? 'mother' : 'baby';
   const f = req.session.family;
+  if (!familyBabyId(req)) return res.status(400).json({ error: '寶寶入住建檔後即可留言，如有急事請直接致電護理站' });
   const info = db.prepare(`INSERT INTO family_messages (baby_id, family_id, sender, sender_name, body, subject_type, read_by_family)
     VALUES (?,?, 'family', ?, ?, ?, 1)`).run(f.baby_id, f.id, f.name + (f.relation ? `（${f.relation}）` : ''), body, subject_type);
   // 即時通知值班：家屬留言推播 LINE（需設定 token 與 line_staff_alert_id）

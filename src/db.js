@@ -148,7 +148,8 @@ function init() {
 
   CREATE TABLE IF NOT EXISTS family_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    baby_id INTEGER NOT NULL REFERENCES babies(id),
+    mother_id INTEGER REFERENCES mothers(id),
+    baby_id INTEGER REFERENCES babies(id),
     name TEXT NOT NULL,
     relation TEXT DEFAULT '',
     access_code TEXT NOT NULL UNIQUE,
@@ -1494,6 +1495,28 @@ function init() {
   if (!famCols.includes('line_user_id')) {
     db.exec("ALTER TABLE family_members ADD COLUMN line_user_id TEXT NOT NULL DEFAULT ''");
   }
+  // 家屬通行碼改以媽媽為主：寶寶可能晚幾天才入住（或尚未建檔），baby_id 改為選填，mother_id 由原寶寶回填
+  if (!famCols.includes('mother_id')) {
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE family_members_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mother_id INTEGER REFERENCES mothers(id),
+        baby_id INTEGER REFERENCES babies(id),
+        name TEXT NOT NULL,
+        relation TEXT DEFAULT '',
+        access_code TEXT NOT NULL UNIQUE,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        line_user_id TEXT NOT NULL DEFAULT ''
+      );
+      INSERT INTO family_members_new (id, mother_id, baby_id, name, relation, access_code, active, created_at, line_user_id)
+        SELECT f.id, b.mother_id, f.baby_id, f.name, f.relation, f.access_code, f.active, f.created_at, f.line_user_id
+        FROM family_members f LEFT JOIN babies b ON b.id = f.baby_id;
+      DROP TABLE family_members;
+      ALTER TABLE family_members_new RENAME TO family_members;`);
+    db.pragma('foreign_keys = ON');
+  }
   const babyCols = db.prepare('PRAGMA table_info(babies)').all().map(c => c.name);
   if (!babyCols.includes('location')) {
     db.exec("ALTER TABLE babies ADD COLUMN location TEXT NOT NULL DEFAULT 'nursery'");
@@ -2626,11 +2649,11 @@ function seed() {
   insTour.run('周小姐', '0966789012', dateStr(45), `${dateStr(-3)} 10:30`, '朋友介紹', 'signed', '已簽約 30 天方案');
   insTour.run('鄭小姐', '0977345678', dateStr(90), `${dateStr(-7)} 15:00`, '網路搜尋', 'lost', '價格考量');
 
-  const insFam = db.prepare(
-    'INSERT INTO family_members (baby_id, name, relation, access_code) VALUES (?,?,?,?)');
-  insFam.run(b1, '張志明', '爸爸', 'DEMO1234');
-  insFam.run(b1, '張王秀蘭', '阿嬤', genAccessCode());
-  insFam.run(b2, '劉建宏', '爸爸', genAccessCode());
+  const insFam = db.prepare(`INSERT INTO family_members (mother_id, baby_id, name, relation, access_code)
+    VALUES ((SELECT mother_id FROM babies WHERE id = ?),?,?,?,?)`);
+  insFam.run(b1, b1, '張志明', '爸爸', 'DEMO1234');
+  insFam.run(b1, b1, '張王秀蘭', '阿嬤', genAccessCode());
+  insFam.run(b2, b2, '劉建宏', '爸爸', genAccessCode());
 
   // ---- 評鑑相關示範資料：異常事件、感染管制、新生兒醫療、發票 ----
   db.prepare(`INSERT INTO incidents
