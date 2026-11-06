@@ -3125,3 +3125,20 @@ test('列印紙本合約：套用合約包範本並以合約資料帶入，不�
   assert.match(all, /紙本先生/);
   assert.match(all, /2026-06-01/);
 });
+
+test('員工名單：沒有帳號管理權限也能讀姓名（感染管制／排班／合約頁人員下拉），但不外洩個資、不能新增帳號', async () => {
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  await req('POST', '/api/users', { username: 'inf_test', password: 'i12345', name: '感控測試', role: 'nurse', permissions: ['infection', 'shifts'] });
+  const full = (await req('GET', '/api/users')).data;
+  assert.ok('id_no' in full[0] && 'permissions' in full[0], '帳號管理者看得到完整資料');
+  cookie = '';
+  assert.strictEqual((await req('POST', '/api/login', { username: 'inf_test', password: 'i12345' })).status, 200);
+  const r = await req('GET', '/api/users');
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(Object.keys(r.data[0]).sort(), ['active', 'id', 'name', 'role']);
+  assert.strictEqual((await req('POST', '/api/users', { username: 'x1', password: 'x12345', name: 'x' })).status, 403);
+  assert.strictEqual((await req('PUT', `/api/users/${r.data[0].id}`, { name: 'x' })).status, 403);
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+});

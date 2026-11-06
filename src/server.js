@@ -271,6 +271,9 @@ const MODULE_RULES = [
   [/^\/api\/surveys/, 'surveys'],
   [/^\/api\/audit-logs/, 'audit'],
   [/^\/api\/(export|backups)/, 'export'],
+  // 員工名單（GET /api/users）開放所有員工讀取，供感染管制／排班／合約等頁的人員下拉；
+  // 沒有帳號管理權限者只拿到姓名等基本欄位（見路由），新增／修改帳號仍限帳號管理
+  [/^\/api\/users$/, 'users', 'WRITE'],
   [/^\/api\/users/, 'users'],
   [/^\/api\/employees/, 'users'],
   [/^\/api\/housekeeping/, 'housekeeping'],
@@ -11342,6 +11345,10 @@ app.get('/api/permission-matrix', requireStaff, (req, res) => {
 });
 
 app.get('/api/users', requireStaff, (req, res) => {
+  if (!userCan(req.session.user, 'users')) {
+    // 無帳號管理權限：只給人員選單需要的欄位，不外洩帳號、電話、身分證與權限
+    return res.json(db.prepare('SELECT id, name, role, active FROM users ORDER BY id').all());
+  }
   const rows = db.prepare('SELECT id, username, name, role, phone, id_no, active, permissions, service_scope FROM users ORDER BY id').all();
   res.json(rows.map(u => ({ ...u, permissions: parsePermissions(u.permissions) })));
 });
