@@ -3754,7 +3754,7 @@ app.post('/api/bookings', requireStaff, (req, res) => {
     (mother_id, room_id, check_in, check_out, deposit, total_amount, status, notes)
     VALUES (?,?,?,?,?,?,?,?)`).run(
     b.mother_id, b.room_id, b.check_in, b.check_out,
-    b.deposit || 0, b.total_amount || 0, b.status || 'reserved', b.notes || '');
+    0, b.total_amount || 0, b.status || 'reserved', b.notes || '');   // 訂金一律於入住前收款登記（payments），不再寫入訂房
   res.json({ id: info.lastInsertRowid });
 });
 
@@ -3901,7 +3901,7 @@ app.post('/api/customers/:motherId/bookings/plan', requireStaff, (req, res) => {
   // 本計畫外的訂房才算衝突（同客戶未列入本次計畫的在住段也會被檢查，避免真的重疊）
   const hits = plan.map(p => bookingConflictRow(p.room_id, p.check_in, p.check_out, planIds)).filter(Boolean);
   if (hits.length && overlapBlocked(req, res, hits.map(conflictMessage).join('\n'))) return;
-  const deposit = Math.round(Number(b.deposit) || 0);
+  const deposit = 0;   // 訂金一律於入住前收款登記（payments），排房不再另記，避免已收款重複計算
   const note = String(b.note || '').slice(0, 200);
   const created = [];
   let updated = 0, cancelled = 0;
@@ -6117,7 +6117,7 @@ app.post('/api/tours/:id/sign', requireStaff, (req, res) => {
       (mother_id, room_id, check_in, check_out, deposit, total_amount, status)
       VALUES (?,?,?,?,?,?,'reserved')`).run(
       motherId, b.room_id, b.check_in, b.check_out,
-      b.deposit || 0, b.total_amount || 0).lastInsertRowid;
+      0, b.total_amount || 0).lastInsertRowid;   // 訂金於入住前收款登記
     db.prepare("UPDATE tours SET status = 'signed' WHERE id = ?").run(req.params.id);
     return { mother_id: motherId, booking_id: bookingId };
   });
@@ -6737,7 +6737,10 @@ function upsertPrepTask(roomId, motherId, taskName, note, userId) {
 
 // 訂金溢收提示：已收訂金 vs 新合約總額 10%
 function depositOverHint(motherId) {
-  const dep = db.prepare(`SELECT COALESCE(SUM(deposit),0) t FROM bookings WHERE mother_id = ? AND status != 'cancelled'`).get(motherId).t;
+  // 已收訂金＝舊資料留在訂房上的訂金＋入住前收款登記的訂金
+  const dep = db.prepare(`SELECT COALESCE(SUM(deposit),0) t FROM bookings WHERE mother_id = ? AND status != 'cancelled'`).get(motherId).t
+    + db.prepare(`SELECT COALESCE(SUM(p.amount),0) t FROM payments p JOIN bookings bk ON bk.id = p.booking_id
+      WHERE bk.mother_id = ? AND bk.status != 'cancelled' AND (p.item = '訂金' OR p.note LIKE '訂金%')`).get(motherId).t;
   const c = getCustomerContract(motherId);
   const need = Math.round(((c && c.total) || 0) * 0.1);
   return dep > need ? dep - need : 0;

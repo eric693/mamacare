@@ -2392,8 +2392,8 @@ function openBookingForm(rooms, mothers, prefill = {}) {
       </div>
       <div class="field"><label>入住日</label><input type="date" id="bk-in" value="${esc(prefill.check_in || '')}"></div>
       <div class="field"><label>退房日</label><input type="date" id="bk-out"></div>
-      <div class="field"><label>訂金</label><input type="number" id="bk-deposit" inputmode="numeric" value="0"></div>
       <div class="field"><label>合約總額</label><input type="number" id="bk-total" inputmode="numeric" value="0"></div>
+      <div class="field full"><small style="color:var(--muted)">訂金請於客戶管理「入住前收款紀錄」登記（記收款日與付款方式），避免重複計算已收款。</small></div>
       <div class="full row">
         <button class="btn" id="bk-save">儲存</button>
         <span class="error-msg" id="bk-err"></span>
@@ -2419,7 +2419,6 @@ function openBookingForm(rooms, mothers, prefill = {}) {
             room_id: body.querySelector('#bk-room').value,
             check_in: inEl.value,
             check_out: outEl.value,
-            deposit: Number(body.querySelector('#bk-deposit').value) || 0,
             total_amount: Number(body.querySelector('#bk-total').value) || 0
           }
         });
@@ -4135,8 +4134,8 @@ async function viewTours() {
         </div>
         <div class="field"><label>入住日</label><input type="date" id="sg-in"></div>
         <div class="field"><label>退房日</label><input type="date" id="sg-out"></div>
-        <div class="field"><label>訂金</label><input type="number" id="sg-deposit" inputmode="numeric" value="0"></div>
         <div class="field"><label>合約總額</label><input type="number" id="sg-total" inputmode="numeric" value="0"></div>
+        <div class="field full"><small style="color:var(--muted)">訂金請於客戶管理「入住前收款紀錄」登記。</small></div>
         <div class="full row">
           <button class="btn" id="sg-save">確認簽約並建立訂房</button>
           <span class="error-msg" id="sg-err"></span>
@@ -4165,7 +4164,6 @@ async function viewTours() {
               room_id: roomEl.value,
               check_in: inEl.value,
               check_out: outEl.value,
-              deposit: Number(body.querySelector('#sg-deposit').value) || 0,
               total_amount: Number(body.querySelector('#sg-total').value) || 0
             }
           });
@@ -14334,7 +14332,7 @@ async function viewCustomers() {
         });
         try {
           await apiBooking(`/customers/${editId}/bookings/plan`, { method: 'POST', body: {
-            start, deposit: Number($q('#bk-dep').value) || 0, note: $q('#bk-note').value.trim(), rows: rows2
+            start, note: $q('#bk-note').value.trim(), rows: rows2
           } });
           selectCustomer(editId);
         } catch (e) {
@@ -14578,8 +14576,7 @@ async function viewCustomers() {
         <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
           <div class="field" style="margin:0"><label>入住日 <b class="req">*</b><small>（合約預計入住日帶入）</small></label>
             <input type="date" id="bk-in" value="${esc(bcd.expected_check_in || '')}"></div>
-          <div class="field" style="margin:0;max-width:130px"><label>訂金<small>（10%合約總額）</small></label>
-            <input type="number" min="0" id="bk-dep" value="${Math.round((bct.total || 0) * 0.1)}"></div>
+          <small style="color:var(--muted);max-width:360px">訂金（合約總額 10%＝${fmtMoney(Math.round((bct.total || 0) * 0.1))}）請於「入住前收款紀錄」登記，排房不另填訂金，避免已收款重複計算。</small>
         </div>
         <div class="table-wrap"><table class="data" id="bk-rows-table">
           <thead><tr><th>預定房型</th><th>預定天數</th><th>安排房型 <b class="req">*</b></th><th>房號 <b class="req">*</b></th><th>天數 <b class="req">*</b></th><th></th></tr></thead>

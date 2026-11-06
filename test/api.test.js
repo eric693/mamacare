@@ -3142,3 +3142,26 @@ test('員工名單：沒有帳號管理權限也能讀姓名（感染管制／�
   cookie = '';
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
 });
+
+test('訂金只在入住前收款登記：排房帶訂金不再記入已收款，避免與入住前收款的訂金重複計算', async () => {
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const base = Date.now() - new Date().getTimezoneOffset() * 60000;
+  const D = n => new Date(base + n * 86400000).toISOString().slice(0, 10);
+  const mid = (await req('POST', '/api/customers', { name: '訂金驗證媽', due_date: D(300) })).data.id;
+  const rooms = (await req('GET', '/api/rooms')).data.filter(r => r.active && r.room_type !== '托嬰');
+  let bk = null;
+  for (const r of rooms) {
+    const t = await req('POST', `/api/customers/${mid}/bookings/plan`, { start: D(500), deposit: 8800, rows: [{ room_id: r.id, days: 10, price: 8800 }] });
+    if (t.status === 200) { bk = t.data.created[0]; break; }
+  }
+  assert.ok(bk);
+  let bill = (await req('GET', `/api/bookings/${bk}/billing`)).data;
+  assert.strictEqual(bill.deposit, 0, '排房不記訂金');
+  assert.strictEqual(bill.paid_contract, 0);
+  await req('POST', `/api/bookings/${bk}/payments`, { amount: 8800, item: '訂金', method: '匯款' });
+  bill = (await req('GET', `/api/bookings/${bk}/billing`)).data;
+  assert.strictEqual(bill.paid_contract, 8800, '訂金只算一次');
+  assert.strictEqual(bill.contract_balance, 88000 - 8800);
+  await req('PUT', `/api/bookings/${bk}/status`, { status: 'cancelled' });
+});
