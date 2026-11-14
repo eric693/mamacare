@@ -3165,3 +3165,20 @@ test('訂金只在入住前收款登記：排房帶訂金不再記入已收款�
   assert.strictEqual(bill.contract_balance, 88000 - 8800);
   await req('PUT', `/api/bookings/${bk}/status`, { status: 'cancelled' });
 });
+
+test('參觀預約與客戶資料的預產期雙向同步：客戶管理補登後參觀清單看得到，參觀改預產期也回寫客戶', async () => {
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const phone = '09' + String(Date.now()).slice(-8);
+  const t = (await req('POST', '/api/tours', { name: '預產期同步媽', phone, tour_at: '2026-12-01 14:00' })).data;
+  assert.ok(t.mother_id && t.customer_created);
+  const rowOf = async () => (await req('GET', '/api/tours')).data.find(x => x.id === t.id);
+  assert.strictEqual((await rowOf()).due_date, '');
+  // 客戶管理補登預產期 → 參觀清單同步
+  await req('PUT', `/api/customers/${t.mother_id}`, { name: '預產期同步媽', phone, due_date: '2027-05-17' });
+  assert.strictEqual((await rowOf()).due_date, '2027-05-17');
+  // 參觀預約改預產期 → 回寫客戶資料
+  assert.strictEqual((await req('PUT', `/api/tours/${t.id}`, { due_date: '2027-05-20' })).status, 200);
+  assert.strictEqual((await rowOf()).due_date, '2027-05-20');
+  assert.strictEqual((await req('GET', `/api/customers/${t.mother_id}`)).data.mother.due_date, '2027-05-20');
+});

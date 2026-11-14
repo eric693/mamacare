@@ -3954,9 +3954,9 @@ function tourForm(t = {}) {
       <div class="field"><label>電話</label><input id="tf-phone" value="${esc(t.phone || '')}"></div>
       <div class="field"><label>參觀日期</label><input type="date" id="tf-date" value="${esc(d || todayStr())}"></div>
       <div class="field"><label>參觀時間</label><input type="time" id="tf-time" value="${esc(tm ? tm.slice(0, 5) : '14:00')}"></div>
-      <div class="field"><label>預產期</label><input type="date" id="tf-due" value="${esc(t.due_date || '')}"></div>
+      <div class="field"><label>預產期 <b class="req">*</b></label><input type="date" id="tf-due" value="${esc(t.due_date || '')}"></div>
       <div class="field"><label>來源</label><input id="tf-source" value="${esc(t.source || '')}" placeholder="官網 / 介紹 / 廣告"></div>
-      <div class="field"><label>下次跟進日</label><input type="date" id="tf-follow" value="${esc(t.follow_up_date || '')}"></div>
+      <div class="field"><label>下次跟進日<small>（下次聯絡客人的日期，不是預產期）</small></label><input type="date" id="tf-follow" value="${esc(t.follow_up_date || '')}"></div>
       <div class="field"><label>客服承辦人<small>（帶參觀人員）</small></label>${tourHostSelect('tf-host', t.host_by)}</div>
       <div class="field full">
         <label>狀態</label>
@@ -4183,6 +4183,11 @@ async function viewTours() {
         body.querySelector('#tf-err').textContent = '姓名與參觀日期必填';
         return;
       }
+      if (!t.due_date) { body.querySelector('#tf-err').textContent = '請填寫預產期'; return; }
+      // 防呆：跟進日比參觀日晚兩個月以上，多半是把預產期填到跟進日
+      const tourDay = body.querySelector('#tf-date').value;
+      if (t.follow_up_date && tourDay && (new Date(t.follow_up_date) - new Date(tourDay)) / 86400000 > 60
+          && !confirm(`下次跟進日 ${t.follow_up_date} 比參觀日晚兩個月以上，是不是填到預產期了？\n\n確定這是下次跟進日，按「確定」繼續儲存；要修改請按「取消」。`)) return;
       try {
         await fn(t);
         closeModal();

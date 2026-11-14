@@ -5968,7 +5968,7 @@ app.delete('/api/meal-menu-files/:id', requireAdmin, (req, res) => {
 // ---------- 參觀預約（潛在客戶追蹤） ----------
 // 支援伺服器端篩選（field 日期欄位 tour/due/reg + from/to、name、phone、status、only_cancelled）與分頁（帶 page）
 app.get('/api/tours', requireStaff, (req, res) => {
-  const field = { tour: 'date(t.tour_at)', due: 't.due_date', reg: 'date(t.created_at)' }[req.query.field] || null;
+  const field = { tour: 'date(t.tour_at)', due: "COALESCE(NULLIF(cm.due_date, ''), t.due_date)", reg: 'date(t.created_at)' }[req.query.field] || null;
   const from = String(req.query.from || ''), to = String(req.query.to || '');
   const name = String(req.query.name || '').trim(), phone = String(req.query.phone || '').trim();
   const status = ['scheduled', 'visited', 'signed', 'lost'].includes(req.query.status) ? req.query.status : '';
@@ -5985,7 +5985,8 @@ app.get('/api/tours', requireStaff, (req, res) => {
   if (req.query.exclude_cancelled === '1') cond.push("(t.cancel_at IS NULL OR t.cancel_at = '')");
   if (req.query.exclude_lost === '1') cond.push("t.status != 'lost'");
   const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
-  const cols = `SELECT t.*,
+  // 預產期以連結的客戶資料為準（客戶管理改了預產期，參觀清單同步顯示）
+  const cols = `SELECT t.*, COALESCE(NULLIF(cm.due_date, ''), t.due_date) AS due_date,
       uc.name AS created_by_name, ux.name AS cancel_by_name, uh.name AS host_name,
       cm.name AS customer_name, cm.status AS customer_status,
       (SELECT COUNT(*) FROM tour_logs l WHERE l.tour_id = t.id) AS log_count,
@@ -5998,7 +5999,7 @@ app.get('/api/tours', requireStaff, (req, res) => {
     LEFT JOIN mothers cm ON cm.id = t.mother_id`;
   const pg = pageParams(req);
   if (pg.enabled) {
-    const total = db.prepare(`SELECT COUNT(*) c FROM tours t ${where}`).get(...args).c;
+    const total = db.prepare(`SELECT COUNT(*) c FROM tours t LEFT JOIN mothers cm ON cm.id = t.mother_id ${where}`).get(...args).c;
     const rows = db.prepare(`${cols} ${where} ORDER BY t.tour_at DESC LIMIT ? OFFSET ?`).all(...args, pg.pageSize, pg.offset);
     return res.json({ rows, total, page: pg.page, pageSize: pg.pageSize });
   }
@@ -6035,7 +6036,13 @@ function tourCustomerLink(t, userId) {
   const phone = String(t.phone || '').trim();
   if (!phone) return { motherId: null, created: false };
   const existing = db.prepare(`SELECT id FROM mothers WHERE phone = ? ORDER BY id DESC LIMIT 1`).get(phone);
-  if (existing) return { motherId: existing.id, created: false };
+  if (existing) {
+    // 既有客戶還沒有預產期時，用這次參觀填的補上
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t.due_date || '')) {
+      db.prepare("UPDATE mothers SET due_date = ? WHERE id = ? AND COALESCE(due_date, '') = ''").run(t.due_date, existing.id);
+    }
+    return { motherId: existing.id, created: false };
+  }
   const info = db.prepare(`INSERT INTO mothers (name, phone, due_date, status) VALUES (?,?,?, 'reserved')`).run(
     String(t.name || '').slice(0, 50), phone.slice(0, 20),
     /^\d{4}-\d{2}-\d{2}$/.test(t.due_date || '') ? t.due_date : '');
@@ -6088,6 +6095,11 @@ app.put('/api/tours/:id', requireStaff, (req, res) => {
     t.attended !== undefined ? (['是', '否'].includes(t.attended) ? t.attended : '') : cur.attended,
     t.birth_hospital !== undefined ? String(t.birth_hospital).slice(0, 50) : cur.birth_hospital,
     motherId, t.host_by !== undefined ? tourHostId(t.host_by) : cur.host_by, req.params.id);
+  // 參觀預約改了預產期 → 同步客戶資料與同一客戶的其他參觀預約（清單以客戶資料為準）
+  if (motherId && /^\d{4}-\d{2}-\d{2}$/.test(t.due_date || '')) {
+    db.prepare("UPDATE mothers SET due_date = ? WHERE id = ? AND COALESCE(due_date, '') != ?").run(t.due_date, motherId, t.due_date);
+    db.prepare('UPDATE tours SET due_date = ? WHERE mother_id = ?').run(t.due_date, motherId);
+  }
   if (status !== cur.status) {
     const L = { scheduled: '待參觀', visited: '已參觀', signed: '已簽約', lost: '未成交' };
     addTourLog(req.params.id, `狀態：${L[cur.status] || cur.status} → ${L[status] || status}`, req.session.user.id);
@@ -8059,6 +8071,8 @@ app.put('/api/customers/:motherId', requireStaff, (req, res) => {
   if (b.delivery_mode !== undefined) { sets.push('delivery_type = ?'); args.push(String(b.delivery_mode).slice(0, 20)); }
   if (typeof b.id_no === 'string' && b.id_no.trim()) { sets.push('id_no = ?'); args.push(b.id_no.trim().slice(0, 10)); }
   if (sets.length) db.prepare(`UPDATE mothers SET ${sets.join(', ')} WHERE id = ?`).run(...args, mother.id);
+  // 預產期同步到這位客戶的參觀預約（參觀時漏填、事後在客戶管理補登的情況）
+  if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) db.prepare('UPDATE tours SET due_date = ? WHERE mother_id = ?').run(b.due_date, mother.id);
   custProfileUpsert(mother.id, b, req.session.user.id);
   logAudit(req, { action: 'update', entity: 'customer_profiles', entity_id: mother.id, summary: '潛在客戶資料修改' });
   res.json({ ok: true });
