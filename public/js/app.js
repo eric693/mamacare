@@ -7817,8 +7817,13 @@ function openUserForm(u) {
       <div class="field"><label>帳號 *</label><input id="u-username" value="${esc(ed.username || '')}" ${isEdit ? 'disabled' : ''}></div>
       <div class="field"><label>姓名 *</label><input id="u-name" value="${esc(ed.name || '')}"></div>
       <div class="field"><label>電話</label><input id="u-phone" value="${esc(ed.phone || '')}"></div>
-      <div class="field"><label>身分證字號<small>（中衛欄位「照護人員身分證字號」自動帶入用）</small></label><input id="u-idno" maxlength="10" value="${esc(ed.id_no || '')}"></div>
-      <div class="field"><label>${isEdit ? '重設密碼（留空不改）' : '密碼 *'}</label><input type="password" id="u-pw"></div>
+      <div class="field"><label>身分證字號<small>（中衛欄位「照護人員身分證字號」自動帶入用）</small></label><input id="u-idno" maxlength="10" autocomplete="off" value="${esc(ed.id_no || '')}"></div>
+      ${isEdit
+        // 編輯既有帳號：勾選才可重設密碼。瀏覽器會把「自己存的帳密」自動填進密碼欄與前一個欄位，
+        // 不勾選就按儲存會把別人的密碼改成自己的（2026-11 曾發生），所以預設停用、也不送出
+        ? `<div class="field"><label><input type="checkbox" id="u-pw-on"> 重設此帳號密碼</label>
+            <input type="password" id="u-pw" autocomplete="new-password" disabled placeholder="勾選後輸入新密碼"></div>`
+        : '<div class="field"><label>密碼 *</label><input type="password" id="u-pw" autocomplete="new-password"></div>'}
       <div class="field"><label>角色</label><select id="u-role">
         <option value="nurse" ${ed.role === 'admin' ? '' : 'selected'}>一般員工（依下方權限）</option>
         <option value="admin" ${ed.role === 'admin' ? 'selected' : ''}>管理員（全權）</option></select></div>
@@ -7850,12 +7855,19 @@ function openUserForm(u) {
       const set = btn.dataset.preset === '__none' ? [] : (ROLE_PRESETS[btn.dataset.preset] || []);
       body.querySelectorAll('[data-mod]').forEach(c => c.checked = set.includes(c.dataset.mod));
     });
+    const pwOnEl = body.querySelector('#u-pw-on');
+    if (pwOnEl) pwOnEl.onchange = () => {
+      const f = body.querySelector('#u-pw');
+      f.disabled = !pwOnEl.checked; f.value = ''; if (pwOnEl.checked) f.focus();
+    };
     body.querySelector('#u-save').onclick = async () => {
       const permissions = [...body.querySelectorAll('[data-mod]:checked')].map(c => c.dataset.mod);
       const payload = { name: body.querySelector('#u-name').value.trim(), phone: body.querySelector('#u-phone').value.trim(),
         id_no: body.querySelector('#u-idno').value.trim(), role: roleSel.value, permissions,
         service_scope: body.querySelector('#u-scope').value.trim() };
-      const pw = body.querySelector('#u-pw').value;
+      const pwOn = !isEdit || body.querySelector('#u-pw-on').checked;
+      const pw = pwOn ? body.querySelector('#u-pw').value : '';
+      if (isEdit && pwOn && !pw) { body.querySelector('#u-err').textContent = '已勾選重設密碼，請輸入新密碼'; return; }
       if (pw) payload.password = pw;
       if (isEdit) payload.active = body.querySelector('#u-active').checked ? 1 : 0;
       try {

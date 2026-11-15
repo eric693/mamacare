@@ -11379,6 +11379,8 @@ app.post('/api/users', requireAdmin, (req, res) => {
   if (!u.username || !u.password || !u.name) {
     return res.status(400).json({ error: '帳號、密碼、姓名必填' });
   }
+  const idErr = staffIdNoError(u.id_no);
+  if (idErr) return res.status(400).json({ error: idErr });
   const role = u.role === 'admin' ? 'admin' : 'nurse';
   try {
     const info = db.prepare(
@@ -11393,10 +11395,19 @@ app.post('/api/users', requireAdmin, (req, res) => {
   }
 });
 
+// 身分證字號（中衛欄位用）：空白可；有填須為身分證／居留證格式（英文字母＋9 碼），
+// 擋下瀏覽器把登入帳號自動填進來的情況（2026-11 曾被填成帳號名稱）
+function staffIdNoError(v, cur) {
+  const s = String(v ?? '').trim().toUpperCase();
+  if (!s || s === String(cur || '').toUpperCase()) return null;
+  return /^[A-Z][A-Z0-9]\d{8}$/.test(s) ? null : `身分證字號格式不正確（${s}）：應為 1 個英文字母＋9 碼，例 A123456789`;
+}
 app.put('/api/users/:id', requireAdmin, (req, res) => {
   const cur = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到帳號' });
   const u = req.body || {};
+  const idErr = staffIdNoError(u.id_no, cur.id_no);
+  if (idErr) return res.status(400).json({ error: idErr });
   const role = u.role === undefined ? cur.role : (u.role === 'admin' ? 'admin' : 'nurse');
   // 避免把最後一位啟用中的管理員降權或停用，導致無人可管理
   if ((cur.role === 'admin') && (role !== 'admin' || u.active === 0)) {
@@ -11407,7 +11418,7 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   const scope = role === 'admin' ? '' : String(u.service_scope ?? cur.service_scope ?? '').trim().slice(0, 30);
   db.prepare('UPDATE users SET name=?, role=?, phone=?, id_no=?, active=?, permissions=?, service_scope=? WHERE id=?').run(
     u.name ?? cur.name, role, u.phone ?? cur.phone,
-    String(u.id_no ?? cur.id_no ?? '').slice(0, 10),
+    String(u.id_no ?? cur.id_no ?? '').trim().toUpperCase().slice(0, 10),
     (u.active === undefined ? cur.active : (u.active ? 1 : 0)), perms, scope, cur.id);
   if (u.password) db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(u.password), cur.id);
   logAudit(req, { action: 'update', entity: 'users', entity_id: cur.id, summary: cur.username });
@@ -11439,6 +11450,8 @@ app.get('/api/employees', requireStaff, (req, res) => {
 app.post('/api/employees', requireAdmin, (req, res) => {
   const u = req.body || {};
   if (!u.username || !u.name) return res.status(400).json({ error: '員工編碼與員工姓名必填' });
+  const idErr = staffIdNoError(u.id_no);
+  if (idErr) return res.status(400).json({ error: idErr });
   const lvl = EMP_LVL(u.login_level);
   const role = lvl >= 5 ? 'admin' : 'nurse';
   const active = lvl > 0 ? 1 : 0;
@@ -11458,6 +11471,8 @@ app.put('/api/employees/:id', requireAdmin, (req, res) => {
   const cur = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!cur) return res.status(404).json({ error: '找不到員工' });
   const u = req.body || {};
+  const idErr = staffIdNoError(u.id_no, cur.id_no);
+  if (idErr) return res.status(400).json({ error: idErr });
   const lvl = u.login_level === undefined ? cur.login_level : EMP_LVL(u.login_level);
   const role = lvl >= 5 ? 'admin' : 'nurse';
   const active = lvl > 0 ? 1 : 0;

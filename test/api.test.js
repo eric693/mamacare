@@ -3182,3 +3182,21 @@ test('參觀預約與客戶資料的預產期雙向同步：客戶管理補登�
   assert.strictEqual((await rowOf()).due_date, '2027-05-20');
   assert.strictEqual((await req('GET', `/api/customers/${t.mother_id}`)).data.mother.due_date, '2027-05-20');
 });
+
+test('帳號管理：身分證字號必須是身分證格式（擋下瀏覽器把登入帳號自動填進來）；沒送密碼就不改密碼', async () => {
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const id = (await req('POST', '/api/users', { username: 'idno_test', password: 'p12345', name: '身分證測試', role: 'nurse', permissions: ['meals'] })).data.id;
+  const bad = await req('PUT', `/api/users/${id}`, { name: '身分證測試', id_no: 'zofia1155' });
+  assert.strictEqual(bad.status, 400);
+  assert.match(bad.data.error, /身分證字號格式不正確/);
+  assert.strictEqual((await req('POST', '/api/users', { username: 'idno_test2', password: 'p12345', name: 'x', id_no: 'admin' })).status, 400);
+  assert.strictEqual((await req('PUT', `/api/users/${id}`, { name: '身分證測試', id_no: 'a123456789' })).status, 200);
+  assert.strictEqual((await req('GET', '/api/users')).data.find(u => u.id === id).id_no, 'A123456789');
+  // 編輯其他欄位、不帶密碼 → 原密碼仍可登入
+  await req('PUT', `/api/users/${id}`, { name: '身分證測試改名', id_no: 'A123456789' });
+  cookie = '';
+  assert.strictEqual((await req('POST', '/api/login', { username: 'idno_test', password: 'p12345' })).status, 200);
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+});
