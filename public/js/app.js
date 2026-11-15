@@ -7970,7 +7970,11 @@ function empForm(u) {
       <div class="field full"><label>E-MAIL</label><input id="e-email" value="${esc(u.email || '')}"></div>
       <div class="field"><label>登入權限<small>（0 表示不可登入系統）</small></label>
         <select id="e-login">${[0, 1, 2, 3, 4, 5].map(n => `<option ${Number(u.login_level || 0) === n ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
-      <div class="field"><label>登入密碼<small>（${isNew ? '預設同登入帳號' : '留空不變更'}）</small></label><input type="password" id="e-pw" autocomplete="new-password"></div>
+      ${isNew
+        ? '<div class="field"><label>登入密碼<small>（預設同登入帳號）</small></label><input type="password" id="e-pw" autocomplete="new-password"></div>'
+        // 編輯：勾選才可重設，避免瀏覽器自動填入自己的密碼把對方密碼改掉
+        : `<div class="field"><label><input type="checkbox" id="e-pw-on"> 重設此員工登入密碼</label>
+            <input type="password" id="e-pw" autocomplete="new-password" disabled placeholder="勾選後輸入新密碼"></div>`}
       <div class="field"><label>員工分機</label><input id="e-ext" value="${esc(u.ext || '')}"></div>
       ${isNew ? '' : `<div class="field"><label>離職日期<small>（留空＝在職）</small></label><input type="date" id="e-resign" value="${esc(u.resign_date || '')}"></div>`}
       <div class="field"><label>參觀介紹/合約經手</label><div class="row" style="gap:14px;padding-top:4px">${yn('e-tour', u.flag_tour)}</div></div>
@@ -7983,6 +7987,10 @@ function empForm(u) {
     <small style="color:var(--muted)">＊登入權限 5＝管理員（全權）、1~4＝一般員工、0＝停用；「醫師權限／可建立護理資料」會對映到對應模組權限。</small>
     <div class="row mt"><button class="btn" id="e-save">${isNew ? '新增資料' : '存檔'}</button><span class="error-msg" id="e-err"></span></div>`, body => {
     const rv = id => (body.querySelector(`input[name="${id}"]:checked`) || {}).value === '1';
+    const ePwOn = body.querySelector('#e-pw-on');
+    if (ePwOn) ePwOn.onchange = () => {
+      const f = body.querySelector('#e-pw'); f.disabled = !ePwOn.checked; f.value = ''; if (ePwOn.checked) f.focus();
+    };
     body.querySelector('#e-save').onclick = async () => {
       const b = {
         name: body.querySelector('#e-name').value.trim(), id_no: body.querySelector('#e-idno').value.trim(),
@@ -7994,7 +8002,9 @@ function empForm(u) {
         flag_tour: rv('e-tour'), flag_checkpoint: rv('e-checkpoint'), flag_nutrition: rv('e-nutrition'),
         flag_nursing: rv('e-nursing'), flag_physician: rv('e-physician'), flag_intern: rv('e-intern')
       };
-      const pw = body.querySelector('#e-pw').value;
+      const pwOn = isNew || body.querySelector('#e-pw-on').checked;
+      const pw = pwOn ? body.querySelector('#e-pw').value : '';
+      if (!isNew && pwOn && !pw) { body.querySelector('#e-err').textContent = '已勾選重設密碼，請輸入新密碼'; return; }
       if (pw) b.password = pw;
       if (!isNew) b.resign_date = body.querySelector('#e-resign').value;
       if (!b.name) { body.querySelector('#e-err').textContent = '員工姓名必填'; return; }

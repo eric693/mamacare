@@ -67,3 +67,75 @@ function svgLineChart(points, opts = {}) {
     ${xLabels}
   </svg>`;
 }
+
+/* ---------- 全站輸入防呆 ----------
+   1. 瀏覽器自動填入：登入畫面以外一律關閉；密碼欄一律標為新密碼，瀏覽器不會把「自己存的帳密」填進去
+      （2026-11 帳號管理曾因此把別人的密碼改成自己的、身分證欄被填成帳號名稱）
+   2. 身分證／電話／Email 欄位：離開欄位時即時檢查格式並提示（後端存檔時也會再擋一次） */
+(function () {
+  const isLogin = el => !!el.closest('#login-view, #login-form');
+  const harden = root => {
+    if (!root || !root.querySelectorAll) return;
+    const list = root.matches && root.matches('input, textarea') ? [root] : root.querySelectorAll('input, textarea');
+    list.forEach(el => {
+      if (isLogin(el) || el.dataset.acDone) return;
+      el.dataset.acDone = '1';
+      if (el.type === 'password') el.setAttribute('autocomplete', 'new-password');
+      else if (!el.getAttribute('autocomplete')) el.setAttribute('autocomplete', 'off');
+    });
+  };
+  const start = () => {
+    harden(document.body);
+    new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && harden(n))))
+      .observe(document.body, { childList: true, subtree: true });
+  };
+  if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
+
+  // 依欄位標題判斷種類（末四碼／後四碼等只填部分的不檢查）
+  const labelOf = el => {
+    const f = el.closest('.field, label, td, .row');
+    const lb = f && (f.querySelector('label') || f);
+    return ((lb && lb.textContent) || '') + ' ' + (el.placeholder || '');
+  };
+  const kindOf = el => {
+    if (el.type === 'password' || el.type === 'hidden' || el.readOnly || el.disabled || isLogin(el)) return '';
+    if (!['text', 'tel', 'email', '', 'search'].includes(el.type)) return '';
+    const t = labelOf(el);
+    if (/末四碼|後四碼|末4碼/.test(t)) return '';
+    if (/身分證|居留證/.test(t)) return /委託人/.test(t) ? 'idp' : 'id';
+    if (/E-?MAIL|電子郵件|信箱/i.test(t)) return 'email';
+    if (/手機|電話|市話|行動/.test(t) && !/分機/.test(t)) return 'phone';
+    return '';
+  };
+  const RULES = {
+    id: [v => /^[A-Z][A-Z0-9]\d{8}$/.test(v), '身分證格式不正確：1 個英文字母＋9 碼，例 A123456789'],
+    idp: [v => /^[A-Z][A-Z0-9]\d{8}$/.test(v) || /^[A-Z]{0,2}\d{7,9}$/.test(v), '格式不正確：身分證（A123456789）或護照號碼'],
+    phone: [v => /^[0-9+\-()#＃\s]{6,25}$/.test(v), '電話格式不正確：只能填數字、-、( )、#（分機），至少 6 碼'],
+    email: [v => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v), 'E-mail 格式不正確，例 name@example.com']
+  };
+  const tip = (el, msg) => {
+    let t = el.nextElementSibling;
+    if (!t || !t.classList || !t.classList.contains('fmt-tip')) {
+      if (!msg) return;
+      t = document.createElement('small'); t.className = 'fmt-tip';
+      t.style.cssText = 'display:block;color:#b23b3b;font-size:.78rem;margin-top:2px';
+      el.insertAdjacentElement('afterend', t);
+    }
+    t.textContent = msg || '';
+    el.style.borderColor = msg ? '#b23b3b' : '';
+    el.setCustomValidity(msg || '');
+  };
+  document.addEventListener('focusout', e => {
+    const el = e.target;
+    if (!(el instanceof HTMLInputElement)) return;
+    const k = kindOf(el);
+    if (!k) return;
+    let v = el.value.trim();
+    if (k === 'id' || k === 'idp') { v = v.toUpperCase(); if (el.value !== v) el.value = v; }
+    tip(el, v && !RULES[k][0](v) ? RULES[k][1] : '');
+  });
+  document.addEventListener('input', e => {
+    const el = e.target;
+    if (el instanceof HTMLInputElement && el.nextElementSibling && el.nextElementSibling.classList && el.nextElementSibling.classList.contains('fmt-tip')) tip(el, '');
+  });
+})();

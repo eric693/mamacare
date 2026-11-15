@@ -310,6 +310,45 @@ app.use('/api', (req, res, next) => {
   return res.status(403).json({ error: '您沒有「' + label + '」的權限' });
 });
 
+// ---------- 欄位格式防呆（全站） ----------
+// 寫入類請求（POST/PUT/PATCH）的身分證、電話、Email 類欄位一律先檢查格式，不合格整筆退回。
+// 起因：瀏覽器把登入帳號／密碼自動填進其他欄位（2026-11 身分證欄被填成帳號名稱、密碼被改成別人的）。
+const TW_ID_RE = /^[A-Z][A-Z0-9]\d{8}$/;                    // 身分證／居留證
+const PASSPORT_RE = /^[A-Z]{0,2}\d{7,9}$/;                   // 護照（委託人可能是外籍）
+const PHONE_RE = /^[0-9+\-()#＃\s]{6,25}$/;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const FIELD_LABELS = {
+  id_no: '身分證字號', mother_id_no: '產婦身分證字號', agent_id_no: '委託人身分證字號', recorder_id_no: '建檔人員身分證',
+  phone: '電話', mother_phone: '媽媽手機', emergency_phone: '緊急聯絡人電話', phone_home: '住家電話', phone_company: '公司電話',
+  phone_mom: '電話（媽咪）', phone_dad: '緊急聯絡人電話', contact_mobile: '聯絡人手機', contact_tel: '聯絡人市話', tel: '市話',
+  home_phone: '住家電話', agent_phone: '委託人電話', email: 'E-MAIL', mother_email: '電子郵件', agent_email: '委託人電子郵件',
+  emergency_email: '緊急聯絡人電子郵件', contact_email: '聯絡人電子郵件', center_email: '機構電子郵件', center_phone: '機構電話'
+};
+function fieldFormatError(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 3) return null;
+  for (const [k, raw] of Object.entries(obj)) {
+    if (raw && typeof raw === 'object') { const e = fieldFormatError(raw, depth + 1); if (e) return e; continue; }
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const v = raw.trim(), label = FIELD_LABELS[k] || k;
+    if (/(^|_)id_no$/.test(k)) {
+      const u = v.toUpperCase();
+      const ok = TW_ID_RE.test(u) || (k === 'agent_id_no' && PASSPORT_RE.test(u));
+      if (!ok) return `「${label}」格式不正確（${v}）：應為 1 個英文字母＋9 碼，例 A123456789`;
+    } else if (/(^|_)(phone|mobile|tel)(_|$)/.test(k)) {
+      if (!PHONE_RE.test(v)) return `「${label}」格式不正確（${v}）：只能填數字、-、( )、#（分機），至少 6 碼`;
+    } else if (/(^|_)email$/.test(k)) {
+      if (!EMAIL_RE.test(v)) return `「${label}」格式不正確（${v}）：應為 name@example.com 的格式`;
+    }
+  }
+  return null;
+}
+app.use('/api', (req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH'].includes(req.method)) return next();
+  if (!(req.session && (req.session.user || req.session.family))) return next();
+  const err = fieldFormatError(req.body);
+  return err ? res.status(400).json({ error: err }) : next();
+});
+
 // AI 助理（只產草稿，不寫任何業務資料表）。路由自己做登入與權限檢查。
 app.use('/api', require('./routes/ai'));
 
@@ -3198,7 +3237,7 @@ app.put('/api/mothers/:id/intake', requireStaff, (req, res) => {
   }
   // 身分證號同步回住客資料（媽媽護理等中衛欄位共用）
   if (typeof b.id_no === 'string' && b.id_no.trim()) {
-    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(b.id_no.trim().slice(0, 10), mother.id);
+    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(b.id_no.trim().toUpperCase().slice(0, 10), mother.id);
   }
   logAudit(req, { action: cur ? 'update' : 'create', entity: 'mother_intake_assessments', entity_id: mother.id, summary: '產婦入住護理評估表' });
   res.json({ ok: true });
@@ -6456,7 +6495,7 @@ app.put('/api/customers/:motherId/contract', requireStaff, (req, res) => {
   }
   // 身分證字號／出生年月日為訂房確認單與服務契約書必填，於合約表單可直接補登
   if (b.mother_id_no !== undefined && String(b.mother_id_no).trim()) {
-    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(String(b.mother_id_no).trim().slice(0, 10), mother.id);
+    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(String(b.mother_id_no).trim().toUpperCase().slice(0, 10), mother.id);
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(b.mother_birth_date || '')) {
     db.prepare('UPDATE mothers SET birth_date = ? WHERE id = ?').run(b.mother_birth_date, mother.id);
@@ -8050,7 +8089,7 @@ app.post('/api/customers', requireStaff, (req, res) => {
     b.due_date, String(b.delivery_mode || '').slice(0, 20));
   const motherId = info.lastInsertRowid;
   if (typeof b.id_no === 'string' && b.id_no.trim()) {
-    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(b.id_no.trim().slice(0, 10), motherId);
+    db.prepare('UPDATE mothers SET id_no = ? WHERE id = ?').run(b.id_no.trim().toUpperCase().slice(0, 10), motherId);
   }
   custProfileUpsert(motherId, b, req.session.user.id);
   logAudit(req, { action: 'create', entity: 'customer_profiles', entity_id: motherId, summary: `新增潛在客戶 ${name}` });
@@ -8069,7 +8108,7 @@ app.put('/api/customers/:motherId', requireStaff, (req, res) => {
   if (b.birth_date !== undefined) { sets.push('birth_date = ?'); args.push(/^\d{4}-\d{2}-\d{2}$/.test(b.birth_date) ? b.birth_date : ''); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) { sets.push('due_date = ?'); args.push(b.due_date); }
   if (b.delivery_mode !== undefined) { sets.push('delivery_type = ?'); args.push(String(b.delivery_mode).slice(0, 20)); }
-  if (typeof b.id_no === 'string' && b.id_no.trim()) { sets.push('id_no = ?'); args.push(b.id_no.trim().slice(0, 10)); }
+  if (typeof b.id_no === 'string' && b.id_no.trim()) { sets.push('id_no = ?'); args.push(b.id_no.trim().toUpperCase().slice(0, 10)); }
   if (sets.length) db.prepare(`UPDATE mothers SET ${sets.join(', ')} WHERE id = ?`).run(...args, mother.id);
   // 預產期同步到這位客戶的參觀預約（參觀時漏填、事後在客戶管理補登的情況）
   if (/^\d{4}-\d{2}-\d{2}$/.test(b.due_date || '')) db.prepare('UPDATE tours SET due_date = ? WHERE mother_id = ?').run(b.due_date, mother.id);

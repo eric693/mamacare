@@ -1265,7 +1265,7 @@ test('備品：CSV 匯入(編號 upsert)、進出/盤點、庫存彙總與分頁
 
 test('參觀：新增(胎次/生產醫院)、取消明細、時段設定、伺服器端分頁/篩選', async () => {
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
-  const c = await req('POST', '/api/tours', { name: '測試媽媽X', phone: '0912', tour_at: '2026-07-15 14:00', due_date: '2026-09-01', source: '官網', parity: '第2胎', birth_hospital: '台大' });
+  const c = await req('POST', '/api/tours', { name: '測試媽媽X', phone: '0912000777', tour_at: '2026-07-15 14:00', due_date: '2026-09-01', source: '官網', parity: '第2胎', birth_hospital: '台大' });
   assert.strictEqual(c.status, 200);
   const tid = c.data.id;
   const paged = (await req('GET', '/api/tours?field=tour&from=2026-07-01&to=2026-07-31&page=1&pageSize=100')).data;
@@ -3189,7 +3189,7 @@ test('帳號管理：身分證字號必須是身分證格式（擋下瀏覽器�
   const id = (await req('POST', '/api/users', { username: 'idno_test', password: 'p12345', name: '身分證測試', role: 'nurse', permissions: ['meals'] })).data.id;
   const bad = await req('PUT', `/api/users/${id}`, { name: '身分證測試', id_no: 'zofia1155' });
   assert.strictEqual(bad.status, 400);
-  assert.match(bad.data.error, /身分證字號格式不正確/);
+  assert.match(bad.data.error, /身分證字號」?格式不正確/);
   assert.strictEqual((await req('POST', '/api/users', { username: 'idno_test2', password: 'p12345', name: 'x', id_no: 'admin' })).status, 400);
   assert.strictEqual((await req('PUT', `/api/users/${id}`, { name: '身分證測試', id_no: 'a123456789' })).status, 200);
   assert.strictEqual((await req('GET', '/api/users')).data.find(u => u.id === id).id_no, 'A123456789');
@@ -3199,4 +3199,23 @@ test('帳號管理：身分證字號必須是身分證格式（擋下瀏覽器�
   assert.strictEqual((await req('POST', '/api/login', { username: 'idno_test', password: 'p12345' })).status, 200);
   cookie = '';
   await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+});
+
+test('全站欄位防呆：身分證／電話／Email 格式不對一律退回，合格的照存（身分證轉大寫、委託人可填護照）', async () => {
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const mid = (await req('POST', '/api/customers', { name: '防呆測試媽', due_date: '2027-01-01', phone: '09' + String(Date.now()).slice(-8), force: true })).data.id;
+  assert.ok(mid);
+  const bad = async body => (await req('PUT', `/api/customers/${mid}/contract`, body));
+  let r = await bad({ emergency_phone: 'zofia1155' });
+  assert.strictEqual(r.status, 400); assert.match(r.data.error, /緊急聯絡人電話/);
+  r = await bad({ mother_email: 'abc' });
+  assert.strictEqual(r.status, 400); assert.match(r.data.error, /電子郵件/);
+  r = await bad({ mother_id_no: 'admin' });
+  assert.strictEqual(r.status, 400); assert.match(r.data.error, /產婦身分證字號/);
+  assert.strictEqual((await req('POST', '/api/customers', { name: '電話亂填', due_date: '2027-01-01', phone: 'abc', force: true })).status, 400);
+  // 合格資料照存
+  r = await bad({ emergency_phone: '02-2345-6789#12', mother_email: 'mom@example.com', mother_id_no: 'f223456789', agent_id_no: 'AB1234567' });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual((await req('GET', `/api/customers/${mid}`)).data.mother.id_no, 'F223456789');
 });
