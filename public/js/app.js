@@ -11088,6 +11088,57 @@ function bnaChecks(name, opts) {
   return opts.map(o => `<label class="bna-chk"><input type="checkbox" data-ck="${name}" value="${esc(o)}"> ${esc(o)}</label>`).join('');
 }
 // 紅臀單側欄位（左／右）
+// 入住當天：新生兒入住護理評估表（入住評估）的重疊欄位自動帶入每日護理評估表，
+// 只填空白欄位（不覆蓋已填的值），護理師確認、補齊其他欄位後再存檔
+async function bnaPrefillFromIntake(babyId) {
+  const hint = document.getElementById('bna-intake-hint');
+  const date = (document.getElementById('bna-date') || {}).value;
+  if (!hint || !date) return;
+  hint.style.display = 'none';
+  let ev;
+  try { ev = await api(`/babies/${babyId}/eval`); } catch (e) { return; }
+  const row = (ev.rows || []).filter(r => r.assess_date === date)
+    .sort((a, b) => String(b.assess_time).localeCompare(String(a.assess_time)))[0];
+  if (!row) return;
+  const a = row.data || {}, prof = (ev.profile && ev.profile.data) || {};
+  let n = 0;
+  const fill = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el || val === undefined || val === null || val === '' || el.value) return;
+    if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === String(val) || o.text === String(val))) return;
+    el.value = String(val); el.dispatchEvent(new Event('input', { bubbles: true })); n++;
+  };
+  const check = (sel, on) => { const el = document.querySelector(sel); if (el && on && !el.checked) { el.checked = true; n++; } };
+  const num = v => (/^\d+(\.\d+)?$/.test(String(v ?? '').trim()) ? String(v).trim() : '');
+  fill('bna-temp', num(a.bt));
+  fill('bna-hr', num(a.heart_rate) || num(a.hr));
+  fill('bna-resp', num(a.resp_rate) || num(a.rr));
+  check('#bna-resp-labored', ['胸凹', '費力'].includes(a.resp_pattern));
+  fill('bna-weight', num(prof.current_weight_g));
+  fill('bna-skin', { 黃疸: '黃染' }[a.skin_color] || a.skin_color);
+  for (const c of a.skin_conditions || []) check(`[data-ck="skincond"][value="${c}"]`, true);
+  for (const [k, note] of Object.entries(a.skin_notes || {})) {
+    const el = document.querySelector(`[data-skin-note="${k}"]`);
+    if (el && !el.value && note) { el.value = note; n++; }
+  }
+  for (const side of ['left', 'right']) {
+    const r = a[`rash_${side}`] || {};
+    fill(`bna-rash-${side}`, r.level);
+    for (const f of r.flags || []) check(`[data-ck="rash-${side}"][value="${f}"]`, true);
+    fill(`bna-rash-${side}-pos`, r.pos); fill(`bna-rash-${side}-range`, r.range);
+  }
+  const cs = a.cord_status || [];
+  fill('bna-cord', cs.includes('脫落') ? '已脫落' : (cs.includes('分泌物') || cs.includes('滲血')) ? '滲液／分泌物' : cs.includes('臍根紅腫') ? '發紅' : '');
+  if (a.scalp === '頭血腫') {
+    fill('bna-head', '血腫');
+    fill('bna-head-note', [a.hematoma_site, a.hematoma_size].filter(Boolean).join('，'));
+  }
+  if (n) {
+    hint.textContent = `已自動帶入 ${date} ${row.assess_time || ''} 的新生兒入住護理評估，共 ${n} 項（體溫、心跳、呼吸、體重、皮膚、紅臀、臍帶等），請確認並補齊其他欄位後存檔。`;
+    hint.style.display = 'block';
+  }
+}
+
 function bnaRashBlock(side, label) {
   return `
     <div class="field"><label>紅臀-${label} <b class="req">*</b></label>
@@ -11164,6 +11215,7 @@ async function viewBabyNursing() {
     </div>
     <div class="card no-print">
       <h3>嬰兒日常評估（<b class="req">*</b> 為必填）</h3>
+      <div id="bna-intake-hint" class="badge teal" style="display:none;margin:0 0 8px;white-space:normal;line-height:1.5"></div>
       <div class="form-grid">
         <div class="field"><label>嬰兒病歷號</label><input id="bna-medno"></div>
         <div class="field"><label>評估日期 <b class="req">*</b></label><input type="date" id="bna-date" value="${todayStr()}"></div>
@@ -11257,6 +11309,8 @@ async function viewBabyNursing() {
   $('#bna-refer').onclick = () => openReferral('baby', babyId, baby.name);
 
   const ckVals = name => [...main().querySelectorAll(`[data-ck="${name}"]:checked`)].map(c => c.value);
+  bnaPrefillFromIntake(babyId);
+  $('#bna-date').addEventListener('change', () => bnaPrefillFromIntake(babyId));
   $('#bna-save').onclick = async () => {
     const err = $('#bna-err');
     err.textContent = '';
