@@ -11330,7 +11330,7 @@ async function viewBabyNursing() {
 
 /* ---------- 寶寶評估單（中衛必要欄位－嬰兒個案基本資料＋嬰兒入住評估） ---------- */
 const BEV_OPTS = {
-  delivery: ['自然生產', '剖腹生產', '真空吸引', '產鉗', 'VBAC', '其他'],
+  delivery: ['自然生產', '剖腹生產', '真空吸引', '產鉗', 'VBAC'],
   weight_cat: ['未滿 1,500g', '1,500～2,499g', '2,500～4,000g', '4,001g 以上'],
   length_cat: ['未滿 45cm', '45～55cm', '55cm 以上'],
   yn: ['無', '有'],
@@ -11374,11 +11374,16 @@ const BEV11 = {
   jaundice_method: ['經皮', '足跟血'],
   bf_way: ['全母乳', '全配方奶', '混合哺乳']
 };
-// 流感／腸病毒症狀（key、標籤）：文字選填，最多 50 字
-const BEV_FLU = [['flu_fever', '流感症狀－發燒'], ['flu_cough', '流感症狀－咳嗽'], ['flu_diarrhea', '流感症狀－腹瀉'], ['flu_rash', '流感症狀－皮疹']];
-const BEV_EV = [['ev_temp', '腸病毒症狀－體溫異常'], ['ev_mouth_red', '腸病毒症狀－口腔泛紅'], ['ev_mouth_blister', '腸病毒症狀－口腔水泡'],
-  ['ev_limb_blister', '腸病毒症狀－手足水泡'], ['ev_limb_rash', '腸病毒症狀－手足紅疹']];
 
+// 體重／身長只填實際數值，中衛分類（範圍）存檔時依數值自動換算
+function bevWeightCat(g) {
+  const n = Number(g); if (!g || !(n > 0)) return '';
+  return n < 1500 ? BEV_OPTS.weight_cat[0] : n < 2500 ? BEV_OPTS.weight_cat[1] : n <= 4000 ? BEV_OPTS.weight_cat[2] : BEV_OPTS.weight_cat[3];
+}
+function bevLengthCat(cm) {
+  const n = Number(cm); if (!cm || !(n > 0)) return '';
+  return n < 45 ? BEV_OPTS.length_cat[0] : n <= 55 ? BEV_OPTS.length_cat[1] : BEV_OPTS.length_cat[2];
+}
 function bevSel(id, opts, val = '', { req = true } = {}) {
   return `<select id="${id}" ${req ? 'data-req' : ''}><option value="">請選擇</option>${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
 }
@@ -11451,59 +11456,38 @@ async function viewBabyEval() {
       </div>
     </div>
     <div class="card" id="bev-a">
-      <div class="sec-hd">中衛必要欄位－嬰兒個案基本資料（<b>*</b> 為必填）</div>
+      <div class="sec-hd">入住資料（<b>*</b> 為必填）</div>
       <div class="form-grid">
         <div class="field"><label>入住日期 <b class="req">*</b></label><input type="date" id="bev-ci-date" data-req value="${esc(d.checkin_date || baby.baby_check_in || baby.mother_check_in || todayStr())}"></div>
         <div class="field"><label>入住時間 <b class="req">*</b></label>
           <div class="row" style="gap:8px"><input type="time" id="bev-ci-time" data-req value="${esc(d.checkin_time || hhmm)}" style="flex:1">
           <button class="btn small" id="bev-ci-save" type="button">入住日存檔</button></div></div>
+        <div class="field"><label>嬰兒病歷號 <b class="req">*</b><small>（系統帶入）</small></label><input value="${esc(medical_no)}" disabled></div>
+        <div class="field full"><div class="sec-hd">一、出生基本資料</div></div>
         <div class="field"><label>出生日期 <b class="req">*</b></label><input type="date" id="bev-b-date" data-req value="${esc(d.birth_date || baby.birth_date || '')}"></div>
         <div class="field"><label>出生時間 <b class="req">*</b></label><input type="time" id="bev-b-time" data-req value="${esc(d.birth_time || '')}"></div>
-        <div class="field"><label>嬰兒病歷號 <b class="req">*</b><small>（系統帶入）</small></label><input value="${esc(medical_no)}" disabled></div>
-        <div class="field"><label>出生地點 <b class="req">*</b><small>（最多100字）</small></label><input id="bev-b-place" data-req maxlength="100" value="${esc(d.birth_place || '')}"></div>
-        <div class="field"><label>APGAR（1~10）<b class="req">*</b></label><input type="number" id="bev-apgar" data-req min="1" max="10" value="${esc(d.apgar ?? '')}"></div>
+        <div class="field"><label>出生週數 <b class="req">*</b><small>（週＋天，例 38+2；足月可只填 39）</small></label><input id="bev-gest" data-bev-a="gest_weeks" data-req maxlength="10" placeholder="例：38+2" value="${esc(d.gest_weeks || '')}"></div>
+        <div class="field"><label>性別<small>（寶寶資料帶入）</small></label><input value="${baby.gender === 'male' ? '男' : baby.gender === 'female' ? '女' : '未登記'}" disabled></div>
+        <div class="field"><label>出生醫院 <b class="req">*</b><small>（最多100字）</small></label><input id="bev-b-place" data-req maxlength="100" value="${esc(d.birth_place || '')}"></div>
         <div class="field full"><label>生產方式（多選）<b class="req">*</b></label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap">${BEV_OPTS.delivery.map(o =>
             `<label class="bna-chk"><input type="checkbox" data-ck="bev-delivery" value="${o}" ${(d.delivery_modes || []).includes(o) ? 'checked' : ''}> ${o}</label>`).join('')}</div></div>
-        <div class="field"><label>生產方式其他<small>（勾選「其他」時必填，最多100字）</small></label><input id="bev-delivery-other" maxlength="100" value="${esc(d.delivery_other || '')}"></div>
-        <div class="field"><label>出生體重(g) <b class="req">*</b></label>${bevSel('bev-bw-cat', BEV_OPTS.weight_cat, d.birth_weight_cat || '')}
-          <input type="number" id="bev-bw" min="0" placeholder="實際數值（g，選填）" style="margin-top:6px" value="${esc(d.birth_weight_g ?? '')}"></div>
-        <div class="field"><label>出院體重(g) <b class="req">*</b></label>${bevSel('bev-dw-cat', BEV_OPTS.weight_cat, d.discharge_weight_cat || '')}
-          <input type="number" id="bev-dw" min="0" placeholder="實際數值（g，選填）" style="margin-top:6px" value="${esc(d.discharge_weight_g ?? '')}"></div>
-        <div class="field"><label>現在體重(g) <b class="req">*</b></label><input type="number" id="bev-cw" data-req min="0" value="${esc(d.current_weight_g ?? '')}"></div>
-        <div class="field"><label>出生身長(cm) <b class="req">*</b></label>${bevSel('bev-bl-cat', BEV_OPTS.length_cat, d.birth_length_cat || '')}
-          <input type="number" step="0.1" id="bev-bl" min="0" placeholder="實際數值（cm，選填）" style="margin-top:6px" value="${esc(d.birth_length_cm ?? '')}"></div>
-        <div class="field"><label>現在身長(cm) <b class="req">*</b></label><input type="number" step="0.1" id="bev-cl" data-req min="0" value="${esc(d.current_length_cm ?? '')}"></div>
-        <div class="field"><label>PROM <b class="req">*</b><small>（早期破水）</small></label>${bevSel('bev-prom', BEV_OPTS.yn, d.prom || '')}</div>
-        <div class="field"><label>DOIC <b class="req">*</b></label>${bevSel('bev-doic', BEV_OPTS.yn, d.doic || '')}</div>
-        <div class="field"><label>胎便吸入(MA) <b class="req">*</b></label>${bevSel('bev-ma', BEV_OPTS.yn, d.ma || '')}</div>
-        <div class="field"><label>代謝篩檢 <b class="req">*</b></label>${bevSel('bev-meta', BEV_OPTS.metabolic, d.metabolic_screen || '')}</div>
-        <div class="field"><label>代謝篩檢日期<small>（選「已採檢」時必填）</small></label><input type="date" id="bev-meta-date" value="${esc(d.metabolic_screen_date || '')}"></div>
-        <div class="field"><label>預防注射 <b class="req">*</b></label>${bevSel('bev-vac', BEV_OPTS.yn, d.vaccination || '')}</div>
-        <div class="field"><label>HBIG注射日期</label><input type="date" id="bev-hbig" value="${esc(d.hbig_date || '')}"></div>
-        <div class="field"><label>HBV注射日期</label><input type="date" id="bev-hbv" value="${esc(d.hbv_date || '')}"></div>
-        <div class="field"><label>出生週數<small>（週）</small></label><input data-bev-a="gest_weeks" maxlength="10" value="${esc(d.gest_weeks || '')}"></div>
+        <div class="field"><label>出生體重(g) <b class="req">*</b></label>
+          <input type="number" id="bev-bw" data-req min="300" max="7000" step="1" inputmode="numeric" placeholder="例：3150" value="${esc(d.birth_weight_g ?? '')}"></div>
+        <div class="field"><label>出生身長(cm) <b class="req">*</b></label>
+          <input type="number" step="0.1" id="bev-bl" data-req min="25" max="70" inputmode="decimal" placeholder="例：50.5" value="${esc(d.birth_length_cm ?? '')}"></div>
         <div class="field"><label>出生頭圍<small>（cm）</small></label><input data-bev-a="head_circ_birth" maxlength="10" value="${esc(d.head_circ_birth || '')}"></div>
         <div class="field"><label>出生胸圍<small>（cm）</small></label><input data-bev-a="chest_circ_birth" maxlength="10" value="${esc(d.chest_circ_birth || '')}"></div>
+        <div class="field"><label>出院體重(g) <b class="req">*</b></label>
+          <input type="number" id="bev-dw" data-req min="300" max="7000" step="1" inputmode="numeric" placeholder="例：3020" value="${esc(d.discharge_weight_g ?? '')}"></div>
+        <div class="field"><label>現在體重(g) <b class="req">*</b></label><input type="number" id="bev-cw" data-req min="0" value="${esc(d.current_weight_g ?? '')}"></div>
         <div class="field"><label>出院黃疸<small>（mg/dl）</small></label><input data-bev-a="discharge_jaundice" maxlength="10" value="${esc(d.discharge_jaundice || '')}"></div>
         <div class="field"><label>黃疸測量方式</label><select data-bev-a="jaundice_method"><option value="">—</option>${BEV11.jaundice_method.map(o => `<option${d.jaundice_method === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
         <div class="field"><label>照光天數<small>（無照光免填）</small></label><input data-bev-a="phototherapy_days" maxlength="10" value="${esc(d.phototherapy_days || '')}"></div>
-        <div class="field"><label>預計返診</label><input data-bev-a="revisit_plan" maxlength="100" value="${esc(d.revisit_plan || '')}"></div>
-        <div class="field full"><label>自備用品<small>（每行一項，最多 12 項）</small></label><textarea data-bev-a="supplies" rows="3" maxlength="500">${esc(d.supplies || '')}</textarea></div>
-        <div class="field full"><label>自備用品備註</label><input data-bev-a="supplies_note" maxlength="200" value="${esc(d.supplies_note || '')}"></div>
-        <div class="field"><label>哺乳方式－入住日</label><select data-bev-a="bf_admit"><option value="">—</option>${BEV11.bf_way.map(o => `<option${d.bf_admit === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
-        <div class="field"><label>哺乳方式－出住前三日</label><select data-bev-a="bf_predischarge"><option value="">—</option>${BEV11.bf_way.map(o => `<option${d.bf_predischarge === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
-        <div class="field full"><div class="sec-hd">入出住蓋腳印（腳印為紙本蓋印，此處記錄未蓋原因與簽名）</div></div>
-        <div class="field"><label>入住－未蓋腳印原因</label><input data-bev-a="footprint_in_reason" maxlength="100" value="${esc(d.footprint_in_reason || '')}"></div>
-        <div class="field"><label>入住－媽媽簽名</label><input data-bev-a="footprint_in_mom" maxlength="50" value="${esc(d.footprint_in_mom || '')}"></div>
-        <div class="field"><label>入住－護理人員簽名</label><input data-bev-a="footprint_in_nurse" maxlength="50" value="${esc(d.footprint_in_nurse || '')}"></div>
-        <div class="field"><label>出住－未蓋腳印原因</label><input data-bev-a="footprint_out_reason" maxlength="100" value="${esc(d.footprint_out_reason || '')}"></div>
-        <div class="field"><label>出住－媽媽簽名</label><input data-bev-a="footprint_out_mom" maxlength="50" value="${esc(d.footprint_out_mom || '')}"></div>
-        <div class="field"><label>出住－護理人員簽名</label><input data-bev-a="footprint_out_nurse" maxlength="50" value="${esc(d.footprint_out_nurse || '')}"></div>
-        ${BEV_FLU.map(([k, label]) => `<div class="field"><label>${label}<small>（最多50字，選填）</small></label><input data-bev-a="${k}" maxlength="50" value="${esc(d[k] || '')}"></div>`).join('')}
-        ${BEV_EV.map(([k, label]) => `<div class="field"><label>${label}<small>（最多50字，選填）</small></label><input data-bev-a="${k}" maxlength="50" value="${esc(d[k] || '')}"></div>`).join('')}
-        <div class="field"><label>特殊照護需求<small>（最多200字，選填）</small></label><input id="bev-special" maxlength="200" value="${esc(d.special_care || '')}"></div>
-        <div class="field full"><div class="sec-hd">表單十一補充區段（新生兒入住身體評估表 109.06 一版）</div></div>
+        <div class="field"><label>預防注射 <b class="req">*</b></label>${bevSel('bev-vac', BEV_OPTS.yn, d.vaccination || '')}</div>
+        <div class="field"><label>B 型肝炎免疫球蛋白（HBIG）日期</label><input type="date" id="bev-hbig" value="${esc(d.hbig_date || '')}"></div>
+        <div class="field"><label>B 型肝炎第一劑（HBV1）日期</label><input type="date" id="bev-hbv" value="${esc(d.hbv_date || '')}"></div>
+        <div class="field full"><div class="sec-hd">身體評估</div></div>
         <div class="field full"><label>一般外觀（可複選，勾選後於下欄註明部位）</label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('general', BEV11.general)}</div>
           <input id="bev11-general-note" maxlength="200" placeholder="部位／數量說明" style="margin-top:6px"></div>
@@ -11534,19 +11518,42 @@ async function viewBabyEval() {
           <input id="bev11-limbs-note" maxlength="100" placeholder="多/少指部位或其他說明" style="margin-top:6px"></div>
         <div class="field"><label>活動力</label>${bevSel('bev11-activity', BEV11.activity, '', { req: false })}</div>
         <div class="field"><label>皮膚</label>${bevSel('bev11-skin-tone', BEV11.skin_tone, '', { req: false })}</div>
+        <div class="field full"><div class="sec-hd">篩檢</div></div>
+        <div class="field"><label>新生兒篩檢 <b class="req">*</b></label>${bevSel('bev-meta', BEV_OPTS.metabolic, d.metabolic_screen || '')}</div>
+        <div class="field"><label>新生兒篩檢日期<small>（選「已採檢」時必填）</small></label><input type="date" id="bev-meta-date" value="${esc(d.metabolic_screen_date || '')}"></div>
         <div class="field"><label>聽力篩檢－右耳</label>${bevSel('bev11-hear-r', BEV11.hearing, '', { req: false })}</div>
         <div class="field"><label>聽力篩檢－左耳</label>${bevSel('bev11-hear-l', BEV11.hearing, '', { req: false })}</div>
         <div class="field full"><label>超音波檢查（可複選）</label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('us', BEV11.us)}</div>
           <input id="bev11-us-note" maxlength="200" placeholder="檢查結果說明" style="margin-top:6px"></div>
+        <div class="field full"><div class="sec-hd">六、生產狀況</div></div>
+        <div class="field"><label>Apgar score（1~10）<b class="req">*</b></label><input type="number" id="bev-apgar" data-req min="1" max="10" value="${esc(d.apgar ?? '')}"></div>
         <div class="field full"><label>生產狀況（可複選）</label>
           <div class="row" style="gap:8px 14px;flex-wrap:wrap;padding-top:6px">${bev11Checks('birth', BEV11.birth_status)}</div>
           <input id="bev11-birth-note" maxlength="200" placeholder="其他說明" style="margin-top:6px"></div>
+        <div class="field"><label>PROM <b class="req">*</b><small>（早期破水）</small></label>${bevSel('bev-prom', BEV_OPTS.yn, d.prom || '')}</div>
+        <div class="field"><label>DOIC <b class="req">*</b></label>${bevSel('bev-doic', BEV_OPTS.yn, d.doic || '')}</div>
+        <div class="field"><label>胎便吸入(MA) <b class="req">*</b></label>${bevSel('bev-ma', BEV_OPTS.yn, d.ma || '')}</div>
+        <div class="field full"><div class="sec-hd">七、進食狀況</div></div>
         <div class="field"><label>進食狀況</label>${bevSel('bev11-feed-type', BEV11.feed_type, '', { req: false })}
           <input id="bev11-feed-brand" maxlength="50" placeholder="配方奶廠牌" style="margin-top:6px"></div>
         <div class="field"><label>餵奶方式</label><input id="bev11-feed-method" maxlength="50"></div>
         <div class="field"><label>最近餵食時間</label><input id="bev11-last-feed" maxlength="20" placeholder="HH:MM"></div>
         <div class="field"><label>奶量<small>（ml/Q3-4H）</small></label><input id="bev11-feed-amount" maxlength="20"></div>
+        <div class="field"><label>哺乳方式－入住日</label><select data-bev-a="bf_admit"><option value="">—</option>${BEV11.bf_way.map(o => `<option${d.bf_admit === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
+        <div class="field"><label>哺乳方式－出住前三日</label><select data-bev-a="bf_predischarge"><option value="">—</option>${BEV11.bf_way.map(o => `<option${d.bf_predischarge === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></div>
+        <div class="field full"><div class="sec-hd">其他</div></div>
+        <div class="field"><label>預計返診</label><input data-bev-a="revisit_plan" maxlength="100" value="${esc(d.revisit_plan || '')}"></div>
+        <div class="field full"><label>自備用品<small>（每行一項，最多 12 項）</small></label><textarea data-bev-a="supplies" rows="3" maxlength="500">${esc(d.supplies || '')}</textarea></div>
+        <div class="field full"><label>自備用品備註</label><input data-bev-a="supplies_note" maxlength="200" value="${esc(d.supplies_note || '')}"></div>
+        <div class="field"><label>特殊照護需求<small>（最多200字，選填）</small></label><input id="bev-special" maxlength="200" value="${esc(d.special_care || '')}"></div>
+        <div class="field full"><div class="sec-hd">入出住蓋腳印（腳印為紙本蓋印，此處記錄未蓋原因與簽名）</div></div>
+        <div class="field"><label>入住－未蓋腳印原因</label><input data-bev-a="footprint_in_reason" maxlength="100" value="${esc(d.footprint_in_reason || '')}"></div>
+        <div class="field"><label>入住－媽媽簽名</label><input data-bev-a="footprint_in_mom" maxlength="50" value="${esc(d.footprint_in_mom || '')}"></div>
+        <div class="field"><label>入住－護理人員簽名</label><input data-bev-a="footprint_in_nurse" maxlength="50" value="${esc(d.footprint_in_nurse || '')}"></div>
+        <div class="field"><label>出住－未蓋腳印原因</label><input data-bev-a="footprint_out_reason" maxlength="100" value="${esc(d.footprint_out_reason || '')}"></div>
+        <div class="field"><label>出住－媽媽簽名</label><input data-bev-a="footprint_out_mom" maxlength="50" value="${esc(d.footprint_out_mom || '')}"></div>
+        <div class="field"><label>出住－護理人員簽名</label><input data-bev-a="footprint_out_nurse" maxlength="50" value="${esc(d.footprint_out_nurse || '')}"></div>
         <div class="field"><label>評估時間</label><input type="datetime-local" id="bev11-assessed-at"></div>
         <div class="field"><label>護理師簽名</label><input id="bev11-nurse-sign" maxlength="50" value="${esc(currentUser.name)}"></div>
         <div class="field"><label>照護人員身分證字號 <b class="req">*</b><small>（自動帶入登入者，不可修改）</small></label><input value="${esc(idNo)}" placeholder="${idNo ? '' : '請於帳號管理維護身分證字號'}" disabled></div>
@@ -11658,19 +11665,20 @@ async function viewBabyEval() {
     }
     const apgar = Number(v('#bev-apgar'));
     if (!(apgar >= 1 && apgar <= 10)) { err.textContent = 'APGAR 需為 1～10'; return; }
+    const gest = /^(\d{2})(?:\+([0-6]))?$/.exec(v('#bev-gest').replace(/\s/g, ''));
+    if (!gest || Number(gest[1]) < 22 || Number(gest[1]) > 44) { err.textContent = '出生週數請填 22～44 週，可加天數，例：38+2'; $('#bev-gest').focus(); return; }
     const delivery = ckVals(secA, 'bev-delivery');
     if (!delivery.length) { err.textContent = '生產方式請至少勾選一項'; return; }
-    if (delivery.includes('其他') && !v('#bev-delivery-other')) { err.textContent = '生產方式勾選「其他」時，生產方式其他必填'; return; }
-    if (v('#bev-meta') === '已採檢' && !v('#bev-meta-date')) { err.textContent = '代謝篩檢選「已採檢」時，代謝篩檢日期必填'; return; }
+    if (v('#bev-meta') === '已採檢' && !v('#bev-meta-date')) { err.textContent = '新生兒篩檢選「已採檢」時，新生兒篩檢日期必填'; return; }
     const body = {
       checkin_date: v('#bev-ci-date'), checkin_time: v('#bev-ci-time'),
       birth_date: v('#bev-b-date'), birth_time: v('#bev-b-time'),
       birth_place: v('#bev-b-place'), apgar: v('#bev-apgar'),
-      delivery_modes: delivery, delivery_other: v('#bev-delivery-other'),
-      birth_weight_cat: v('#bev-bw-cat'), birth_weight_g: v('#bev-bw'),
-      discharge_weight_cat: v('#bev-dw-cat'), discharge_weight_g: v('#bev-dw'),
+      delivery_modes: delivery,
+      birth_weight_cat: bevWeightCat(v('#bev-bw')), birth_weight_g: v('#bev-bw'),
+      discharge_weight_cat: bevWeightCat(v('#bev-dw')), discharge_weight_g: v('#bev-dw'),
       current_weight_g: v('#bev-cw'),
-      birth_length_cat: v('#bev-bl-cat'), birth_length_cm: v('#bev-bl'), current_length_cm: v('#bev-cl'),
+      birth_length_cat: bevLengthCat(v('#bev-bl')), birth_length_cm: v('#bev-bl'),
       prom: v('#bev-prom'), doic: v('#bev-doic'), ma: v('#bev-ma'),
       metabolic_screen: v('#bev-meta'), metabolic_screen_date: v('#bev-meta-date'),
       vaccination: v('#bev-vac'), hbig_date: v('#bev-hbig'), hbv_date: v('#bev-hbv'),
