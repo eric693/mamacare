@@ -9877,7 +9877,7 @@ async function viewBabyRooms() {
         ${canCare ? `<div class="bbc-foot">
           <div class="row" style="gap:6px;flex-wrap:wrap">
             <a class="btn small" href="#/baby-nursing?b=${b.id}">寶寶護理</a>
-            <a class="btn small" href="#/baby-eval?b=${b.id}">寶寶評估單</a>
+            <a class="btn small" href="#/baby-eval?b=${b.id}">新生兒入住護理評估表</a>
             ${canAccess('#/baby-doctor') ? `<a class="btn small" href="#/baby-doctor?b=${b.id}">醫師巡診</a>` : ''}
             <a class="btn small" href="#/baby-handover?b=${b.id}">新生兒交班單</a>
             ${b.closed || !b.check_out || b.check_out <= data.date
@@ -11138,7 +11138,7 @@ async function viewBabyNursing() {
         <div class="field" style="max-width:240px;margin:0"><label>選擇寶寶</label>
           <select id="bna-baby">${babies.map(b => `<option value="${b.id}" ${b.id === babyId ? 'selected' : ''}>${esc(b.name)}（${esc(b.mother_name)}${b.room_name ? `／${esc(b.room_name)}` : ''}）</option>`).join('')}</select></div>
         <a class="btn small secondary" href="#/baby-rooms">回寶寶房況</a>
-        <a class="btn small secondary" href="#/baby-eval?b=${babyId}">寶寶評估單</a>
+        <a class="btn small secondary" href="#/baby-eval?b=${babyId}">新生兒入住護理評估表</a>
         ${canAccess('#/baby-doctor') ? `<a class="btn small secondary" href="#/baby-doctor?b=${babyId}">醫師巡診</a>` : ''}
         <a class="btn small secondary" href="#/breastfeeding?b=${babyId}">母乳哺育評估</a>
         <a class="btn small secondary" href="#/baby-guidance?b=${babyId}">寶寶護理指導</a>
@@ -11403,7 +11403,7 @@ async function viewBabyEval() {
   const list = await api('/room-status/babies');
   const babies = list.babies;
   if (!babies.length) {
-    main().innerHTML = '<div class="page-title">寶寶評估單</div><div class="card"><div class="empty">目前沒有在住寶寶</div></div>';
+    main().innerHTML = '<div class="page-title">新生兒入住護理評估表</div><div class="card"><div class="empty">目前沒有在住寶寶</div></div>';
     return;
   }
   const want = Number((location.hash.split('?b=')[1] || '').split('&')[0]);
@@ -11432,7 +11432,7 @@ async function viewBabyEval() {
   }).join('');
 
   main().innerHTML = `
-    <div class="page-title">寶寶評估單 <small style="font-weight:400;color:var(--muted);font-size:.9rem">寶寶護理資料評估表</small></div>
+    <div class="page-title">新生兒入住護理評估表 <small style="font-weight:400;color:var(--muted);font-size:.9rem">含嬰兒個案基本資料</small></div>
     <div class="card no-print">
       <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
         <div class="field" style="max-width:240px;margin:0"><label>選擇寶寶</label>
