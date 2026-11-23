@@ -10865,7 +10865,8 @@ async function viewMotherIntake() {
         ${F('呼吸速率（質）', sel('resp_quality', MIA_OPT.respQuality), { req: true })}
         ${F('脈搏', numf('pulse', '', true), { req: true })}
         ${F('呼吸型態', sel('resp_pattern', MIA_OPT.respPattern) + other('resp_pattern_other', '呼吸型態其他'), { req: true })}
-        ${F('心跳速率', sel('heart_rate', MIA_OPT.heartRate) + other('heart_rate_other', '心跳速率其他'), { req: true })}
+        ${F('心跳速率', `<input id="mi-heart_rate" type="number" min="30" max="220" step="1" inputmode="numeric" data-req placeholder="例：78" value="${esc(/^\d+$/.test(String(d.heart_rate ?? '')) ? d.heart_rate : '')}"><small data-vital-hint="mi-heart_rate"></small>`
+          + other('heart_rate_other', '心律補述（選填，例：不規則）'), { req: true, hint: '（次/分，正常 60–100）' })}
         ${F('四肢循環-溫度', sel('limb_temp', MIA_OPT.limbTemp), { req: true })}
         ${F('四肢循環-顏色', sel('limb_color', MIA_OPT.limbColor), { req: true })}
         ${F('腹部外觀', sel('abdomen', MIA_OPT.abdomen) + other('abdomen_other', '腹部外觀其他'), { req: true })}
@@ -10987,6 +10988,8 @@ async function viewMotherIntake() {
       if (!el.value.trim()) { err.textContent = '尚有必填欄位未填寫'; el.scrollIntoView({ block: 'center' }); el.focus(); return; }
     }
     // 數值範圍
+    const hrN = Number(gv('mi-heart_rate'));
+    if (!Number.isInteger(hrN) || hrN < 30 || hrN > 220) { err.textContent = '心跳速率請填寫 30～220 的整數（次/分）'; $('#mi-heart_rate').focus(); return; }
     const pain = gv('mi-pain_score');
     if (pain !== '' && !(Number(pain) >= 0 && Number(pain) <= 10)) { err.textContent = '疼痛分數需為 0～10'; return; }
     // 必填旗標（radio）
@@ -11066,7 +11069,7 @@ const BNA_COUNTS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10+'];
 
 // 心跳／呼吸改填數字（舊紀錄為文字選項，照原樣顯示）
 const bnaVital = v => (v === undefined || v === null || v === '') ? '—' : (/^\d+$/.test(String(v)) ? `${v} 次/分` : String(v));
-const BNA_VITAL_RANGE = { 'bna-hr': [100, 160], 'bna-resp': [40, 60], 'bev-hr-rate': [100, 160], 'bev-resp': [40, 60] };
+const BNA_VITAL_RANGE = { 'bna-hr': [100, 160], 'bna-resp': [40, 60], 'bev-hr-rate': [100, 160], 'bev-resp': [40, 60], 'mi-heart_rate': [60, 100] };
 document.addEventListener('input', e => {
   const r = BNA_VITAL_RANGE[e.target.id];
   if (!r) return;
