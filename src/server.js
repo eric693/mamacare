@@ -1028,7 +1028,11 @@ app.post('/api/babies/:id/breastmilk', requireStaff, (req, res) => {
   const baby = db.prepare('SELECT id, name FROM babies WHERE id = ?').get(req.params.id);
   if (!baby) return res.status(404).json({ error: '找不到寶寶' });
   const b = req.body || {};
-  const bottles = Math.round(Number(b.bottles) || 0);
+  // 只記 ml 數（不計瓶數）：新版前端送 ml，存成 1 瓶 × ml；舊版送 bottles／ml_each 仍相容
+  const viaMl = b.ml !== undefined;
+  const bottles = viaMl ? 1 : Math.round(Number(b.bottles) || 0);
+  const mlEach = viaMl ? Math.round(Number(b.ml) || 0) : Math.max(0, Math.round(Number(b.ml_each) || 0));
+  if (viaMl && !(mlEach > 0)) return res.status(400).json({ error: '請填寫容量（ml），需大於 0' });
   if (!(bottles > 0)) return res.status(400).json({ error: '瓶數需大於 0' });
   const info = db.prepare(`INSERT INTO breastmilk_logs
     (baby_id, log_date, log_time, direction, bottles, ml_each, storage, expressed_at, note, created_by)
@@ -1037,7 +1041,7 @@ app.post('/api/babies/:id/breastmilk', requireStaff, (req, res) => {
     /^\d{4}-\d{2}-\d{2}$/.test(b.log_date || '') ? b.log_date : today(),
     /^\d{2}:\d{2}$/.test(b.log_time || '') ? b.log_time : new Date().toTimeString().slice(0, 5),
     BML_DIR.includes(b.direction) ? b.direction : 'in',
-    bottles, Math.max(0, Math.round(Number(b.ml_each) || 0)),
+    bottles, mlEach,
     BML_STORAGE.includes(b.storage) ? b.storage : 'fridge',
     /^\d{4}-\d{2}-\d{2}$/.test(b.expressed_at || '') ? b.expressed_at : '',
     String(b.note || '').slice(0, 300), req.session.user.id);
@@ -1193,7 +1197,7 @@ app.put('/api/babies/:id/home-summary', requireStaff, (req, res) => {
 // ---------- 寶寶護理每日評估（中衛必要欄位－嬰兒日常評估） ----------
 // data 僅收白名單欄位；多選以陣列、紅臀左右以物件保存
 const BNA_FIELDS = [
-  'medical_no', 'bath', 'heart_rate', 'respiration', 'lip_color', 'muscle_tone',
+  'medical_no', 'bath', 'heart_rate', 'respiration', 'resp_labored', 'lip_color', 'muscle_tone',
   'appearance', 'appearance_note', 'cord', 'milk_types', 'milk_note', 'feeding_status',
   'skin_color', 'skin_conditions', 'skin_notes', 'rash_left', 'rash_right',
   'stool', 'stool_count_note', 'stool_amount', 'stool_color', 'stool_color_note', 'stool_texture',

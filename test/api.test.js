@@ -3219,3 +3219,16 @@ test('全站欄位防呆：身分證／電話／Email 格式不對一律退回�
   assert.strictEqual(r.status, 200);
   assert.strictEqual((await req('GET', `/api/customers/${mid}`)).data.mother.id_no, 'F223456789');
 });
+
+test('母乳庫存只記 ml：送 ml 存成單筆容量，結存以 ml 計；舊格式（瓶數×每瓶）仍相容；寶寶每日評估存心跳呼吸數字', async () => {
+  cookie = '';
+  await req('POST', '/api/login', { username: 'admin', password: 'admin123' });
+  const baby = (await req('GET', '/api/babies')).data[0];
+  const before = (await req('GET', `/api/babies/${baby.id}/breastmilk`)).data.stock.fridge.ml;
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/breastmilk`, { direction: 'in', storage: 'fridge', ml: 0 })).status, 400);
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/breastmilk`, { direction: 'in', storage: 'fridge', ml: 150 })).status, 200);
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/breastmilk`, { direction: 'out', storage: 'fridge', ml: 40 })).status, 200);
+  assert.strictEqual((await req('POST', `/api/babies/${baby.id}/breastmilk`, { direction: 'in', storage: 'fridge', bottles: 2, ml_each: 50 })).status, 200);
+  const d = (await req('GET', `/api/babies/${baby.id}/breastmilk`)).data;
+  assert.strictEqual(d.stock.fridge.ml - before, 150 - 40 + 100);
+});

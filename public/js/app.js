@@ -9106,7 +9106,7 @@ async function openBreastmilkStock(babyId, babyName) {
     const dirLabel = v => (d.directions.find(x => x.value === v) || {}).label || v;
     const stLabel = v => (d.storages.find(x => x.value === v) || {}).label || v;
     const stockLine = d.storages.map(s =>
-      `<span class="badge ${d.stock[s.value].bottles > 0 ? 'teal' : 'gray'}" style="margin-right:6px">${esc(s.label)}：${d.stock[s.value].bottles} 瓶／${d.stock[s.value].ml} ml</span>`).join('');
+      `<span class="badge ${d.stock[s.value].ml > 0 ? 'teal' : 'gray'}" style="margin-right:6px">${esc(s.label)}：${d.stock[s.value].ml} ml</span>`).join('');
     openModal(`母乳庫存紀錄：${babyName}`, `
       <div style="margin-bottom:8px">目前結存　${stockLine}</div>
       <div class="form-grid">
@@ -9114,8 +9114,7 @@ async function openBreastmilkStock(babyId, babyName) {
         <div class="field"><label>時間</label><input type="time" id="bml-time" value="${new Date().toTimeString().slice(0, 5)}"></div>
         <div class="field"><label>異動別</label><select id="bml-dir">${d.directions.map(x => `<option value="${x.value}">${esc(x.label)}</option>`).join('')}</select></div>
         <div class="field"><label>存放</label><select id="bml-storage">${d.storages.map(x => `<option value="${x.value}">${esc(x.label)}</option>`).join('')}</select></div>
-        <div class="field"><label>瓶數 <b class="req">*</b></label><input type="number" min="1" id="bml-bottles" value="1"></div>
-        <div class="field"><label>每瓶容量<small>（ml）</small></label><input type="number" min="0" id="bml-ml" value="0"></div>
+        <div class="field"><label>容量（ml） <b class="req">*</b></label><input type="number" min="1" step="1" inputmode="numeric" id="bml-ml" placeholder="例：120"></div>
         <div class="field"><label>擠乳日期</label><input type="date" id="bml-exp"></div>
         <div class="field full"><label>備註</label><input id="bml-note" maxlength="300"></div>
         <div class="full row" style="gap:10px"><button class="btn" id="bml-add">新增紀錄</button><span class="error-msg" id="bml-err"></span></div>
@@ -9124,30 +9123,30 @@ async function openBreastmilkStock(babyId, babyName) {
       <div class="sec-hd mt">庫存明細（近 300 筆）</div>
       <div class="table-wrap">
         <table class="data stack">
-          <thead><tr><th>日期時間</th><th>異動別</th><th>存放</th><th>瓶數</th><th>容量</th><th>擠乳日期</th><th>備註</th><th>登錄人</th><th></th></tr></thead>
+          <thead><tr><th>日期時間</th><th>異動別</th><th>存放</th><th>容量</th><th>擠乳日期</th><th>備註</th><th>登錄人</th><th></th></tr></thead>
           <tbody>${d.rows.map(r => `
             <tr>
               <td data-label="日期時間">${esc(r.log_date)}<br><small>${esc(r.log_time)}</small></td>
               <td data-label="異動別">${r.direction === 'in' ? '<span class="badge teal">存入</span>' : `<span class="badge yellow">${esc(dirLabel(r.direction))}</span>`}</td>
               <td data-label="存放">${esc(stLabel(r.storage))}</td>
-              <td data-label="瓶數">${r.bottles}</td>
-              <td data-label="容量">${r.ml_each ? `${r.ml_each} ml` : '—'}</td>
+              <td data-label="容量">${r.bottles * r.ml_each ? `${r.bottles * r.ml_each} ml` : '—'}</td>
               <td data-label="擠乳日期">${esc(r.expressed_at || '—')}</td>
               <td data-label="備註"><small>${esc(r.note || '—')}</small></td>
               <td data-label="登錄人">${esc(r.nurse_name || '—')}</td>
               <td><button class="btn small danger" data-bml-del="${r.id}">刪</button></td>
-            </tr>`).join('') || '<tr><td colspan="9"><div class="empty">尚無庫存紀錄</div></td></tr>'}</tbody>
+            </tr>`).join('') || '<tr><td colspan="8"><div class="empty">尚無庫存紀錄</div></td></tr>'}</tbody>
         </table>
       </div>`, body => {
       body.querySelector('#bml-add').onclick = async () => {
+        const ml = Number(body.querySelector('#bml-ml').value);
+        if (!(ml > 0)) { body.querySelector('#bml-err').textContent = '請填寫容量（ml）'; return; }
         try {
           await api(`/babies/${babyId}/breastmilk`, { method: 'POST', body: {
             log_date: body.querySelector('#bml-date').value,
             log_time: body.querySelector('#bml-time').value,
             direction: body.querySelector('#bml-dir').value,
             storage: body.querySelector('#bml-storage').value,
-            bottles: body.querySelector('#bml-bottles').value,
-            ml_each: body.querySelector('#bml-ml').value,
+            ml: Math.round(ml),
             expressed_at: body.querySelector('#bml-exp').value,
             note: body.querySelector('#bml-note').value.trim()
           } });
@@ -11065,6 +11064,20 @@ const BNA_MILK = ['母奶', '配方', '親餵'];
 const BNA_SHIFTS = ['大夜', '白天', '小夜'];   // 大夜 00–08／白天 08–16／小夜 16–24
 const BNA_COUNTS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10+'];
 
+// 心跳／呼吸改填數字（舊紀錄為文字選項，照原樣顯示）
+const bnaVital = v => (v === undefined || v === null || v === '') ? '—' : (/^\d+$/.test(String(v)) ? `${v} 次/分` : String(v));
+const BNA_VITAL_RANGE = { 'bna-hr': [100, 160], 'bna-resp': [40, 60] };
+document.addEventListener('input', e => {
+  const r = BNA_VITAL_RANGE[e.target.id];
+  if (!r) return;
+  const hint = document.querySelector(`[data-vital-hint="${e.target.id}"]`);
+  const n = Number(e.target.value);
+  if (!hint) return;
+  if (!e.target.value) { hint.textContent = ''; return; }
+  const [lo, hi] = r;
+  hint.textContent = n > hi ? `過速（>${hi}）` : n < lo ? `過緩（<${lo}）` : '正常';
+  hint.style.color = n > hi || n < lo ? 'var(--danger)' : 'var(--primary-dark)';
+});
 function bnaSel(id, opts, { req = true, blank = '請選擇' } = {}) {
   return `<select id="${id}" ${req ? 'data-req' : ''}><option value="">${blank}</option>${opts.map(o => `<option>${esc(o)}</option>`).join('')}</select>`;
 }
@@ -11103,7 +11116,7 @@ async function viewBabyNursing() {
       <tr data-filter="${esc(r.assess_date)} ${esc(r.nurse_name || '')}">
         <td data-label="日期時間">${esc(r.assess_date)}<br><small>${esc(r.assess_time)}</small></td>
         <td data-label="體重/體溫">${r.weight_g} g<br><small>${r.temperature} °C</small></td>
-        <td data-label="心跳/呼吸"><small>${esc(d.heart_rate || '—')}<br>${esc(d.respiration || '—')}</small></td>
+        <td data-label="心跳/呼吸"><small>${esc(bnaVital(d.heart_rate))}<br>${esc(bnaVital(d.respiration))}${d.resp_labored ? '（費力／胸凹）' : ''}</small></td>
         <td data-label="臍帶">${esc(d.cord || '—')}</td>
         <td data-label="奶量"><small>${esc(milk || '—')}${d.feeding_status ? `<br>哺育：${esc(d.feeding_status)}` : ''}</small></td>
         <td data-label="皮膚"><small>${esc(skin || '—')}</small></td>
@@ -11155,8 +11168,11 @@ async function viewBabyNursing() {
         <div class="field"><label>體重（g）<b class="req">*</b></label><input type="number" step="0.1" min="0" id="bna-weight" placeholder="範圍：0～99999.9"></div>
         <div class="field"><label>體溫（°C）<b class="req">*</b></label><input type="number" step="0.1" min="0" id="bna-temp" placeholder="範圍：0～99.9"></div>
         <div class="field"><label>洗澡 <b class="req">*</b></label>${bnaSel('bna-bath', BNA_OPTS.bath)}</div>
-        <div class="field"><label>心跳 <b class="req">*</b></label>${bnaSel('bna-hr', BNA_OPTS.heart_rate)}</div>
-        <div class="field"><label>呼吸 <b class="req">*</b></label>${bnaSel('bna-resp', BNA_OPTS.respiration)}</div>
+        <div class="field"><label>心跳 <b class="req">*</b><small>（次/分，正常 100–160）</small></label>
+          <input type="number" id="bna-hr" data-req min="40" max="250" step="1" inputmode="numeric" placeholder="例：132"><small data-vital-hint="bna-hr"></small></div>
+        <div class="field"><label>呼吸 <b class="req">*</b><small>（次/分，正常 40–60）</small></label>
+          <input type="number" id="bna-resp" data-req min="10" max="120" step="1" inputmode="numeric" placeholder="例：48"><small data-vital-hint="bna-resp"></small>
+          <label class="bna-chk" style="margin-top:4px"><input type="checkbox" id="bna-resp-labored"> 費力／胸凹</label></div>
         <div class="field"><label>唇色 <b class="req">*</b></label>${bnaSel('bna-lip', BNA_OPTS.lip_color)}</div>
         <div class="field"><label>肌張活動力 <b class="req">*</b></label>${bnaSel('bna-tone', BNA_OPTS.muscle_tone)}</div>
         <div class="field"><label>外觀 <b class="req">*</b></label>${bnaSel('bna-look', BNA_OPTS.appearance)}</div>
@@ -11247,6 +11263,10 @@ async function viewBabyNursing() {
       if (!el.value) { err.textContent = '尚有必填欄位未選擇'; el.focus(); return; }
     }
     if (!v('#bna-weight') || !v('#bna-temp')) { err.textContent = '請填寫體重與體溫'; return; }
+    for (const [id, label, lo, hi] of [['#bna-hr', '心跳', 40, 250], ['#bna-resp', '呼吸', 10, 120]]) {
+      const n = Number(v(id));
+      if (!Number.isInteger(n) || n < lo || n > hi) { err.textContent = `${label}請填寫 ${lo}～${hi} 的整數（次/分）`; $(id).focus(); return; }
+    }
     const milk = ckVals('milk');
     if (!milk.length) { err.textContent = '奶量請至少勾選一項（母奶／配方／親餵）'; return; }
     if (!v('#bna-milk-note')) { err.textContent = '請填寫奶量補述（範例：30,20）'; return; }
@@ -11271,7 +11291,8 @@ async function viewBabyNursing() {
         assess_date: v('#bna-date'), assess_time: v('#bna-time'),
         weight_g: Number(v('#bna-weight')), temperature: Number(v('#bna-temp')),
         medical_no: v('#bna-medno'), bath: v('#bna-bath'),
-        heart_rate: v('#bna-hr'), respiration: v('#bna-resp'), lip_color: v('#bna-lip'),
+        heart_rate: v('#bna-hr'), respiration: v('#bna-resp'), resp_labored: $('#bna-resp-labored').checked ? '是' : '',
+        lip_color: v('#bna-lip'),
         muscle_tone: v('#bna-tone'), appearance: v('#bna-look'), appearance_note: v('#bna-look-note'),
         cord: v('#bna-cord'), milk_types: milk, milk_note: v('#bna-milk-note'),
         feeding_status: v('#bna-feedst'), skin_color: v('#bna-skin'),
