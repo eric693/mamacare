@@ -11066,7 +11066,7 @@ const BNA_COUNTS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10+'];
 
 // 心跳／呼吸改填數字（舊紀錄為文字選項，照原樣顯示）
 const bnaVital = v => (v === undefined || v === null || v === '') ? '—' : (/^\d+$/.test(String(v)) ? `${v} 次/分` : String(v));
-const BNA_VITAL_RANGE = { 'bna-hr': [100, 160], 'bna-resp': [40, 60] };
+const BNA_VITAL_RANGE = { 'bna-hr': [100, 160], 'bna-resp': [40, 60], 'bev-hr-rate': [100, 160], 'bev-resp': [40, 60] };
 document.addEventListener('input', e => {
   const r = BNA_VITAL_RANGE[e.target.id];
   if (!r) return;
@@ -11422,7 +11422,7 @@ async function viewBabyEval() {
         <td data-label="頭部"><small>囟門 ${esc(a.fontanelle || '—')}<br>頭皮 ${esc(a.scalp || '—')}</small></td>
         <td data-label="皮膚"><small>${esc([a.skin_color, (a.skin_conditions || []).join('、')].filter(Boolean).join('；') || '—')}</small></td>
         <td data-label="紅臀"><small>左 ${esc(rashL.level || '—')}／右 ${esc(rashR.level || '—')}</small></td>
-        <td data-label="呼吸/心跳"><small>${esc(a.resp_rate || '—')}<br>${esc(a.heart_rate || '—')}</small></td>
+        <td data-label="呼吸/心跳"><small>${esc(bnaVital(a.resp_rate))}<br>${esc(bnaVital(a.heart_rate))}</small></td>
         <td data-label="評估者">${esc(r.nurse_name || '—')}</td>
         <td data-label="" class="no-print">${currentUser.role === 'admin' ? `<button class="btn small danger" data-del="${r.id}">刪除</button>` : ''}</td>
       </tr>`;
@@ -11595,11 +11595,13 @@ async function viewBabyEval() {
         ${bevRashBlock('right', '右臀')}
         <div class="field"><label>胸部外觀 <b class="req">*</b></label>${bevSel('bev-chest', BEV_OPTS.chest)}</div>
         <div class="field"><label>胸部補述<small>（選「其他」時必填，最多100字）</small></label><input id="bev-chest-note" maxlength="100"></div>
-        <div class="field"><label>呼吸速率 <b class="req">*</b></label>${bevSel('bev-resp', BEV_OPTS.resp_rate)}</div>
+        <div class="field"><label>呼吸速率 <b class="req">*</b><small>（次/分，正常 40–60）</small></label>
+          <input type="number" id="bev-resp" data-req min="10" max="120" step="1" inputmode="numeric" placeholder="例：48"><small data-vital-hint="bev-resp"></small></div>
         <div class="field"><label>呼吸型態 <b class="req">*</b></label>${bevSel('bev-resp-pat', BEV_OPTS.resp_pattern)}</div>
         <div class="field"><label>呼吸型態補述<small>（選「其他」時必填，最多100字）</small></label><input id="bev-resp-note" maxlength="100"></div>
-        <div class="field"><label>心跳速率 <b class="req">*</b></label>${bevSel('bev-hr-rate', BEV_OPTS.heart_rate)}</div>
-        <div class="field"><label>心跳速率補述<small>（選「其他」時必填，最多100字）</small></label><input id="bev-hr-note" maxlength="100"></div>
+        <div class="field"><label>心跳速率 <b class="req">*</b><small>（次/分，正常 100–160）</small></label>
+          <input type="number" id="bev-hr-rate" data-req min="40" max="250" step="1" inputmode="numeric" placeholder="例：132"><small data-vital-hint="bev-hr-rate"></small></div>
+        <div class="field"><label>心跳速率補述<small>（選填，最多100字）</small></label><input id="bev-hr-note" maxlength="100"></div>
         <div class="field"><label>四肢循環溫度 <b class="req">*</b></label>${bevSel('bev-limb-t', BEV_OPTS.limb_temp)}</div>
         <div class="field"><label>四肢循環顏色 <b class="req">*</b></label>${bevSel('bev-limb-c', BEV_OPTS.limb_color)}</div>
         <div class="field"><label>腹部外觀 <b class="req">*</b></label>${bevSel('bev-abd', BEV_OPTS.abdomen)}</div>
@@ -11696,9 +11698,12 @@ async function viewBabyEval() {
       ['#bev-nose', '其他', '#bev-nose-note', '鼻子選「其他」時，鼻子補述必填'],
       ['#bev-neck', '其他', '#bev-neck-note', '頸部選「其他」時，頸部補述必填'],
       ['#bev-chest', '其他', '#bev-chest-note', '胸部外觀選「其他」時，胸部補述必填'],
-      ['#bev-resp-pat', '其他', '#bev-resp-note', '呼吸型態選「其他」時，呼吸型態補述必填'],
-      ['#bev-hr-rate', '其他', '#bev-hr-note', '心跳速率選「其他」時，心跳速率補述必填']
+      ['#bev-resp-pat', '其他', '#bev-resp-note', '呼吸型態選「其他」時，呼吸型態補述必填']
     ];
+    for (const [id, label, lo, hi] of [['#bev-hr-rate', '心跳速率', 40, 250], ['#bev-resp', '呼吸速率', 10, 120]]) {
+      const n = Number((document.querySelector(id) || {}).value);
+      if (!Number.isInteger(n) || n < lo || n > hi) { err.textContent = `${label}請填寫 ${lo}～${hi} 的整數（次/分）`; document.querySelector(id).focus(); return; }
+    }
     for (const [sel, val, note, msg] of conds) {
       if (v(sel) === val && !v(note)) { err.textContent = msg; return; }
     }
